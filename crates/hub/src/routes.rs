@@ -52,22 +52,31 @@ pub fn create_router(state: AppState) -> Router {
             require_session,
         ));
 
-    // Resolve frontend/dist: try cwd first, then walk up from binary location
-    let frontend_path = if std::path::Path::new("frontend/dist").exists() {
-        std::path::PathBuf::from("frontend/dist")
-    } else {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        // target/release/ -> project root is two levels up
-        let candidate = exe_dir.join("../../frontend/dist");
-        if candidate.exists() {
-            candidate
-        } else {
-            std::path::PathBuf::from("frontend/dist")
+    // Resolve frontend/dist by walking up from the binary location.
+    // Covers: dev (target/release/hub → project root), installed (bin/hub → install dir),
+    // and running from any working directory.
+    let frontend_path = find_frontend_dist().unwrap_or_else(|| std::path::PathBuf::from("frontend/dist"));
+
+    fn find_frontend_dist() -> Option<std::path::PathBuf> {
+        // 1. Check cwd first (common dev case: run from project root)
+        let cwd_candidate = std::path::PathBuf::from("frontend/dist");
+        if cwd_candidate.exists() {
+            return Some(cwd_candidate);
         }
-    };
+
+        // 2. Walk up from binary location, up to 5 levels
+        let mut dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+        for _ in 0..5 {
+            let candidate = dir.join("frontend/dist");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+        None
+    }
 
     let frontend = ServeDir::new(frontend_path);
 
