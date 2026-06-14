@@ -24,3 +24,13 @@ rusqlite = { version = "0.35", features = ["bundled"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 filebox-protocol = { path = "crates/protocol" }
+rand = "0.9"
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+hex = "0.4"
+tokio-stream = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+async-stream = "0.3"
+bcrypt = "0.19"
+toml = "0.8"
+sysinfo = "0.35"

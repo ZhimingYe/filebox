@@ -1,7 +1,11 @@
 use tracing_subscriber::EnvFilter;
 
 mod config;
+mod config_store;
 mod connection;
+mod fs;
+mod resources;
+mod sysinfo;
 
 #[tokio::main]
 async fn main() {
@@ -9,7 +13,7 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let config = config::AgentConfig::from_env();
+    let config = config::AgentConfig::load();
     tracing::info!("Agent starting, connecting to {}", config.hub_url);
 
     connection::run_connection_loop(&config).await;

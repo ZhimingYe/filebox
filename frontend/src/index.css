@@ -1,0 +1,149 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: #ffffff;
+  color: #0f172a;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+input:focus {
+  outline: 2px solid #6366f1;
+  outline-offset: -1px;
+}
+
+button:hover {
+  opacity: 0.9;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+a {
+  color: #6366f1;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* Markdown content */
+.markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 {
+  margin: 1em 0 0.5em;
+  color: #0f172a;
+  font-weight: 600;
+}
+.markdown h1 { font-size: 1.6em; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.3em; }
+.markdown h2 { font-size: 1.3em; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.2em; }
+.markdown p { margin: 0.5em 0; }
+.markdown code {
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
+}
+.markdown pre {
+  background: #f8fafc;
+  padding: 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+  border: 1px solid #e2e8f0;
+}
+.markdown pre code {
+  background: none;
+  padding: 0;
+}
+.markdown blockquote {
+  border-left: 3px solid #6366f1;
+  padding-left: 12px;
+  color: #475569;
+  margin: 0.5em 0;
+}
+.markdown table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+.markdown th, .markdown td {
+  border: 1px solid #e2e8f0;
+  padding: 6px 10px;
+  text-align: left;
+}
+.markdown th {
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 500;
+}
+.markdown ul, .markdown ol {
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+.markdown li {
+  margin: 0.25em 0;
+}
+.markdown img {
+  max-width: 100%;
+}
+.markdown hr {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 1em 0;
+}
+.markdown a {
+  color: #6366f1;
+}
+
+/* Syntax highlighter: force transparent background on all tokens */
+.code-transparent pre code,
+.code-transparent pre code span {
+  background: transparent !important;
+}
+/* Force word-wrap on syntax highlighter (overrides inline styles) */
+.code-wrap pre,
+.code-wrap pre code,
+.code-wrap pre code span {
+  white-space: pre-wrap !important;
+  word-break: break-all !important;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

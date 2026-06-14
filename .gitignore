@@ -17,6 +17,14 @@ frontend/.vite/
 .DS_Store
 Thumbs.db
 
-# Env
+# Logs
+*.log
+
+# Env / secrets
 .env
-.env.local
+.env.*
+*.pem
+*.key
+
+# Planning notes
+detailedplan.md

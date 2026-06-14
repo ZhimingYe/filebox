@@ -2,12 +2,32 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
+use filebox_protocol::message::{AgentMessage, HubMessage};
+use filebox_protocol::resources::Capabilities;
+
 use crate::config::AgentConfig;
+use crate::resources::ResourceManager;
 
 pub async fn run_connection_loop(config: &AgentConfig) {
     let ws_url = format!("{}/ws/agent", config.hub_url);
     let mut backoff_secs = 1u64;
-    let max_backoff = 60u64;
+    let max_backoff = 300u64;
+
+    // Ensure data directory exists
+    if let Err(e) = std::fs::create_dir_all(&config.data_dir) {
+        tracing::error!("Failed to create data directory {:?}: {}", config.data_dir, e);
+        return;
+    }
+
+    // Load or initialize resource manager (persists agent_id and resources)
+    let mut resource_mgr = ResourceManager::new(config.data_dir.clone(), config.agent_name.clone());
+    let stable_agent_id = resource_mgr.agent_id().to_string();
+
+    tracing::info!(
+        "Agent ID: {}, data dir: {:?}",
+        stable_agent_id,
+        config.data_dir
+    );
 
     loop {
         tracing::info!("Connecting to {}", ws_url);
@@ -19,30 +39,254 @@ pub async fn run_connection_loop(config: &AgentConfig) {
 
                 let (mut write, mut read) = ws_stream.split();
 
-                // Send auth message
-                let auth = filebox_protocol::message::AgentMessage::Auth {
+                // Step 1: Send Auth
+                let auth = AgentMessage::Auth {
                     token: config.token.clone(),
                 };
-                let auth_text = serde_json::to_string(&auth).unwrap();
-                if write.send(Message::Text(auth_text.into())).await.is_err() {
+                if write
+                    .send(Message::Text(serde_json::to_string(&auth).unwrap().into()))
+                    .await
+                    .is_err()
+                {
                     tracing::warn!("Failed to send auth, reconnecting...");
                     continue;
                 }
 
-                // Message loop
-                while let Some(Ok(msg)) = read.next().await {
-                    match msg {
-                        Message::Text(text) => {
-                            tracing::debug!("Received: {}", text);
+                // Step 2: Wait for AuthResult
+                let auth_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    read.next(),
+                )
+                .await;
+
+                let assigned_agent_id = match auth_result {
+                    Ok(Some(Ok(Message::Text(text)))) => {
+                        match serde_json::from_str::<HubMessage>(&text) {
+                            Ok(HubMessage::AuthResult {
+                                success: true,
+                                agent_id: Some(id),
+                            }) => {
+                                tracing::info!("Authenticated as agent {}", id);
+                                id
+                            }
+                            Ok(HubMessage::AuthResult {
+                                success: false, ..
+                            }) => {
+                                tracing::error!("Authentication failed");
+                                continue;
+                            }
+                            _ => {
+                                tracing::warn!("Unexpected auth response: {}", text);
+                                continue;
+                            }
                         }
-                        Message::Ping(data) => {
-                            let _ = write.send(Message::Pong(data)).await;
+                    }
+                    _ => {
+                        tracing::warn!("Timeout waiting for auth result");
+                        continue;
+                    }
+                };
+
+                // Step 3: Send Register with persisted resource state
+                let (rev, roots) = resource_mgr.current_state();
+                let register = AgentMessage::Register {
+                    agent_id: Some(stable_agent_id.clone()),
+                    name: config.agent_name.clone(),
+                    resource_revision: rev,
+                    roots,
+                    capabilities: Capabilities::default(),
+                };
+                if write
+                    .send(Message::Text(
+                        serde_json::to_string(&register).unwrap().into(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("Failed to send register, reconnecting...");
+                    continue;
+                }
+
+                tracing::info!(
+                    "Registered as {} (rev={})",
+                    config.agent_name,
+                    resource_mgr.resource_revision()
+                );
+
+                // Step 4: Main message loop
+                let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+
+                loop {
+                    tokio::select! {
+                        msg = read.next() => {
+                            match msg {
+                                Some(Ok(Message::Text(text))) => {
+                                    match serde_json::from_str::<HubMessage>(&text) {
+                                        Ok(HubMessage::Ping) => {
+                                            let _ = write.send(Message::Text(
+                                                serde_json::to_string(&AgentMessage::Pong).unwrap().into(),
+                                            )).await;
+                                        }
+                                        Ok(HubMessage::ResourcesSetDesired {
+                                            req_id,
+                                            desired_revision,
+                                            roots,
+                                        }) => {
+                                            tracing::info!(
+                                                "Received resource update: rev={}, {} roots",
+                                                desired_revision,
+                                                roots.len()
+                                            );
+
+                                            let response = match resource_mgr.apply_desired(desired_revision, roots) {
+                                                Ok(new_rev) => {
+                                                    // Also send ResourcesUpdated so Hub syncs
+                                                    let update = AgentMessage::ResourcesUpdated {
+                                                        agent_id: assigned_agent_id.clone(),
+                                                        resource_revision: new_rev,
+                                                        roots: resource_mgr.roots().to_vec(),
+                                                    };
+                                                    let _ = write.send(Message::Text(
+                                                        serde_json::to_string(&update).unwrap().into(),
+                                                    )).await;
+
+                                                    AgentMessage::ResourcesApplied {
+                                                        req_id: req_id.clone(),
+                                                        agent_id: assigned_agent_id.clone(),
+                                                        resource_revision: new_rev,
+                                                    }
+                                                }
+                                                Err(err_msg) => {
+                                                    tracing::warn!("Resource update rejected: {}", err_msg);
+                                                    AgentMessage::ResourcesRejected {
+                                                        req_id: req_id.clone(),
+                                                        agent_id: assigned_agent_id.clone(),
+                                                        current_resource_revision: resource_mgr.resource_revision(),
+                                                        error: "invalid_resource".to_string(),
+                                                        message: err_msg,
+                                                    }
+                                                }
+                                            };
+
+                                            let _ = write.send(Message::Text(
+                                                serde_json::to_string(&response).unwrap().into(),
+                                            )).await;
+                                        }
+                                        Ok(HubMessage::FsListRequest { req_id, root, path, limit, cursor }) => {
+                                            tracing::debug!("FS list: root={}, path={}", root, path);
+                                            let response = match crate::fs::list_directory(
+                                                resource_mgr.roots(), &root, &path, limit as usize, cursor.as_deref(),
+                                            ) {
+                                                Ok((items, next_cursor)) => AgentMessage::FsListResponse {
+                                                    req_id: req_id.clone(),
+                                                    items,
+                                                    next_cursor,
+                                                    error: None,
+                                                },
+                                                Err(e) => AgentMessage::FsListResponse {
+                                                    req_id: req_id.clone(),
+                                                    items: vec![],
+                                                    next_cursor: None,
+                                                    error: Some(e),
+                                                },
+                                            };
+                                            let _ = write.send(Message::Text(
+                                                serde_json::to_string(&response).unwrap().into(),
+                                            )).await;
+                                        }
+                                        Ok(HubMessage::FsStatRequest { req_id, root, path }) => {
+                                            tracing::debug!("FS stat: root={}, path={}", root, path);
+                                            let response = match crate::fs::stat_file(
+                                                resource_mgr.roots(), &root, &path,
+                                            ) {
+                                                Ok(stat) => AgentMessage::FsStatResponse {
+                                                    req_id: req_id.clone(),
+                                                    stat: Some(stat),
+                                                    error: None,
+                                                },
+                                                Err(e) => AgentMessage::FsStatResponse {
+                                                    req_id: req_id.clone(),
+                                                    stat: None,
+                                                    error: Some(e),
+                                                },
+                                            };
+                                            let _ = write.send(Message::Text(
+                                                serde_json::to_string(&response).unwrap().into(),
+                                            )).await;
+                                        }
+                                        Ok(HubMessage::FileReadRequest { req_id, root, path, offset, length }) => {
+                                            tracing::debug!("FS read: root={}, path={}, offset={}, len={:?}", root, path, offset, length);
+                                            let response = match crate::fs::read_file_range(
+                                                resource_mgr.roots(), &root, &path, offset, length,
+                                            ) {
+                                                Ok((data, done)) => AgentMessage::FileChunk {
+                                                    req_id: req_id.clone(),
+                                                    offset,
+                                                    data,
+                                                    done,
+                                                    error: None,
+                                                },
+                                                Err(e) => AgentMessage::FileChunk {
+                                                    req_id: req_id.clone(),
+                                                    offset: 0,
+                                                    data: vec![],
+                                                    done: true,
+                                                    error: Some(e),
+                                                },
+                                            };
+                                            let _ = write.send(Message::Text(
+                                                serde_json::to_string(&response).unwrap().into(),
+                                            )).await;
+                                        }
+                                        Ok(HubMessage::Cancel { req_id }) => {
+                                            tracing::debug!("Cancel request: {}", req_id);
+                                        }
+                                        Ok(HubMessage::SysStatsRequest { req_id }) => {
+                                            tracing::debug!("Sys stats request");
+                                            let response = match crate::sysinfo::collect_stats() {
+                                                Ok(stats) => AgentMessage::SysStatsResponse {
+                                                    req_id: req_id.clone(),
+                                                    stats: Some(stats),
+                                                    error: None,
+                                                },
+                                                Err(e) => AgentMessage::SysStatsResponse {
+                                                    req_id: req_id.clone(),
+                                                    stats: None,
+                                                    error: Some(e),
+                                                },
+                                            };
+                                            let _ = write.send(Message::Text(
+                                                serde_json::to_string(&response).unwrap().into(),
+                                            )).await;
+                                        }
+                                        Ok(HubMessage::Error { message }) => {
+                                            tracing::warn!("Hub error: {}", message);
+                                        }
+                                        Err(e) => {
+                                            tracing::debug!("Failed to parse hub message: {}", e);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                Some(Ok(Message::Ping(data))) => {
+                                    let _ = write.send(Message::Pong(data)).await;
+                                }
+                                Some(Ok(Message::Close(_))) => {
+                                    tracing::info!("Hub closed connection");
+                                    break;
+                                }
+                                None => {
+                                    tracing::info!("Connection stream ended");
+                                    break;
+                                }
+                                _ => {}
+                            }
                         }
-                        Message::Close(_) => {
-                            tracing::info!("Hub closed connection");
-                            break;
+                        _ = ping_interval.tick() => {
+                            let _ = write.send(Message::Text(
+                                serde_json::to_string(&AgentMessage::Heartbeat).unwrap().into(),
+                            )).await;
                         }
-                        _ => {}
                     }
                 }
 
