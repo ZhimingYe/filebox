@@ -12,6 +12,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 INSTALL_DIR="$HOME/filebox"
 CONFIG_DIR="$INSTALL_DIR/config"
 LOG_DIR="$INSTALL_DIR/logs"
@@ -137,9 +140,7 @@ EOF
 
 build_project() {
     info "Building project..."
-    local project_dir
-    project_dir=$(cd "$(dirname "$0")/.." && pwd)
-    cd "$project_dir"
+    cd "$PROJECT_DIR"
 
     info "Building frontend..."
     cd frontend
@@ -155,15 +156,13 @@ build_project() {
 
 install_files() {
     info "Installing to $INSTALL_DIR..."
-    local project_dir
-    project_dir=$(cd "$(dirname "$0")/.." && pwd)
 
     mkdir -p "$INSTALL_DIR/bin" "$FRONTEND_DIR" "$LOG_DIR"
 
-    cp "$project_dir/target/release/hub" "$INSTALL_DIR/bin/"
+    cp "$PROJECT_DIR/target/release/hub" "$INSTALL_DIR/bin/"
     chmod +x "$INSTALL_DIR/bin/hub"
 
-    cp -r "$project_dir/frontend/dist" "$FRONTEND_DIR/"
+    cp -r "$PROJECT_DIR/frontend/dist" "$FRONTEND_DIR/"
 
     success "Files installed"
 }

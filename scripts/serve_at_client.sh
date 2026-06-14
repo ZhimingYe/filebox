@@ -12,6 +12,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 INSTALL_DIR="$HOME/filebox-agent"
 CONFIG_FILE="$INSTALL_DIR/agent.toml"
 DATA_DIR="$INSTALL_DIR/data"
@@ -130,14 +133,12 @@ build_binary() {
 
     command -v cargo &>/dev/null || error "Need Rust toolchain (cargo)"
 
-    local project_dir
-    project_dir=$(cd "$(dirname "$0")/.." && pwd)
-    cd "$project_dir"
+    cd "$PROJECT_DIR"
 
     info "Compiling (may take a few minutes)..."
     cargo build --release --bin agent 2>&1 | tail -3
 
-    cp "$project_dir/target/release/agent" "$INSTALL_DIR/agent"
+    cp "$PROJECT_DIR/target/release/agent" "$INSTALL_DIR/agent"
     chmod +x "$INSTALL_DIR/agent"
     success "Build complete"
 }
@@ -188,8 +189,8 @@ main() {
 
     collect_config
     generate_config
-    get_binary
     install_files
+    get_binary
     print_summary
 }
 
