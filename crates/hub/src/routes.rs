@@ -52,7 +52,24 @@ pub fn create_router(state: AppState) -> Router {
             require_session,
         ));
 
-    let frontend = ServeDir::new("frontend/dist");
+    // Resolve frontend/dist: try cwd first, then walk up from binary location
+    let frontend_path = if std::path::Path::new("frontend/dist").exists() {
+        std::path::PathBuf::from("frontend/dist")
+    } else {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        // target/release/ -> project root is two levels up
+        let candidate = exe_dir.join("../../frontend/dist");
+        if candidate.exists() {
+            candidate
+        } else {
+            std::path::PathBuf::from("frontend/dist")
+        }
+    };
+
+    let frontend = ServeDir::new(frontend_path);
 
     // CORS: allow any origin (hub serves both API and frontend)
     let cors = CorsLayer::new()
