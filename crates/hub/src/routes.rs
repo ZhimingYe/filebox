@@ -17,11 +17,11 @@ pub fn create_router(state: AppState) -> Router {
     let public = Router::new()
         .route("/api/health", get(health::health_handler))
         .route("/api/session/exchange", post(session_exchange_handler))
-        .route("/api/events", get(events::sse_handler))
         .route("/ws/agent", get(ws::ws_handler));
 
     // Protected routes (session cookie required)
     let protected = Router::new()
+        .route("/api/events", get(events::sse_handler))
         .route("/api/session/logout", post(session_logout_handler))
         .route("/api/agents", get(agents_list_handler))
         .route("/api/agents/{agent_id}", get(agent_detail_handler))
@@ -80,17 +80,19 @@ pub fn create_router(state: AppState) -> Router {
 
     let frontend = ServeDir::new(frontend_path);
 
-    // CORS: allow any origin (hub serves both API and frontend)
+    // CORS: mirror request origin so credentials work (browsers reject ACAO:* with credentials)
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::any())
+        .allow_origin(AllowOrigin::mirror_request())
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::PUT, Method::DELETE])
-        .allow_headers([header::CONTENT_TYPE, header::COOKIE]);
+        .allow_headers([header::CONTENT_TYPE, header::COOKIE])
+        .allow_credentials(true);
 
     Router::new()
         .merge(public)
         .merge(protected)
         .fallback_service(frontend)
         .layer(cors)
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)) // 1MB max request body
         .with_state(state)
 }
 
@@ -152,15 +154,41 @@ async fn require_session(
 struct SessionExchangeRequest {
     username: String,
     password: String,
+    remember: Option<bool>,
 }
 
 async fn session_exchange_handler(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<SessionExchangeRequest>,
 ) -> Response {
+    // Extract client IP (prefer X-Forwarded-For for reverse proxy setups)
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| addr.ip().to_string());
+
+    // Rate limit check
+    if let Err(remaining) = state.rate_limiter.check(&ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": "too_many_requests",
+                "message": format!("Too many login attempts. Try again in {} seconds.", remaining),
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+
     let mut inner = state.inner.write().await;
 
     if !inner.sessions.validate_login(&req.username, &req.password) {
+        drop(inner);
+        state.rate_limiter.record_failure(&ip);
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
@@ -172,12 +200,17 @@ async fn session_exchange_handler(
             .into_response();
     }
 
-    let session = inner.sessions.create_session(&req.username);
+    let remember = req.remember.unwrap_or(false);
+    let (session, ttl) = inner.sessions.create_session(&req.username, remember);
     let session_id = session.session_id.clone();
+    drop(inner);
+
+    // Clear rate limit on successful login
+    state.rate_limiter.clear(&ip);
 
     let cookie = format!(
-        "filebox_session={}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400",
-        session_id
+        "filebox_session={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}",
+        session_id, ttl
     );
 
     (
@@ -194,7 +227,7 @@ async fn session_exchange_handler(
 
 async fn session_logout_handler(State(_state): State<AppState>) -> Response {
     // Clear cookie
-    let cookie = "filebox_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
+    let cookie = "filebox_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0";
     (
         StatusCode::OK,
         [(header::SET_COOKIE, cookie)],
@@ -317,6 +350,30 @@ async fn add_root_handler(
     Path(agent_id): Path<String>,
     Json(req): Json<AddRootRequest>,
 ) -> Response {
+    // Validate root name
+    if req.name.is_empty() || req.name.len() > 128 || req.name.contains('/') || req.name.contains('\\') || req.name.contains('\0') {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_root_name",
+                "message": "Root name must be non-empty, max 128 chars, and contain no slashes",
+                "retryable": false,
+            })),
+        ).into_response();
+    }
+
+    // Validate path is not empty
+    if req.path.is_empty() || req.path.len() > 4096 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_root_path",
+                "message": "Root path must be non-empty and max 4096 chars",
+                "retryable": false,
+            })),
+        ).into_response();
+    }
+
     let inner = state.inner.read().await;
     let agent = match inner.agents.get(&agent_id) {
         Some(a) => a,
@@ -364,6 +421,20 @@ async fn patch_root_handler(
     Path((agent_id, root_name)): Path<(String, String)>,
     Json(req): Json<PatchRootRequest>,
 ) -> Response {
+    // Validate new name if being renamed
+    if let Some(ref name) = req.name {
+        if name.is_empty() || name.len() > 128 || name.contains('/') || name.contains('\\') || name.contains('\0') {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_root_name",
+                    "message": "Root name must be non-empty, max 128 chars, and contain no slashes",
+                    "retryable": false,
+                })),
+            ).into_response();
+        }
+    }
+
     let inner = state.inner.read().await;
     let agent = match inner.agents.get(&agent_id) {
         Some(a) => a,

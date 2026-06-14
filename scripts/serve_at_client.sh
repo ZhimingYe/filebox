@@ -36,24 +36,28 @@ collect_config() {
     info "Configuring Filebox Agent"
     echo ""
 
+    # Hub URL
     while true; do
         read -rp "Hub server URL (e.g. https://filebox.example.com): " hub_url
-        if [[ -n "$hub_url" ]]; then
-            hub_url="${hub_url%/}"
+        hub_url="${hub_url%/}"
+        if [[ "$hub_url" =~ ^https?:// ]]; then
             break
         fi
-        warn "Hub URL cannot be empty"
+        warn "URL must start with http:// or https://"
     done
 
+    # Token
     while true; do
         read -rp "Agent token: " agent_token
         [[ -n "$agent_token" ]] && break
         warn "Token cannot be empty"
     done
 
+    # Name
     read -rp "Agent name [$(hostname)]: " agent_name
     agent_name=${agent_name:-$(hostname)}
 
+    # Data dir
     read -rp "Data directory [${DATA_DIR}]: " custom_data_dir
     [[ -n "$custom_data_dir" ]] && DATA_DIR="$custom_data_dir"
 
@@ -100,27 +104,42 @@ get_binary() {
 }
 
 download_binary() {
-    info "Downloading Agent from Hub..."
+    # Check download tools
+    if ! command -v curl &>/dev/null && ! command -v wget &>/dev/null; then
+        error "Need curl or wget to download. Install one and retry."
+    fi
 
     local arch
     arch=$(uname -m)
     case "$arch" in
         x86_64)  arch="x86_64" ;;
         aarch64) arch="aarch64" ;;
+        arm64)   arch="aarch64" ;;  # macOS Apple Silicon
         *)       error "Unsupported architecture: $arch" ;;
     esac
 
-    local os="unknown-linux-gnu"
+    local os
+    case "$(uname -s)" in
+        Linux*)  os="unknown-linux-gnu" ;;
+        Darwin*) os="apple-darwin" ;;
+        *)       error "Unsupported OS: $(uname -s)" ;;
+    esac
+
     local url="${hub_url}/downloads/agent-${arch}-${os}"
-    local temp_file="/tmp/filebox-agent-$$"
+    local temp_file
+    temp_file=$(mktemp /tmp/filebox-agent-XXXXXX)
 
     info "Downloading: $url"
     if command -v curl &>/dev/null; then
-        curl -fsSL "$url" -o "$temp_file" || error "Download failed"
-    elif command -v wget &>/dev/null; then
-        wget -q "$url" -O "$temp_file" || error "Download failed"
+        curl -fsSL "$url" -o "$temp_file" || { rm -f "$temp_file"; error "Download failed (curl)"; }
     else
-        error "Need curl or wget"
+        wget -q "$url" -O "$temp_file" || { rm -f "$temp_file"; error "Download failed (wget)"; }
+    fi
+
+    # Basic sanity check — file should be non-empty and executable-looking
+    if [[ ! -s "$temp_file" ]]; then
+        rm -f "$temp_file"
+        error "Downloaded file is empty. Check the Hub URL and try again."
     fi
 
     chmod +x "$temp_file"
@@ -129,14 +148,13 @@ download_binary() {
 }
 
 build_binary() {
-    info "Building Agent locally..."
-
-    command -v cargo &>/dev/null || error "Need Rust toolchain (cargo)"
+    command -v cargo &>/dev/null || error "Need Rust toolchain (cargo). Install from https://rustup.rs"
 
     cd "$PROJECT_DIR"
 
-    info "Compiling (may take a few minutes)..."
-    cargo build --release --bin agent 2>&1 | tail -3
+    info "Compiling agent (may take a few minutes)..."
+    cargo build --release --bin agent || error "Cargo build failed"
+    [[ -f "$PROJECT_DIR/target/release/agent" ]] || error "Agent binary not found after build"
 
     cp "$PROJECT_DIR/target/release/agent" "$INSTALL_DIR/agent"
     chmod +x "$INSTALL_DIR/agent"
@@ -146,6 +164,9 @@ build_binary() {
 install_files() {
     info "Installing to $INSTALL_DIR..."
     mkdir -p "$INSTALL_DIR" "$DATA_DIR"
+
+    [[ -f "$INSTALL_DIR/agent" ]] || error "Agent binary not found. Download or build step may have failed."
+
     success "Files installed"
 }
 
@@ -165,7 +186,7 @@ print_summary() {
     echo "    ${INSTALL_DIR}/agent"
     echo ""
     echo "  Background:"
-    echo "    nohup ${INSTALL_DIR}/agent &"
+    echo "    nohup ${INSTALL_DIR}/agent > ${INSTALL_DIR}/agent.log 2>&1 &"
     echo ""
     echo "  Add root directories:"
     echo "    1. Open the Hub frontend"
@@ -183,14 +204,14 @@ main() {
     echo ""
 
     if [[ -d "$INSTALL_DIR" ]]; then
-        warn "Existing Filebox Agent installation detected"
+        warn "Existing Filebox Agent installation detected at $INSTALL_DIR"
         confirm "Overwrite?" || error "Cancelled"
     fi
 
     collect_config
     generate_config
-    install_files
     get_binary
+    install_files
     print_summary
 }
 

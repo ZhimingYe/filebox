@@ -2,12 +2,13 @@ import { useState } from 'react';
 import { c, radius, shadow, font } from '../theme';
 
 interface Props {
-  onLogin: (username: string, password: string) => Promise<boolean>;
+  onLogin: (username: string, password: string, remember: boolean) => Promise<boolean>;
 }
 
 export function Login({ onLogin }: Props) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [remember, setRemember] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -17,7 +18,7 @@ export function Login({ onLogin }: Props) {
     setLoading(true);
     setError('');
     try {
-      const ok = await onLogin(username, password);
+      const ok = await onLogin(username, password, remember);
       if (!ok) setError('Invalid username or password');
     } catch {
       setError('Authentication failed');
@@ -56,6 +57,15 @@ export function Login({ onLogin }: Props) {
             autoComplete="current-password"
           />
         </div>
+        <label style={styles.rememberRow}>
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(e) => setRemember(e.target.checked)}
+            style={styles.checkbox}
+          />
+          <span style={styles.rememberLabel}>Remember me for 30 days</span>
+        </label>
         {error && (
           <div style={styles.errorBox}>
             <p style={styles.error}>{error}</p>
@@ -105,4 +115,13 @@ const styles: Record<string, React.CSSProperties> = {
     background: c.dangerBg, border: `1px solid ${c.danger}20`,
   },
   error: { margin: 0, color: c.danger, fontSize: 13 },
+  rememberRow: {
+    display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+  },
+  checkbox: {
+    width: 16, height: 16, accentColor: c.accent, cursor: 'pointer', margin: 0,
+  },
+  rememberLabel: {
+    fontSize: 13, color: c.textSecondary, userSelect: 'none' as const,
+  },
 };

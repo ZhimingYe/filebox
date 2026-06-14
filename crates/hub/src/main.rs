@@ -33,8 +33,10 @@ async fn main() {
         .await
         .expect("failed to bind");
 
-    tracing::info!("Hub listening on {}", config.listen_addr);
-    axum::serve(listener, app).await.expect("server error");
+    eprintln!("[hub] listening on {}", config.listen_addr);
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .await
+        .expect("server error");
 }
 
 async fn heartbeat_loop(state: state::AppState) {

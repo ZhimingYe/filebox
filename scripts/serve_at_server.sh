@@ -39,16 +39,15 @@ generate_token() {
 
 generate_bcrypt() {
     local input="$1"
-    if command -v python3 &>/dev/null; then
-        python3 -c "
+    local hash
+    if hash=$(python3 -c "
 import bcrypt, sys
 p = sys.argv[1].encode('utf-8')
 print(bcrypt.hashpw(p, bcrypt.gensalt(rounds=12)).decode('utf-8'))
-" "$input"
-    elif command -v htpasswd &>/dev/null; then
-        htpasswd -nbBC 12 "" "$input" | cut -d: -f2
+" "$input" 2>&1); then
+        echo "$hash"
     else
-        error "Need python3+bcrypt or htpasswd to generate password hashes"
+        error "Failed to generate bcrypt hash: $hash"
     fi
 }
 
@@ -56,27 +55,38 @@ check_dependencies() {
     info "Checking dependencies..."
     local missing=()
 
-    command -v cargo &>/dev/null || missing+=("Rust (cargo)")
+    command -v cargo &>/dev/null || missing+=("Rust (cargo) — install from https://rustup.rs")
 
     if command -v node &>/dev/null; then
         local vn
         vn=$(node -v | sed 's/v//' | cut -d. -f1)
         [[ "$vn" -lt 18 ]] && missing+=("Node.js >= 18 (found: $(node -v))")
     else
-        missing+=("Node.js")
+        missing+=("Node.js >= 18 — install from https://nodejs.org")
     fi
 
-    command -v npm &>/dev/null || missing+=("npm")
-    command -v python3 &>/dev/null || missing+=("Python 3")
-
-    if ! python3 -c "import bcrypt" 2>/dev/null; then
-        warn "Python bcrypt module not found, attempting install..."
-        pip3 install --user bcrypt 2>/dev/null || error "Cannot install bcrypt. Run: pip3 install bcrypt"
-    fi
+    command -v npm &>/dev/null || missing+=("npm (usually bundled with Node.js)")
 
     if [[ ${#missing[@]} -gt 0 ]]; then
         error "Missing dependencies:\n$(printf '  - %s\n' "${missing[@]}")"
     fi
+
+    # bcrypt — try import, install if missing, fail clearly if still missing
+    if ! python3 -c "import bcrypt" 2>/dev/null; then
+        info "Installing Python bcrypt module..."
+        if pip3 install bcrypt 2>/dev/null; then
+            success "bcrypt installed"
+        elif pip3 install --user bcrypt 2>/dev/null; then
+            success "bcrypt installed (user-local)"
+        else
+            error "Cannot install bcrypt. Run manually: pip3 install bcrypt"
+        fi
+    fi
+
+    if ! python3 -c "import bcrypt" 2>/dev/null; then
+        error "bcrypt module still not available after install. Run: pip3 install bcrypt"
+    fi
+
     success "All dependencies satisfied"
 }
 
@@ -84,28 +94,41 @@ collect_config() {
     info "Configuring Filebox Hub"
     echo ""
 
-    read -rp "Listen port [3000]: " listen_port
-    listen_port=${listen_port:-3000}
+    # Port
+    while true; do
+        read -rp "Listen port [3000]: " listen_port
+        listen_port=${listen_port:-3000}
+        if [[ "$listen_port" =~ ^[0-9]+$ ]] && (( listen_port >= 1 && listen_port <= 65535 )); then
+            break
+        fi
+        warn "Port must be a number between 1 and 65535"
+    done
 
+    # Username
     read -rp "Admin username [admin]: " admin_user
     admin_user=${admin_user:-admin}
+    [[ -z "$admin_user" ]] && error "Username cannot be empty"
 
+    # Password
     while true; do
         read -rs -p "Admin password: " admin_pass; echo ""
+        [[ -z "$admin_pass" ]] && { warn "Password cannot be empty"; continue; }
         read -rs -p "Confirm password: " admin_pass2; echo ""
         [[ "$admin_pass" == "$admin_pass2" ]] && break
         warn "Passwords do not match, try again"
     done
-    [[ -z "$admin_pass" ]] && error "Password cannot be empty"
 
+    # Agent token
     echo ""
     if confirm "Auto-generate agent token? (recommended)"; then
         agent_token=$(generate_token)
-        info "Generated token: $agent_token"
     else
-        read -rp "Enter agent token: " agent_token
+        while true; do
+            read -rp "Enter agent token: " agent_token
+            [[ -n "$agent_token" ]] && break
+            warn "Token cannot be empty"
+        done
     fi
-    [[ -z "$agent_token" ]] && error "Token cannot be empty"
 
     echo ""
     info "Configuration summary:"
@@ -125,6 +148,13 @@ generate_config() {
     pass_hash=$(generate_bcrypt "$admin_pass")
     token_hash=$(generate_bcrypt "$agent_token")
 
+    [[ -z "$pass_hash" ]] && error "Failed to generate password hash"
+    [[ -z "$token_hash" ]] && error "Failed to generate token hash"
+
+    # Verify hashes look like bcrypt
+    [[ "$pass_hash" =~ ^\$2[aby]\$ ]] || error "Password hash does not look like bcrypt: $pass_hash"
+    [[ "$token_hash" =~ ^\$2[aby]\$ ]] || error "Token hash does not look like bcrypt: $token_hash"
+
     cat > "$CONFIG_DIR/hub.json" <<EOF
 {
   "listen_addr": "0.0.0.0:${listen_port}",
@@ -135,6 +165,12 @@ generate_config() {
 }
 EOF
 
+    # Validate the JSON is parseable
+    if command -v python3 &>/dev/null; then
+        python3 -c "import json; json.load(open('$CONFIG_DIR/hub.json'))" 2>/dev/null \
+            || error "Generated hub.json is not valid JSON"
+    fi
+
     success "Config generated: $CONFIG_DIR/hub.json"
 }
 
@@ -142,14 +178,17 @@ build_project() {
     info "Building project..."
     cd "$PROJECT_DIR"
 
+    # Frontend
+    info "Installing frontend dependencies..."
+    (cd frontend && npm install --no-fund --no-audit) || error "npm install failed"
     info "Building frontend..."
-    cd frontend
-    npm install --no-fund --no-audit 2>&1 | tail -1
-    npm run build 2>&1 | tail -3
-    cd ..
+    (cd frontend && npm run build) || error "Frontend build failed"
+    [[ -d "frontend/dist" ]] || error "frontend/dist not found after build"
 
+    # Backend
     info "Building backend (may take a few minutes)..."
-    cargo build --release 2>&1 | tail -3
+    cargo build --release || error "Cargo build failed"
+    [[ -f "target/release/hub" ]] || error "Hub binary not found after build"
 
     success "Build complete"
 }
@@ -157,12 +196,21 @@ build_project() {
 install_files() {
     info "Installing to $INSTALL_DIR..."
 
+    # Clean old frontend if overwriting
+    if [[ -d "$FRONTEND_DIR/dist" ]]; then
+        rm -rf "$FRONTEND_DIR/dist"
+    fi
+
     mkdir -p "$INSTALL_DIR/bin" "$FRONTEND_DIR" "$LOG_DIR"
 
-    cp "$PROJECT_DIR/target/release/hub" "$INSTALL_DIR/bin/"
+    cp "$PROJECT_DIR/target/release/hub" "$INSTALL_DIR/bin/hub"
     chmod +x "$INSTALL_DIR/bin/hub"
 
     cp -r "$PROJECT_DIR/frontend/dist" "$FRONTEND_DIR/"
+
+    # Verify install
+    [[ -f "$INSTALL_DIR/bin/hub" ]] || error "Binary not installed correctly"
+    [[ -f "$FRONTEND_DIR/dist/index.html" ]] || error "Frontend not installed correctly"
 
     success "Files installed"
 }
@@ -175,16 +223,15 @@ print_summary() {
     echo ""
     echo "  Install dir: ${INSTALL_DIR}"
     echo "  Config file: ${CONFIG_DIR}/hub.json"
-    echo "  Frontend:    ${FRONTEND_DIR}/dist/"
     echo ""
     echo "  Admin user:  ${admin_user}"
     echo "  Agent token: ${agent_token}"
     echo ""
     echo "  To run:"
-    echo "    FILEBOX_CONFIG_PATH=${CONFIG_DIR}/hub.json ${INSTALL_DIR}/bin/hub"
+    echo "    ${INSTALL_DIR}/bin/hub"
     echo ""
     echo "  Background:"
-    echo "    FILEBOX_CONFIG_PATH=${CONFIG_DIR}/hub.json nohup ${INSTALL_DIR}/bin/hub &"
+    echo "    nohup ${INSTALL_DIR}/bin/hub > ${LOG_DIR}/hub.log 2>&1 &"
     echo ""
     echo -e "${YELLOW}  Save the agent token -- you will need it when setting up Agents.${NC}"
     echo ""
@@ -198,7 +245,7 @@ main() {
     echo ""
 
     if [[ -d "$INSTALL_DIR" ]]; then
-        warn "Existing Filebox Hub installation detected"
+        warn "Existing Filebox Hub installation detected at $INSTALL_DIR"
         confirm "Overwrite?" || error "Cancelled"
     fi
 

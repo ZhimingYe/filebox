@@ -72,8 +72,8 @@ Client:
 After installation, start services manually:
 
 ```bash
-# Hub
-FILEBOX_CONFIG_PATH=~/filebox/config/hub.json ~/filebox/bin/hub
+# Hub (auto-discovers config/hub.json next to the binary)
+~/filebox/bin/hub
 
 # Agent
 ~/filebox-agent/agent
@@ -83,7 +83,7 @@ Run in background:
 
 ```bash
 # Hub
-FILEBOX_CONFIG_PATH=~/filebox/config/hub.json nohup ~/filebox/bin/hub &
+nohup ~/filebox/bin/hub > ~/filebox/logs/hub.log 2>&1 &
 
 # Agent
 nohup ~/filebox-agent/agent &
@@ -92,7 +92,7 @@ nohup ~/filebox-agent/agent &
 Capture logs to a file:
 
 ```bash
-FILEBOX_CONFIG_PATH=~/filebox/config/hub.json ~/filebox/bin/hub > ~/filebox/logs/hub.log 2>&1 &
+~/filebox/bin/hub > ~/filebox/logs/hub.log 2>&1 &
 tail -f ~/filebox/logs/hub.log
 ```
 

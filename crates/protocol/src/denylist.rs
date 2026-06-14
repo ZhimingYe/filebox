@@ -1,7 +1,7 @@
 use std::path::Path;
 
 const DENIED_EXTENSIONS: &[&str] = &[
-    ".env", ".pem", ".key", ".crt", ".p12", ".pfx",
+    ".env", ".pem", ".key", ".crt", ".p12", ".pfx", ".jks",
     ".sqlite", ".sqlite3", ".db", ".keychain",
 ];
 
@@ -16,9 +16,10 @@ const DENIED_EXACT: &[&str] = &[
     ".netrc", ".git-credentials", ".gitconfig",
     ".npmrc", ".yarnrc", ".pnpmrc", ".pypirc",
     ".Renviron", ".Rprofile",
-    ".envrc", ".condarc",
+    ".envrc", ".condarc", ".vault-token",
     "known_hosts", "authorized_keys",
     "credentials", "credentials.json", "token.json", "secrets.json",
+    "kubeconfig",
 ];
 
 /// Specific files inside directories that are otherwise allowed
@@ -27,6 +28,7 @@ const DENIED_IN_DIR: &[(&str, &str)] = &[
     (".cargo", "credentials.toml"),
     (".gradle", "gradle.properties"),
     (".maven", "settings.xml"),
+    (".config/rclone", "rclone.conf"),
 ];
 
 const DENIED_PREFIXES: &[&str] = &[
@@ -41,6 +43,7 @@ const DENIED_DIRS: &[&str] = &[
     ".direnv",
     ".jupyter",
     ".ipython",
+    ".password-store",
 ];
 
 pub fn is_denied(relative_path: &str) -> bool {
@@ -156,6 +159,12 @@ mod tests {
         assert!(is_denied(".cargo/credentials.toml"));
         assert!(is_denied(".gradle/gradle.properties"));
         assert!(is_denied(".maven/settings.xml"));
+        // New entries
+        assert!(is_denied(".password-store/gpg-key.gpg"));
+        assert!(is_denied(".vault-token"));
+        assert!(is_denied(".config/rclone/rclone.conf"));
+        assert!(is_denied("server.jks"));
+        assert!(is_denied("kubeconfig"));
         // Allowed paths
         assert!(!is_denied("src/main.rs"));
         assert!(!is_denied("README.md"));

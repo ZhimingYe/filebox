@@ -392,6 +392,7 @@ function PdfPreview({ url }: { url: string }) {
       <iframe
         ref={iframeRef}
         src={url}
+        sandbox="allow-same-origin"
         style={{ ...styles.pdf, display: error ? 'none' : 'block' }}
         title="PDF Preview"
         onLoad={handleLoad}
@@ -441,7 +442,7 @@ function HtmlPreview({ agentId, root, path, url }: { agentId: string; root: stri
 
   const openInNewWindow = useCallback(() => {
     if (blobUrlRef.current) {
-      window.open(blobUrlRef.current, '_blank');
+      window.open(blobUrlRef.current, '_blank', 'noopener,noreferrer');
     }
   }, []);
 
@@ -495,7 +496,7 @@ function HtmlPreview({ agentId, root, path, url }: { agentId: string; root: stri
           <iframe
             ref={iframeRef}
             src={blobUrlRef.current || ''}
-            sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+            sandbox="allow-scripts allow-popups allow-forms"
             style={styles.htmlFrame}
             title="HTML Preview"
             onLoad={handleIframeLoad}
@@ -516,23 +517,25 @@ function injectBaseTag(html: string, baseUrl: string): string {
 
   // Ensure baseUrl ends with /
   const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+  // Escape for safe interpolation into HTML attribute
+  const escapedUrl = normalizedBaseUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 
   // Try to inject after <head> tag
   const headMatch = html.match(/<head[^>]*>/i);
   if (headMatch) {
     const insertPos = html.indexOf(headMatch[0]) + headMatch[0].length;
-    return html.slice(0, insertPos) + `\n<base href="${normalizedBaseUrl}">` + html.slice(insertPos);
+    return html.slice(0, insertPos) + `\n<base href="${escapedUrl}">` + html.slice(insertPos);
   }
 
   // If no <head> tag, try to inject after <html> tag
   const htmlMatch = html.match(/<html[^>]*>/i);
   if (htmlMatch) {
     const insertPos = html.indexOf(htmlMatch[0]) + htmlMatch[0].length;
-    return html.slice(0, insertPos) + `\n<head><base href="${normalizedBaseUrl}"></head>` + html.slice(insertPos);
+    return html.slice(0, insertPos) + `\n<head><base href="${escapedUrl}"></head>` + html.slice(insertPos);
   }
 
   // If no <html> tag either, prepend base tag
-  return `<base href="${normalizedBaseUrl}">\n${html}`;
+  return `<base href="${escapedUrl}">\n${html}`;
 }
 
 // ── Markdown Preview ──────────────────────────────────────────────────────

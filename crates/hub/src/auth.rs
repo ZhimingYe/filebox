@@ -56,12 +56,14 @@ impl SessionStore {
         bcrypt::verify(token, &self.agent_token_hash).unwrap_or(false)
     }
 
-    pub fn create_session(&mut self, _username: &str) -> Session {
+    pub fn create_session(&mut self, _username: &str, remember: bool) -> (Session, u64) {
         let session_id = generate_session_id();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
+
+        let ttl: u64 = if remember { 30 * 86400 } else { 86400 };
 
         let session = Session {
             session_id: session_id.clone(),
@@ -73,11 +75,11 @@ impl SessionStore {
                 "view_health".to_string(),
             ],
             created_at: now,
-            expires_at: now + 86400, // 24 hours
+            expires_at: now + ttl,
         };
 
         self.sessions.insert(session_id.clone(), session.clone());
-        session
+        (session, ttl)
     }
 
     pub fn get_session(&self, session_id: &str) -> Option<&Session> {

@@ -294,6 +294,8 @@ pub async fn file_raw_handler(
             let content_type = guess_content_type(&file_path);
             let disposition = if is_inline_type(content_type) { "inline" } else { "attachment" };
             let filename = file_path.rsplit('/').next().unwrap_or("file");
+            // Sanitize filename: remove chars that could break Content-Disposition header
+            let safe_filename: String = filename.chars().filter(|c| *c != '"' && *c != '\\' && *c != '\n' && *c != '\r').collect();
 
             if length.is_some() {
                 // Partial content response
@@ -303,7 +305,7 @@ pub async fn file_raw_handler(
                     .header(header::CONTENT_TYPE, content_type)
                     .header(header::CONTENT_LENGTH, data.len())
                     .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", offset, end, "*"))
-                    .header(header::CONTENT_DISPOSITION, format!("{}; filename=\"{}\"", disposition, filename))
+                    .header(header::CONTENT_DISPOSITION, format!("{}; filename=\"{}\"", disposition, safe_filename))
                     .body(axum::body::Body::from(data))
                     .unwrap();
                 resp.into_response()
@@ -312,7 +314,7 @@ pub async fn file_raw_handler(
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, content_type)
                     .header(header::CONTENT_LENGTH, data.len())
-                    .header(header::CONTENT_DISPOSITION, format!("{}; filename=\"{}\"", disposition, filename))
+                    .header(header::CONTENT_DISPOSITION, format!("{}; filename=\"{}\"", disposition, safe_filename))
                     .body(axum::body::Body::from(data))
                     .unwrap();
                 resp.into_response()

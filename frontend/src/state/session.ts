@@ -18,8 +18,8 @@ export function useSession() {
       });
   }, []);
 
-  const login = useCallback(async (username: string, password: string) => {
-    const result = await api.exchangeSession(username, password);
+  const login = useCallback(async (username: string, password: string, remember: boolean) => {
+    const result = await api.exchangeSession(username, password, remember);
     if (result.ok) {
       setLoggedIn(true);
       return true;
@@ -33,7 +33,6 @@ export function useSession() {
     } catch {
       // Ignore errors
     }
-    document.cookie = 'filebox_session=; Max-Age=0; Path=/';
     setLoggedIn(false);
   }, []);
 

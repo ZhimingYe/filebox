@@ -25,7 +25,6 @@ export function friendlyMessage(error: any): string {
     invalid_root_path: 'Path does not exist or is not accessible.',
   };
   if (code && map[code]) return map[code];
-  if (error?.message) return error.message;
   return 'An unexpected error occurred.';
 }
 
@@ -44,10 +43,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 // ── Session ──────────────────────────────────────────────────────────────────
 
-export async function exchangeSession(username: string, password: string) {
+export async function exchangeSession(username: string, password: string, remember: boolean) {
   return request<{ ok: boolean; session_id: string; permissions: string[] }>(
     '/api/session/exchange',
-    { method: 'POST', body: JSON.stringify({ username, password }) },
+    { method: 'POST', body: JSON.stringify({ username, password, remember }) },
   );
 }
 
