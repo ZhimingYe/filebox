@@ -128,32 +128,41 @@ pub async fn run_connection_loop(config: &AgentConfig) {
         .await;
 
         let conn_duration = connect_at.elapsed();
+        let was_stable = conn_duration >= STABLE_CONNECTION_THRESHOLD;
 
-        // Reset backoff only if the previous connection was stable, so a
-        // flapping link doesn't keep retrying every 1s forever.
-        if conn_duration >= STABLE_CONNECTION_THRESHOLD {
-            backoff_secs = 1;
-        }
-
+        // Compute sleep duration for THIS retry. A connection that just
+        // demonstrated the network is healthy (lasted ≥ threshold) gets a
+        // 1s sleep; a flapping connection sleeps the current backoff.
+        let base = if was_stable { 1 } else { backoff_secs };
         // Jitter prevents thundering herd when many agents drop at once
         // (e.g., hub restart or network partition healing).
-        let jitter = if backoff_secs > 1 {
-            rand::random::<u64>() % (backoff_secs / 2)
+        let jitter = if base > 1 {
+            rand::random::<u64>() % (base / 2)
         } else {
             0
         };
-        let sleep_secs = backoff_secs + jitter;
+        let sleep_secs = base + jitter;
 
         tracing::info!(
-            "Reconnecting in {}s (backoff={}, jitter={}, last_conn_duration={:?})",
+            "Reconnecting in {}s (base={}, jitter={}, last_conn_duration={:?}, stable={})",
             sleep_secs,
-            backoff_secs,
+            base,
             jitter,
-            conn_duration
+            conn_duration,
+            was_stable,
         );
 
         tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
-        backoff_secs = (backoff_secs * 2).min(max_backoff);
+
+        // Update backoff for the NEXT unstable iteration: stable resets to 1
+        // (so a future flap starts from 1s, not the doubled value), unstable
+        // doubles. Without this conditional, every iteration's "always
+        // double" would ratchet the backoff up even after stable connections.
+        if was_stable {
+            backoff_secs = 1;
+        } else {
+            backoff_secs = (backoff_secs * 2).min(max_backoff);
+        }
     }
 }
 

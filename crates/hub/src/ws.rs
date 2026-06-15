@@ -18,6 +18,15 @@ use crate::state::AppState;
 /// agent is detected via write blockage within seconds.
 const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Liveness timeout for inbound agent messages. Agent sends Heartbeat every
+/// 15s, so 90s = 6 missed heartbeats. If we get nothing in this window the
+/// TCP is silently dead (NAT expiry, half-open after sleep) and we close
+/// the connection — without this the read loop would block on
+/// ws_stream.next() for the OS's TCP timeout, leaking the fd. Matches the
+/// Slow→Offline threshold in update_heartbeats so the registry view and
+/// the actual socket close stay in sync.
+const NO_AGENT_MESSAGE_TIMEOUT: Duration = Duration::from_secs(90);
+
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -208,12 +217,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     });
 
-    // Main message read loop. Two exits:
-    //   1. ws_stream ends (TCP drop / close frame) — normal cleanup path.
-    //   2. abort_notify fires — a newer connection for this agent_id has
+    // Main message read loop. Three exits:
+    //   1. abort_notify fires — a newer connection for this agent_id has
     //      replaced this entry, so this read loop must exit to release its
     //      fd instead of waiting hours for OS TCP timeout.
+    //   2. ws_stream ends (TCP drop / close frame) — normal cleanup path.
+    //   3. Liveness timeout — agent hasn't sent anything in
+    //      NO_AGENT_MESSAGE_TIMEOUT, meaning its TCP is silently dead.
     let agent_id_for_msgs = agent_id.clone();
+    let mut exited_via_abort = false;
     loop {
         tokio::select! {
             biased;  // check abort first so a re-register doesn't race
@@ -222,11 +234,23 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     "Agent {} connection superseded by new connection, exiting",
                     agent_id_for_msgs
                 );
+                exited_via_abort = true;
                 break;
             }
-            msg = ws_stream.next() => {
-                let Some(Ok(msg)) = msg else { break };
+            msg = tokio::time::timeout(NO_AGENT_MESSAGE_TIMEOUT, ws_stream.next()) => {
                 match msg {
+                    Err(_) => {
+                        tracing::warn!(
+                            "Agent {} silent for {}s, closing connection",
+                            agent_id_for_msgs,
+                            NO_AGENT_MESSAGE_TIMEOUT.as_secs()
+                        );
+                        break;
+                    }
+                    Ok(None) => break,
+                    Ok(Some(Err(_))) => break,
+                    Ok(Some(Ok(msg))) => {
+                        match msg {
                     Message::Text(text) => {
                         match serde_json::from_str::<AgentMessage>(&text) {
                             Ok(AgentMessage::Pong) | Ok(AgentMessage::Heartbeat) => {
@@ -358,6 +382,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     Message::Close(_) => break,
                     _ => {}
                 }
+                    }
+                }
             }
         }
     }
@@ -374,10 +400,16 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     drop(inner);
     tracing::info!("Agent disconnected: {} ({})", name, agent_id);
 
-    state.emit_sse("agent_disconnected", serde_json::json!({
-        "agent_id": agent_id,
-        "name": name,
-    })).await;
+    // If we exited because a new connection replaced this one, the new
+    // connection already emitted "agent_connected" with the same agent_id.
+    // Emitting "agent_disconnected" here would make the frontend briefly
+    // flap the agent's status, so skip it.
+    if !exited_via_abort {
+        state.emit_sse("agent_disconnected", serde_json::json!({
+            "agent_id": agent_id,
+            "name": name,
+        })).await;
+    }
 }
 
 async fn send_auth_fail(ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>) {
