@@ -45,3 +45,66 @@ pub fn collect_stats() -> Result<SysStats, String> {
         load_avg: load,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_stats_succeeds_on_real_system() {
+        // collect_stats sleeps ~200ms internally for CPU sampling — keep this test
+        // count low to avoid bloating suite runtime.
+        let stats = collect_stats().expect("collect_stats must succeed");
+        assert!(
+            stats.mem_total_bytes > 0,
+            "total memory must be reported and non-zero"
+        );
+        assert!(
+            stats.mem_used_bytes <= stats.mem_total_bytes,
+            "used memory must not exceed total"
+        );
+        if stats.swap_total_bytes > 0 {
+            assert!(
+                stats.swap_used_bytes <= stats.swap_total_bytes,
+                "used swap must not exceed total"
+            );
+        }
+    }
+
+    #[test]
+    fn collect_stats_caps_top_processes_at_ten() {
+        let stats = collect_stats().unwrap();
+        assert!(
+            stats.top_processes.len() <= 10,
+            "top_processes must be capped at 10 entries"
+        );
+    }
+
+    #[test]
+    fn collect_stats_load_average_has_three_values() {
+        let stats = collect_stats().unwrap();
+        // 1-min, 5-min, 15-min load averages — always 3 elements.
+        assert_eq!(stats.load_avg.len(), 3);
+    }
+
+    #[test]
+    fn collect_stats_cpu_usage_is_finite() {
+        let stats = collect_stats().unwrap();
+        assert!(
+            stats.cpu_usage_percent.is_finite(),
+            "cpu_usage must be a finite f32"
+        );
+        assert!(
+            stats.cpu_usage_percent >= 0.0,
+            "cpu_usage must be non-negative"
+        );
+    }
+
+    #[test]
+    fn collect_stats_processes_have_non_empty_names() {
+        let stats = collect_stats().unwrap();
+        for p in &stats.top_processes {
+            assert!(!p.name.is_empty(), "process name must be non-empty");
+        }
+    }
+}

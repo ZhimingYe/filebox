@@ -94,3 +94,90 @@ impl HubConfig {
         config
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_listen_addr_binds_to_all_interfaces_port_3000() {
+        let addr = default_listen_addr();
+        assert_eq!(addr.ip().to_string(), "0.0.0.0");
+        assert_eq!(addr.port(), 3000);
+    }
+
+    #[test]
+    fn hub_config_parses_full_json() {
+        let json = r#"{
+            "listen_addr": "127.0.0.1:8080",
+            "agent_token_hash": "$2b$12$abc",
+            "users": [
+                {"username": "admin", "password_hash": "$2b$12$xyz"},
+                {"username": "alice", "password_hash": "$2b$12$qqq"}
+            ]
+        }"#;
+        let config: HubConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.listen_addr.port(), 8080);
+        assert_eq!(config.agent_token_hash, "$2b$12$abc");
+        assert_eq!(config.users.len(), 2);
+        assert_eq!(config.users[0].username, "admin");
+        assert_eq!(config.users[1].username, "alice");
+    }
+
+    #[test]
+    fn hub_config_uses_default_listen_addr_when_missing() {
+        let json = r#"{
+            "agent_token_hash": "$2b$12$abc",
+            "users": []
+        }"#;
+        let config: HubConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.listen_addr.port(), 3000);
+    }
+
+    #[test]
+    fn hub_config_accepts_empty_users_list() {
+        let json = r#"{
+            "agent_token_hash": "$2b$12$abc",
+            "users": []
+        }"#;
+        let config: HubConfig = serde_json::from_str(json).unwrap();
+        assert!(config.users.is_empty());
+    }
+
+    #[test]
+    fn hub_config_rejects_missing_agent_token_hash() {
+        let json = r#"{
+            "users": []
+        }"#;
+        let result: Result<HubConfig, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn hub_config_rejects_missing_users_field() {
+        let json = r#"{
+            "agent_token_hash": "$2b$12$abc"
+        }"#;
+        let result: Result<HubConfig, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn hub_config_supports_ipv6_listen_addr() {
+        let json = r#"{
+            "listen_addr": "[::1]:3000",
+            "agent_token_hash": "x",
+            "users": []
+        }"#;
+        let config: HubConfig = serde_json::from_str(json).unwrap();
+        assert!(config.listen_addr.is_ipv6());
+    }
+
+    #[test]
+    fn user_config_parses_from_json() {
+        let json = r#"{"username": "admin", "password_hash": "$2b$12$abc"}"#;
+        let user: UserConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(user.username, "admin");
+        assert_eq!(user.password_hash, "$2b$12$abc");
+    }
+}

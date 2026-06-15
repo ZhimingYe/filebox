@@ -92,3 +92,306 @@ fn validate_root(root: &RootConfig) -> Result<(), String> {
     // We store the original path for display but use canonical for operations
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config_store::PersistedConfig;
+    use filebox_protocol::resources::RootConfig;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn manager_in_temp() -> ResourceManager {
+        let dir = tempdir().unwrap();
+        ResourceManager::new(dir.path().to_path_buf())
+    }
+
+    #[test]
+    fn new_manager_generates_stable_agent_id() {
+        let mgr = manager_in_temp();
+        let id = mgr.agent_id();
+        assert!(!id.is_empty());
+        // UUID format check
+        assert_eq!(id.len(), 36);
+    }
+
+    #[test]
+    fn fresh_manager_has_zero_revision_and_no_roots() {
+        let mgr = manager_in_temp();
+        assert_eq!(mgr.resource_revision(), 0);
+        assert!(mgr.roots().is_empty());
+    }
+
+    #[test]
+    fn current_state_returns_clone_of_internal_state() {
+        let mgr = manager_in_temp();
+        let (rev, roots) = mgr.current_state();
+        assert_eq!(rev, 0);
+        assert!(roots.is_empty());
+    }
+
+    #[test]
+    fn apply_desired_accepts_valid_directory_root() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+
+        let real_root = tempdir().unwrap();
+        let roots = vec![RootConfig {
+            name: "data".to_string(),
+            path: real_root.path().to_str().unwrap().to_string(),
+            enabled: true,
+        }];
+
+        let new_rev = mgr.apply_desired(5, roots).unwrap();
+        assert_eq!(new_rev, 5);
+        assert_eq!(mgr.resource_revision(), 5);
+        assert_eq!(mgr.roots().len(), 1);
+        assert_eq!(mgr.roots()[0].name, "data");
+    }
+
+    #[test]
+    fn apply_desired_rejects_empty_root_name() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+
+        let real_root = tempdir().unwrap();
+        let roots = vec![RootConfig {
+            name: "".to_string(),
+            path: real_root.path().to_str().unwrap().to_string(),
+            enabled: true,
+        }];
+
+        let err = mgr.apply_desired(1, roots).unwrap_err();
+        assert!(err.contains("name cannot be empty"));
+        // State unchanged
+        assert_eq!(mgr.resource_revision(), 0);
+        assert!(mgr.roots().is_empty());
+    }
+
+    #[test]
+    fn apply_desired_rejects_empty_path() {
+        let mut mgr = manager_in_temp();
+        let roots = vec![RootConfig {
+            name: "empty".to_string(),
+            path: "".to_string(),
+            enabled: true,
+        }];
+        let err = mgr.apply_desired(1, roots).unwrap_err();
+        assert!(err.contains("path cannot be empty"));
+    }
+
+    #[test]
+    fn apply_desired_rejects_nonexistent_path() {
+        let mut mgr = manager_in_temp();
+        let roots = vec![RootConfig {
+            name: "ghost".to_string(),
+            path: "/this/path/definitely/does/not/exist/xyz".to_string(),
+            enabled: true,
+        }];
+        let err = mgr.apply_desired(1, roots).unwrap_err();
+        assert!(err.contains("cannot be resolved") || err.contains("not a directory"));
+    }
+
+    #[test]
+    fn apply_desired_rejects_file_path_as_root() {
+        let mut mgr = manager_in_temp();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let roots = vec![RootConfig {
+            name: "file".to_string(),
+            path: file.path().to_str().unwrap().to_string(),
+            enabled: true,
+        }];
+        let err = mgr.apply_desired(1, roots).unwrap_err();
+        assert!(err.contains("not a directory"));
+    }
+
+    #[test]
+    fn apply_desired_preserves_last_good_state_on_validation_failure() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+
+        // First, successfully apply a known-good state
+        let good_root = tempdir().unwrap();
+        let good_roots = vec![RootConfig {
+            name: "good".to_string(),
+            path: good_root.path().to_str().unwrap().to_string(),
+            enabled: true,
+        }];
+        mgr.apply_desired(3, good_roots).unwrap();
+        assert_eq!(mgr.resource_revision(), 3);
+
+        // Now attempt to apply invalid state
+        let bad_roots = vec![RootConfig {
+            name: "".to_string(),
+            path: "/anything".to_string(),
+            enabled: true,
+        }];
+        let result = mgr.apply_desired(99, bad_roots);
+        assert!(result.is_err());
+
+        // Last good state MUST be preserved
+        assert_eq!(mgr.resource_revision(), 3, "revision must not change on failure");
+        assert_eq!(mgr.roots().len(), 1);
+        assert_eq!(mgr.roots()[0].name, "good");
+    }
+
+    #[test]
+    fn apply_desired_validates_all_roots_before_applying_any() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+
+        let good_root = tempdir().unwrap();
+        // Mixed: one valid, one invalid (empty name)
+        let mixed_roots = vec![
+            RootConfig {
+                name: "valid".to_string(),
+                path: good_root.path().to_str().unwrap().to_string(),
+                enabled: true,
+            },
+            RootConfig {
+                name: "".to_string(),
+                path: "/anywhere".to_string(),
+                enabled: true,
+            },
+        ];
+
+        let result = mgr.apply_desired(1, mixed_roots);
+        assert!(result.is_err());
+        // Nothing applied
+        assert_eq!(mgr.resource_revision(), 0);
+        assert!(mgr.roots().is_empty());
+    }
+
+    #[test]
+    fn apply_desired_persists_state_across_manager_instances() {
+        let dir = tempdir().unwrap();
+        let data_path = dir.path().to_path_buf();
+
+        let real_root = tempdir().unwrap();
+        let roots = vec![RootConfig {
+            name: "persisted".to_string(),
+            path: real_root.path().to_str().unwrap().to_string(),
+            enabled: true,
+        }];
+
+        // Apply in one manager
+        let original_id = {
+            let mut mgr = ResourceManager::new(data_path.clone());
+            let id = mgr.agent_id().to_string();
+            mgr.apply_desired(7, roots).unwrap();
+            id
+        };
+
+        // New manager from same data_dir must reload
+        let reloaded = ResourceManager::new(data_path);
+        assert_eq!(reloaded.agent_id(), original_id, "agent_id must be stable");
+        assert_eq!(reloaded.resource_revision(), 7);
+        assert_eq!(reloaded.roots().len(), 1);
+        assert_eq!(reloaded.roots()[0].name, "persisted");
+    }
+
+    #[test]
+    fn apply_desired_replacing_roots_entirely() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+
+        let r1 = tempdir().unwrap();
+        let r2 = tempdir().unwrap();
+
+        // Apply first set
+        mgr.apply_desired(
+            1,
+            vec![RootConfig {
+                name: "old".to_string(),
+                path: r1.path().to_str().unwrap().to_string(),
+                enabled: true,
+            }],
+        )
+        .unwrap();
+
+        // Replace entirely
+        mgr.apply_desired(
+            2,
+            vec![RootConfig {
+                name: "new".to_string(),
+                path: r2.path().to_str().unwrap().to_string(),
+                enabled: true,
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(mgr.resource_revision(), 2);
+        assert_eq!(mgr.roots().len(), 1);
+        assert_eq!(mgr.roots()[0].name, "new");
+    }
+
+    #[test]
+    fn apply_desired_clears_roots_with_empty_vec() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+
+        // First add a root
+        let r = tempdir().unwrap();
+        mgr.apply_desired(
+            1,
+            vec![RootConfig {
+                name: "temp".to_string(),
+                path: r.path().to_str().unwrap().to_string(),
+                enabled: true,
+            }],
+        )
+        .unwrap();
+        assert_eq!(mgr.roots().len(), 1);
+
+        // Clear
+        mgr.apply_desired(2, vec![]).unwrap();
+        assert_eq!(mgr.resource_revision(), 2);
+        assert!(mgr.roots().is_empty());
+    }
+
+    #[test]
+    fn apply_desired_accepts_disabled_root() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+        let real_root = tempdir().unwrap();
+
+        let roots = vec![RootConfig {
+            name: "off".to_string(),
+            path: real_root.path().to_str().unwrap().to_string(),
+            enabled: false,
+        }];
+
+        mgr.apply_desired(1, roots).unwrap();
+        assert!(!mgr.roots()[0].enabled);
+    }
+
+    #[test]
+    fn validate_root_rejects_root_path_that_is_symlink_to_file() {
+        let real_file = tempfile::NamedTempFile::new().unwrap();
+        let dir = tempdir().unwrap();
+        let link_path = dir.path().join("link_to_file");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(real_file.path(), &link_path).unwrap();
+
+        let root = RootConfig {
+            name: "link".to_string(),
+            path: link_path.to_str().unwrap().to_string(),
+            enabled: true,
+        };
+        let err = validate_root(&root).unwrap_err();
+        assert!(err.contains("not a directory"));
+    }
+
+    #[test]
+    fn persist_config_round_trip_via_manager() {
+        // Smoke test the persisted JSON shape is stable
+        let dir = tempdir().unwrap();
+        let cfg = PersistedConfig::new("agent-shape".to_string());
+        cfg.save(&dir.path().to_path_buf());
+
+        let text = fs::read_to_string(dir.path().join("agent_state.json")).unwrap();
+        assert!(text.contains("\"agent_id\": \"agent-shape\""));
+        assert!(text.contains("\"resource_revision\": 0"));
+        assert!(text.contains("\"roots\": []"));
+    }
+}

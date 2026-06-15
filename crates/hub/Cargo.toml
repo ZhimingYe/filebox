@@ -26,3 +26,10 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 async-stream = { workspace = true }
 bcrypt = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

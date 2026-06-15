@@ -108,3 +108,142 @@ impl AppState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_limiter_allows_first_attempt() {
+        let limiter = LoginRateLimiter::new(5, std::time::Duration::from_secs(30));
+        assert!(limiter.check("1.2.3.4").is_ok());
+    }
+
+    #[test]
+    fn rate_limiter_allows_until_threshold_reached() {
+        let limiter = LoginRateLimiter::new(3, std::time::Duration::from_secs(30));
+        // First 3 failures allowed
+        for _ in 0..3 {
+            assert!(limiter.check("1.2.3.4").is_ok());
+            limiter.record_failure("1.2.3.4");
+        }
+        // 4th attempt should be blocked
+        let result = limiter.check("1.2.3.4");
+        assert!(result.is_err());
+        let remaining = result.unwrap_err();
+        assert!(remaining > 0);
+    }
+
+    #[test]
+    fn rate_limiter_is_per_ip() {
+        let limiter = LoginRateLimiter::new(2, std::time::Duration::from_secs(30));
+        for _ in 0..2 {
+            limiter.record_failure("1.1.1.1");
+        }
+        // 1.1.1.1 is blocked
+        assert!(limiter.check("1.1.1.1").is_err());
+        // 2.2.2.2 is still allowed
+        assert!(limiter.check("2.2.2.2").is_ok());
+    }
+
+    #[test]
+    fn rate_limiter_clears_on_success() {
+        let limiter = LoginRateLimiter::new(3, std::time::Duration::from_secs(30));
+        for _ in 0..2 {
+            limiter.record_failure("1.1.1.1");
+        }
+        limiter.clear("1.1.1.1");
+        // Should be allowed again — counter reset
+        assert!(limiter.check("1.1.1.1").is_ok());
+    }
+
+    #[test]
+    fn rate_limiter_clear_is_safe_for_unknown_ip() {
+        let limiter = LoginRateLimiter::new(3, std::time::Duration::from_secs(30));
+        limiter.clear("never-seen");
+        // Should not panic
+    }
+
+    #[test]
+    fn rate_limiter_returns_at_least_one_second_remaining() {
+        let limiter = LoginRateLimiter::new(1, std::time::Duration::from_secs(60));
+        limiter.record_failure("1.1.1.1");
+        let remaining = limiter.check("1.1.1.1").unwrap_err();
+        assert!(remaining >= 1, "remaining seconds must be at least 1");
+    }
+
+    #[test]
+    fn rate_limiter_cooldown_expires_after_window() {
+        // 1 attempt max, 50ms cooldown — short so test stays fast
+        let limiter = LoginRateLimiter::new(1, std::time::Duration::from_millis(50));
+        limiter.record_failure("1.1.1.1");
+        // First check after threshold should fail
+        assert!(limiter.check("1.1.1.1").is_err());
+
+        // Wait out the cooldown
+        std::thread::sleep(std::time::Duration::from_millis(70));
+        // Now should pass — cooldown expired, counter reset
+        assert!(limiter.check("1.1.1.1").is_ok());
+    }
+
+    #[test]
+    fn rate_limiter_check_without_record_does_not_block() {
+        let limiter = LoginRateLimiter::new(3, std::time::Duration::from_secs(30));
+        // check() alone without record_failure() should always allow
+        for _ in 0..10 {
+            assert!(limiter.check("1.1.1.1").is_ok());
+        }
+    }
+
+    #[test]
+    fn rate_limiter_concurrent_threads_serialize_safely() {
+        use std::sync::Arc;
+        let limiter = Arc::new(LoginRateLimiter::new(100, std::time::Duration::from_secs(30)));
+        let mut handles = vec![];
+        for i in 0..10 {
+            let l = limiter.clone();
+            handles.push(std::thread::spawn(move || {
+                let ip = format!("10.0.0.{}", i);
+                for _ in 0..5 {
+                    l.record_failure(&ip);
+                }
+                // Each IP has exactly 5 failures
+                assert!(l.check(&ip).is_ok());
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn app_state_can_be_constructed_from_dev_config() {
+        let config = crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            agent_token_hash: "fake-hash".to_string(),
+            users: vec![crate::config::UserConfig {
+                username: "admin".to_string(),
+                password_hash: "fake-hash".to_string(),
+            }],
+        };
+        let state = AppState::new(&config);
+        // Verify the inner state is accessible
+        let inner = state.inner.blocking_read();
+        assert_eq!(inner.agents.list_all().len(), 0);
+        // Verify rate limiter is initialized with default thresholds
+        assert!(state.rate_limiter.check("any-ip").is_ok());
+    }
+
+    #[test]
+    fn app_state_inner_starts_with_no_pending_responses() {
+        let config = crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            agent_token_hash: "fake-hash".to_string(),
+            users: vec![],
+        };
+        let state = AppState::new(&config);
+        let pending = state.inner.blocking_read().pending_responses.clone();
+        let map = pending.blocking_read();
+        assert!(map.is_empty());
+    }
+}

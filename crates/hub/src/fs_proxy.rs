@@ -444,3 +444,196 @@ async fn cleanup_pending(state: &AppState, req_id: &str) {
     let mut map = pending.write().await;
     map.remove(req_id);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn hv(val: &str) -> HeaderValue {
+        HeaderValue::from_str(val).unwrap()
+    }
+
+    // ── parse_range_header ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_range_none_returns_zero_offset_no_length() {
+        let (offset, length) = parse_range_header(None);
+        assert_eq!(offset, 0);
+        assert!(length.is_none());
+    }
+
+    #[test]
+    fn parse_range_start_only_returns_open_ended() {
+        let h = hv("bytes=100-");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 100);
+        assert!(length.is_none());
+    }
+
+    #[test]
+    fn parse_range_start_end_returns_length_inclusive() {
+        // bytes=0-99 means 100 bytes
+        let h = hv("bytes=0-99");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 0);
+        assert_eq!(length, Some(100));
+    }
+
+    #[test]
+    fn parse_range_with_arbitrary_offset_and_end() {
+        // bytes=200-299 means 100 bytes
+        let h = hv("bytes=200-299");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 200);
+        assert_eq!(length, Some(100));
+    }
+
+    #[test]
+    fn parse_range_rejects_non_bytes_prefix() {
+        let h = hv("items=0-100");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 0);
+        assert!(length.is_none());
+    }
+
+    #[test]
+    fn parse_range_rejects_malformed_format() {
+        // Too many parts
+        let h = hv("bytes=1-2-3");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 0);
+        assert!(length.is_none());
+    }
+
+    #[test]
+    fn parse_range_with_invalid_start_falls_back_to_zero() {
+        let h = hv("bytes=abc-");
+        let (offset, _length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn parse_range_with_invalid_end_yields_no_length() {
+        let h = hv("bytes=0-xyz");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 0);
+        assert!(length.is_none());
+    }
+
+    #[test]
+    fn parse_range_handles_extra_whitespace() {
+        let h = hv("  bytes=10-20  ");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 10);
+        assert_eq!(length, Some(11));
+    }
+
+    #[test]
+    fn parse_range_invalid_header_value_falls_back_to_defaults() {
+        // Build a HeaderValue containing bytes that aren't visible ASCII — to_str() fails
+        let bad = HeaderValue::from_bytes(b"bytes=\xff-").unwrap();
+        let (offset, length) = parse_range_header(Some(&bad));
+        assert_eq!(offset, 0);
+        assert!(length.is_none());
+    }
+
+    // ── guess_content_type ───────────────────────────────────────────────────
+
+    #[test]
+    fn content_type_pdf() {
+        assert_eq!(guess_content_type("doc.pdf"), "application/pdf");
+    }
+
+    #[test]
+    fn content_type_image_variants() {
+        assert_eq!(guess_content_type("a.png"), "image/png");
+        assert_eq!(guess_content_type("a.jpg"), "image/jpeg");
+        assert_eq!(guess_content_type("a.jpeg"), "image/jpeg");
+        assert_eq!(guess_content_type("a.gif"), "image/gif");
+        assert_eq!(guess_content_type("a.webp"), "image/webp");
+        assert_eq!(guess_content_type("a.svg"), "image/svg+xml");
+        assert_eq!(guess_content_type("a.bmp"), "image/bmp");
+        assert_eq!(guess_content_type("a.ico"), "image/x-icon");
+        assert_eq!(guess_content_type("a.tiff"), "image/tiff");
+        assert_eq!(guess_content_type("a.tif"), "image/tiff");
+    }
+
+    #[test]
+    fn content_type_text_and_code() {
+        assert_eq!(guess_content_type("a.txt"), "text/plain; charset=utf-8");
+        assert_eq!(guess_content_type("a.log"), "text/plain; charset=utf-8");
+        assert_eq!(guess_content_type("a.md"), "text/plain; charset=utf-8");
+        assert_eq!(guess_content_type("a.csv"), "text/plain; charset=utf-8");
+        assert_eq!(guess_content_type("a.html"), "text/html; charset=utf-8");
+        assert_eq!(guess_content_type("a.htm"), "text/html; charset=utf-8");
+        assert_eq!(guess_content_type("a.css"), "text/css; charset=utf-8");
+        assert_eq!(guess_content_type("a.js"), "application/javascript; charset=utf-8");
+        assert_eq!(guess_content_type("a.mjs"), "application/javascript; charset=utf-8");
+        assert_eq!(guess_content_type("a.json"), "application/json; charset=utf-8");
+        assert_eq!(guess_content_type("a.xml"), "application/xml; charset=utf-8");
+    }
+
+    #[test]
+    fn content_type_case_insensitive_extension() {
+        assert_eq!(guess_content_type("PHOTO.PNG"), "image/png");
+        assert_eq!(guess_content_type("Doc.PDF"), "application/pdf");
+        assert_eq!(guess_content_type("INDEX.HTML"), "text/html; charset=utf-8");
+    }
+
+    #[test]
+    fn content_type_unknown_extension_is_octet_stream() {
+        assert_eq!(guess_content_type("archive.zip"), "application/octet-stream");
+        assert_eq!(guess_content_type("data.dat"), "application/octet-stream");
+    }
+
+    #[test]
+    fn content_type_file_without_extension_is_octet_stream() {
+        assert_eq!(guess_content_type("README"), "application/octet-stream");
+    }
+
+    #[test]
+    fn content_type_uses_last_extension_for_double_dot() {
+        // .tar.gz → gz is the last extension; we don't have a mapping for gz,
+        // so this should fall back to octet-stream.
+        assert_eq!(guess_content_type("file.tar.gz"), "application/octet-stream");
+    }
+
+    #[test]
+    fn content_type_handles_paths_with_directories() {
+        assert_eq!(
+            guess_content_type("dir/subdir/file.pdf"),
+            "application/pdf"
+        );
+    }
+
+    // ── is_inline_type ───────────────────────────────────────────────────────
+
+    #[test]
+    fn inline_type_images_are_inline() {
+        assert!(is_inline_type("image/png"));
+        assert!(is_inline_type("image/jpeg"));
+        assert!(is_inline_type("image/svg+xml"));
+    }
+
+    #[test]
+    fn inline_type_text_is_inline() {
+        assert!(is_inline_type("text/plain; charset=utf-8"));
+        assert!(is_inline_type("text/html; charset=utf-8"));
+        assert!(is_inline_type("text/css; charset=utf-8"));
+    }
+
+    #[test]
+    fn inline_type_pdf_json_xml_js_are_inline() {
+        assert!(is_inline_type("application/pdf"));
+        assert!(is_inline_type("application/json"));
+        assert!(is_inline_type("application/xml"));
+        assert!(is_inline_type("application/javascript"));
+    }
+
+    #[test]
+    fn inline_type_octet_stream_is_not_inline() {
+        assert!(!is_inline_type("application/octet-stream"));
+        assert!(!is_inline_type("application/zip"));
+    }
+}

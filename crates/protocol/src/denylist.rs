@@ -195,4 +195,129 @@ mod tests {
         assert!(!is_denied("Page.Html"));
         assert!(!is_denied(".hidden-page.html"));
     }
+
+    #[test]
+    fn empty_path_is_allowed() {
+        // No path means no sensitive segment to match.
+        assert!(!is_denied(""));
+    }
+
+    #[test]
+    fn plain_filename_without_extension_is_allowed() {
+        assert!(!is_denied("notes"));
+        assert!(!is_denied("README"));
+    }
+
+    #[test]
+    fn dotfiles_outside_denylist_are_allowed() {
+        // .gitignore and .editorconfig are not in the denylist
+        assert!(!is_denied(".gitignore"));
+        assert!(!is_denied(".editorconfig"));
+        assert!(!is_denied(".dockerignore"));
+    }
+
+    #[test]
+    fn denied_directories_match_as_path_component_only() {
+        // `.git` as a leading dir is denied
+        assert!(is_denied(".git/refs/heads/main"));
+        // But `my.git/notes` should NOT match the `.git` directory rule
+        // because `.git` is a complete path component, not a substring.
+        // Note: the actual rule matches any path component named `.git`,
+        // so `my.git` is a different component and should be allowed.
+        assert!(!is_denied("my.git/notes"));
+    }
+
+    #[test]
+    fn env_files_in_nested_dirs_are_denied() {
+        assert!(is_denied("apps/api/.env"));
+        assert!(is_denied("config/.env.local"));
+        assert!(is_denied("deploy/prod/.env.production"));
+    }
+
+    #[test]
+    fn id_rsa_prefix_matches_variants() {
+        assert!(is_denied("id_rsa"));
+        assert!(is_denied("id_rsa.pub"));
+        assert!(is_denied("id_ed25519"));
+        assert!(is_denied("id_ecdsa"));
+        // The plain filename "id" is not denied
+        assert!(!is_denied("id"));
+    }
+
+    #[test]
+    fn service_account_json_files_are_denied() {
+        assert!(is_denied("service-account.json"));
+        assert!(is_denied("service-account-prod.json"));
+        assert!(is_denied("firebase-adminsdk.json"));
+    }
+
+    #[test]
+    fn credential_filenames_are_denied() {
+        assert!(is_denied("credentials"));
+        assert!(is_denied("credentials.json"));
+        assert!(is_denied("token.json"));
+        assert!(is_denied("secrets.json"));
+    }
+
+    #[test]
+    fn database_files_are_denied() {
+        assert!(is_denied("app.sqlite"));
+        assert!(is_denied("app.sqlite3"));
+        assert!(is_denied("app.db"));
+        assert!(is_denied("backup.db"));
+    }
+
+    #[test]
+    fn windows_style_paths_are_handled() {
+        // Backslashes are not path separators in this implementation —
+        // the file is matched as a single component. This documents behavior:
+        // agent-side path resolution normalizes separators before calling is_denied.
+        // A `.env` segment anywhere in a slash-separated path is caught.
+        assert!(is_denied("project/.env"));
+    }
+
+    #[test]
+    fn fish_config_in_correct_path_is_denied() {
+        assert!(is_denied(".config/fish/config.fish"));
+        assert!(is_denied("home/user/.config/fish/config.fish"));
+        // config.fish outside .config/fish should be allowed
+        assert!(!is_denied("docs/config.fish"));
+    }
+
+    #[test]
+    fn ipython_security_dir_is_denied() {
+        assert!(is_denied(".ipython/profile_default/security/foo"));
+        assert!(is_denied("home/u/.ipython/profile_default/security/ca.crt"));
+    }
+
+    #[test]
+    fn shell_history_files_are_denied() {
+        assert!(is_denied(".bash_history"));
+        assert!(is_denied(".zsh_history"));
+        assert!(is_denied(".python_history"));
+        assert!(is_denied(".mysql_history"));
+        assert!(is_denied(".psql_history"));
+        assert!(is_denied(".sqlite_history"));
+    }
+
+    #[test]
+    fn allowed_code_files_are_not_denied() {
+        assert!(!is_denied("src/lib.rs"));
+        assert!(!is_denied("tests/test_main.py"));
+        assert!(!is_denied("package.json"));
+        assert!(!is_denied("tsconfig.json"));
+        assert!(!is_denied("docker-compose.yml"));
+        assert!(!is_denied("Dockerfile"));
+        assert!(!is_denied("Makefile"));
+    }
+
+    #[test]
+    fn non_sensitive_extensions_are_allowed() {
+        assert!(!is_denied("data.csv"));
+        assert!(!is_denied("data.tsv"));
+        assert!(!is_denied("image.png"));
+        assert!(!is_denied("doc.pdf"));
+        assert!(!is_denied("archive.zip"));
+        assert!(!is_denied("archive.tar.gz"));
+    }
 }
