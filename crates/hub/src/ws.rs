@@ -322,7 +322,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     send_task.abort();
 
     let mut inner = state.inner.write().await;
-    inner.agents.unregister(&agent_id);
+    // Only mark offline if the registry entry still belongs to THIS
+    // connection. A reconnect may have already replaced the entry with a
+    // new sender, in which case marking it offline would break the live
+    // connection (reconnect race condition).
+    inner.agents.unregister(&agent_id, &tx);
     drop(inner);
     tracing::info!("Agent disconnected: {} ({})", name, agent_id);
 

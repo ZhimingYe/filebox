@@ -144,9 +144,22 @@ impl AgentRegistry {
         self.agents.insert(agent_id, agent);
     }
 
-    pub fn unregister(&mut self, agent_id: &str) {
-        if let Some(agent) = self.agents.get_mut(agent_id) {
-            agent.status = AgentStatus::Offline;
+    /// Mark an agent offline, but only if the registry entry still belongs
+    /// to the connection that's calling this. Reconnects race with the old
+    /// connection's TCP-timeout cleanup: if a new connection has already
+    /// replaced this entry (different sender channel), we must NOT mark it
+    /// offline — that would silently break the live connection.
+    pub fn unregister(
+        &mut self,
+        agent_id: &str,
+        caller_sender: &mpsc::UnboundedSender<HubMessage>,
+    ) {
+        if let Some(agent) = self.agents.get(agent_id) {
+            if agent.sender.same_channel(caller_sender) {
+                if let Some(agent) = self.agents.get_mut(agent_id) {
+                    agent.status = AgentStatus::Offline;
+                }
+            }
         }
     }
 
@@ -259,15 +272,17 @@ mod tests {
         tx
     }
 
-    fn register_simple(reg: &mut AgentRegistry, id: &str) {
+    fn register_simple(reg: &mut AgentRegistry, id: &str) -> mpsc::UnboundedSender<HubMessage> {
+        let tx = make_sender();
         reg.register(
             id.to_string(),
             format!("agent-{}", id),
-            make_sender(),
+            tx.clone(),
             0,
             vec![],
             Capabilities::default(),
         );
+        tx
     }
 
     #[test]
@@ -318,9 +333,9 @@ mod tests {
     #[test]
     fn unregister_marks_agent_offline_but_keeps_record() {
         let mut reg = AgentRegistry::new();
-        register_simple(&mut reg, "a1");
+        let tx = register_simple(&mut reg, "a1");
 
-        reg.unregister("a1");
+        reg.unregister("a1", &tx);
 
         let agent = reg.get("a1").expect("agent record must persist after unregister");
         assert_eq!(agent.status, AgentStatus::Offline);
@@ -329,8 +344,43 @@ mod tests {
     #[test]
     fn unregister_unknown_agent_is_noop() {
         let mut reg = AgentRegistry::new();
-        reg.unregister("nonexistent");
+        let tx = make_sender();
+        reg.unregister("nonexistent", &tx);
         // Should not panic
+    }
+
+    #[test]
+    fn unregister_does_not_offline_reconnected_agent() {
+        // Regression: reconnect race. The OLD connection's cleanup calls
+        // unregister AFTER the new connection has already replaced the
+        // registry entry. The new entry has a different sender channel, so
+        // unregister must NOT mark it offline — otherwise the live new
+        // connection silently appears offline to the hub.
+        let mut reg = AgentRegistry::new();
+        let old_tx = register_simple(&mut reg, "a1");
+
+        // Simulate reconnect: same agent_id, fresh sender
+        let new_tx = make_sender();
+        reg.register(
+            "a1".to_string(),
+            "reconnected".to_string(),
+            new_tx,
+            5,
+            vec![],
+            Capabilities::default(),
+        );
+
+        // Old connection's cleanup runs NOW (after the new register)
+        reg.unregister("a1", &old_tx);
+
+        let agent = reg.get("a1").expect("agent record must persist");
+        assert_eq!(
+            agent.status,
+            AgentStatus::Online,
+            "new connection must remain Online after old connection cleanup"
+        );
+        assert_eq!(agent.name, "reconnected");
+        assert_eq!(agent.resource_revision, 5);
     }
 
     #[test]
@@ -364,8 +414,8 @@ mod tests {
     #[test]
     fn send_ping_returns_false_for_offline_agent() {
         let mut reg = AgentRegistry::new();
-        register_simple(&mut reg, "a1");
-        reg.unregister("a1");
+        let tx = register_simple(&mut reg, "a1");
+        reg.unregister("a1", &tx);
 
         assert!(!reg.send_ping("a1"));
     }
@@ -445,8 +495,8 @@ mod tests {
     #[test]
     fn update_heartbeats_does_not_revive_offline_agents() {
         let mut reg = AgentRegistry::new();
-        register_simple(&mut reg, "a1");
-        reg.unregister("a1");
+        let tx = register_simple(&mut reg, "a1");
+        reg.unregister("a1", &tx);
 
         // Even with a fresh pong, offline agents must stay offline via update_heartbeats
         let agent = reg.get_mut("a1").unwrap();
@@ -607,10 +657,10 @@ mod tests {
     #[test]
     fn to_info_status_string_serializes() {
         let mut reg = AgentRegistry::new();
-        register_simple(&mut reg, "a1");
+        let tx = register_simple(&mut reg, "a1");
         assert_eq!(reg.get("a1").unwrap().to_info().status, "online");
 
-        reg.unregister("a1");
+        reg.unregister("a1", &tx);
         assert_eq!(reg.get("a1").unwrap().to_info().status, "offline");
     }
 
