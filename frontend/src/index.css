@@ -47,6 +47,16 @@ button:hover {
   opacity: 0.9;
 }
 
+/* While dragging the file/preview splitter, iframes (HTML preview, PDF)
+   swallow mousemove events. Disable pointer events so the drag continues
+   smoothly across the preview area. */
+body.split-resizing iframe {
+  pointer-events: none;
+}
+body.split-resizing {
+  cursor: col-resize !important;
+}
+
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;

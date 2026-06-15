@@ -57,17 +57,29 @@ export default function App() {
     e.preventDefault();
     const container = splitContainerRef.current;
     if (!container) return;
+    let rafId: number | null = null;
+    let lastClientX = e.clientX;
     const onMove = (ev: MouseEvent) => {
-      const rect = container.getBoundingClientRect();
-      const ratio = (ev.clientX - rect.left) / rect.width;
-      setSplitRatio(Math.max(0.2, Math.min(0.8, ratio)));
+      lastClientX = ev.clientX;
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const rect = container.getBoundingClientRect();
+        const ratio = (lastClientX - rect.left) / rect.width;
+        setSplitRatio(Math.max(0.2, Math.min(0.8, ratio)));
+      });
     };
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      document.body.classList.remove('split-resizing');
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     };
+    // iframe (HTML preview, PDF) eats mousemove once cursor enters it.
+    // Disable pointer events globally during drag so events reach document.
+    document.body.classList.add('split-resizing');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMove);

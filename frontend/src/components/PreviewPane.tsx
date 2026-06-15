@@ -38,6 +38,9 @@ function LoadingOverlay({ message, onCancel }: {
 function useMounted() {
   const mountedRef = useRef(true);
   useEffect(() => {
+    // Reset on each setup so StrictMode's "setup → cleanup → setup" cycle
+    // doesn't leave us permanently unmounted after the first cleanup.
+    mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
   return mountedRef;
@@ -148,13 +151,13 @@ function useFetchText(url: string) {
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const abortRef = useRef<AbortController | null>(null);
-  const mounted = useMounted();
+  const [retryToken, setRetryToken] = useState(0);
+  const cancelRef = useRef<AbortController | null>(null);
 
-  const doFetch = useCallback(() => {
-    abortRef.current?.abort();
+  useEffect(() => {
+    let cancelled = false;
     const controller = new AbortController();
-    abortRef.current = controller;
+    cancelRef.current = controller;
     setLoading(true);
     setError(null);
     setText(null);
@@ -164,35 +167,34 @@ function useFetchText(url: string) {
         return r.text();
       })
       .then((t) => {
-        if (mounted.current && !controller.signal.aborted) setText(t);
+        if (cancelled) return;
+        setText(t);
+        setLoading(false);
       })
       .catch((e) => {
-        if (e.name === 'AbortError') return;
-        if (mounted.current && !controller.signal.aborted) setError(e.message);
-      })
-      .finally(() => {
-        if (mounted.current && !controller.signal.aborted) setLoading(false);
+        if (cancelled || e.name === 'AbortError') return;
+        setError(e.message);
+        setLoading(false);
       });
-  }, [url]); // mounted is a stable ref, no need to be a dep
-
-  useEffect(() => {
-    doFetch();
     return () => {
-      abortRef.current?.abort();
-      abortRef.current = null;
+      cancelled = true;
+      controller.abort();
+      cancelRef.current = null;
     };
-  }, [doFetch]);
+  }, [url, retryToken]);
 
   const cancel = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    if (mounted.current) {
-      setLoading(false);
-      setError('Cancelled');
-    }
-  }, []); // mounted is a stable ref
+    cancelRef.current?.abort();
+    cancelRef.current = null;
+    setLoading(false);
+    setError('Cancelled');
+  }, []);
 
-  return { text, error, loading, cancel, retry: doFetch };
+  const retry = useCallback(() => {
+    setRetryToken((n) => n + 1);
+  }, []);
+
+  return { text, error, loading, cancel, retry };
 }
 
 // ── Image Preview ─────────────────────────────────────────────────────────
@@ -559,9 +561,12 @@ function PdfPreview({ url }: { url: string }) {
 function HtmlPreview({ agentId, root, path, url }: { agentId: string; root: string; path: string; url: string }) {
   const { text, error, loading, cancel, retry } = useFetchText(url);
   const [iframeLoading, setIframeLoading] = useState(true);
+  const [slowRendering, setSlowRendering] = useState(false);
   const [showSource, setShowSource] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const blobUrlRef = useRef<string | null>(null);
+  const mounted = useMounted();
+  const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Build base URL for resolving relative paths
   const dirPath = path.replace(/\/[^/]*$/, '/');
@@ -575,6 +580,8 @@ function HtmlPreview({ agentId, root, path, url }: { agentId: string; root: stri
     const blob = new Blob([processedHtml], { type: 'text/html' });
     const blobUrl = URL.createObjectURL(blob);
     blobUrlRef.current = blobUrl;
+    setIframeLoading(true);
+    setSlowRendering(false);
 
     return () => {
       if (blobUrlRef.current) {
@@ -584,12 +591,31 @@ function HtmlPreview({ agentId, root, path, url }: { agentId: string; root: stri
     };
   }, [text, baseUrl]);
 
+  // Slow-rendering detection: if the iframe hasn't fired onLoad in 8s, flag it
+  useEffect(() => {
+    if (!iframeLoading || showSource) return;
+    slowTimerRef.current = setTimeout(() => {
+      if (mounted.current) setSlowRendering(true);
+    }, 8000);
+    return () => {
+      if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+    };
+  }, [iframeLoading, showSource, mounted]);
+
+  useEffect(() => () => {
+    if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+  }, []);
+
   const handleIframeLoad = useCallback(() => {
+    if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
     setIframeLoading(false);
+    setSlowRendering(false);
   }, []);
 
   const handleIframeError = useCallback(() => {
+    if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
     setIframeLoading(false);
+    setSlowRendering(false);
   }, []);
 
   const openInNewWindow = useCallback(() => {
@@ -599,10 +625,17 @@ function HtmlPreview({ agentId, root, path, url }: { agentId: string; root: stri
   }, []);
 
   const handleRefresh = useCallback(() => {
+    const iframe = iframeRef.current;
+    const blobUrl = blobUrlRef.current;
+    if (!iframe || !blobUrl) return;
     setIframeLoading(true);
-    if (iframeRef.current && blobUrlRef.current) {
-      iframeRef.current.src = blobUrlRef.current;
-    }
+    setSlowRendering(false);
+    // Browsers dedupe same-URL navigations. Reset to about:blank first so the
+    // subsequent assignment actually triggers a reload.
+    iframe.src = 'about:blank';
+    requestAnimationFrame(() => {
+      if (iframeRef.current) iframeRef.current.src = blobUrl;
+    });
   }, []);
 
   if (loading) {
@@ -630,22 +663,23 @@ function HtmlPreview({ agentId, root, path, url }: { agentId: string; root: stri
     <div style={styles.htmlContainer}>
       {/* Toolbar */}
       <div style={styles.htmlToolbar}>
-        <button onClick={handleRefresh} style={styles.toolbarBtn} title="Refresh">
+        <button onClick={handleRefresh} style={styles.toolbarBtn} title="Reload preview">
           &#x21bb;
         </button>
-        <button onClick={() => setShowSource(!showSource)} style={styles.toolbarBtn} title="View Source">
+        <button onClick={() => setShowSource(!showSource)} style={styles.toolbarBtn} title="Toggle source">
           {showSource ? 'Preview' : 'Source'}
         </button>
         <button onClick={openInNewWindow} style={styles.toolbarBtn} title="Open in new window">
           &#x2197;
         </button>
-        <span style={styles.toolbarPath}>{path}</span>
       </div>
 
       {/* Content */}
       <div style={styles.htmlContent}>
-        {iframeLoading && (
-          <LoadingOverlay message="Rendering..." />
+        {!showSource && iframeLoading && (
+          <LoadingOverlay
+            message={slowRendering ? 'Still rendering — large or script-heavy HTML...' : 'Rendering...'}
+          />
         )}
         {showSource ? (
           <pre style={styles.sourceCode}>{text}</pre>
@@ -653,7 +687,10 @@ function HtmlPreview({ agentId, root, path, url }: { agentId: string; root: stri
           <iframe
             ref={iframeRef}
             src={blobUrlRef.current || ''}
-            sandbox="allow-scripts allow-popups allow-forms"
+            // allow-same-origin: blob URL needs this for localStorage / fetch inside the doc
+            // allow-top-navigation-by-user-activation: lets <a target="_blank"> actually open
+            //   (combined with the <base target="_blank"> injected by injectBaseTag)
+            sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-top-navigation-by-user-activation allow-popups-to-escape-sandbox"
             style={styles.htmlFrame}
             title="HTML Preview"
             onLoad={handleIframeLoad}
@@ -667,32 +704,37 @@ function HtmlPreview({ agentId, root, path, url }: { agentId: string; root: stri
 
 // Inject <base> tag into HTML for relative path resolution
 function injectBaseTag(html: string, baseUrl: string): string {
-  // If HTML already has a <base> tag, don't inject
-  if (/<base\s/i.test(html)) {
-    return html;
-  }
-
   // Ensure baseUrl ends with /
   const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
-  // Escape for safe interpolation into HTML attribute
   const escapedUrl = normalizedBaseUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  const newBase = `<base href="${escapedUrl}" target="_blank">`;
 
-  // Try to inject after <head> tag
+  // If the doc already has a <base>, respect its href but make sure links open
+  // in a new tab — otherwise clicking a link in the sandboxed iframe navigates
+  // it to a non-blob URL and dies silently.
+  const existingMatch = html.match(/<base\b[^>]*>/i);
+  if (existingMatch) {
+    const existing = existingMatch[0];
+    if (/target\s*=/i.test(existing)) return html; // already has target
+    const withTarget = existing.replace(/<base\b/i, '<base target="_blank" ');
+    return html.replace(/<base\b[^>]*>/i, withTarget);
+  }
+
+  // Try to inject after <head>
   const headMatch = html.match(/<head[^>]*>/i);
   if (headMatch) {
     const insertPos = html.indexOf(headMatch[0]) + headMatch[0].length;
-    return html.slice(0, insertPos) + `\n<base href="${escapedUrl}">` + html.slice(insertPos);
+    return html.slice(0, insertPos) + `\n${newBase}` + html.slice(insertPos);
   }
 
-  // If no <head> tag, try to inject after <html> tag
+  // Inject after <html>
   const htmlMatch = html.match(/<html[^>]*>/i);
   if (htmlMatch) {
     const insertPos = html.indexOf(htmlMatch[0]) + htmlMatch[0].length;
-    return html.slice(0, insertPos) + `\n<head><base href="${escapedUrl}"></head>` + html.slice(insertPos);
+    return html.slice(0, insertPos) + `\n<head>${newBase}</head>` + html.slice(insertPos);
   }
 
-  // If no <html> tag either, prepend base tag
-  return `<base href="${escapedUrl}">\n${html}`;
+  return `${newBase}\n${html}`;
 }
 
 // ── Markdown Preview ──────────────────────────────────────────────────────
