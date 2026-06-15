@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -86,7 +86,11 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
   );
 }
 
-export function PreviewPane({ agentId, root, path, entryType, denied }: Props) {
+// Memoized so dragging the file/preview splitter (which re-renders App and
+// would otherwise cascade into a SyntaxHighlighter re-tokenize on every
+// animation frame) does not re-render the preview subtree. Props are all
+// primitives that only change when the selected file changes.
+export const PreviewPane = memo(function PreviewPane({ agentId, root, path, entryType, denied }: Props) {
   if (denied) {
     return (
       <div style={styles.container}>
@@ -143,7 +147,7 @@ export function PreviewPane({ agentId, root, path, entryType, denied }: Props) {
       </div>
     </div>
   );
-}
+});
 
 // ── Reusable fetch hook with cancel/retry ────────────────────────────────
 
