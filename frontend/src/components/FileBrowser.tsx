@@ -287,7 +287,9 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
         </span>
         <span style={styles.entryName}>{isBack ? '..' : displayEntry!.name}</span>
         {!isBack && displayEntry!.modified && (
-          <span style={styles.entryDate}>{formatDate(displayEntry!.modified)}</span>
+          <span style={isMobile ? styles.entryDateMobile : styles.entryDate}>
+            {isMobile ? formatDateShort(displayEntry!.modified) : formatDate(displayEntry!.modified)}
+          </span>
         )}
         {!isBack && displayEntry!.size !== null && (
           <span style={styles.entryMeta}>{formatSize(displayEntry!.size)}</span>
@@ -457,6 +459,18 @@ function formatDate(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Compact form for narrow mobile rows: same year drops the year prefix.
+function formatDateShort(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  if (d.getFullYear() === now.getFullYear()) {
+    return `${md} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  return `${d.getFullYear()}-${md}`;
+}
+
 const styles: Record<string, React.CSSProperties> = {
   container: { display: 'flex', flexDirection: 'column', height: '100%', fontFamily: font.sans },
   toolbar: {
@@ -543,6 +557,7 @@ const styles: Record<string, React.CSSProperties> = {
   icon: { fontSize: 14, width: 20, textAlign: 'center', flexShrink: 0 },
   entryName: { color: c.text, fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   entryDate: { color: c.textMuted, fontSize: 12, width: 130, textAlign: 'right', flexShrink: 0 },
+  entryDateMobile: { color: c.textMuted, fontSize: 10, textAlign: 'right', flexShrink: 0, marginLeft: 'auto' },
   entryMeta: { color: c.textFaint, fontSize: 12, width: 80, textAlign: 'right', flexShrink: 0 },
   deniedBadge: {
     color: c.warning, fontSize: 10, fontStyle: 'normal', fontWeight: 500,
