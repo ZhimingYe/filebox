@@ -30,28 +30,35 @@ fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
-bcrypt_hash() {
-    # $1 = plaintext
-    python3 -c "import bcrypt,sys; print(bcrypt.hashpw(sys.argv[1].encode(),bcrypt.gensalt(12)).decode())" "$1"
+# Random agent token via openssl. 32 bytes of entropy, base64 → ~44 chars.
+gen_random_token() {
+    openssl rand -base64 32 | tr -d '\n'
 }
 
-gen_random_token() {
-    head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32
+# bcrypt hash via mkpasswd (whois package). $2b$12$... matches what the hub
+# expects. No Python, no pip pollution.
+bcrypt_hash() {
+    if ! command -v mkpasswd >/dev/null 2>&1; then
+        echo "ERROR: mkpasswd not found. Install whois package:" >&2
+        echo "  Debian/Ubuntu: sudo apt install whois" >&2
+        echo "  RHEL/CentOS:   sudo yum install whois" >&2
+        echo "  Alpine:        sudo apk add whois" >&2
+        exit 1
+    fi
+    mkpasswd -m bcrypt -R 12 "$1"
 }
 
 # ── Hub config ───────────────────────────────────────────────────────────
 
 gen_hub() {
-    command -v python3 >/dev/null || { echo "ERROR: python3 required (for bcrypt)" >&2; exit 1; }
-    if ! python3 -c "import bcrypt" 2>/dev/null; then
-        echo "python3 bcrypt module missing, installing..." >&2
-        if pip3 install --user bcrypt >/dev/null 2>&1 || pip3 install bcrypt >/dev/null 2>&1; then
-            echo "bcrypt installed" >&2
-        else
-            echo "ERROR: failed to install bcrypt. Run manually: pip3 install --user bcrypt" >&2
-            exit 1
-        fi
-    fi
+    command -v openssl >/dev/null  || { echo "ERROR: openssl required" >&2; exit 1; }
+    command -v mkpasswd >/dev/null || {
+        echo "ERROR: mkpasswd not found. Install whois package:" >&2
+        echo "  Debian/Ubuntu: sudo apt install whois" >&2
+        echo "  RHEL/CentOS:   sudo yum install whois" >&2
+        echo "  Alpine:        sudo apk add whois" >&2
+        exit 1
+    }
 
     echo "── Hub config ──" >&2
 
