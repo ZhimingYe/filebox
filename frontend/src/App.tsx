@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useSession } from './state/session';
 import { useHealth } from './state/health';
 import { useSse } from './state/events';
@@ -11,6 +11,7 @@ import { AgentSettings } from './components/AgentSettings';
 import { HealthPanel } from './components/HealthPanel';
 import { SystemStats } from './components/SystemStats';
 import type { FsEntry } from './api/client';
+import { fileRawUrl } from './api/client';
 import { c, radius, shadow, font } from './theme';
 
 type View = 'files' | 'settings' | 'health' | 'stats';
@@ -34,6 +35,83 @@ export default function App() {
   const [progressMap, setProgressMap] = useState<Map<string, ProgressEvent>>(new Map());
   const progressTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // ── Desktop split: persisted file/preview width ratio ──
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const [splitterHover, setSplitterHover] = useState(false);
+  const [splitRatio, setSplitRatio] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem('filebox.splitRatio');
+      const v = stored ? parseFloat(stored) : 0.5;
+      if (isNaN(v)) return 0.5;
+      return Math.max(0.2, Math.min(0.8, v));
+    } catch {
+      return 0.5;
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('filebox.splitRatio', String(splitRatio)); } catch { /* ignore */ }
+  }, [splitRatio]);
+
+  const startSplitDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const container = splitContainerRef.current;
+    if (!container) return;
+    const onMove = (ev: MouseEvent) => {
+      const rect = container.getBoundingClientRect();
+      const ratio = (ev.clientX - rect.left) / rect.width;
+      setSplitRatio(Math.max(0.2, Math.min(0.8, ratio)));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, []);
+
+  // ── Keyboard navigation: cache last reported file list ──
+  const fileListRef = useRef<{ root: string; path: string; entries: FsEntry[] } | null>(null);
+  const handleEntriesChange = useCallback((info: { root: string; path: string; entries: FsEntry[] }) => {
+    fileListRef.current = info;
+  }, []);
+
+  // Esc closes preview; ← → jump to previous/next file in the same directory
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      if (e.key === 'Escape') {
+        setPreview(null);
+        return;
+      }
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const info = fileListRef.current;
+      if (!info || info.root !== preview.root) return;
+      // preview.path is absolute within root, e.g. /sub/file.txt or /file.txt
+      const previewDir = preview.path.replace(/\/[^/]*$/, '') || '/';
+      if (info.path !== previewDir) return;
+      const files = info.entries.filter((en) => en.entry_type === 'file' && !en.denied);
+      const currentName = preview.path.split('/').pop() || '';
+      const idx = files.findIndex((en) => en.name === currentName);
+      if (idx === -1) return;
+      const nextIdx = e.key === 'ArrowRight' ? idx + 1 : idx - 1;
+      if (nextIdx < 0 || nextIdx >= files.length) return;
+      e.preventDefault();
+      const next = files[nextIdx];
+      const nextPath = (previewDir === '/' ? '' : previewDir) + '/' + next.name;
+      setPreview({ root: preview.root, path: nextPath, entry: next });
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [preview]);
 
   const agents = health?.agents || [];
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) || null;
@@ -171,6 +249,19 @@ export default function App() {
               // Mobile: show file list OR preview
               showMobilePreview ? (
                 <div style={styles.mobilePreviewWrap}>
+                  <div style={styles.previewHeader}>
+                    <span style={styles.previewPath}>{preview!.path}</span>
+                    <div style={styles.previewActions}>
+                      <a
+                        href={fileRawUrl(selectedAgent.id, preview!.root, preview!.path)}
+                        download
+                        style={styles.headerLink}
+                        title="Download"
+                      >
+                        Download
+                      </a>
+                    </div>
+                  </div>
                   <PreviewPane
                     agentId={selectedAgent.id}
                     root={preview!.root}
@@ -181,30 +272,59 @@ export default function App() {
                 </div>
               ) : (
                 <div style={styles.mobileFileWrap}>
-                  <FileBrowser agentId={selectedAgent.id} roots={selectedAgent.roots} onFileSelect={handleFileSelect} />
+                  <FileBrowser
+                    agentId={selectedAgent.id}
+                    roots={selectedAgent.roots}
+                    onFileSelect={handleFileSelect}
+                    onEntriesChange={handleEntriesChange}
+                  />
                 </div>
               )
             ) : (
-              // Desktop: side-by-side split
-              <div style={styles.splitView}>
-                <div style={styles.filePanel}>
-                  <FileBrowser agentId={selectedAgent.id} roots={selectedAgent.roots} onFileSelect={handleFileSelect} />
+              // Desktop: side-by-side split, resizable
+              <div ref={splitContainerRef} style={styles.splitView}>
+                <div style={{ ...styles.filePanel, flex: preview ? `0 0 ${splitRatio * 100}%` : '1' }}>
+                  <FileBrowser
+                    agentId={selectedAgent.id}
+                    roots={selectedAgent.roots}
+                    onFileSelect={handleFileSelect}
+                    onEntriesChange={handleEntriesChange}
+                  />
                 </div>
                 {preview && (
-                  <div style={styles.previewPanel}>
-                    <div style={styles.previewHeader}>
-                      <span style={styles.previewPath}>{preview.path}</span>
-                      <button onClick={() => setPreview(null)} style={styles.closeBtn}>&times;</button>
-                    </div>
-                    <PreviewPane
-                      key={`${preview.root}:${preview.path}`}
-                      agentId={selectedAgent.id}
-                      root={preview.root}
-                      path={preview.path}
-                      entryType={preview.entry.entry_type}
-                      denied={preview.entry.denied}
+                  <>
+                    <div
+                      onMouseDown={startSplitDrag}
+                      onMouseEnter={() => setSplitterHover(true)}
+                      onMouseLeave={() => setSplitterHover(false)}
+                      style={{ ...styles.splitter, ...(splitterHover ? styles.splitterHover : {}) }}
+                      title="Drag to resize"
                     />
-                  </div>
+                    <div style={styles.previewPanel}>
+                      <div style={styles.previewHeader}>
+                        <span style={styles.previewPath}>{preview.path}</span>
+                        <div style={styles.previewActions}>
+                          <a
+                            href={fileRawUrl(selectedAgent.id, preview.root, preview.path)}
+                            download
+                            style={styles.headerLink}
+                            title="Download"
+                          >
+                            Download
+                          </a>
+                          <button onClick={() => setPreview(null)} style={styles.closeBtn} title="Close (Esc)">&times;</button>
+                        </div>
+                      </div>
+                      <PreviewPane
+                        key={`${preview.root}:${preview.path}`}
+                        agentId={selectedAgent.id}
+                        root={preview.root}
+                        path={preview.path}
+                        entryType={preview.entry.entry_type}
+                        denied={preview.entry.denied}
+                      />
+                    </div>
+                  </>
                 )}
               </div>
             )
@@ -331,14 +451,30 @@ const styles: Record<string, React.CSSProperties> = {
   },
   emptyText: { color: c.textMuted, fontSize: 14, textAlign: 'center' },
   // ── Desktop split ──
-  splitView: { display: 'flex', flex: 1, overflow: 'hidden' },
-  filePanel: { flex: 1, minWidth: 0, borderRight: `1px solid ${c.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+  splitView: { display: 'flex', flex: 1, overflow: 'hidden', position: 'relative' },
+  filePanel: {
+    minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+  },
+  splitter: {
+    width: 4, cursor: 'col-resize', background: c.border,
+    flexShrink: 0, transition: 'background 0.15s',
+  } as React.CSSProperties,
+  splitterHover: {
+    background: c.accent,
+  } as React.CSSProperties,
   previewPanel: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
   previewHeader: {
-    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
     padding: '8px 16px', borderBottom: `1px solid ${c.border}`, background: c.bgSubtle,
   },
-  previewPath: { color: c.textMuted, fontSize: 12, fontFamily: font.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  previewActions: { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 },
+  headerLink: {
+    color: c.textSecondary, fontSize: 12, textDecoration: 'none',
+    padding: '4px 10px', borderRadius: radius.sm,
+    border: `1px solid ${c.border}`, background: 'transparent',
+    transition: 'all 0.15s',
+  },
+  previewPath: { color: c.textMuted, fontSize: 12, fontFamily: font.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 },
   closeBtn: {
     background: 'none', border: 'none', color: c.textMuted, fontSize: 18,
     cursor: 'pointer', padding: '0 4px', borderRadius: radius.sm,

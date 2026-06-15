@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { fileRawUrl, fsStat } from '../api/client';
-import { c, radius, font } from '../theme';
+import { c, radius, font, shadow } from '../theme';
 
 interface Props {
   agentId: string;
@@ -41,6 +41,46 @@ function useMounted() {
     return () => { mountedRef.current = false; };
   }, []);
   return mountedRef;
+}
+
+// ── Shared preferences & helpers ──────────────────────────────────────────
+
+// Wrap preference persists across file switches (App.tsx remounts PreviewPane with a key)
+let wrapPref = true;
+
+function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useMounted();
+
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
+
+  const handleClick = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch { /* ignore */ }
+      document.body.removeChild(ta);
+    }
+    if (!mounted.current) return;
+    setCopied(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      if (mounted.current) setCopied(false);
+    }, 2000);
+  }, [text, mounted]);
+
+  return (
+    <button onClick={handleClick} style={copied ? styles.toolBtnCopied : styles.toolBtn}>
+      {copied ? 'Copied!' : label}
+    </button>
+  );
 }
 
 export function PreviewPane({ agentId, root, path, entryType, denied }: Props) {
@@ -82,6 +122,10 @@ export function PreviewPane({ agentId, root, path, entryType, denied }: Props) {
 
   if (['html', 'htm'].includes(ext)) {
     return <HtmlPreview agentId={agentId} root={root} path={path} url={url} />;
+  }
+
+  if (['csv', 'tsv'].includes(ext)) {
+    return <CsvPreview url={url} ext={ext} path={path} />;
   }
 
   if (isTextFile(ext)) {
@@ -129,7 +173,7 @@ function useFetchText(url: string) {
       .finally(() => {
         if (mounted.current && !controller.signal.aborted) setLoading(false);
       });
-  }, [url, mounted]);
+  }, [url]); // mounted is a stable ref, no need to be a dep
 
   useEffect(() => {
     doFetch();
@@ -146,7 +190,7 @@ function useFetchText(url: string) {
       setLoading(false);
       setError('Cancelled');
     }
-  }, [mounted]);
+  }, []); // mounted is a stable ref
 
   return { text, error, loading, cancel, retry: doFetch };
 }
@@ -154,6 +198,8 @@ function useFetchText(url: string) {
 // ── Image Preview ─────────────────────────────────────────────────────────
 
 const LARGE_IMAGE_THRESHOLD = 10 * 1024 * 1024; // 10MB
+const ZOOM_MIN = 0.1;
+const ZOOM_MAX = 5.0;
 
 function ImagePreview({ agentId, root, path, url }: { agentId: string; root: string; path: string; url: string }) {
   const [fileSize, setFileSize] = useState<number | null>(null);
@@ -161,7 +207,14 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
   const [imgLoading, setImgLoading] = useState(false);
   const [slowLoading, setSlowLoading] = useState(false);
   const [imgError, setImgError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
+  const [zoom, setZoom] = useState(1);
+  const [rotation, setRotation] = useState(0);
+  const [pos, setPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number; posX: number; posY: number } | null>(null);
   const mounted = useMounted();
   const loadingRef = useRef(false);
   const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -177,6 +230,7 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
   }, [agentId, root, path, mounted]);
 
   const isLarge = fileSize !== null && fileSize > LARGE_IMAGE_THRESHOLD;
+  const sizeUnknown = fileSize === null;
 
   const startLoad = useCallback(() => {
     if (!mounted.current) return;
@@ -184,7 +238,7 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
     setImgLoading(true);
     setSlowLoading(false);
     setImgError(null);
-  }, [mounted]);
+  }, []); // mounted is a stable ref
 
   // Detect slow loading (after 8 seconds)
   useEffect(() => {
@@ -202,7 +256,6 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
   const cancelLoad = useCallback(() => {
     loadingRef.current = false;
     if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
-    // Reset image element to cancel loading
     if (imgRef.current) {
       imgRef.current.src = '';
       imgRef.current.onload = null;
@@ -213,19 +266,28 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
       setSlowLoading(false);
       setImgError('Cancelled');
     }
-  }, [mounted]);
+  }, []); // mounted is a stable ref
 
   const handleForceLoad = useCallback(() => {
     setForceLoad(true);
     startLoad();
   }, [startLoad]);
 
-  // Auto-start loading for non-large images
+  const handleRetry = useCallback(() => {
+    setImgError(null);
+    setZoom(1);
+    setRotation(0);
+    setPos({ x: 0, y: 0 });
+    setRetryKey((k) => k + 1);
+    startLoad();
+  }, [startLoad]);
+
+  // Bug 1 fix: wait for size before deciding large vs not
   useEffect(() => {
-    if (!isLarge && !forceLoad && fileSize !== null) {
+    if (!sizeUnknown && !isLarge && !forceLoad) {
       startLoad();
     }
-  }, [isLarge, forceLoad, fileSize, startLoad]);
+  }, [isLarge, forceLoad, sizeUnknown, startLoad]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -240,8 +302,72 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
     };
   }, []);
 
+  // ── Zoom / rotate / drag handlers ──
+  const clampZoom = (z: number) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLImageElement>) => {
+    // Only zoom when image is interactive (loaded, not in error)
+    if (imgLoading || imgError) return;
+    const delta = e.deltaY < 0 ? 0.1 : -0.1;
+    setZoom((z) => clampZoom(+(z + delta).toFixed(2)));
+  }, [imgLoading, imgError]);
+
+  const handleDoubleClick = useCallback(() => {
+    if (imgLoading || imgError) return;
+    setZoom((z) => (z < 1.5 ? 2.0 : 1.0));
+    setPos({ x: 0, y: 0 });
+  }, [imgLoading, imgError]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLImageElement>) => {
+    if (zoom <= 1) return; // only drag when zoomed in
+    e.preventDefault();
+    setDragging(true);
+    dragStartRef.current = { x: e.clientX, y: e.clientY, posX: pos.x, posY: pos.y };
+  }, [zoom, pos.x, pos.y]);
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e: MouseEvent) => {
+      const start = dragStartRef.current;
+      if (!start) return;
+      setPos({
+        x: start.posX + (e.clientX - start.x),
+        y: start.posY + (e.clientY - start.y),
+      });
+    };
+    const onUp = () => {
+      setDragging(false);
+      dragStartRef.current = null;
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, [dragging]);
+
+  const handleRotate = (dir: 'left' | 'right') => {
+    setRotation((r) => (dir === 'left' ? (r - 90 + 360) % 360 : (r + 90) % 360));
+  };
+
+  const handleReset = () => {
+    setZoom(1);
+    setRotation(0);
+    setPos({ x: 0, y: 0 });
+  };
+
+  // Bug 1 fix: while size is unknown, show generic loading instead of starting download
+  if (sizeUnknown) {
+    return (
+      <div style={styles.container}>
+        <LoadingOverlay message="Checking image size..." />
+      </div>
+    );
+  }
+
   if (isLarge && !forceLoad) {
-    const sizeMB = (fileSize / (1024 * 1024)).toFixed(1);
+    const sizeMB = (fileSize! / (1024 * 1024)).toFixed(1);
     return (
       <div style={styles.container}>
         <div style={styles.largeImageWarning}>
@@ -254,8 +380,11 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
     );
   }
 
+  const interactive = !imgLoading && !imgError;
+  const cursor = !interactive ? 'default' : (dragging ? 'grabbing' : (zoom > 1 ? 'grab' : 'zoom-in'));
+
   return (
-    <div style={styles.container}>
+    <div ref={containerRef} style={{ ...styles.container, overflow: 'hidden' }}>
       {imgLoading && (
         <LoadingOverlay
           message={slowLoading
@@ -269,39 +398,62 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
         <div style={styles.largeImageWarning}>
           <p style={styles.errorText}>{imgError}</p>
           <div style={{ display: 'flex', gap: 12 }}>
-            <button onClick={() => { setImgError(null); startLoad(); }} style={styles.retryBtn}>Retry</button>
+            <button onClick={handleRetry} style={styles.retryBtn}>Retry</button>
             <a href={url} download style={styles.downloadLink}>Download</a>
           </div>
         </div>
       )}
-      <img
-        ref={imgRef}
-        src={url}
-        alt={path}
-        style={{
-          ...styles.image,
-          display: imgError ? 'none' : 'block',
-          opacity: imgLoading ? 0 : 1,
-          transition: 'opacity 0.3s ease',
-        }}
-        onLoad={() => {
-          if (mounted.current && loadingRef.current) {
-            loadingRef.current = false;
-            if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
-            setImgLoading(false);
-            setSlowLoading(false);
-          }
-        }}
-        onError={() => {
-          if (mounted.current && loadingRef.current) {
-            loadingRef.current = false;
-            if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
-            setImgLoading(false);
-            setSlowLoading(false);
-            setImgError('Failed to load image');
-          }
-        }}
-      />
+      <div style={styles.imageStage}>
+        <img
+          key={retryKey}
+          ref={imgRef}
+          src={url}
+          alt={path}
+          draggable={false}
+          onWheel={handleWheel}
+          onDoubleClick={handleDoubleClick}
+          onMouseDown={handleMouseDown}
+          style={{
+            ...styles.image,
+            display: imgError ? 'none' : 'block',
+            opacity: imgLoading ? 0 : 1,
+            transition: dragging ? 'none' : 'opacity 0.3s ease',
+            cursor,
+            transform: `translate(${pos.x}px, ${pos.y}px) scale(${zoom}) rotate(${rotation}deg)`,
+            transformOrigin: 'center center',
+            userSelect: 'none',
+          }}
+          onLoad={() => {
+            if (mounted.current && loadingRef.current) {
+              loadingRef.current = false;
+              if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+              setImgLoading(false);
+              setSlowLoading(false);
+            }
+          }}
+          onError={() => {
+            if (mounted.current && loadingRef.current) {
+              loadingRef.current = false;
+              if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+              setImgLoading(false);
+              setSlowLoading(false);
+              setImgError('Failed to load image');
+            }
+          }}
+        />
+      </div>
+      {interactive && (
+        <div style={styles.imageToolbar}>
+          <button onClick={() => setZoom((z) => clampZoom(+(z - 0.1).toFixed(2)))} style={styles.imgToolBtn} title="Zoom out">&minus;</button>
+          <span style={styles.imgZoomLabel}>{Math.round(zoom * 100)}%</span>
+          <button onClick={() => setZoom((z) => clampZoom(+(z + 0.1).toFixed(2)))} style={styles.imgToolBtn} title="Zoom in">+</button>
+          <span style={styles.imgToolDivider} />
+          <button onClick={() => handleRotate('left')} style={styles.imgToolBtn} title="Rotate left">&#x21ba;</button>
+          <button onClick={() => handleRotate('right')} style={styles.imgToolBtn} title="Rotate right">&#x21bb;</button>
+          <span style={styles.imgToolDivider} />
+          <button onClick={handleReset} style={styles.imgToolBtn} title="Reset view">Reset</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -463,8 +615,13 @@ function HtmlPreview({ agentId, root, path, url }: { agentId: string; root: stri
   if (error) {
     return (
       <div style={styles.container}>
-        <p style={styles.errorText}>{error}</p>
-        <button onClick={retry} style={styles.retryBtn}>Retry</button>
+        <div style={styles.largeImageWarning}>
+          <p style={styles.errorText}>{error}</p>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button onClick={retry} style={styles.retryBtn}>Retry</button>
+            <a href={url} download style={styles.downloadLink}>Download</a>
+          </div>
+        </div>
       </div>
     );
   }
@@ -553,19 +710,175 @@ function MarkdownPreview({ url }: { url: string }) {
   if (error) {
     return (
       <div style={styles.container}>
-        <p style={styles.errorText}>{error}</p>
-        <button onClick={retry} style={styles.retryBtn}>Retry</button>
+        <div style={styles.largeImageWarning}>
+          <p style={styles.errorText}>{error}</p>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button onClick={retry} style={styles.retryBtn}>Retry</button>
+            <a href={url} download style={styles.downloadLink}>Download</a>
+          </div>
+        </div>
       </div>
     );
   }
 
-  const displayText = text!.length > 500000 ? text!.slice(0, 500000) + '\n\n---\n*File truncated*' : text!;
+  const raw = text!;
+  const isTruncated = raw.length > 500000;
+  const displayText = isTruncated ? raw.slice(0, 500000) + '\n\n---\n*File truncated*' : raw;
 
   return (
     <div style={styles.markdownContainer}>
-      <div className="markdown" style={styles.markdown}>
+      <div style={styles.codeToolbar}>
+        <span style={styles.metaInfo}>{raw.length.toLocaleString()} chars{isTruncated ? ' · truncated' : ''}</span>
+        <CopyButton text={raw} />
+      </div>
+      <div className="markdown" style={{ ...styles.markdown, marginTop: 0 }}>
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayText}</ReactMarkdown>
       </div>
+    </div>
+  );
+}
+
+// ── CSV/TSV Preview (head only, for performance) ──────────────────────────
+
+const CSV_PREVIEW_ROWS = 100;
+
+function detectDelimiter(text: string, fallback: string): string {
+  // Scan first 5 non-empty lines, count candidate delimiters
+  const lines = text.split(/\r?\n/).filter((l) => l.length > 0).slice(0, 5);
+  if (lines.length === 0) return fallback;
+  const candidates = [',', '\t', ';', '|'];
+  let best = fallback;
+  let bestCount = 0;
+  for (const d of candidates) {
+    let total = 0;
+    for (const line of lines) {
+      let count = 0;
+      let inQuote = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') inQuote = !inQuote;
+        else if (ch === d && !inQuote) count++;
+      }
+      total += count;
+    }
+    if (total > bestCount) {
+      bestCount = total;
+      best = d;
+    }
+  }
+  return best;
+}
+
+function splitCsvLine(line: string, delim: string): string[] {
+  const result: string[] = [];
+  let cur = '';
+  let inQuote = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuote && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQuote = !inQuote;
+    } else if (ch === delim && !inQuote) {
+      result.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  result.push(cur);
+  return result;
+}
+
+function CsvPreview({ url, ext }: { url: string; ext: string; path: string }) {
+  const { text, error, loading, cancel, retry } = useFetchText(url);
+  const [view, setView] = useState<'table' | 'raw'>('table');
+
+  if (loading) {
+    return (
+      <div style={styles.container}>
+        <LoadingOverlay message="Loading CSV..." onCancel={cancel} />
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.largeImageWarning}>
+          <p style={styles.errorText}>{error}</p>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button onClick={retry} style={styles.retryBtn}>Retry</button>
+            <a href={url} download style={styles.downloadLink}>Download</a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const raw = text!;
+  const allLines = raw.split(/\r?\n/);
+  const totalLines = allLines.length;
+  // Drop trailing empty line(s)
+  while (totalLines > 0 && allLines[allLines.length - 1] === '') allLines.pop();
+  const actualTotal = allLines.length;
+  const previewLines = allLines.slice(0, CSV_PREVIEW_ROWS);
+  const isTruncated = actualTotal > CSV_PREVIEW_ROWS;
+  const defaultDelim = ext === 'tsv' ? '\t' : ',';
+  const delim = detectDelimiter(raw, defaultDelim);
+  const delimLabel = delim === '\t' ? 'tab' : delim;
+
+  const rows = previewLines.map((line) => splitCsvLine(line, delim));
+  const header = rows[0] || [];
+  const bodyRows = rows.slice(1);
+  const maxCols = rows.reduce((m, r) => Math.max(m, r.length), 0);
+
+  return (
+    <div style={styles.codeContainer}>
+      <div style={styles.codeToolbar}>
+        <span style={styles.metaInfo}>
+          {actualTotal.toLocaleString()} rows{isTruncated ? ` · showing first ${CSV_PREVIEW_ROWS}` : ''} · delim: {delimLabel}
+        </span>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <button
+            onClick={() => setView(view === 'table' ? 'raw' : 'table')}
+            style={styles.toolBtn}
+            title="Toggle view"
+          >
+            {view === 'table' ? 'Raw' : 'Table'}
+          </button>
+          <CopyButton text={raw} />
+        </div>
+      </div>
+      {view === 'raw' ? (
+        <pre style={{
+          ...styles.code,
+          whiteSpace: 'pre',
+          wordBreak: 'normal',
+          overflow: 'auto',
+        }}>{previewLines.join('\n')}{isTruncated ? '\n\n... (truncated)' : ''}</pre>
+      ) : (
+        <div style={styles.csvTableWrap}>
+          <table style={styles.csvTable}>
+            {header.length > 0 && (
+              <thead>
+                <tr>
+                  {Array.from({ length: maxCols }).map((_, i) => (
+                    <th key={i} style={styles.csvTh}>{header[i] ?? ''}</th>
+                  ))}
+                </tr>
+              </thead>
+            )}
+            <tbody>
+              {bodyRows.map((row, ri) => (
+                <tr key={ri}>
+                  {Array.from({ length: maxCols }).map((_, ci) => (
+                    <td key={ci} style={styles.csvTd}>{row[ci] ?? ''}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -574,7 +887,13 @@ function MarkdownPreview({ url }: { url: string }) {
 
 function TextPreview({ url, ext }: { url: string; ext: string }) {
   const { text, error, loading, cancel, retry } = useFetchText(url);
-  const [wrap, setWrap] = useState(true);
+  const [wrap, setWrap] = useState(wrapPref);
+
+  const toggleWrap = () => {
+    const next = !wrap;
+    wrapPref = next; // persist across file switches
+    setWrap(next);
+  };
 
   if (loading) {
     return (
@@ -586,58 +905,62 @@ function TextPreview({ url, ext }: { url: string; ext: string }) {
   if (error) {
     return (
       <div style={styles.container}>
-        <p style={styles.errorText}>{error}</p>
-        <button onClick={retry} style={styles.retryBtn}>Retry</button>
+        <div style={styles.largeImageWarning}>
+          <p style={styles.errorText}>{error}</p>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button onClick={retry} style={styles.retryBtn}>Retry</button>
+            <a href={url} download style={styles.downloadLink}>Download</a>
+          </div>
+        </div>
       </div>
     );
   }
 
-  const isLarge = text!.length > 100000;
-  const displayText = isLarge ? text!.slice(0, 100000) + '\n... (truncated)' : text!;
+  const raw = text!;
+  const totalLines = raw.split('\n').length;
+  const isLarge = raw.length > 100000;
+  const displayText = isLarge ? raw.slice(0, 100000) + '\n... (truncated)' : raw;
   const lang = extToLang[ext] || 'text';
 
-  if (isLarge) {
-    return (
-      <div style={styles.codeContainer}>
-        <div style={styles.codeToolbar}>
-          <button onClick={() => setWrap(!wrap)} style={styles.wrapToggle}>
+  return (
+    <div style={styles.codeContainer}>
+      <div style={styles.codeToolbar}>
+        <span style={styles.metaInfo}>
+          {totalLines.toLocaleString()} lines · {raw.length.toLocaleString()} chars{isLarge ? ' · truncated' : ''}
+        </span>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <button onClick={toggleWrap} style={styles.toolBtn}>
             {wrap ? 'Wrap: On' : 'Wrap: Off'}
           </button>
+          <CopyButton text={raw} />
         </div>
+      </div>
+      {isLarge ? (
         <pre style={{
           ...styles.code,
           whiteSpace: wrap ? 'pre-wrap' : 'pre',
           wordBreak: wrap ? 'break-all' : 'normal',
         }}>{displayText}</pre>
-      </div>
-    );
-  }
-
-  return (
-    <div style={styles.codeContainer}>
-      <div style={styles.codeToolbar}>
-        <button onClick={() => setWrap(!wrap)} style={styles.wrapToggle}>
-          {wrap ? 'Wrap: On' : 'Wrap: Off'}
-        </button>
-      </div>
-      <div className={wrap ? 'code-transparent code-wrap' : 'code-transparent'}>
-        <SyntaxHighlighter
-          language={lang}
-          style={oneLight}
-          showLineNumbers
-          customStyle={{
-            margin: 0,
-            padding: '16px',
-            background: 'transparent',
-            fontSize: 13,
-            lineHeight: 1.5,
-            overflowX: wrap ? 'hidden' : 'auto',
-            minWidth: 0,
-          }}
-        >
-          {displayText}
-        </SyntaxHighlighter>
-      </div>
+      ) : (
+        <div className={wrap ? 'code-transparent code-wrap' : 'code-transparent'}>
+          <SyntaxHighlighter
+            language={lang}
+            style={oneLight}
+            showLineNumbers
+            customStyle={{
+              margin: 0,
+              padding: '16px',
+              background: 'transparent',
+              fontSize: 13,
+              lineHeight: 1.5,
+              overflowX: wrap ? 'hidden' : 'auto',
+              minWidth: 0,
+            }}
+          >
+            {displayText}
+          </SyntaxHighlighter>
+        </div>
+      )}
     </div>
   );
 }
@@ -749,13 +1072,67 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0, padding: '0 16px',
   },
   codeToolbar: {
-    display: 'flex', justifyContent: 'flex-end', padding: '6px 12px',
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '6px 12px', gap: 12,
     borderBottom: `1px solid ${c.border}`, background: c.bgSubtle,
   },
-  wrapToggle: {
+  metaInfo: {
+    color: c.textMuted, fontSize: 11, fontFamily: font.mono,
+    flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  },
+  toolBtn: {
     padding: '3px 10px', borderRadius: radius.sm, border: `1px solid ${c.border}`,
     background: 'transparent', color: c.textSecondary, cursor: 'pointer',
-    fontSize: 11, transition: 'all 0.15s',
+    fontSize: 11, lineHeight: 1, transition: 'all 0.15s',
+  },
+  toolBtnCopied: {
+    padding: '3px 10px', borderRadius: radius.sm, border: `1px solid ${c.success}`,
+    background: c.successBg, color: c.success, cursor: 'default',
+    fontSize: 11, lineHeight: 1,
+  },
+  imageStage: {
+    flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    overflow: 'hidden', position: 'relative', minHeight: 0,
+  },
+  imageToolbar: {
+    position: 'absolute', bottom: 12, left: '50%', transform: 'translateX(-50%)',
+    display: 'flex', alignItems: 'center', gap: 4,
+    padding: '4px 6px', borderRadius: radius.pill,
+    background: 'rgba(255,255,255,0.95)', border: `1px solid ${c.border}`,
+    boxShadow: shadow.md, zIndex: 10,
+  },
+  imgToolBtn: {
+    padding: '4px 10px', borderRadius: radius.pill, border: 'none',
+    background: 'transparent', color: c.textSecondary, cursor: 'pointer',
+    fontSize: 12, lineHeight: 1, minWidth: 28, transition: 'all 0.15s',
+  },
+  imgZoomLabel: {
+    color: c.text, fontSize: 11, fontFamily: font.mono,
+    minWidth: 36, textAlign: 'center',
+  },
+  imgToolDivider: {
+    width: 1, height: 14, background: c.border, margin: '0 2px',
+  },
+  csvTableWrap: {
+    flex: 1, overflow: 'auto', background: c.surface,
+  },
+  csvTable: {
+    borderCollapse: 'collapse', width: '100%', fontSize: 12,
+    fontFamily: font.mono,
+  },
+  csvTh: {
+    padding: '6px 10px', textAlign: 'left', fontWeight: 600,
+    color: c.text, background: c.bgMuted,
+    borderBottom: `1px solid ${c.border}`,
+    borderRight: `1px solid ${c.borderSubtle}`,
+    position: 'sticky', top: 0, zIndex: 1,
+    whiteSpace: 'nowrap',
+  },
+  csvTd: {
+    padding: '4px 10px', color: c.textSecondary,
+    borderBottom: `1px solid ${c.borderSubtle}`,
+    borderRight: `1px solid ${c.borderSubtle}`,
+    whiteSpace: 'nowrap', verticalAlign: 'top',
   },
   denied: {
     display: 'flex', flexDirection: 'column', alignItems: 'center',

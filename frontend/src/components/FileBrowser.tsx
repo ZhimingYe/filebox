@@ -61,13 +61,15 @@ interface Props {
   agentId: string;
   roots: { name: string; path_display: string; enabled: boolean }[];
   onFileSelect: (root: string, path: string, entry: api.FsEntry) => void;
+  // Fired whenever the visible file list changes — used by parent for keyboard navigation
+  onEntriesChange?: (info: { root: string; path: string; entries: api.FsEntry[] }) => void;
 }
 
 type SortKey = 'name' | 'modified' | 'size';
 
 const PAGE_LIMIT = 200;
 
-export function FileBrowser({ agentId, roots, onFileSelect }: Props) {
+export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: Props) {
   const isMobile = useIsMobile();
   const ROW_HEIGHT = isMobile ? 44 : 32;
 
@@ -239,6 +241,18 @@ export function FileBrowser({ agentId, roots, onFileSelect }: Props) {
       return sortedEntries;
     }
   }, [sortedEntries, filterText]);
+
+  // Report current visible entries to parent (for keyboard navigation).
+  // Uses a signature ref so we only fire when something actually changed.
+  const lastSigRef = useRef('');
+  useEffect(() => {
+    if (!onEntriesChange || !selectedRoot) return;
+    const sig = `${selectedRoot}@${currentPath}|` +
+      filteredEntries.map((e) => `${e.entry_type}:${e.name}:${e.denied ? '1' : '0'}`).join(',');
+    if (sig === lastSigRef.current) return;
+    lastSigRef.current = sig;
+    onEntriesChange({ root: selectedRoot, path: currentPath, entries: filteredEntries });
+  }, [filteredEntries, selectedRoot, currentPath, onEntriesChange]);
 
   // Build display rows: ".." + filtered entries
   const showBack = currentPath !== '/';
