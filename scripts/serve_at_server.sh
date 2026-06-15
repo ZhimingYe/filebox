@@ -244,7 +244,7 @@ print_summary() {
     echo "    ${INSTALL_DIR}/bin/hub"
     echo ""
     echo "  Background:"
-    echo "    nohup ${INSTALL_DIR}/bin/hub > ${LOG_DIR}/hub.log 2>&1 &"
+    echo "    RUST_LOG=info nohup ${INSTALL_DIR}/bin/hub > ${LOG_DIR}/hub.log 2>&1 &"
     echo ""
     echo "  Env vars (optional):"
     echo "    FILEBOX_CONFIG_PATH=<path>     Override config file location"

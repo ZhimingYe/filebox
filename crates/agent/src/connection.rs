@@ -8,8 +8,27 @@ use filebox_protocol::resources::Capabilities;
 use crate::config::AgentConfig;
 use crate::resources::ResourceManager;
 
+/// Translate a user-facing hub URL (http/https/ws/wss) into a WebSocket URL
+/// ending in /ws/agent. Accepts the forms the install script and CLAUDE.md
+/// document (http/https) plus raw ws/wss for flexibility.
+fn build_ws_url(hub_url: &str) -> String {
+    let trimmed = hub_url.trim_end_matches('/');
+    let (scheme, rest) = if let Some(rest) = trimmed.strip_prefix("https://") {
+        ("wss://", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("http://") {
+        ("ws://", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("wss://") {
+        ("wss://", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("ws://") {
+        ("ws://", rest)
+    } else {
+        ("ws://", trimmed)
+    };
+    format!("{}{}/ws/agent", scheme, rest)
+}
+
 pub async fn run_connection_loop(config: &AgentConfig) {
-    let ws_url = format!("{}/ws/agent", config.hub_url);
+    let ws_url = build_ws_url(&config.hub_url);
     let mut backoff_secs = 1u64;
     let max_backoff = 300u64;
 
@@ -300,5 +319,51 @@ pub async fn run_connection_loop(config: &AgentConfig) {
         tracing::info!("Reconnecting in {}s...", backoff_secs);
         tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
         backoff_secs = (backoff_secs * 2).min(max_backoff);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_ws_url;
+
+    #[test]
+    fn translates_https_to_wss() {
+        assert_eq!(
+            build_ws_url("https://hub.example.com"),
+            "wss://hub.example.com/ws/agent"
+        );
+    }
+
+    #[test]
+    fn translates_http_to_ws() {
+        assert_eq!(
+            build_ws_url("http://192.168.1.10:3000"),
+            "ws://192.168.1.10:3000/ws/agent"
+        );
+    }
+
+    #[test]
+    fn passes_through_wss_and_ws() {
+        assert_eq!(
+            build_ws_url("wss://hub.example.com"),
+            "wss://hub.example.com/ws/agent"
+        );
+        assert_eq!(
+            build_ws_url("ws://hub.local:3000"),
+            "ws://hub.local:3000/ws/agent"
+        );
+    }
+
+    #[test]
+    fn strips_trailing_slash() {
+        assert_eq!(
+            build_ws_url("https://hub.example.com/"),
+            "wss://hub.example.com/ws/agent"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_ws_without_scheme() {
+        assert_eq!(build_ws_url("hub.example.com:3000"), "ws://hub.example.com:3000/ws/agent");
     }
 }

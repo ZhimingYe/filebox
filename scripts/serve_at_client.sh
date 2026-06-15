@@ -135,7 +135,7 @@ print_summary() {
     echo "    ${INSTALL_DIR}/agent"
     echo ""
     echo "  Background:"
-    echo "    nohup ${INSTALL_DIR}/agent > ${INSTALL_DIR}/agent.log 2>&1 &"
+    echo "    RUST_LOG=info nohup ${INSTALL_DIR}/agent > ${INSTALL_DIR}/agent.log 2>&1 &"
     echo ""
     echo "  Add root directories:"
     echo "    1. Open the Hub frontend"
