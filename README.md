@@ -236,104 +236,6 @@ credentials.json
 
 Full list in `crates/protocol/src/denylist.rs`.
 
-## API Reference
-
-### Authentication
-
-```http
-POST /api/session/exchange
-Content-Type: application/json
-
-{
-  "username": "admin",
-  "password": "your-password"
-}
-```
-
-### Agent Management
-
-```http
-GET /api/agents                          # List agents
-GET /api/agents/:id                      # Agent details
-GET /api/agents/:id/resources            # Agent resources
-GET /api/agents/:id/sys-stats            # System stats
-```
-
-### Root Management
-
-```http
-POST /api/agents/:id/roots               # Add root
-PATCH /api/agents/:id/roots/:name        # Update root
-DELETE /api/agents/:id/roots/:name       # Delete root
-```
-
-### File Operations
-
-```http
-GET /api/fs/list?agent_id=&root=&path=   # List directory
-GET /api/fs/stat?agent_id=&root=&path=   # File info
-GET /api/file/raw?agent_id=&root=&path=  # Read file
-```
-
-### Real-time Events
-
-```http
-GET /api/events                          # SSE event stream
-```
-
-Event types:
-- `agent_connected` - Agent came online
-- `agent_disconnected` - Agent went offline
-- `resources_updated` - Resources changed
-- `progress` - Request progress
-
-## Development
-
-### Project Structure
-
-```text
-filebox/
-├── Cargo.toml              # Rust workspace config
-├── crates/
-│   ├── protocol/           # Shared protocol definitions
-│   ├── hub/                # Hub server
-│   └── agent/              # Agent daemon
-├── frontend/               # React frontend
-│   ├── src/
-│   │   ├── api/            # API client
-│   │   ├── components/     # React components
-│   │   └── state/          # State management
-│   └── public/             # Static assets
-└── hub.json                # Hub config file
-```
-
-### Dev Environment
-
-```bash
-# Frontend dev server
-cd frontend
-npm run dev
-
-# Hub
-cargo run --bin hub
-
-# Agent
-cargo run --bin agent
-```
-
-The frontend dev server proxies API requests to `http://localhost:3000`.
-
-### Build
-
-```bash
-# Frontend
-cd frontend
-npm run build
-
-# Backend
-cargo build --release
-```
-
 ## Deployment
 
 ### Rootless Deployment (Recommended)
@@ -381,32 +283,6 @@ server {
 }
 ```
 
-## Troubleshooting
-
-### Agent cannot connect to Hub
-
-1. Check the Hub URL is correct
-2. Check the agent token matches
-3. Check network and firewall settings
-4. Check Agent stdout/stderr output
-
-### File preview not working
-
-1. Check the file is inside an allowed root
-2. Check the file is not blocked by the denylist
-3. Check file size limits
-4. Check file permissions
-
-### Frontend not loading
-
-1. Confirm `npm run build` was run
-2. Confirm the Hub working directory contains `frontend/dist`
-3. Check Hub logs for errors
-
 ## License
 
-[To be determined]
-
-## Contributing
-
-Issues and pull requests are welcome.
+[MIT](LICENSE)
