@@ -1,15 +1,22 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use uuid::Uuid;
 
 use filebox_protocol::message::{AgentMessage, HubMessage};
 use filebox_protocol::resources::Capabilities;
 
 use crate::state::AppState;
+
+/// Per-write timeout for outbound WS frames. A half-open TCP can keep a
+/// `ws_sink.send()` future pending for the OS's TCP timeout (~hours on
+/// default Linux), stalling send_task forever. This bounds it so a dead
+/// agent is detected via write blockage within seconds.
+const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -22,6 +29,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut ws_sink, mut ws_stream) = socket.split();
 
     let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+    let abort_notify = Arc::new(Notify::new());
 
     // Step 1: Wait for Auth
     let auth_msg = tokio::time::timeout(Duration::from_secs(10), ws_stream.next()).await;
@@ -145,12 +153,18 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 since_heartbeat,
                 existing.status
             );
+            // Wake the old connection's read loop so it exits cleanly. Without
+            // this, the old read loop would block on ws_stream.next() for the
+            // OS's TCP timeout (~hours on default Linux), leaking an fd per
+            // reconnect on a flaky network.
+            existing.abort_notify.notify_one();
         }
 
         inner.agents.register(
             agent_id.clone(),
             name.clone(),
             tx.clone(),
+            abort_notify.clone(),
             resource_revision,
             roots.clone(),
             capabilities,
@@ -169,152 +183,182 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     }
 
-    // Spawn task to forward channel messages to WebSocket
+    // Spawn task to forward channel messages to WebSocket. Each write is
+    // bounded by WS_WRITE_TIMEOUT so a half-open agent TCP can't stall this
+    // task indefinitely.
     let send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let text = serde_json::to_string(&msg).unwrap();
-            if ws_sink.send(Message::Text(text.into())).await.is_err() {
-                break;
+            let send_result = tokio::time::timeout(
+                WS_WRITE_TIMEOUT,
+                ws_sink.send(Message::Text(text.into())),
+            )
+            .await;
+            match send_result {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => break,
+                Err(_) => {
+                    tracing::warn!(
+                        "WS write to agent timed out after {}s, closing connection",
+                        WS_WRITE_TIMEOUT.as_secs()
+                    );
+                    break;
+                }
             }
         }
     });
 
-    // Main message read loop
+    // Main message read loop. Two exits:
+    //   1. ws_stream ends (TCP drop / close frame) — normal cleanup path.
+    //   2. abort_notify fires — a newer connection for this agent_id has
+    //      replaced this entry, so this read loop must exit to release its
+    //      fd instead of waiting hours for OS TCP timeout.
     let agent_id_for_msgs = agent_id.clone();
-    while let Some(Ok(msg)) = ws_stream.next().await {
-        match msg {
-            Message::Text(text) => {
-                match serde_json::from_str::<AgentMessage>(&text) {
-                    Ok(AgentMessage::Pong) | Ok(AgentMessage::Heartbeat) => {
-                        let mut inner = state.inner.write().await;
-                        inner.agents.record_pong(&agent_id_for_msgs);
-                    }
-                    Ok(AgentMessage::ResourcesApplied {
-                        req_id,
-                        agent_id: aid,
-                        resource_revision,
-                    }) => {
-                        // Extract pending response first, then update registry
-                        let pending_resp = {
-                            let inner = state.inner.read().await;
-                            let mut pending = inner.pending_responses.write().await;
-                            pending.remove(&req_id)
-                        };
-                        if let Some(pending_resp) = pending_resp {
-                            let roots = pending_resp.desired_roots.unwrap_or_default();
-                            {
+    loop {
+        tokio::select! {
+            biased;  // check abort first so a re-register doesn't race
+            _ = abort_notify.notified() => {
+                tracing::info!(
+                    "Agent {} connection superseded by new connection, exiting",
+                    agent_id_for_msgs
+                );
+                break;
+            }
+            msg = ws_stream.next() => {
+                let Some(Ok(msg)) = msg else { break };
+                match msg {
+                    Message::Text(text) => {
+                        match serde_json::from_str::<AgentMessage>(&text) {
+                            Ok(AgentMessage::Pong) | Ok(AgentMessage::Heartbeat) => {
                                 let mut inner = state.inner.write().await;
-                                inner.agents.update_resources(&aid, resource_revision, roots);
+                                inner.agents.record_pong(&agent_id_for_msgs);
                             }
-                            let _ = pending_resp.tx
-                                .send(serde_json::json!({
-                                    "ok": true,
-                                    "state": "applied",
-                                    "resource_revision": resource_revision,
-                                }))
-                                .await;
+                            Ok(AgentMessage::ResourcesApplied {
+                                req_id,
+                                agent_id: aid,
+                                resource_revision,
+                            }) => {
+                                let pending_resp = {
+                                    let inner = state.inner.read().await;
+                                    let mut pending = inner.pending_responses.write().await;
+                                    pending.remove(&req_id)
+                                };
+                                if let Some(pending_resp) = pending_resp {
+                                    let roots = pending_resp.desired_roots.unwrap_or_default();
+                                    {
+                                        let mut inner = state.inner.write().await;
+                                        inner.agents.update_resources(&aid, resource_revision, roots);
+                                    }
+                                    let _ = pending_resp.tx
+                                        .send(serde_json::json!({
+                                            "ok": true,
+                                            "state": "applied",
+                                            "resource_revision": resource_revision,
+                                        }))
+                                        .await;
 
-                            state.emit_sse("resources_updated", serde_json::json!({
-                                "agent_id": aid,
-                                "resource_revision": resource_revision,
-                                "state": "applied",
-                            })).await;
-                        }
-                    }
-                    Ok(AgentMessage::ResourcesRejected {
-                        req_id,
-                        agent_id: aid,
-                        error,
-                        message,
-                        ..
-                    }) => {
-                        let pending_resp = {
-                            let inner = state.inner.read().await;
-                            let mut pending = inner.pending_responses.write().await;
-                            pending.remove(&req_id)
-                        };
-                        // Store config error on agent
-                        {
-                            let mut inner = state.inner.write().await;
-                            let err_msg = if message.is_empty() { error.clone() } else { message.clone() };
-                            inner.agents.set_config_error(&aid, err_msg);
-                        }
-                        if let Some(pending_resp) = pending_resp {
-                            let _ = pending_resp.tx
-                                .send(serde_json::json!({
-                                    "ok": false,
+                                    state.emit_sse("resources_updated", serde_json::json!({
+                                        "agent_id": aid,
+                                        "resource_revision": resource_revision,
+                                        "state": "applied",
+                                    })).await;
+                                }
+                            }
+                            Ok(AgentMessage::ResourcesRejected {
+                                req_id,
+                                agent_id: aid,
+                                error,
+                                message,
+                                ..
+                            }) => {
+                                let pending_resp = {
+                                    let inner = state.inner.read().await;
+                                    let mut pending = inner.pending_responses.write().await;
+                                    pending.remove(&req_id)
+                                };
+                                {
+                                    let mut inner = state.inner.write().await;
+                                    let err_msg = if message.is_empty() { error.clone() } else { message.clone() };
+                                    inner.agents.set_config_error(&aid, err_msg);
+                                }
+                                if let Some(pending_resp) = pending_resp {
+                                    let _ = pending_resp.tx
+                                        .send(serde_json::json!({
+                                            "ok": false,
+                                            "state": "rejected",
+                                            "error": error,
+                                            "message": message,
+                                        }))
+                                        .await;
+                                }
+
+                                state.emit_sse("resources_updated", serde_json::json!({
+                                    "agent_id": aid,
                                     "state": "rejected",
-                                    "error": error,
+                                })).await;
+                            }
+                            Ok(AgentMessage::ResourcesUpdated {
+                                agent_id: aid,
+                                resource_revision,
+                                roots,
+                            }) => {
+                                {
+                                    let mut inner = state.inner.write().await;
+                                    inner
+                                        .agents
+                                        .update_resources(&aid, resource_revision, roots);
+                                }
+                                state.emit_sse("resources_updated", serde_json::json!({
+                                    "agent_id": aid,
+                                    "resource_revision": resource_revision,
+                                    "state": "applied",
+                                })).await;
+                            }
+                            Ok(AgentMessage::FsListResponse { req_id, .. })
+                            | Ok(AgentMessage::FsStatResponse { req_id, .. })
+                            | Ok(AgentMessage::FileChunk { req_id, .. })
+                            | Ok(AgentMessage::SysStatsResponse { req_id, .. }) => {
+                                let pending_resp = {
+                                    let inner = state.inner.read().await;
+                                    let mut pending = inner.pending_responses.write().await;
+                                    pending.remove(&req_id)
+                                };
+                                if let Some(pending_resp) = pending_resp {
+                                    let parsed: serde_json::Value =
+                                        serde_json::from_str(&text).unwrap_or_default();
+                                    let _ = pending_resp.tx.send(parsed).await;
+                                }
+                            }
+                            Ok(AgentMessage::Progress {
+                                req_id,
+                                phase,
+                                processed,
+                                total,
+                                message,
+                            }) => {
+                                state.emit_sse("progress", serde_json::json!({
+                                    "req_id": req_id,
+                                    "phase": phase,
+                                    "processed": processed,
+                                    "total": total,
                                     "message": message,
-                                }))
-                                .await;
-                        }
-
-                        state.emit_sse("resources_updated", serde_json::json!({
-                            "agent_id": aid,
-                            "state": "rejected",
-                        })).await;
-                    }
-                    Ok(AgentMessage::ResourcesUpdated {
-                        agent_id: aid,
-                        resource_revision,
-                        roots,
-                    }) => {
-                        {
-                            let mut inner = state.inner.write().await;
-                            inner
-                                .agents
-                                .update_resources(&aid, resource_revision, roots);
-                        }
-                        state.emit_sse("resources_updated", serde_json::json!({
-                            "agent_id": aid,
-                            "resource_revision": resource_revision,
-                            "state": "applied",
-                        })).await;
-                    }
-                    Ok(AgentMessage::FsListResponse { req_id, .. })
-                    | Ok(AgentMessage::FsStatResponse { req_id, .. })
-                    | Ok(AgentMessage::FileChunk { req_id, .. })
-                    | Ok(AgentMessage::SysStatsResponse { req_id, .. }) => {
-                        let pending_resp = {
-                            let inner = state.inner.read().await;
-                            let mut pending = inner.pending_responses.write().await;
-                            pending.remove(&req_id)
-                        };
-                        if let Some(pending_resp) = pending_resp {
-                            let parsed: serde_json::Value =
-                                serde_json::from_str(&text).unwrap_or_default();
-                            let _ = pending_resp.tx.send(parsed).await;
+                                })).await;
+                            }
+                            _ => {
+                                tracing::debug!("Unknown agent message: {}", text);
+                            }
                         }
                     }
-                    Ok(AgentMessage::Progress {
-                        req_id,
-                        phase,
-                        processed,
-                        total,
-                        message,
-                    }) => {
-                        state.emit_sse("progress", serde_json::json!({
-                            "req_id": req_id,
-                            "phase": phase,
-                            "processed": processed,
-                            "total": total,
-                            "message": message,
-                        })).await;
+                    Message::Ping(_data) => {
+                        let inner = state.inner.read().await;
+                        if let Some(agent) = inner.agents.get(&agent_id_for_msgs) {
+                            let _ = agent.sender.send(HubMessage::Ping);
+                        }
                     }
-                    _ => {
-                        tracing::debug!("Unknown agent message: {}", text);
-                    }
+                    Message::Close(_) => break,
+                    _ => {}
                 }
             }
-            Message::Ping(_data) => {
-                let inner = state.inner.read().await;
-                if let Some(agent) = inner.agents.get(&agent_id_for_msgs) {
-                    let _ = agent.sender.send(HubMessage::Ping);
-                }
-            }
-            Message::Close(_) => break,
-            _ => {}
         }
     }
 

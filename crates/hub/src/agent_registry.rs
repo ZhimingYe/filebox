@@ -1,7 +1,8 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 use filebox_protocol::resources::{
     Capabilities, DesiredResources, ResourceRevision, RootConfig, RootInfo,
@@ -19,6 +20,12 @@ pub struct AgentConnection {
     pub agent_id: String,
     pub name: String,
     pub sender: mpsc::UnboundedSender<HubMessage>,
+    /// One-shot signal used to tell this connection's read loop to exit
+    /// when a newer connection for the same agent_id replaces it. Without
+    /// this, the old read loop would block on `ws_stream.next()` for the
+    /// OS's TCP timeout (~hours on default Linux) — leaking fds on flaky
+    /// networks with frequent reconnects.
+    pub abort_notify: Arc<Notify>,
     pub status: AgentStatus,
     pub last_seen: Instant,
     pub last_pong: Option<Instant>,
@@ -113,6 +120,7 @@ impl AgentRegistry {
         agent_id: String,
         name: String,
         sender: mpsc::UnboundedSender<HubMessage>,
+        abort_notify: Arc<Notify>,
         resource_revision: u64,
         roots: Vec<RootConfig>,
         capabilities: Capabilities,
@@ -127,6 +135,7 @@ impl AgentRegistry {
             agent_id: agent_id.clone(),
             name,
             sender,
+            abort_notify,
             status: AgentStatus::Online,
             last_seen: now,
             last_pong: None,
@@ -142,6 +151,18 @@ impl AgentRegistry {
         };
 
         self.agents.insert(agent_id, agent);
+    }
+
+    /// If there's a live entry for `agent_id`, signal its read loop to exit.
+    /// Used by the new connection's setup to abort a stuck old read loop
+    /// that's blocked on `ws_stream.next()` waiting for a TCP timeout.
+    pub fn notify_old_connection_abort(&self, agent_id: &str) -> bool {
+        if let Some(agent) = self.agents.get(agent_id) {
+            agent.abort_notify.notify_one();
+            true
+        } else {
+            false
+        }
     }
 
     /// Mark an agent offline, but only if the registry entry still belongs
@@ -274,10 +295,12 @@ mod tests {
 
     fn register_simple(reg: &mut AgentRegistry, id: &str) -> mpsc::UnboundedSender<HubMessage> {
         let tx = make_sender();
+        let notify = Arc::new(Notify::new());
         reg.register(
             id.to_string(),
             format!("agent-{}", id),
             tx.clone(),
+            notify,
             0,
             vec![],
             Capabilities::default(),
@@ -317,6 +340,7 @@ mod tests {
             "a1".to_string(),
             "new-name".to_string(),
             make_sender(),
+            Arc::new(Notify::new()),
             5,
             vec![],
             Capabilities::default(),
@@ -361,10 +385,12 @@ mod tests {
 
         // Simulate reconnect: same agent_id, fresh sender
         let new_tx = make_sender();
+        let new_notify = Arc::new(Notify::new());
         reg.register(
             "a1".to_string(),
             "reconnected".to_string(),
             new_tx,
+            new_notify,
             5,
             vec![],
             Capabilities::default(),
@@ -381,6 +407,48 @@ mod tests {
         );
         assert_eq!(agent.name, "reconnected");
         assert_eq!(agent.resource_revision, 5);
+    }
+
+    #[tokio::test]
+    async fn notify_old_connection_abort_wakes_waiters_before_replacement() {
+        // When a new connection registers for an agent_id that already has a
+        // live entry, the hub calls notify_old_connection_abort() to make
+        // the old read loop exit. Verify the notify actually fires.
+        let mut reg = AgentRegistry::new();
+        let old_notify = Arc::new(Notify::new());
+        reg.register(
+            "a1".to_string(),
+            "first".to_string(),
+            make_sender(),
+            old_notify.clone(),
+            0,
+            vec![],
+            Capabilities::default(),
+        );
+
+        // Spawn a task that waits on the old notify (simulating the old
+        // handle_socket's read-loop select! arm).
+        let waiter = old_notify.clone();
+        let task = tokio::spawn(async move {
+            waiter.notified().await;
+        });
+
+        // Yield once to let the task reach notified().
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        assert!(
+            reg.notify_old_connection_abort("a1"),
+            "must report true when an entry exists"
+        );
+
+        // The waiting task should complete shortly.
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .expect("notified() must resolve after notify_old_connection_abort")
+            .expect("task must not panic");
+
+        // Unknown agent returns false (no-op).
+        assert!(!reg.notify_old_connection_abort("ghost"));
     }
 
     #[test]
@@ -608,6 +676,7 @@ mod tests {
             "a1".to_string(),
             "test".to_string(),
             make_sender(),
+            Arc::new(Notify::new()),
             2,
             vec![
                 RootConfig {
@@ -639,6 +708,7 @@ mod tests {
             "a1".to_string(),
             "test".to_string(),
             make_sender(),
+            Arc::new(Notify::new()),
             7,
             vec![RootConfig {
                 name: "x".to_string(),
@@ -682,6 +752,7 @@ mod tests {
             "a1".to_string(),
             "test".to_string(),
             tx,
+            Arc::new(Notify::new()),
             0,
             vec![],
             Capabilities::default(),
