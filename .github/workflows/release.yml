@@ -72,15 +72,18 @@ jobs:
       - name: Verify static linking
         run: |
           set -e
-          file target/${{ env.TARGET }}/release/hub
-          file target/${{ env.TARGET }}/release/agent
-          # ldd returns non-zero + "not a dynamic executable" for static bins
-          if ldd target/${{ env.TARGET }}/release/hub >/dev/null 2>&1; then
-            echo "::error::hub is dynamically linked"; exit 1
-          fi
-          if ldd target/${{ env.TARGET }}/release/agent >/dev/null 2>&1; then
-            echo "::error::agent is dynamically linked"; exit 1
-          fi
+          for bin in hub agent; do
+            out=$(file target/${{ env.TARGET }}/release/$bin)
+            echo "$out"
+            # file reports "statically linked" for static ELF bins (both
+            # glibc-static and musl-static). ldd is unreliable for musl-static
+            # on Ubuntu runners (can return 0 even for static binaries), so
+            # trust file output instead.
+            if ! echo "$out" | grep -q "statically linked"; then
+              echo "::error::$bin is not statically linked"
+              exit 1
+            fi
+          done
           echo "Both binaries are statically linked."
 
       - name: Stage hub package
