@@ -15,7 +15,7 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-INSTALL_DIR="$HOME/filebox-agent"
+INSTALL_DIR="${FILEBOX_INSTALL_DIR:-$HOME/filebox-agent}"
 CONFIG_FILE="$INSTALL_DIR/agent.toml"
 DATA_DIR="$INSTALL_DIR/data"
 
@@ -30,6 +30,13 @@ confirm() {
         [yY][eE][sS]|[yY]) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+check_dependencies() {
+    info "Checking dependencies..."
+    command -v cargo &>/dev/null \
+        || error "Missing: Rust (cargo) — install from https://rustup.rs"
+    success "All dependencies satisfied"
 }
 
 collect_config() {
@@ -82,77 +89,19 @@ name = "${agent_name}"
 data_dir = "${DATA_DIR}"
 EOF
 
+    # Restrict permissions: agent.toml contains the agent token
+    chmod 600 "$CONFIG_FILE"
+
     success "Config generated: $CONFIG_FILE"
 }
 
 get_binary() {
-    info "Getting Agent binary..."
-
-    echo ""
-    echo "  Choose install method:"
-    echo "  1) Download prebuilt from Hub (recommended)"
-    echo "  2) Build locally (requires Rust toolchain)"
-    echo ""
-    read -rp "Select [1]: " choice
-    choice=${choice:-1}
-
-    case "$choice" in
-        1) download_binary ;;
-        2) build_binary ;;
-        *) error "Invalid choice" ;;
-    esac
-}
-
-download_binary() {
-    # Check download tools
-    if ! command -v curl &>/dev/null && ! command -v wget &>/dev/null; then
-        error "Need curl or wget to download. Install one and retry."
-    fi
-
-    local arch
-    arch=$(uname -m)
-    case "$arch" in
-        x86_64)  arch="x86_64" ;;
-        aarch64) arch="aarch64" ;;
-        arm64)   arch="aarch64" ;;  # macOS Apple Silicon
-        *)       error "Unsupported architecture: $arch" ;;
-    esac
-
-    local os
-    case "$(uname -s)" in
-        Linux*)  os="unknown-linux-gnu" ;;
-        Darwin*) os="apple-darwin" ;;
-        *)       error "Unsupported OS: $(uname -s)" ;;
-    esac
-
-    local url="${hub_url}/downloads/agent-${arch}-${os}"
-    local temp_file
-    temp_file=$(mktemp /tmp/filebox-agent-XXXXXX)
-
-    info "Downloading: $url"
-    if command -v curl &>/dev/null; then
-        curl -fsSL "$url" -o "$temp_file" || { rm -f "$temp_file"; error "Download failed (curl)"; }
-    else
-        wget -q "$url" -O "$temp_file" || { rm -f "$temp_file"; error "Download failed (wget)"; }
-    fi
-
-    # Basic sanity check — file should be non-empty and executable-looking
-    if [[ ! -s "$temp_file" ]]; then
-        rm -f "$temp_file"
-        error "Downloaded file is empty. Check the Hub URL and try again."
-    fi
-
-    chmod +x "$temp_file"
-    mv "$temp_file" "$INSTALL_DIR/agent"
-    success "Download complete"
+    build_binary
 }
 
 build_binary() {
-    command -v cargo &>/dev/null || error "Need Rust toolchain (cargo). Install from https://rustup.rs"
-
-    cd "$PROJECT_DIR"
-
     info "Compiling agent (may take a few minutes)..."
+    cd "$PROJECT_DIR"
     cargo build --release --bin agent || error "Cargo build failed"
     [[ -f "$PROJECT_DIR/target/release/agent" ]] || error "Agent binary not found after build"
 
@@ -203,11 +152,18 @@ main() {
     echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
     echo ""
 
+    # Refuse if install dir would be the same as the source dir
+    if [[ "$INSTALL_DIR" == "$PROJECT_DIR" ]]; then
+        error "INSTALL_DIR ($INSTALL_DIR) is the same as the source directory ($PROJECT_DIR).
+Set FILEBOX_INSTALL_DIR to a different path, or clone the source elsewhere."
+    fi
+
     if [[ -d "$INSTALL_DIR" ]]; then
         warn "Existing Filebox Agent installation detected at $INSTALL_DIR"
         confirm "Overwrite?" || error "Cancelled"
     fi
 
+    check_dependencies
     collect_config
     generate_config
     get_binary

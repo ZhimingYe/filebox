@@ -15,7 +15,7 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-INSTALL_DIR="$HOME/filebox"
+INSTALL_DIR="${FILEBOX_INSTALL_DIR:-$HOME/.local/share/filebox}"
 CONFIG_DIR="$INSTALL_DIR/config"
 LOG_DIR="$INSTALL_DIR/logs"
 FRONTEND_DIR="$INSTALL_DIR/frontend"
@@ -171,6 +171,9 @@ EOF
             || error "Generated hub.json is not valid JSON"
     fi
 
+    # Restrict permissions: hub.json contains password and token hashes
+    chmod 600 "$CONFIG_DIR/hub.json"
+
     success "Config generated: $CONFIG_DIR/hub.json"
 }
 
@@ -196,8 +199,8 @@ build_project() {
 install_files() {
     info "Installing to $INSTALL_DIR..."
 
-    # Clean old frontend if overwriting
-    if [[ -d "$FRONTEND_DIR/dist" ]]; then
+    # Clean old frontend if overwriting (must not be the source we're about to copy from)
+    if [[ -d "$FRONTEND_DIR/dist" ]] && [[ "$FRONTEND_DIR" != "$PROJECT_DIR/frontend" ]]; then
         rm -rf "$FRONTEND_DIR/dist"
     fi
 
@@ -206,12 +209,19 @@ install_files() {
     cp "$PROJECT_DIR/target/release/hub" "$INSTALL_DIR/bin/hub"
     chmod +x "$INSTALL_DIR/bin/hub"
 
-    cp -r "$PROJECT_DIR/frontend/dist" "$FRONTEND_DIR/"
+    # Copy frontend. Use source's basename to detect self-copy defensively.
+    local src_dist="$PROJECT_DIR/frontend/dist"
+    local dest_dist="$FRONTEND_DIR/dist"
+    if [[ "$src_dist" == "$dest_dist" ]]; then
+        error "Refusing to copy frontend/dist onto itself (source dir == install dir). Set FILEBOX_INSTALL_DIR to a different path."
+    fi
+    cp -r "$src_dist" "$FRONTEND_DIR/"
 
     # Verify install
     [[ -f "$INSTALL_DIR/bin/hub" ]] || error "Binary not installed correctly"
     [[ -f "$FRONTEND_DIR/dist/index.html" ]] || error "Frontend not installed correctly"
 
+    info "Frontend path: $FRONTEND_DIR/dist"
     success "Files installed"
 }
 
@@ -221,17 +231,25 @@ print_summary() {
     echo -e "${GREEN}  Filebox Hub installation complete!${NC}"
     echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"
     echo ""
-    echo "  Install dir: ${INSTALL_DIR}"
-    echo "  Config file: ${CONFIG_DIR}/hub.json"
+    echo "  Install dir:  ${INSTALL_DIR}"
+    echo "  Binary:       ${INSTALL_DIR}/bin/hub"
+    echo "  Frontend:     ${FRONTEND_DIR}/dist"
+    echo "  Config file:  ${CONFIG_DIR}/hub.json"
+    echo "  Logs dir:     ${LOG_DIR}"
     echo ""
-    echo "  Admin user:  ${admin_user}"
-    echo "  Agent token: ${agent_token}"
+    echo "  Admin user:   ${admin_user}"
+    echo "  Agent token:  ${agent_token}"
     echo ""
     echo "  To run:"
     echo "    ${INSTALL_DIR}/bin/hub"
     echo ""
     echo "  Background:"
     echo "    nohup ${INSTALL_DIR}/bin/hub > ${LOG_DIR}/hub.log 2>&1 &"
+    echo ""
+    echo "  Env vars (optional):"
+    echo "    FILEBOX_CONFIG_PATH=<path>     Override config file location"
+    echo "    FILEBOX_FRONTEND_DIR=<path>    Override frontend/dist location"
+    echo "    FILEBOX_LISTEN_ADDR=<addr>     Override listen address"
     echo ""
     echo -e "${YELLOW}  Save the agent token -- you will need it when setting up Agents.${NC}"
     echo ""
@@ -243,6 +261,14 @@ main() {
     echo -e "${BLUE}║  Filebox Hub - Rootless Install Script ║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
     echo ""
+
+    # Refuse if install dir would be the same as the source dir (causes cp self-copy errors)
+    if [[ "$INSTALL_DIR" == "$PROJECT_DIR" ]]; then
+        error "INSTALL_DIR ($INSTALL_DIR) is the same as the source directory ($PROJECT_DIR).
+This causes file copy failures. Pick a different install location:
+    FILEBOX_INSTALL_DIR=\$HOME/.local/share/filebox ./scripts/serve_at_server.sh
+Or clone the source elsewhere before running this script."
+    fi
 
     if [[ -d "$INSTALL_DIR" ]]; then
         warn "Existing Filebox Hub installation detected at $INSTALL_DIR"

@@ -34,7 +34,7 @@ The script walks you through:
 - Hub server URL
 - Agent token
 - Agent name
-- Install method (download or build)
+- Builds the Agent binary locally (Rust toolchain required)
 
 ## System Requirements
 
@@ -47,14 +47,13 @@ The script walks you through:
 
 ### Client
 - Linux (x86_64 or aarch64)
-- No extra dependencies (with prebuilt binary)
-- Or same toolchain as server (for local build)
+- Rust >= 1.75 (Agent is built locally on each client machine)
 
 ## Install Locations
 
 ```
 Server:
-~/filebox/
+~/.local/share/filebox/
 ├── bin/hub              # Hub binary
 ├── frontend/dist/       # Frontend static files
 ├── config/hub.json      # Configuration
@@ -67,13 +66,17 @@ Client:
 └── data/                # Persistent data
 ```
 
+Both scripts honor `FILEBOX_INSTALL_DIR` to override the install location. The
+install dir must NOT be the same as the source dir you cloned the repo into —
+the scripts will refuse with an error if so.
+
 ## Running
 
 After installation, start services manually:
 
 ```bash
 # Hub (auto-discovers config/hub.json next to the binary)
-~/filebox/bin/hub
+~/.local/share/filebox/bin/hub
 
 # Agent
 ~/filebox-agent/agent
@@ -83,7 +86,7 @@ Run in background:
 
 ```bash
 # Hub
-nohup ~/filebox/bin/hub > ~/filebox/logs/hub.log 2>&1 &
+nohup ~/.local/share/filebox/bin/hub > ~/.local/share/filebox/logs/hub.log 2>&1 &
 
 # Agent
 nohup ~/filebox-agent/agent &
@@ -92,9 +95,22 @@ nohup ~/filebox-agent/agent &
 Capture logs to a file:
 
 ```bash
-~/filebox/bin/hub > ~/filebox/logs/hub.log 2>&1 &
-tail -f ~/filebox/logs/hub.log
+~/.local/share/filebox/bin/hub > ~/.local/share/filebox/logs/hub.log 2>&1 &
+tail -f ~/.local/share/filebox/logs/hub.log
 ```
+
+## Environment Variables
+
+| Variable | Scope | Purpose |
+|----------|-------|---------|
+| `FILEBOX_INSTALL_DIR` | Install scripts | Override install location (default: `~/.local/share/filebox` server, `~/filebox-agent` client) |
+| `FILEBOX_CONFIG_PATH` | Hub | Override config file location |
+| `FILEBOX_FRONTEND_DIR` | Hub | Override `frontend/dist` location (useful if frontend lives elsewhere) |
+| `FILEBOX_LISTEN_ADDR` | Hub | Override listen address (e.g. `0.0.0.0:3000`) |
+| `FILEBOX_AGENT_HUB` | Agent | Override `hub` from agent.toml |
+| `FILEBOX_AGENT_TOKEN` | Agent | Override `token` from agent.toml |
+| `FILEBOX_AGENT_NAME` | Agent | Override `name` from agent.toml |
+| `FILEBOX_AGENT_DATA_DIR` | Agent | Override `data_dir` from agent.toml |
 
 ## Configuration Files
 
@@ -129,7 +145,7 @@ Environment variable overrides:
 
 ```bash
 # Server
-rm -rf ~/filebox
+rm -rf ~/.local/share/filebox
 
 # Client
 rm -rf ~/filebox-agent

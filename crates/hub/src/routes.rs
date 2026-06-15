@@ -52,19 +52,36 @@ pub fn create_router(state: AppState) -> Router {
             require_session,
         ));
 
-    // Resolve frontend/dist by walking up from the binary location.
-    // Covers: dev (target/release/hub → project root), installed (bin/hub → install dir),
-    // and running from any working directory.
-    let frontend_path = find_frontend_dist().unwrap_or_else(|| std::path::PathBuf::from("frontend/dist"));
+    // Resolve frontend/dist.
+    // Order: FILEBOX_FRONTEND_DIR env → cwd → walk up from binary location.
+    let frontend_path = find_frontend_dist().unwrap_or_else(|| {
+        eprintln!("[hub] WARNING: frontend/dist not found");
+        eprintln!("[hub] Set FILEBOX_FRONTEND_DIR, run from a directory containing frontend/dist,");
+        eprintln!("[hub] or place frontend/dist as a sibling of the binary's parent dir.");
+        std::path::PathBuf::from("frontend/dist")
+    });
+    eprintln!("[hub] frontend: {}", frontend_path.display());
 
     fn find_frontend_dist() -> Option<std::path::PathBuf> {
-        // 1. Check cwd first (common dev case: run from project root)
+        // 1. Explicit env override (highest priority)
+        if let Ok(p) = std::env::var("FILEBOX_FRONTEND_DIR") {
+            let path = std::path::PathBuf::from(&p);
+            if path.exists() {
+                return Some(path);
+            }
+            eprintln!(
+                "[hub] WARNING: FILEBOX_FRONTEND_DIR={} does not exist, ignoring",
+                p
+            );
+        }
+
+        // 2. Check cwd first (common dev case: run from project root)
         let cwd_candidate = std::path::PathBuf::from("frontend/dist");
         if cwd_candidate.exists() {
             return Some(cwd_candidate);
         }
 
-        // 2. Walk up from binary location, up to 5 levels
+        // 3. Walk up from binary location, up to 5 levels
         let mut dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
         for _ in 0..5 {
             let candidate = dir.join("frontend/dist");
