@@ -47,7 +47,12 @@ const DENIED_DIRS: &[&str] = &[
 ];
 
 pub fn is_denied(relative_path: &str) -> bool {
-    let path = Path::new(relative_path);
+    // Lowercase the path for case-insensitive matching. Case-insensitive
+    // filesystems (macOS, Windows) treat .AWS/credentials the same as
+    // .aws/credentials, so the denylist must too. Original case is not
+    // needed for matching decisions.
+    let relative_path: String = relative_path.to_lowercase();
+    let path = Path::new(&relative_path);
 
     // Check each component of the path
     let mut prev_name: Option<String> = None;
@@ -175,5 +180,19 @@ mod tests {
         assert!(!is_denied(".config/gh/hosts.yml"));
         assert!(!is_denied(".cargo-bad/config.toml"));
         assert!(!is_denied("my.cargo/config.toml"));
+        // Case-insensitive matching (macOS/Windows filesystems treat these the same)
+        assert!(is_denied(".GIT/config"));
+        assert!(is_denied(".SSH/id_rsa"));
+        assert!(is_denied(".ENV"));
+        assert!(is_denied("SECRET.PEM"));
+        assert!(is_denied("ID_RSA"));
+        assert!(is_denied(".AWS/credentials"));
+        assert!(is_denied(".Config/GCloud/application_default_credentials.json"));
+        assert!(is_denied("Data.SQLITE"));
+        // HTML files of any case are NOT denied (preview feature must work)
+        assert!(!is_denied("index.html"));
+        assert!(!is_denied("INDEX.HTML"));
+        assert!(!is_denied("Page.Html"));
+        assert!(!is_denied(".hidden-page.html"));
     }
 }

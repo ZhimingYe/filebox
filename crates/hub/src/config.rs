@@ -45,13 +45,24 @@ impl HubConfig {
 
         let path = PathBuf::from(&config_path);
         if !path.exists() {
-            eprintln!("[hub] WARNING: config not found: {}", config_path);
-            eprintln!("[hub] WARNING: using dev defaults (user: admin, password: dev-password) — NOT for production");
-            eprintln!("[hub] WARNING: create config/hub.json or set FILEBOX_CONFIG_PATH for production use");
+            let dev_mode = std::env::var("FILEBOX_DEV_MODE")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+
+            if !dev_mode {
+                eprintln!("[hub] FATAL: config not found: {}", config_path);
+                eprintln!("[hub] Create config/hub.json (use scripts/serve_at_server.sh) or set FILEBOX_CONFIG_PATH.");
+                eprintln!("[hub] For local development only, set FILEBOX_DEV_MODE=1 to use insecure defaults bound to 127.0.0.1.");
+                std::process::exit(1);
+            }
+
+            eprintln!("[hub] WARNING: FILEBOX_DEV_MODE=1 — using insecure dev defaults");
+            eprintln!("[hub] WARNING: binding to 127.0.0.1 only — NOT for production");
+            eprintln!("[hub] WARNING: dev credentials: admin / dev-password, agent token: dev-token");
 
             return Self {
                 listen_addr: std::env::var("FILEBOX_LISTEN_ADDR")
-                    .unwrap_or_else(|_| "0.0.0.0:3000".to_string())
+                    .unwrap_or_else(|_| "127.0.0.1:3000".to_string())
                     .parse()
                     .expect("invalid FILEBOX_LISTEN_ADDR"),
                 agent_token_hash: bcrypt::hash("dev-token", 10).unwrap(),

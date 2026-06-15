@@ -127,9 +127,24 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     {
         let mut inner = state.inner.write().await;
 
-        // If this agent_id already exists (reconnect), unregister old connection first
-        if inner.agents.get(&agent_id).is_some() {
-            tracing::info!("Replacing existing connection for agent {}", agent_id);
+        // If this agent_id already has a live connection, this is suspicious —
+        // either the real agent is reconnecting after a brief network blip, or
+        // someone with the shared token is trying to impersonate it. We allow
+        // replacement (so real reconnects keep working) but log a warning so
+        // operators can spot impersonation patterns.
+        if let Some(existing) = inner.agents.get(&agent_id) {
+            let since_heartbeat = existing.last_seen.elapsed().as_secs();
+            tracing::warn!(
+                "Agent {} re-registering while existing connection is {} (last heartbeat {}s ago, status={:?})",
+                agent_id,
+                if existing.status == crate::agent_registry::AgentStatus::Online {
+                    "Online"
+                } else {
+                    "Offline"
+                },
+                since_heartbeat,
+                existing.status
+            );
         }
 
         inner.agents.register(

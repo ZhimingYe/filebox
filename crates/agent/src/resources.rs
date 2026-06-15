@@ -10,8 +10,8 @@ pub struct ResourceManager {
 }
 
 impl ResourceManager {
-    pub fn new(data_dir: PathBuf, agent_id: String) -> Self {
-        let config = PersistedConfig::load_or_create(&data_dir, agent_id);
+    pub fn new(data_dir: PathBuf) -> Self {
+        let config = PersistedConfig::load_or_create(&data_dir);
         Self { config, data_dir }
     }
 

@@ -41,21 +41,25 @@ impl AgentConfig {
             }
         };
 
-        // TOML values can be overridden by env vars
-        let hub_url = std::env::var("FILEBOX_HUB_URL")
+        // TOML values can be overridden by env vars.
+        // FILEBOX_AGENT_HUB is the documented name; FILEBOX_HUB_URL kept as a legacy alias.
+        let hub_url = std::env::var("FILEBOX_AGENT_HUB")
             .ok()
+            .or_else(|| std::env::var("FILEBOX_HUB_URL").ok())
             .or(toml_config.hub)
             .unwrap_or_else(|| {
-                tracing::warn!("No hub URL configured, using ws://localhost:3000");
-                "ws://localhost:3000".to_string()
+                eprintln!("[agent] FATAL: no hub URL configured.");
+                eprintln!("[agent] Set 'hub' in agent.toml or FILEBOX_AGENT_HUB env var.");
+                std::process::exit(1);
             });
 
         let token = std::env::var("FILEBOX_AGENT_TOKEN")
             .ok()
             .or(toml_config.token)
             .unwrap_or_else(|| {
-                tracing::warn!("No agent token configured, using dev-token");
-                "dev-token".to_string()
+                eprintln!("[agent] FATAL: no agent token configured.");
+                eprintln!("[agent] Set 'token' in agent.toml or FILEBOX_AGENT_TOKEN env var.");
+                std::process::exit(1);
             });
 
         let agent_name = std::env::var("FILEBOX_AGENT_NAME")

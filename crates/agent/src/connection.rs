@@ -20,7 +20,7 @@ pub async fn run_connection_loop(config: &AgentConfig) {
     }
 
     // Load or initialize resource manager (persists agent_id and resources)
-    let mut resource_mgr = ResourceManager::new(config.data_dir.clone(), config.agent_name.clone());
+    let mut resource_mgr = ResourceManager::new(config.data_dir.clone());
     let stable_agent_id = resource_mgr.agent_id().to_string();
 
     tracing::info!(
