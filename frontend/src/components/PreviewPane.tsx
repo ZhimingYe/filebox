@@ -546,7 +546,6 @@ function PdfPreview({ url }: { url: string }) {
       <iframe
         ref={iframeRef}
         src={url}
-        sandbox="allow-same-origin"
         style={{ ...styles.pdf, display: error ? 'none' : 'block' }}
         title="PDF Preview"
         onLoad={handleLoad}
