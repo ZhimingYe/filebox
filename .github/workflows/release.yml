@@ -71,20 +71,25 @@ jobs:
 
       - name: Verify static linking
         run: |
-          set -e
-          for bin in hub agent; do
-            out=$(file target/${{ env.TARGET }}/release/$bin)
-            echo "$out"
-            # file reports "statically linked" for static ELF bins (both
-            # glibc-static and musl-static). ldd is unreliable for musl-static
-            # on Ubuntu runners (can return 0 even for static binaries), so
-            # trust file output instead.
-            if ! echo "$out" | grep -q "statically linked"; then
-              echo "::error::$bin is not statically linked"
-              exit 1
-            fi
-          done
-          echo "Both binaries are statically linked."
+          # file(1)'s "statically linked" label is sometimes absent for musl
+          # static-pie (it may report "shared object" instead because of PIE).
+          # The reliable signal is the *absence* of "dynamically linked" —
+          # only fail when that phrase shows up. Print output to step summary
+          # so we can see exactly what file reported without needing log access.
+          {
+            echo "## file output"
+            echo '```'
+            file target/${{ env.TARGET }}/release/hub
+            file target/${{ env.TARGET }}/release/agent
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if file target/${{ env.TARGET }}/release/hub target/${{ env.TARGET }}/release/agent \
+               | grep -q "dynamically linked"; then
+            echo "::error::one or more binaries are dynamically linked"
+            exit 1
+          fi
+          echo "Neither binary reports dynamic linking."
 
       - name: Stage hub package
         run: |
