@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -7,6 +10,7 @@ use filebox_protocol::resources::Capabilities;
 
 use crate::config::AgentConfig;
 use crate::resources::ResourceManager;
+use crate::sysinfo::StatsCache;
 
 /// Translate a user-facing hub URL (http/https/ws/wss) into a WebSocket URL
 /// ending in /ws/agent. Accepts the forms the install script and CLAUDE.md
@@ -27,6 +31,16 @@ fn build_ws_url(hub_url: &str) -> String {
     format!("{}{}/ws/agent", scheme, rest)
 }
 
+/// Stats cache TTL. Override with FILEBOX_AGENT_STATS_TTL_SECS for hosts with
+/// many processes (HPC: set to 30-60 to amortize the /proc sweep cost).
+fn stats_ttl() -> Duration {
+    let secs = std::env::var("FILEBOX_AGENT_STATS_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(15);
+    Duration::from_secs(secs.max(1))
+}
+
 pub async fn run_connection_loop(config: &AgentConfig) {
     let ws_url = build_ws_url(&config.hub_url);
     let mut backoff_secs = 1u64;
@@ -41,6 +55,10 @@ pub async fn run_connection_loop(config: &AgentConfig) {
     // Load or initialize resource manager (persists agent_id and resources)
     let mut resource_mgr = ResourceManager::new(config.data_dir.clone());
     let stable_agent_id = resource_mgr.agent_id().to_string();
+
+    // Stats cache lives across reconnects so a brief network blip doesn't
+    // throw away the cached System / fresh stats.
+    let stats_cache: Arc<StatsCache> = StatsCache::new(stats_ttl());
 
     tracing::info!(
         "Agent ID: {}, data dir: {:?}",
@@ -193,20 +211,30 @@ pub async fn run_connection_loop(config: &AgentConfig) {
                                         }
                                         Ok(HubMessage::FsListRequest { req_id, root, path, limit, cursor }) => {
                                             tracing::debug!("FS list: root={}, path={}", root, path);
-                                            let response = match crate::fs::list_directory(
-                                                resource_mgr.roots(), &root, &path, limit as usize, cursor.as_deref(),
-                                            ) {
-                                                Ok((items, next_cursor)) => AgentMessage::FsListResponse {
-                                                    req_id: req_id.clone(),
+                                            let roots_vec = resource_mgr.roots().to_vec();
+                                            let result = tokio::task::spawn_blocking(move || {
+                                                crate::fs::list_directory(
+                                                    &roots_vec, &root, &path, limit as usize, cursor.as_deref(),
+                                                )
+                                            }).await;
+                                            let response = match result {
+                                                Ok(Ok((items, next_cursor))) => AgentMessage::FsListResponse {
+                                                    req_id,
                                                     items,
                                                     next_cursor,
                                                     error: None,
                                                 },
-                                                Err(e) => AgentMessage::FsListResponse {
-                                                    req_id: req_id.clone(),
+                                                Ok(Err(e)) => AgentMessage::FsListResponse {
+                                                    req_id,
                                                     items: vec![],
                                                     next_cursor: None,
                                                     error: Some(e),
+                                                },
+                                                Err(join_err) => AgentMessage::FsListResponse {
+                                                    req_id,
+                                                    items: vec![],
+                                                    next_cursor: None,
+                                                    error: Some(format!("agent worker panicked: {}", join_err)),
                                                 },
                                             };
                                             let _ = write.send(Message::Text(
@@ -215,18 +243,20 @@ pub async fn run_connection_loop(config: &AgentConfig) {
                                         }
                                         Ok(HubMessage::FsStatRequest { req_id, root, path }) => {
                                             tracing::debug!("FS stat: root={}, path={}", root, path);
-                                            let response = match crate::fs::stat_file(
-                                                resource_mgr.roots(), &root, &path,
-                                            ) {
-                                                Ok(stat) => AgentMessage::FsStatResponse {
-                                                    req_id: req_id.clone(),
-                                                    stat: Some(stat),
-                                                    error: None,
+                                            let roots_vec = resource_mgr.roots().to_vec();
+                                            let result = tokio::task::spawn_blocking(move || {
+                                                crate::fs::stat_file(&roots_vec, &root, &path)
+                                            }).await;
+                                            let response = match result {
+                                                Ok(Ok(stat)) => AgentMessage::FsStatResponse {
+                                                    req_id, stat: Some(stat), error: None,
                                                 },
-                                                Err(e) => AgentMessage::FsStatResponse {
-                                                    req_id: req_id.clone(),
-                                                    stat: None,
-                                                    error: Some(e),
+                                                Ok(Err(e)) => AgentMessage::FsStatResponse {
+                                                    req_id, stat: None, error: Some(e),
+                                                },
+                                                Err(join_err) => AgentMessage::FsStatResponse {
+                                                    req_id, stat: None,
+                                                    error: Some(format!("agent worker panicked: {}", join_err)),
                                                 },
                                             };
                                             let _ = write.send(Message::Text(
@@ -235,22 +265,20 @@ pub async fn run_connection_loop(config: &AgentConfig) {
                                         }
                                         Ok(HubMessage::FileReadRequest { req_id, root, path, offset, length }) => {
                                             tracing::debug!("FS read: root={}, path={}, offset={}, len={:?}", root, path, offset, length);
-                                            let response = match crate::fs::read_file_range(
-                                                resource_mgr.roots(), &root, &path, offset, length,
-                                            ) {
-                                                Ok((data, done)) => AgentMessage::FileChunk {
-                                                    req_id: req_id.clone(),
-                                                    offset,
-                                                    data,
-                                                    done,
-                                                    error: None,
+                                            let roots_vec = resource_mgr.roots().to_vec();
+                                            let result = tokio::task::spawn_blocking(move || {
+                                                crate::fs::read_file_range(&roots_vec, &root, &path, offset, length)
+                                            }).await;
+                                            let response = match result {
+                                                Ok(Ok((data, done))) => AgentMessage::FileChunk {
+                                                    req_id, offset, data, done, error: None,
                                                 },
-                                                Err(e) => AgentMessage::FileChunk {
-                                                    req_id: req_id.clone(),
-                                                    offset: 0,
-                                                    data: vec![],
-                                                    done: true,
-                                                    error: Some(e),
+                                                Ok(Err(e)) => AgentMessage::FileChunk {
+                                                    req_id, offset: 0, data: vec![], done: true, error: Some(e),
+                                                },
+                                                Err(join_err) => AgentMessage::FileChunk {
+                                                    req_id, offset: 0, data: vec![], done: true,
+                                                    error: Some(format!("agent worker panicked: {}", join_err)),
                                                 },
                                             };
                                             let _ = write.send(Message::Text(
@@ -262,17 +290,9 @@ pub async fn run_connection_loop(config: &AgentConfig) {
                                         }
                                         Ok(HubMessage::SysStatsRequest { req_id }) => {
                                             tracing::debug!("Sys stats request");
-                                            let response = match crate::sysinfo::collect_stats() {
-                                                Ok(stats) => AgentMessage::SysStatsResponse {
-                                                    req_id: req_id.clone(),
-                                                    stats: Some(stats),
-                                                    error: None,
-                                                },
-                                                Err(e) => AgentMessage::SysStatsResponse {
-                                                    req_id: req_id.clone(),
-                                                    stats: None,
-                                                    error: Some(e),
-                                                },
+                                            let stats = stats_cache.get().await;
+                                            let response = AgentMessage::SysStatsResponse {
+                                                req_id, stats: Some(stats), error: None,
                                             };
                                             let _ = write.send(Message::Text(
                                                 serde_json::to_string(&response).unwrap().into(),
