@@ -1,0 +1,156 @@
+name: release
+
+# Triggered by scripts/release.sh pushing a v* tag.
+# Builds static musl binaries for x86_64 Linux and publishes a Release with
+# the hub and agent tarballs attached.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # required by softprops/action-gh-release to publish the release
+
+env:
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from tag
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: musl-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            musl-${{ runner.os }}-
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm install --no-fund --no-audit
+          npm run build
+          test -f dist/index.html || { echo "frontend build failed: dist/index.html missing"; exit 1; }
+
+      - name: Build hub and agent (static musl)
+        env:
+          # rusqlite-bundled compiles SQLite from C source; point cc at
+          # musl-gcc so the result is statically linked.
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --target ${{ env.TARGET }} -p filebox-hub -p filebox-agent
+
+      - name: Verify static linking
+        run: |
+          set -e
+          file target/${{ env.TARGET }}/release/hub
+          file target/${{ env.TARGET }}/release/agent
+          # ldd returns non-zero + "not a dynamic executable" for static bins
+          if ldd target/${{ env.TARGET }}/release/hub >/dev/null 2>&1; then
+            echo "::error::hub is dynamically linked"; exit 1
+          fi
+          if ldd target/${{ env.TARGET }}/release/agent >/dev/null 2>&1; then
+            echo "::error::agent is dynamically linked"; exit 1
+          fi
+          echo "Both binaries are statically linked."
+
+      - name: Stage hub package
+        run: |
+          set -e
+          V="${{ steps.ver.outputs.version }}"
+          STAGE="filebox-hub-${V}-x86_64-musl"
+          mkdir -p "$STAGE/bin" "$STAGE/frontend" "$STAGE/config"
+          cp target/${{ env.TARGET }}/release/hub "$STAGE/bin/hub"
+          cp -r frontend/dist "$STAGE/frontend/"
+
+          cat > "$STAGE/config/hub.json.example" <<'EOF'
+          {
+            "listen_addr": "0.0.0.0:3000",
+            "agent_token_hash": "REPLACE_WITH_BCRYPT_HASH_OF_AGENT_TOKEN",
+            "users": [
+              { "username": "admin", "password_hash": "REPLACE_WITH_BCRYPT_HASH_OF_PASSWORD" }
+            ]
+          }
+          EOF
+          sed -i 's/^          //' "$STAGE/config/hub.json.example"
+
+          cat > "$STAGE/README.md" <<'EOF'
+          # Filebox Hub
+
+          Pre-built static Linux x86_64 (musl) build.
+
+          Quick start with interactive config:
+              curl -fsSL https://raw.githubusercontent.com/ZhimingYe/filebox/main/scripts/install_hub.sh | bash
+          EOF
+          sed -i 's/^          //' "$STAGE/README.md"
+
+          tar -czf "$STAGE.tar.gz" "$STAGE"
+
+      - name: Stage agent package
+        run: |
+          set -e
+          V="${{ steps.ver.outputs.version }}"
+          STAGE="filebox-agent-${V}-x86_64-musl"
+          mkdir -p "$STAGE"
+          cp target/${{ env.TARGET }}/release/agent "$STAGE/agent"
+
+          cat > "$STAGE/agent.toml.example" <<'EOF'
+          hub = "https://your-hub.example.com"
+          token = "your-agent-token"
+          name = "Lab Server 1"
+          data_dir = "/var/lib/filebox"
+          EOF
+          sed -i 's/^          //' "$STAGE/agent.toml.example"
+
+          tar -czf "$STAGE.tar.gz" "$STAGE"
+
+      - name: Generate checksums
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          sha256sum \
+            filebox-hub-${V}-x86_64-musl.tar.gz \
+            filebox-agent-${V}-x86_64-musl.tar.gz \
+            > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            filebox-hub-${{ steps.ver.outputs.version }}-x86_64-musl.tar.gz
+            filebox-agent-${{ steps.ver.outputs.version }}-x86_64-musl.tar.gz
+            SHA256SUMS.txt
