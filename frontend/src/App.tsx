@@ -258,32 +258,16 @@ export default function App() {
             </div>
           ) : view === 'files' ? (
             isMobile ? (
-              // Mobile: show file list OR preview
-              showMobilePreview ? (
-                <div style={styles.mobilePreviewWrap}>
-                  <div style={styles.previewHeader}>
-                    <span style={styles.previewPath}>{preview!.path}</span>
-                    <div style={styles.previewActions}>
-                      <a
-                        href={fileRawUrl(selectedAgent.id, preview!.root, preview!.path)}
-                        download
-                        style={styles.headerLink}
-                        title="Download"
-                      >
-                        Download
-                      </a>
-                    </div>
-                  </div>
-                  <PreviewPane
-                    agentId={selectedAgent.id}
-                    root={preview!.root}
-                    path={preview!.path}
-                    entryType={preview!.entry.entry_type}
-                    denied={preview!.entry.denied}
-                  />
-                </div>
-              ) : (
-                <div style={styles.mobileFileWrap}>
+              // Mobile: FileBrowser stays mounted (just CSS-hidden) while
+              // preview is open, so its selectedRoot/currentPath/scroll state
+              // survives the round-trip. Unmounting it on every preview toggle
+              // was the reason "Back" returned to root instead of the dir the
+              // user was browsing.
+              <>
+                <div style={{
+                  ...styles.mobileFileWrap,
+                  display: showMobilePreview ? 'none' : 'flex',
+                }}>
                   <FileBrowser
                     agentId={selectedAgent.id}
                     roots={selectedAgent.roots}
@@ -291,7 +275,31 @@ export default function App() {
                     onEntriesChange={handleEntriesChange}
                   />
                 </div>
-              )
+                {showMobilePreview && (
+                  <div style={styles.mobilePreviewWrap}>
+                    <div style={styles.previewHeader}>
+                      <span style={styles.previewPath}>{preview!.path}</span>
+                      <div style={styles.previewActions}>
+                        <a
+                          href={fileRawUrl(selectedAgent.id, preview!.root, preview!.path)}
+                          download
+                          style={styles.headerLink}
+                          title="Download"
+                        >
+                          Download
+                        </a>
+                      </div>
+                    </div>
+                    <PreviewPane
+                      agentId={selectedAgent.id}
+                      root={preview!.root}
+                      path={preview!.path}
+                      entryType={preview!.entry.entry_type}
+                      denied={preview!.entry.denied}
+                    />
+                  </div>
+                )}
+              </>
             ) : (
               // Desktop: side-by-side split, resizable
               <div ref={splitContainerRef} style={styles.splitView}>
