@@ -206,126 +206,193 @@ pub async fn fs_stat_handler(
     }
 }
 
+// Hub-side accumulated body cap. Agent streams FileChunk in 4MB frames; we
+// gather them in memory before returning. This cap prevents a single huge
+// file from exhausting Hub memory under concurrent requests.
+const HUB_FILE_MAX: usize = 256 * 1024 * 1024;
+
 pub async fn file_raw_handler(
     State(state): State<AppState>,
     Query(params): Query<FileRawParams>,
     req: axum::extract::Request,
 ) -> Response {
-    let inner = state.inner.read().await;
-    let agent = match inner.agents.get(&params.agent_id) {
-        Some(a) => a,
-        None => {
-            return error_response(
+    // One-shot check that the agent is registered and online. We acquire
+    // and release the read guard here so the loop below doesn't hold it
+    // across awaits — that would block agent register/unregister for the
+    // whole multi-chunk transfer.
+    {
+        let inner = state.inner.read().await;
+        let agent = match inner.agents.get(&params.agent_id) {
+            Some(a) => a,
+            None => return error_response(
                 StatusCode::NOT_FOUND,
                 "backend_offline",
                 &format!("Agent {} not found or offline", params.agent_id),
                 true,
+            ),
+        };
+        if agent.status == crate::agent_registry::AgentStatus::Offline {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "backend_offline",
+                &format!("Agent {} is offline", params.agent_id),
+                true,
             );
         }
-    };
-
-    if agent.status == crate::agent_registry::AgentStatus::Offline {
-        return error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "backend_offline",
-            &format!("Agent {} is offline", params.agent_id),
-            true,
-        );
     }
 
     // Parse Range header
-    let (offset, length) = parse_range_header(req.headers().get(header::RANGE));
-
-    let req_id = format!("file_{}", Uuid::new_v4());
+    let (offset_start, length_opt) = parse_range_header(req.headers().get(header::RANGE));
     let file_path = params.path.clone();
 
-    let msg = HubMessage::FileReadRequest {
-        req_id: req_id.clone(),
-        root: params.root,
-        path: params.path,
-        offset,
-        length,
-    };
+    // Agent caps each FileChunk at 4MB (crates/agent/src/fs.rs). Loop here
+    // and re-request subsequent offsets until done so the browser gets the
+    // full file body, not just the first 4MB.
+    let mut accumulated: Vec<u8> = Vec::new();
+    let mut first_round = true;
 
-    let (resp_tx, mut resp_rx) = mpsc::channel(1);
-    {
-        let mut pending = inner.pending_responses.write().await;
-        pending.insert(req_id.clone(), PendingResponse {
-            tx: resp_tx,
-            desired_roots: None,
-        });
-    }
+    loop {
+        let current_offset = offset_start + accumulated.len() as u64;
+        // Only the first round honors the Range length; subsequent rounds
+        // read until the agent's own cap or EOF.
+        let current_length = if first_round { length_opt } else { None };
 
-    if !inner.agents.send_to_agent(&params.agent_id, msg) {
-        return error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "backend_offline",
-            "Failed to send request to agent",
-            true,
-        );
-    }
+        let req_id = format!("file_{}", Uuid::new_v4());
+        let msg = HubMessage::FileReadRequest {
+            req_id: req_id.clone(),
+            root: params.root.clone(),
+            path: params.path.clone(),
+            offset: current_offset,
+            length: current_length,
+        };
 
-    drop(inner);
+        let (resp_tx, mut resp_rx) = mpsc::channel(1);
+        let send_ok = {
+            let inner = state.inner.read().await;
+            let mut pending = inner.pending_responses.write().await;
+            pending.insert(req_id.clone(), PendingResponse {
+                tx: resp_tx,
+                desired_roots: None,
+            });
+            drop(pending);
+            inner.agents.send_to_agent(&params.agent_id, msg)
+        };
+        // inner dropped here — agent register/unregister can proceed while
+        // we await the agent's FileChunk.
 
-    let resp = tokio::time::timeout(Duration::from_secs(60), resp_rx.recv()).await;
+        if !send_ok {
+            cleanup_pending(&state, &req_id).await;
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "backend_offline",
+                "Failed to send request to agent",
+                true,
+            );
+        }
 
-    cleanup_pending(&state, &req_id).await;
+        let resp = tokio::time::timeout(Duration::from_secs(60), resp_rx.recv()).await;
 
-    match resp {
-        Ok(Some(value)) => {
-            // Extract data from the FileChunk response
-            let data = value["data"].as_array().map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_u64().map(|n| n as u8))
-                    .collect::<Vec<u8>>()
-            }).unwrap_or_default();
+        cleanup_pending(&state, &req_id).await;
 
-            let error = value["error"].as_str();
+        let value = match resp {
+            Ok(Some(v)) => v,
+            _ => return error_response(
+                StatusCode::GATEWAY_TIMEOUT,
+                "request_timeout",
+                "Agent did not respond in time",
+                true,
+            ),
+        };
 
-            if let Some(err) = error {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    "file_read_error",
-                    err,
-                    false,
-                );
-            }
+        if let Some(err) = value["error"].as_str() {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "file_read_error",
+                err,
+                false,
+            );
+        }
 
-            let content_type = guess_content_type(&file_path);
-            let disposition = if is_inline_type(content_type) { "inline" } else { "attachment" };
-            let filename = file_path.rsplit('/').next().unwrap_or("file");
-            // Sanitize filename: remove chars that could break Content-Disposition header
-            let safe_filename: String = filename.chars().filter(|c| *c != '"' && *c != '\\' && *c != '\n' && *c != '\r').collect();
+        let chunk_data: Vec<u8> = value["data"].as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_u64().map(|n| n as u8))
+                .collect::<Vec<u8>>()
+        }).unwrap_or_default();
 
-            if length.is_some() {
-                // Partial content response
-                let end = offset + data.len() as u64 - 1;
-                let resp = Response::builder()
-                    .status(StatusCode::PARTIAL_CONTENT)
-                    .header(header::CONTENT_TYPE, content_type)
-                    .header(header::CONTENT_LENGTH, data.len())
-                    .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", offset, end, "*"))
-                    .header(header::CONTENT_DISPOSITION, format!("{}; filename=\"{}\"", disposition, safe_filename))
-                    .body(axum::body::Body::from(data))
-                    .unwrap();
-                resp.into_response()
-            } else {
-                let resp = Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, content_type)
-                    .header(header::CONTENT_LENGTH, data.len())
-                    .header(header::CONTENT_DISPOSITION, format!("{}; filename=\"{}\"", disposition, safe_filename))
-                    .body(axum::body::Body::from(data))
-                    .unwrap();
-                resp.into_response()
+        let done = value["done"].as_bool().unwrap_or(true);
+
+        // Dead-loop defense: agent returned no data and didn't mark done.
+        if chunk_data.is_empty() && !done {
+            tracing::warn!("file_raw_handler: agent returned empty chunk without done; breaking");
+            break;
+        }
+
+        // Hub memory guard. Check before extend so we don't materialize the
+        // oversize body just to throw it away. Returning 413 here surfaces
+        // clearly to the browser (image onerror, fetch non-2xx) instead of
+        // silently serving a truncated file.
+        let projected = accumulated.len() + chunk_data.len();
+        if projected > HUB_FILE_MAX {
+            tracing::warn!(
+                "file_raw_handler: {} would exceed HUB_FILE_MAX ({}); returning 413",
+                file_path, HUB_FILE_MAX
+            );
+            return error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "file_too_large",
+                &format!(
+                    "File exceeds hub-side preview limit of {} bytes",
+                    HUB_FILE_MAX
+                ),
+                false,
+            );
+        }
+
+        accumulated.extend_from_slice(&chunk_data);
+
+        // Range length satisfied — truncate to exact length and stop.
+        if let Some(req_len) = length_opt {
+            if (accumulated.len() as u64) >= req_len {
+                accumulated.truncate(req_len as usize);
+                break;
             }
         }
-        _ => error_response(
-            StatusCode::GATEWAY_TIMEOUT,
-            "request_timeout",
-            "Agent did not respond in time",
-            true,
-        ),
+
+        if done {
+            break;
+        }
+
+        first_round = false;
+    }
+
+    let data = accumulated;
+    let content_type = guess_content_type(&file_path);
+    let disposition = if is_inline_type(content_type) { "inline" } else { "attachment" };
+    let filename = file_path.rsplit('/').next().unwrap_or("file");
+    // Sanitize filename: remove chars that could break Content-Disposition header
+    let safe_filename: String = filename.chars().filter(|c| *c != '"' && *c != '\\' && *c != '\n' && *c != '\r').collect();
+
+    if length_opt.is_some() {
+        // Partial content response
+        let end = offset_start + data.len() as u64 - 1;
+        let resp = Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_TYPE, content_type)
+            .header(header::CONTENT_LENGTH, data.len())
+            .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", offset_start, end, "*"))
+            .header(header::CONTENT_DISPOSITION, format!("{}; filename=\"{}\"", disposition, safe_filename))
+            .body(axum::body::Body::from(data))
+            .unwrap();
+        resp.into_response()
+    } else {
+        let resp = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, content_type)
+            .header(header::CONTENT_LENGTH, data.len())
+            .header(header::CONTENT_DISPOSITION, format!("{}; filename=\"{}\"", disposition, safe_filename))
+            .body(axum::body::Body::from(data))
+            .unwrap();
+        resp.into_response()
     }
 }
 
@@ -405,9 +472,14 @@ fn parse_range_header(value: Option<&axum::http::HeaderValue>) -> (u64, Option<u
         return (0, None);
     };
 
-    // Parse "bytes=START-END" or "bytes=START-"
+    // Parse "bytes=START-END" or "bytes=START-". RFC 7233 specifies the
+    // range unit as a case-insensitive token ("bytes"), so accept any case
+    // variation of the prefix.
     let s = s.trim();
-    if !s.starts_with("bytes=") {
+    let Some(prefix) = s.get(..6) else {
+        return (0, None);
+    };
+    if !prefix.eq_ignore_ascii_case("bytes=") {
         return (0, None);
     }
 
@@ -449,6 +521,10 @@ async fn cleanup_pending(state: &AppState, req_id: &str) {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    use filebox_protocol::message::AgentMessage;
+    use filebox_protocol::resources::Capabilities;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
 
     fn hv(val: &str) -> HeaderValue {
         HeaderValue::from_str(val).unwrap()
@@ -492,6 +568,33 @@ mod tests {
     #[test]
     fn parse_range_rejects_non_bytes_prefix() {
         let h = hv("items=0-100");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 0);
+        assert!(length.is_none());
+    }
+
+    #[test]
+    fn parse_range_accepts_uppercase_bytes_prefix() {
+        // RFC 7233: range unit is case-insensitive. Must accept "BYTES=",
+        // "Bytes=", etc., not just lowercase.
+        let h = hv("BYTES=100-199");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 100);
+        assert_eq!(length, Some(100));
+    }
+
+    #[test]
+    fn parse_range_accepts_mixed_case_bytes_prefix() {
+        let h = hv("Bytes=0-");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 0);
+        assert!(length.is_none());
+    }
+
+    #[test]
+    fn parse_range_rejects_short_header_without_six_byte_prefix() {
+        // Fewer than 6 bytes — must not panic on slicing.
+        let h = hv("abc");
         let (offset, length) = parse_range_header(Some(&h));
         assert_eq!(offset, 0);
         assert!(length.is_none());
@@ -635,5 +738,245 @@ mod tests {
     fn inline_type_octet_stream_is_not_inline() {
         assert!(!is_inline_type("application/octet-stream"));
         assert!(!is_inline_type("application/zip"));
+    }
+
+    // ── file_raw_handler multi-chunk loop ───────────────────────────────────
+    //
+    // Mock-agent harness: spin up a tokio task that consumes FileReadRequest
+    // from the channel and injects matching FileChunk values through
+    // pending_responses, mirroring ws.rs:341-355. Lets us test the
+    // accumulate-until-done loop without a real WebSocket.
+
+    fn test_config() -> crate::config::HubConfig {
+        crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            agent_token_hash: "fake-hash".to_string(),
+            users: vec![],
+        }
+    }
+
+    /// Spawn a mock agent that simulates `file_total` bytes delivered in
+    /// `chunk_cap`-sized frames. Returns the agent's sender (for the
+    /// registry) and the join handle (so the test can await/cleanup).
+    fn spawn_mock_file_agent(
+        state: AppState,
+        agent_id: &str,
+        file_total: u64,
+        chunk_cap: u64,
+    ) -> (mpsc::UnboundedSender<HubMessage>, tokio::task::JoinHandle<()>) {
+        let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+        let agent_id_owned = agent_id.to_string();
+        let handle = tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                let HubMessage::FileReadRequest { req_id, offset, length, .. } = msg else {
+                    continue;
+                };
+                let remaining = file_total.saturating_sub(offset);
+                let to_read = length
+                    .unwrap_or(chunk_cap)
+                    .min(chunk_cap)
+                    .min(remaining);
+                let data = vec![0xABu8; to_read as usize];
+                let done = offset + to_read >= file_total;
+                let chunk = AgentMessage::FileChunk {
+                    req_id: req_id.clone(),
+                    offset,
+                    data,
+                    done,
+                    error: None,
+                };
+                let value = serde_json::to_value(&chunk).unwrap();
+                let pending_arc = state.inner.read().await.pending_responses.clone();
+                let mut pending = pending_arc.write().await;
+                if let Some(p) = pending.remove(&req_id) {
+                    let _ = p.tx.send(value).await;
+                }
+                if done {
+                    break;
+                }
+            }
+            let _ = agent_id_owned; // silence unused warning
+        });
+        (tx, handle)
+    }
+
+    async fn register_mock_agent(state: &AppState, agent_id: &str, tx: mpsc::UnboundedSender<HubMessage>) {
+        let mut inner = state.inner.write().await;
+        inner.agents.register(
+            agent_id.to_string(),
+            "MockAgent".to_string(),
+            tx,
+            Arc::new(Notify::new()),
+            0,
+            vec![],
+            Capabilities::default(),
+        );
+    }
+
+    fn build_raw_request(range: Option<&str>) -> axum::extract::Request {
+        let mut builder = axum::http::Request::builder()
+            .method("GET")
+            .uri("http://test/api/file/raw");
+        if let Some(r) = range {
+            builder = builder.header("range", r);
+        }
+        builder.body(axum::body::Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn file_raw_handler_accumulates_multi_chunk_responses() {
+        // 5MB file with 4MB agent-side cap → must produce 2 chunks
+        // (4MB + 1MB) that the handler should coalesce into one body.
+        let state = AppState::new(&test_config());
+        let file_total: u64 = 5 * 1024 * 1024;
+        let (tx, agent_handle) =
+            spawn_mock_file_agent(state.clone(), "a1", file_total, 4 * 1024 * 1024);
+        register_mock_agent(&state, "a1", tx).await;
+
+        let params = FileRawParams {
+            agent_id: "a1".to_string(),
+            root: "test".to_string(),
+            path: "big.bin".to_string(),
+        };
+        let response = file_raw_handler(
+            State(state.clone()),
+            Query(params),
+            build_raw_request(None),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 10 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(bytes.len(), file_total as usize);
+        // All bytes came from our mock (0xAB filler).
+        assert!(bytes.iter().all(|&b| b == 0xAB));
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn file_raw_handler_honors_range_header() {
+        // 1MB file but request only 10 bytes via Range — single chunk,
+        // handler should truncate and return PARTIAL_CONTENT.
+        let state = AppState::new(&test_config());
+        let (tx, agent_handle) =
+            spawn_mock_file_agent(state.clone(), "a1", 1024 * 1024, 4 * 1024 * 1024);
+        register_mock_agent(&state, "a1", tx).await;
+
+        let params = FileRawParams {
+            agent_id: "a1".to_string(),
+            root: "test".to_string(),
+            path: "r.bin".to_string(),
+        };
+        let response = file_raw_handler(
+            State(state.clone()),
+            Query(params),
+            build_raw_request(Some("bytes=0-9")),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        let content_range = response
+            .headers()
+            .get(header::CONTENT_RANGE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(content_range.starts_with("bytes 0-9/"), "got: {}", content_range);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(bytes.len(), 10);
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn file_raw_handler_returns_413_when_exceeding_hub_max() {
+        // File larger than HUB_FILE_MAX (256MB) must fail with 413 instead
+        // of silently truncating. Mock claims a 300MB file and would happily
+        // emit chunks forever; the handler must bail on the first chunk that
+        // would push accumulated past the cap.
+        let state = AppState::new(&test_config());
+        let file_total: u64 = (HUB_FILE_MAX as u64) + 1024 * 1024;
+        let (tx, agent_handle) =
+            spawn_mock_file_agent(state.clone(), "a1", file_total, 4 * 1024 * 1024);
+        register_mock_agent(&state, "a1", tx).await;
+
+        let params = FileRawParams {
+            agent_id: "a1".to_string(),
+            root: "test".to_string(),
+            path: "huge.bin".to_string(),
+        };
+        let response = file_raw_handler(
+            State(state.clone()),
+            Query(params),
+            build_raw_request(None),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        // Body is the JSON error envelope, not image bytes.
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("file_too_large"), "body: {}", body);
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn file_raw_handler_breaks_on_empty_chunk_without_done() {
+        // Dead-loop defense: if agent returns empty data + done=false, the
+        // handler must stop instead of infinitely re-requesting.
+        let state = AppState::new(&test_config());
+        let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+        let state_for_agent = state.clone();
+        let agent_handle = tokio::spawn(async move {
+            // Reply once with an empty non-terminal chunk, then stop
+            // responding. The handler should break, not spin.
+            if let Some(msg) = rx.recv().await {
+                if let HubMessage::FileReadRequest { req_id, offset, .. } = msg {
+                    let chunk = AgentMessage::FileChunk {
+                        req_id: req_id.clone(),
+                        offset,
+                        data: vec![],
+                        done: false,
+                        error: None,
+                    };
+                    let value = serde_json::to_value(&chunk).unwrap();
+                    let pending_arc = state_for_agent.inner.read().await.pending_responses.clone();
+                    let mut pending = pending_arc.write().await;
+                    if let Some(p) = pending.remove(&req_id) {
+                        let _ = p.tx.send(value).await;
+                    }
+                }
+            }
+        });
+        register_mock_agent(&state, "a1", tx).await;
+
+        let params = FileRawParams {
+            agent_id: "a1".to_string(),
+            root: "test".to_string(),
+            path: "weird.bin".to_string(),
+        };
+        let response = file_raw_handler(
+            State(state.clone()),
+            Query(params),
+            build_raw_request(None),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert!(bytes.is_empty(), "expected empty body after dead-loop break");
+
+        agent_handle.abort();
     }
 }

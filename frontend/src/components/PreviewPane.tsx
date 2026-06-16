@@ -71,7 +71,10 @@ export const PreviewPane = memo(function PreviewPane({ agentId, root, path, entr
   const ext = path.split('.').pop()?.toLowerCase() || '';
 
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif'].includes(ext)) {
-    return <ImagePreview agentId={agentId} root={root} path={path} url={url} />;
+    // key by path so switching files (especially in mobile, where PreviewPane
+    // itself isn't keyed) remounts ImagePreview — fresh zoom/rotation/pos
+    // and a clean AbortController/blob-URL lifecycle per file.
+    return <ImagePreview key={`${root}:${path}`} agentId={agentId} root={root} path={path} url={url} />;
   }
 
   if (ext === 'pdf') {
@@ -136,8 +139,11 @@ const ZOOM_MAX = 5.0;
 
 function ImagePreview({ agentId, root, path, url }: { agentId: string; root: string; path: string; url: string }) {
   const [fileSize, setFileSize] = useState<number | null>(null);
+  const [fsStatError, setFsStatError] = useState(false);
+  const [objectURL, setObjectURL] = useState<string | null>(null);
   const [forceLoad, setForceLoad] = useState(false);
   const [imgLoading, setImgLoading] = useState(false);
+  const [imgDecoding, setImgDecoding] = useState(false);
   const [slowLoading, setSlowLoading] = useState(false);
   const [imgError, setImgError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
@@ -149,56 +155,121 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragStartRef = useRef<{ x: number; y: number; posX: number; posY: number } | null>(null);
   const mounted = useMounted();
-  const loadingRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const objectURLRef = useRef<string | null>(null);
   const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setFsStatError(false);
     fsStat(agentId, root, path).then((data) => {
       if (!cancelled && mounted.current && data.stat) {
         setFileSize(data.stat.size);
       }
-    }).catch(() => {});
+    }).catch(() => {
+      // fsStat failed (network blip, agent momentary offline, etc.). Don't
+      // strand the user on "Checking image size..." forever — treat size as
+      // unknown-but-proceed-anyway and let startLoad run. If it really is a
+      // huge image, LoadingOverlay's 8s slow-warning catches it.
+      if (!cancelled && mounted.current) {
+        setFsStatError(true);
+      }
+    });
     return () => { cancelled = true; };
   }, [agentId, root, path, mounted]);
 
   const isLarge = fileSize !== null && fileSize > LARGE_IMAGE_THRESHOLD;
-  const sizeUnknown = fileSize === null;
+  // sizeUnknown flips false either when fsStat returns OR when fsStat fails
+  // (so we don't get stuck on the "Checking image size..." overlay).
+  const sizeUnknown = fileSize === null && !fsStatError;
+
+  // Release the current object URL (if any) and clear refs/state.
+  const releaseObjectURL = useCallback(() => {
+    if (objectURLRef.current) {
+      URL.revokeObjectURL(objectURLRef.current);
+      objectURLRef.current = null;
+    }
+    if (mounted.current) {
+      setObjectURL(null);
+    }
+  }, [mounted]);
 
   const startLoad = useCallback(() => {
     if (!mounted.current) return;
-    loadingRef.current = true;
+
+    // Tear down any in-flight fetch + previous object URL before starting.
+    abortRef.current?.abort();
+    if (slowTimerRef.current) {
+      clearTimeout(slowTimerRef.current);
+      slowTimerRef.current = null;
+    }
+    releaseObjectURL();
+
     setImgLoading(true);
+    setImgDecoding(false);
     setSlowLoading(false);
     setImgError(null);
-  }, []);
 
-  useEffect(() => {
-    if (!imgLoading) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     slowTimerRef.current = setTimeout(() => {
-      if (mounted.current && imgLoading) {
+      if (mounted.current && !controller.signal.aborted) {
         setSlowLoading(true);
       }
     }, 8000);
-    return () => {
-      if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
-    };
-  }, [imgLoading, mounted]);
+
+    fetch(url, { credentials: 'include', signal: controller.signal })
+      .then(async (r) => {
+        if (!r.ok) {
+          // Surface server-side errors with friendlier text where possible.
+          if (r.status === 413) {
+            throw new Error('File exceeds hub-side preview size limit (256MB)');
+          }
+          if (r.status === 401 || r.status === 403) {
+            throw new Error('Authentication required');
+          }
+          throw new Error(`HTTP ${r.status}`);
+        }
+        return r.blob();
+      })
+      .then((blob) => {
+        if (!mounted.current || controller.signal.aborted) return;
+        const objURL = URL.createObjectURL(blob);
+        objectURLRef.current = objURL;
+        setObjectURL(objURL);
+        setImgDecoding(true);
+        // imgLoading stays true until <img> onLoad fires.
+      })
+      .catch((e) => {
+        if (e?.name === 'AbortError') return; // user cancelled
+        if (!mounted.current) return;
+        if (slowTimerRef.current) {
+          clearTimeout(slowTimerRef.current);
+          slowTimerRef.current = null;
+        }
+        setImgLoading(false);
+        setImgDecoding(false);
+        setSlowLoading(false);
+        setImgError(e?.message || 'Failed to load image');
+      });
+  }, [mounted, releaseObjectURL, url]);
 
   const cancelLoad = useCallback(() => {
-    loadingRef.current = false;
-    if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
-    if (imgRef.current) {
-      imgRef.current.src = '';
-      imgRef.current.onload = null;
-      imgRef.current.onerror = null;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (slowTimerRef.current) {
+      clearTimeout(slowTimerRef.current);
+      slowTimerRef.current = null;
     }
+    releaseObjectURL();
     if (mounted.current) {
       setImgLoading(false);
+      setImgDecoding(false);
       setSlowLoading(false);
       setImgError('Cancelled');
     }
-  }, []);
+  }, [mounted, releaseObjectURL]);
 
   const handleForceLoad = useCallback(() => {
     setForceLoad(true);
@@ -220,15 +291,13 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
     }
   }, [isLarge, forceLoad, sizeUnknown, startLoad]);
 
+  // Cleanup on unmount: abort in-flight fetch + release object URL.
   useEffect(() => {
     return () => {
-      loadingRef.current = false;
+      abortRef.current?.abort();
       if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
-      if (imgRef.current) {
-        imgRef.current.onload = null;
-        imgRef.current.onerror = null;
-        imgRef.current.src = '';
-      }
+      if (objectURLRef.current) URL.revokeObjectURL(objectURLRef.current);
+      objectURLRef.current = null;
     };
   }, []);
 
@@ -334,7 +403,7 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
         <img
           key={retryKey}
           ref={imgRef}
-          src={url}
+          src={objectURL || undefined}
           alt={path}
           draggable={false}
           onWheel={handleWheel}
@@ -342,7 +411,7 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
           onMouseDown={handleMouseDown}
           style={{
             ...styles.image,
-            display: imgError ? 'none' : 'block',
+            display: (imgError || !objectURL) ? 'none' : 'block',
             opacity: imgLoading ? 0 : 1,
             transition: dragging ? 'none' : 'opacity 0.3s ease',
             cursor,
@@ -351,20 +420,26 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
             userSelect: 'none',
           }}
           onLoad={() => {
-            if (mounted.current && loadingRef.current) {
-              loadingRef.current = false;
-              if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+            if (mounted.current && imgDecoding) {
+              if (slowTimerRef.current) {
+                clearTimeout(slowTimerRef.current);
+                slowTimerRef.current = null;
+              }
               setImgLoading(false);
+              setImgDecoding(false);
               setSlowLoading(false);
             }
           }}
           onError={() => {
-            if (mounted.current && loadingRef.current) {
-              loadingRef.current = false;
-              if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+            if (mounted.current && imgDecoding) {
+              if (slowTimerRef.current) {
+                clearTimeout(slowTimerRef.current);
+                slowTimerRef.current = null;
+              }
               setImgLoading(false);
+              setImgDecoding(false);
               setSlowLoading(false);
-              setImgError('Failed to load image');
+              setImgError('Failed to decode image (data may be corrupt)');
             }
           }}
         />

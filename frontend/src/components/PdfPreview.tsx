@@ -19,12 +19,26 @@ interface Props {
 // are flaky on some Android browsers — the iframe comes up blank. PDF.js
 // renders to <canvas> so it works on every browser, at the cost of pulling
 // in pdfjs-dist (~500KB) which we lazy-load via React.lazy at the call site.
+//
+// Virtualization: only pages within viewport + a 300%-screen buffer get a
+// real <Page> mounted. Everything else stays as a placeholder <div> with an
+// estimated or cached height. Without this, a 500-page PDF materializes
+// 500 canvases at once and OOMs the tab.
+
+const ESTIMATED_ASPECT = 1.414; // A4 portrait, common default before we know real height
+
 export function PdfPreview({ url }: Props) {
   const [numPages, setNumPages] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [containerWidth, setContainerWidth] = useState<number>(0);
   const [slowLoad, setSlowLoad] = useState(false);
+  const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set());
+  // Store per-page aspect ratio (height / width) instead of absolute height
+  // so placeholders stay correct when the container resizes (pageWidth
+  // changes) — no need to invalidate the cache on resize.
+  const [pageAspects, setPageAspects] = useState<Record<number, number>>({});
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const placeholderRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   // Responsive page width: pages fit container width minus padding.
   useEffect(() => {
@@ -47,9 +61,65 @@ export function PdfPreview({ url }: Props) {
     return () => clearTimeout(t);
   }, [numPages]);
 
+  // pageWidth: leave a little padding; pdf.js v6 requires an explicit pixel width.
+  // Computed before the virtualization effect so the effect can depend on it.
+  const pageWidth = containerWidth > 0 ? Math.max(200, containerWidth - 24) : undefined;
+
+  // Virtualization: track which page placeholders are inside the viewport
+  // (plus a generous rootMargin buffer) and only mount real <Page> for those.
+  // Depends on both numPages and pageWidth — the first paint after
+  // onLoadSuccess may still have pageWidth === 0 (ResizeObserver is async),
+  // so we (re)observe once pageWidth settles and placeholders actually mount.
+  useEffect(() => {
+    if (numPages === 0 || !pageWidth) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        setVisiblePages((prev) => {
+          const next = new Set(prev);
+          let changed = false;
+          for (const entry of entries) {
+            const pageNum = Number((entry.target as HTMLElement).dataset.pageNum);
+            if (!pageNum) continue;
+            if (entry.isIntersecting) {
+              if (!next.has(pageNum)) {
+                next.add(pageNum);
+                changed = true;
+              }
+            } else {
+              if (next.has(pageNum)) {
+                next.delete(pageNum);
+                changed = true;
+              }
+            }
+          }
+          return changed ? next : prev;
+        });
+      },
+      {
+        root: container,
+        // Viewport + 3 screens of buffer above and below — keeps pages
+        // mounted briefly after they scroll out so a quick scroll-back
+        // doesn't re-render.
+        rootMargin: '300% 0px',
+        threshold: 0,
+      },
+    );
+
+    placeholderRefs.current.forEach((el) => observer.observe(el));
+
+    return () => observer.disconnect();
+  }, [numPages, pageWidth]);
+
   const onLoadSuccess = ({ numPages: n }: { numPages: number }) => {
     setNumPages(n);
     setError(null);
+    // First page always rendered initially (covers the "open at top" case).
+    // The observer will add more as the user scrolls.
+    setVisiblePages(new Set([1]));
+    setPageAspects({});
   };
 
   const onLoadError = (err: Error) => {
@@ -57,8 +127,14 @@ export function PdfPreview({ url }: Props) {
     setNumPages(0);
   };
 
-  // pageWidth: leave a little padding; pdf.js v6 requires an explicit pixel width.
-  const pageWidth = containerWidth > 0 ? Math.max(200, containerWidth - 24) : undefined;
+  const onPageLoadSuccess = (page: { pageNumber: number; width: number; height: number }) => {
+    setPageAspects((prev) => {
+      if (!page.width) return prev;
+      const aspect = page.height / page.width;
+      if (prev[page.pageNumber] === aspect) return prev;
+      return { ...prev, [page.pageNumber]: aspect };
+    });
+  };
 
   return (
     <div ref={containerRef} style={styles.container}>
@@ -84,17 +160,49 @@ export function PdfPreview({ url }: Props) {
         loading=""
         error=""
       >
-        {numPages > 0 && pageWidth && Array.from({ length: numPages }, (_, i) => (
-          <div key={i + 1} style={styles.pageWrap}>
-            <Page
-              pageNumber={i + 1}
-              width={pageWidth}
-              renderAnnotationLayer={false}
-              renderTextLayer={false}
-              loading=""
-            />
-          </div>
-        ))}
+        {numPages > 0 && pageWidth && Array.from({ length: numPages }, (_, i) => {
+          const pageNum = i + 1;
+          const isVisible = visiblePages.has(pageNum);
+          // Placeholder keeps its slot in the document flow with either the
+          // real aspect (cached after first render) or an A4 estimate, so
+          // the scrollbar stays stable while pages mount/unmount. Using
+          // aspect (not absolute height) makes placeholders resize correctly
+          // when pageWidth changes.
+          const aspect = pageAspects[pageNum] ?? ESTIMATED_ASPECT;
+          const placeholderHeight = aspect * pageWidth;
+          return (
+            <div
+              key={pageNum}
+              data-page-num={pageNum}
+              ref={(el) => {
+                if (el) placeholderRefs.current.set(pageNum, el);
+                else placeholderRefs.current.delete(pageNum);
+              }}
+              style={{
+                ...styles.pageWrap,
+                height: isVisible ? 'auto' : placeholderHeight,
+              }}
+            >
+              {isVisible ? (
+                <Page
+                  pageNumber={pageNum}
+                  width={pageWidth}
+                  renderAnnotationLayer={false}
+                  renderTextLayer={false}
+                  loading={<PageSpinner />}
+                  onLoadSuccess={onPageLoadSuccess}
+                />
+              ) : (
+                // Placeholder: a centered spinner tells the user the page is
+                // queued for render, not that the page is blank. Without this
+                // cue, virtualized pages look like missing content.
+                <div style={{ ...styles.placeholderInner, minHeight: placeholderHeight }}>
+                  <PageSpinner />
+                </div>
+              )}
+            </div>
+          );
+        })}
       </Document>
     </div>
   );
@@ -112,6 +220,21 @@ const styles: Record<string, React.CSSProperties> = {
     background: c.surface, borderRadius: radius.md,
     boxShadow: shadow.sm, overflow: 'hidden',
   },
+  // Centered spinner container used inside the placeholder <div> for pages
+  // that haven't mounted yet. The spinner signals "queued for render"
+  // rather than "blank page" so virtualization doesn't look like missing
+  // content.
+  placeholderInner: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    width: '100%',
+  },
+  placeholderSpinner: {
+    width: 20, height: 20,
+    border: `2px solid ${c.border}`,
+    borderTopColor: c.accent,
+    borderRadius: '50%',
+    animation: 'spin 0.8s linear infinite',
+  },
   errorBox: {
     background: c.dangerBg, border: `1px solid ${c.danger}20`,
     borderRadius: radius.md, padding: '14px 18px',
@@ -126,3 +249,7 @@ const styles: Record<string, React.CSSProperties> = {
     textDecoration: 'none', fontSize: 13,
   },
 };
+
+function PageSpinner() {
+  return <div style={styles.placeholderSpinner} />;
+}
