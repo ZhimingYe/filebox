@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 
 import { c, radius, shadow, font } from '../theme';
+import { LoadingOverlay } from './previewShared';
 
 // Vite bundles the worker with the app via new URL(...). Avoids CDN dep
 // and keeps the install offline-capable.
@@ -62,12 +63,9 @@ export function PdfPreview({ url }: Props) {
   return (
     <div ref={containerRef} style={styles.container}>
       {numPages === 0 && !error && (
-        <div style={styles.loadingOverlay}>
-          <div style={styles.spinner} />
-          <p style={styles.loadingText}>
-            {slowLoad ? 'PDF is large, still loading...' : 'Loading PDF...'}
-          </p>
-        </div>
+        <LoadingOverlay
+          message={slowLoad ? 'PDF is large, still loading...' : 'Loading PDF...'}
+        />
       )}
 
       {error && (
@@ -108,24 +106,12 @@ const styles: Record<string, React.CSSProperties> = {
     background: c.bgSubtle, minWidth: 0,
     display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
     fontFamily: font.sans,
+    position: 'relative',
   },
   pageWrap: {
     background: c.surface, borderRadius: radius.md,
     boxShadow: shadow.sm, overflow: 'hidden',
   },
-  loadingOverlay: {
-    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    display: 'flex', flexDirection: 'column',
-    alignItems: 'center', justifyContent: 'center',
-    background: 'rgba(255,255,255,0.7)', gap: 12,
-    zIndex: 1,
-  },
-  spinner: {
-    width: 32, height: 32, borderRadius: '50%',
-    border: `3px solid ${c.border}`, borderTopColor: c.accent,
-    animation: 'spin 0.8s linear infinite',
-  },
-  loadingText: { color: c.textSecondary, fontSize: 13 },
   errorBox: {
     background: c.dangerBg, border: `1px solid ${c.danger}20`,
     borderRadius: radius.md, padding: '14px 18px',
