@@ -291,7 +291,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
             {isMobile ? formatDateShort(displayEntry!.modified) : formatDate(displayEntry!.modified)}
           </span>
         )}
-        {!isBack && displayEntry!.size !== null && (
+        {!isBack && displayEntry!.size !== null && !isMobile && (
           <span style={styles.entryMeta}>{formatSize(displayEntry!.size)}</span>
         )}
         {!isBack && displayEntry!.denied && <span style={styles.deniedBadge}>denied</span>}
@@ -557,7 +557,7 @@ const styles: Record<string, React.CSSProperties> = {
   icon: { fontSize: 14, width: 20, textAlign: 'center', flexShrink: 0 },
   entryName: { color: c.text, fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   entryDate: { color: c.textMuted, fontSize: 12, width: 130, textAlign: 'right', flexShrink: 0 },
-  entryDateMobile: { color: c.textMuted, fontSize: 10, textAlign: 'right', flexShrink: 0, marginLeft: 'auto' },
+  entryDateMobile: { color: c.textMuted, fontSize: 10, textAlign: 'right', flexShrink: 0, width: 72 },
   entryMeta: { color: c.textFaint, fontSize: 12, width: 80, textAlign: 'right', flexShrink: 0 },
   deniedBadge: {
     color: c.warning, fontSize: 10, fontStyle: 'normal', fontWeight: 500,
