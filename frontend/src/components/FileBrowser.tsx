@@ -377,14 +377,23 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
         <span style={{ ...styles.colName, cursor: 'pointer' }} onClick={() => toggleSort('name')}>
           Name{sortIndicator('name')}
         </span>
-        {!isMobile && (
-          <span style={{ ...styles.colDate, cursor: 'pointer' }} onClick={() => toggleSort('modified')}>
+        {isMobile ? (
+          <span
+            style={{ ...styles.colDate, width: 72, cursor: 'pointer' }}
+            onClick={() => toggleSort('modified')}
+          >
             Modified{sortIndicator('modified')}
           </span>
+        ) : (
+          <>
+            <span style={{ ...styles.colDate, cursor: 'pointer' }} onClick={() => toggleSort('modified')}>
+              Modified{sortIndicator('modified')}
+            </span>
+            <span style={{ ...styles.colSize, cursor: 'pointer' }} onClick={() => toggleSort('size')}>
+              Size{sortIndicator('size')}
+            </span>
+          </>
         )}
-        <span style={{ ...styles.colSize, cursor: 'pointer' }} onClick={() => toggleSort('size')}>
-          Size{sortIndicator('size')}
-        </span>
       </div>
 
       <div ref={containerRef} style={styles.listContainer}>
