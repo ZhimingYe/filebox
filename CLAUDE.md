@@ -1,863 +1,271 @@
 # CLAUDE.md
 
-## What We Are Building
+## What This Is
 
-Build a minimal read-only remote file browser.
-
-The product has three parts:
-
-1. **Frontend**: TypeScript web app hosted by the Hub.
-2. **Hub**: Rust server exposed over HTTPS.
-3. **Agent**: Rust daemon running on backend machines.
-
-Architecture:
+Filebox is a **read-only remote file browser with system monitoring**. User
+logs into one HTTPS web page, sees backend machines ("Agents") that have
+dialed out to a central Hub, and browses files / reads system stats.
 
 ```text
-Browser
-  -> HTTPS
-  -> Hub
-  -> outbound WSS/HTTPS connection
-  -> Agent
-  -> local read-only files / allowed local web ports
+Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ local files + sysinfo
 ```
 
-Agents connect outward to Hub. Browsers never connect directly to Agents. Backend machines must not need public IPs, inbound ports, VPN, or port mapping.
+Agents connect outward; browsers never touch agents directly. Backend
+machines need no public IP, inbound port, VPN, or port mapping.
 
----
+## Out of Scope (do not resurrect without explicit sign-off)
 
-## MVP Goal
+- Write / edit / delete / rename files
+- Shell execution, terminal, remote desktop
+- Arbitrary TCP proxying, LAN scanning, **port forwarding** (an earlier
+  draft planned a port-tunnel feature; it was dropped)
+- WebDAV, sync drive behavior
+- Multi-tenant user management, RBAC, audit log
 
-The first usable version should let a user:
+## Hard Rules
 
-1. Open one HTTPS web page.
-2. Login with username and password (bcrypt-hashed).
-3. See connected Agents.
-4. Add allowed folders from the frontend.
-5. Browse those folders read-only.
-6. Preview Markdown, code, PDF, and images.
-7. Add allowed local HTTP ports from the frontend.
-8. Open those allowed ports through the Hub.
-9. See health status for Hub, Agents, requests, and config updates.
-10. Monitor agent system stats (CPU, memory, top processes).
-11. Continue working after Agent disconnects/reconnects.
+- **Frontend is the control surface.** Roots are managed from the UI. CLI
+  is bootstrap / automation / recovery only.
+- **Read-only.** Never add writes, shell, or arbitrary proxying.
+- **Reconnect forever.** Survives 24h+ outages; identity persists; no
+  duplicate backend entries on reconnect.
+- **Never freeze silently.** Long ops are fine, but every one needs visible
+  progress, a cancel affordance, bounded memory/queue, no infinite spinner,
+  and a clear failed / stalled / retryable state. Stalled = no progress,
+  not "took a long time."
+- **No emojis in the frontend.** Custom 16×16 SVG icons.
+- **All UI tokens come from `frontend/src/theme.ts`.** No hardcoded colors.
+  Inline styles only — no CSS modules, no Tailwind.
 
-This is not a file editor, terminal, sync drive, WebDAV server, or remote desktop.
+## Stack
 
----
+**Frontend** (`frontend/`): TypeScript + Vite + React. Heavy preview
+components are `React.lazy()`-loaded (`PdfPreview`, `TextPreview`,
+`MarkdownPreview`, `HtmlPreview`, `CsvPreview`); `ImagePreview` stays inline.
+`previewShared.tsx` holds shared utilities. `PreviewPane` is a memoized
+dispatcher — memoization is what stops splitter-drag stutter. Vite
+`manualChunks` splits react / highlighter / markdown vendor chunks so
+deployments that don't bump a vendor reuse the cached chunk. PDF uses
+`react-pdf` + `pdfjs-dist` worker (bundled via
+`new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url)`) because
+some mobile browsers ship no native PDF viewer.
 
-## Hard Product Rules
+**Hub** (`crates/hub/`): Rust + Tokio + Axum + tower-http +
+tokio-tungstenite. Serves the built frontend via `ServeDir`. 1MB body
+limit. CORS mirrors request origin (credentials need non-`*` ACAO). See
+`routes.rs` for the full route table; `auth.rs` (bcrypt + sessions +
+per-IP login rate limit), `agent_registry.rs` (lifecycle + coalesced
+pending root updates + config_error), `ws.rs` (agent WSS handler with
+abort-on-reregister), `events.rs` (SSE fanout), `fs_proxy.rs` (proxies
+file ops to agent WS), `health.rs`.
 
-### Frontend is the main control surface
+**Agent** (`crates/agent/`): Rust + Tokio + tokio-tungstenite (rustls
+webpki-roots) + sysinfo. Connects outward, reconnects forever.
+`connection.rs` (reconnect loop — see "Reconnect & liveness" below),
+`resources.rs` (validate + apply root updates atomically; bad updates
+never destroy last good state), `fs.rs` (read-only ops + path safety +
+denylist), `sysinfo.rs` (TTL-cached stats — see below), `config_store.rs`
+(persists `agent_id`, roots, revision under `data_dir`).
 
-Do not make CLI the normal workflow.
+**Protocol** (`crates/protocol/`): JSON over WS, tagged enums in
+`message.rs`. Every request has `req_id`, supports `Cancel` / `Progress` /
+`Error` / terminal response. File reads stream as `FileChunk { offset,
+data, done }` — agent never slurps whole files. `Capabilities` struct has
+vestigial flags (`image_preview`, `pdf_preview`, `serve_dir`) that default
+`false` and aren't gated on — don't read meaning into them.
 
-Users should manage roots and ports from the frontend:
+## Reconnect & Liveness (non-obvious invariants)
 
-* Add root.
-* Remove root.
-* Enable/disable root.
-* Add local port.
-* Remove local port.
-* Enable/disable port.
-* See pending/applied/rejected config states.
+Both sides were hardened specifically for "very flaky network" scenarios.
+Re-read `crates/agent/src/connection.rs` and `crates/hub/src/{ws.rs,
+agent_registry.rs}` before touching this path.
 
-CLI may exist only for bootstrap, emergency recovery, automation, or debugging.
+**Agent:**
 
-If normal use requires CLI, the implementation is incomplete.
+- `CONNECT_TIMEOUT = 10s` — give up on handshake, retry.
+- `NO_MESSAGE_TIMEOUT = 45s` — proactively reconnect if nothing (data or
+  Ping) for 45s. Catches half-open connections the kernel hasn't noticed.
+- `WS_WRITE_TIMEOUT = 10s` — writes blocking longer than 10s abort the
+  connection. Prevents stuck TCP send buffer from freezing the agent.
+- `STABLE_CONNECTION_THRESHOLD = 30s` — a connection that lasted ≥30s is
+  "stable"; its next disconnect resets backoff to 1s. A flapping
+  connection keeps growing backoff.
+- Backoff: 1s base, doubles per consecutive flap, capped at 300s, with
+  up-to-half-of-base jitter (so a cohort of agents reconnecting after a
+  hub restart doesn't synchronize).
+- Always sends a clean `Close` frame before reconnecting when possible.
+- URL scheme: `http(s)://` hub URL → `ws(s)://`. TLS via rustls
+  webpki-roots (no OS cert store dependency).
 
-### Read-only only
+**Hub:**
 
-Never implement:
+- Per-connection `Arc<Notify>` abort handle. New `Register` for an existing
+  `agent_id` calls `notify_one()` on the old handle; the old read loop
+  exits cleanly via its `tokio::select!` abort arm.
+- `unregister` verifies `same_channel()` between caller's sender and
+  registry entry before tearing down — a slow old connection can't
+  clobber a fresh one's status back to Offline.
+- Only emits `agent_disconnected` SSE on normal-close exits, not on abort,
+  so reconnect-driven rotation doesn't flash spurious offline to the UI.
 
-* Upload.
-* Edit.
-* Delete.
-* Rename.
-* File modification.
-* Shell execution.
-* Arbitrary command execution.
-* Arbitrary TCP proxying.
-* Arbitrary LAN scanning.
-* Remote desktop.
-* WebDAV.
-* Sync drive behavior.
+## Sysinfo TTL Cache (non-obvious invariant)
 
-### Agents reconnect forever
+HPC boxes (terabyte memory, tens of thousands of PIDs) make each
+`sysinfo` refresh take seconds. Naive per-request refresh froze the agent.
+`StatsCache` (`crates/agent/src/sysinfo.rs`) does:
 
-Agent must automatically reconnect after network failure, even after 24h+ outage.
+- **Fresh** (within TTL): return cached instantly.
+- **Stale** (past TTL): return cached + schedule a background
+  `spawn_blocking` refresh. Concurrent requests collapse into one refresh
+  via an atomic `refreshing` flag (CAS).
+- **Cold** (no cache yet): synchronous `spawn_blocking` refresh so the
+  first request still returns real data, just slower.
+- The `System` instance is reused across refreshes so CPU deltas compute
+  correctly without an extra sleep.
 
-Agent identity must be stable. Reconnect must not create duplicate backend entries.
+TTL configurable via `FILEBOX_AGENT_STATS_TTL_SECS` (default 60). No
+periodic timer — if nobody asks, no work happens.
 
-### Never freeze silently
+## Runtime Resource Management (roots)
 
-Long operations are allowed.
-
-Large images and PDFs may take time.
-
-But every long operation must have:
-
-* Visible progress or status.
-* Cancel button.
-* Bounded memory.
-* Bounded queue.
-* No infinite spinner.
-* Clear failed/stalled/retryable state.
-
-Do not kill large files just because total elapsed time is long. Mark stalled only when there is no progress.
-
----
-
-## UI Design System
-
-The frontend uses a shadcn/Linear-inspired design with a neutral slate color palette. All design tokens live in `frontend/src/theme.ts` -- every component imports from there.
-
-### Theme Tokens
-
-```ts
-// frontend/src/theme.ts
-export const c = {
-  bg: '#ffffff', bgSubtle: '#f8fafc', bgMuted: '#f1f5f9',
-  bgOverlay: 'rgba(15,23,42,0.4)', surface: '#ffffff',
-  border: '#e2e8f0', borderSubtle: '#f1f5f9',
-  text: '#0f172a', textSecondary: '#475569', textMuted: '#94a3b8', textFaint: '#cbd5e1',
-  accent: '#6366f1', accentHover: '#4f46e5', accentBg: '#eef2ff',
-  danger: '#ef4444', dangerBg: '#fef2f2',
-  warning: '#f59e0b', warningBg: '#fffbeb',
-  success: '#10b981', successBg: '#ecfdf5',
-} as const;
-
-export const radius = { sm: 6, md: 8, lg: 12, pill: 9999 } as const;
-export const shadow = {
-  xs: '0 1px 2px rgba(0,0,0,0.05)',
-  sm: '0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06)',
-  md: '0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1)',
-  lg: '0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1)',
-} as const;
-export const font = {
-  sans: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-  mono: '"JetBrains Mono", "SF Mono", "Fira Code", monospace',
-} as const;
-```
-
-### Design Principles
-
-* **No emojis**: Use custom inline SVG icons (16x16, stroke-based) instead of emoji characters.
-* **Inline styles**: All components use `const styles: Record<string, React.CSSProperties>` -- no CSS modules, no Tailwind.
-* **Compact spacing**: 4/6/8/10/12/16/20/24px scale.
-* **Subtle borders**: `c.border` (#e2e8f0) primary, `c.borderSubtle` (#f1f5f9) for light dividers.
-* **Rounded corners**: radius.sm (6px) for badges, radius.md (8px) for inputs/buttons, radius.lg (12px) for panels.
-* **Semantic colors**: success (green), warning (amber), danger (red), accent (indigo) for interactive elements.
-
----
-
-## Components to Implement
-
-### 1. Frontend
-
-Use TypeScript.
-
-Stack:
-
-* Vite.
-* React.
-* PDF.js.
-* Markdown renderer with sanitization.
-* Code highlighter with size limits.
-
-Components:
+Roots are a dynamic allowlist, not hardcoded.
 
 ```text
-Login              - Username/password login form
-BackendList        - Agent sidebar list with status dots
-FileBrowser        - Virtualized file table with filter, sort, icons
-PreviewPane        - Markdown/code/PDF/image/HTML preview with loading states
-AgentSettings      - Agent configuration and root management
-RootManager        - Add/remove/enable/disable root directories
-HealthPanel        - Hub and agent health status display
-SystemStats        - CPU, memory, gauge bars, top processes table
+Frontend POST /api/agents/{id}/roots
+  → Hub validates name/path, rewrites desired set
+  → Hub sends ResourcesSetDesired { req_id, desired_revision, roots }
+  → Agent validates, applies atomically, persists, replies ResourcesApplied
+  → Hub updates registry, broadcasts via SSE
 ```
 
-Frontend supports:
-
-* Username/password login (bcrypt-validated).
-* Cookie-based session after login.
-* Backend/Agent list with online/offline status.
-* File browsing with glob/regex filename filter.
-* File preview with word-wrap toggle for code.
-* Modification date column with sorting.
-* Binary file preview blocking.
-* System monitoring (CPU, memory, top processes).
-* Responsive mobile layout with hamburger drawer.
-* Health display with SSE real-time updates.
-* Agent settings with root management.
-* Root management with enable/disable toggles.
-* Config update status (pending/applied/rejected).
-* Request cancel/retry.
-* Denied sensitive path state (shown as denied, not previewable).
-* Copy path/filename to clipboard.
-* Slow loading detection (8s timer) for images and PDFs.
-* Progress toasts for long operations via SSE.
-* Key-based forced remount on file switch for clean state.
-
----
-
-### 2. Hub
-
-Use Rust.
-
-Stack:
-
-* Tokio.
-* Axum.
-* rustls or reverse-proxy TLS.
-* WebSocket.
-
-Hub must:
-
-* Serve frontend static files.
-* Validate username/password login with bcrypt.
-* Authenticate browser sessions via secure cookies.
-* Authenticate Agents via bcrypt-hashed token.
-* Track Agent online/offline/slow state.
-* Store Agent registry.
-* Store latest Agent resource state.
-* Store pending resource updates for offline Agents.
-* Proxy file list/stat/range-read requests.
-* Proxy system stats requests to agents.
-* Proxy preview requests.
-* Proxy allowed local HTTP/WebSocket ports.
-* Expose health API.
-* Enforce permissions.
-* Enforce limits.
-* Never queue infinitely.
-
-Hub configuration is loaded from `hub.json` (JSON format):
-
-```json
-{
-  "listen_addr": "0.0.0.0:3000",
-  "agent_token_hash": "$2b$12$...",
-  "users": [
-    { "username": "admin", "password_hash": "$2b$12$..." }
-  ]
-}
-```
-
-Hub APIs (implemented):
-
-```http
-POST   /api/session/exchange
-POST   /api/session/logout
-GET    /api/health
-GET    /api/agents
-GET    /api/agents/{agent_id}
-GET    /api/agents/{agent_id}/resources
-GET    /api/agents/{agent_id}/sys-stats
-GET    /api/events                       (SSE stream)
-POST   /api/cancel                       (cancel in-flight request)
-
-POST   /api/agents/{agent_id}/roots
-PATCH  /api/agents/{agent_id}/roots/{root_name}
-DELETE /api/agents/{agent_id}/roots/{root_name}
-
-PUT    /api/agents/{agent_id}/resources  (set desired resources)
-
-GET    /api/fs/list
-GET    /api/fs/stat
-GET    /api/file/raw
-
-GET    /ws/agent                         (Agent WebSocket connection)
-```
-
-Hub APIs (planned, not yet implemented):
-
-```http
-POST   /api/agents/{agent_id}/ports
-PATCH  /api/agents/{agent_id}/ports/{port_name}
-DELETE /api/agents/{agent_id}/ports/{port_name}
-
-POST   /api/serve-dir
-GET    /api/tunnel/{agent_id}/{port_name}/...
-```
-
----
-
-### 3. Agent
-
-Use Rust.
-
-Agent bootstrap config is loaded from `agent.toml` (TOML format, env vars override):
-
-```toml
-hub = "https://fileview.example.com"
-token = "agent_xxx"
-name = "Lab Server 1"
-data_dir = "/var/lib/filebox"
-```
-
-Environment variables `FILEBOX_AGENT_HUB`, `FILEBOX_AGENT_TOKEN`, `FILEBOX_AGENT_NAME`, `FILEBOX_AGENT_DATA_DIR` override TOML values.
-
-Agent must persist locally:
-
-```text
-agent_id
-accepted roots
-accepted ports
-resource revision
-last known good resource state
-```
-
-Agent must:
-
-* Connect outward to Hub.
-* Reconnect forever.
-* Register current roots/ports/capabilities.
-* Receive resource updates from Hub.
-* Validate resource updates.
-* Apply updates atomically.
-* Keep last good state if update is invalid.
-* List directories.
-* Stat files.
-* Read file ranges.
-* Collect system stats (CPU, memory, top processes via sysinfo crate).
-* Generate basic previews when needed.
-* Forward only explicitly allowed local ports.
-* Enforce read-only access.
-* Enforce path safety.
-* Enforce sensitive denylist.
-* Send progress for long operations.
-* Support cancellation.
-
----
-
-## Runtime Resource Management
-
-Roots and ports are dynamic allowlists.
-
-They are not hardcoded.
-
-Normal flow:
-
-```text
-Frontend
-  -> Hub permission check
-  -> Hub sends desired resource update to Agent
-  -> Agent validates
-  -> Agent applies atomically
-  -> Agent persists
-  -> Hub updates registry
-  -> Frontend refreshes
-```
-
-If Agent is offline:
-
-```text
-Frontend request
-  -> Hub stores latest desired state as pending
-  -> Frontend shows pending
-  -> Agent reconnects later
-  -> Hub sends pending update
-  -> Agent applies or rejects
-```
-
-Pending updates must be visible and cancellable.
-
-Do not create infinite pending queues. Coalesce to latest desired state.
-
----
-
-## Security Requirements
-
-### Authentication
-
-User authentication uses bcrypt-hashed passwords stored in `hub.json`.
-
-Agent authentication uses bcrypt-hashed token stored in `hub.json`.
-
-No plaintext passwords or tokens are stored or transmitted.
-
-Session cookies are HttpOnly, Secure, and SameSite.
-
-### Path safety
-
-Every file request must:
-
-```text
-1. Receive root name and relative path.
-2. Resolve active root.
-3. Join root and relative path.
-4. Normalize.
-5. Canonicalize when possible.
-6. Verify final path remains inside root.
-7. Reject symlink escape.
-8. Apply deny rules.
-9. Open read-only.
-```
-
-Never trust browser paths.
-
-Never allow `../` escape.
-
-Never follow symlinks outside root.
-
-### Sensitive denylist
-
-Default-deny privacy-sensitive files even inside allowed roots.
-
-At minimum deny:
-
-```text
-.git/
-.ssh/
-.gnupg/
-.env
-.env.*
-*.env
-.envrc
-.direnv/
-.bashrc
-.bash_profile
-.profile
-.zshrc
-.zprofile
-.zshenv
-.config/fish/config.fish
-.bash_history
-.zsh_history
-.python_history
-.mysql_history
-.psql_history
-.sqlite_history
-.aws/
-.azure/
-.gcloud/
-.config/gcloud/
-.kube/
-.docker/
-.netrc
-.git-credentials
-.gitconfig
-.npmrc
-.yarnrc
-.pnpmrc
-.pypirc
-.cargo/credentials
-.cargo/credentials.toml
-.condarc
-.jupyter/
-.ipython/profile_default/security/
-.Renviron
-.Rprofile
-*.pem
-*.key
-*.crt
-*.p12
-*.pfx
-id_rsa
-id_dsa
-id_ecdsa
-id_ed25519
-credentials
-credentials.json
-token.json
-secrets.json
-service-account*.json
-*.sqlite
-*.sqlite3
-*.db
-*.keychain
-```
-
-Denied files should be hidden by default or shown as denied and not previewable.
-
-Read-only access can still leak secrets.
-
----
-
-## Preview Requirements
-
-### Markdown
-
-* Fetch raw text.
-* Render in frontend.
-* Sanitize HTML.
-* Use safe mode for large files.
-
-### Code
-
-* Highlight small files.
-* Disable highlighter for large files.
-* Use partial or virtualized text preview.
-* Word-wrap toggle.
-
-### PDF
-
-* Use PDF.js.
-* Support range requests.
-* Do not force full download.
-* Slow loading detection at 8 seconds.
-
-### Images
-
-* Support large images, including 30MB+ files.
-* Do not judge only by file size.
-* Consider dimensions and decoded memory.
-* Use downscaled/compressed preview when needed.
-* Show progress for expensive previews.
-* Slow loading detection at 8 seconds.
-
-### HTML
-
-* Render via Blob URL with base tag injection.
-* Toolbar with open-in-new-tab and copy-HTML buttons.
-
-### Port forwarding
-
-* Only explicitly allowed ports.
-* Default targets should be loopback only:
-
-```text
-127.0.0.1:PORT
-localhost:PORT
-[::1]:PORT
-```
-
-No arbitrary host/port proxying from browser.
-
----
-
-## Health Requirements
-
-Frontend must show:
-
-```text
-Hub status
-Agent status
-Last seen
-RTT
-Inflight requests
-Resource revision
-Pending config
-Last config error
-Current request state
-```
-
-Request states should include:
-
-```text
-idle
-loading
-streaming
-slow_but_progressing
-stalled
-cancelled
-failed
-done
-```
-
-Resource update states should include:
-
-```text
-editing
-validating
-pending_agent
-applying
-applied
-rejected
-failed
-```
-
-Hub should expose:
-
-```http
-GET /api/health
-```
-
----
-
-## Protocol Rules
-
-Browser to Hub:
-
-```text
-HTTPS REST
-Range requests
-Streaming responses
-Resource management APIs
-SSE event stream
-```
-
-Hub to Agent:
-
-```text
-WSS control channel
-WSS data channel
-```
-
-Do not send large file data over the same channel as heartbeat/control messages.
-
-Every request should support:
-
-```text
-req_id
-cancel
-progress
-error
-done
-```
-
-Large transfers should support:
-
-```text
-range
-offset
-chunk sequence
-backpressure
-bounded in-flight bytes
-```
-
----
-
-## MVP Build Order
-
-Build in this order:
-
-1. ~~Rust workspace and TypeScript frontend skeleton.~~ DONE
-2. ~~Hub static frontend serving.~~ DONE
-3. ~~Username/password login with bcrypt validation and cookie session.~~ DONE
-4. ~~Agent outbound connection and authentication (bcrypt token).~~ DONE
-5. ~~Agent registry and health.~~ DONE
-6. ~~Frontend backend list and health panel.~~ DONE
-7. ~~Frontend Agent Settings page.~~ DONE
-8. ~~Frontend-managed roots.~~ DONE
-9. ~~Agent root validation and persistence.~~ DONE
-10. ~~File list/stat/range-read.~~ DONE
-11. ~~File browser UI with glob/regex filter and refresh.~~ DONE
-12. ~~Markdown/code/image/PDF preview.~~ DONE
-13. ~~Sensitive path denylist.~~ DONE
-14. ~~Request cancellation and progress states.~~ DONE
-15. ~~System monitoring (CPU, memory, top processes).~~ DONE
-16. Frontend-managed ports.
-17. Basic HTTP/WebSocket port forwarding.
-18. Offline Agent pending resource updates.
-19. Reconnect hardening and no-freeze polish.
-
-Do not start with advanced previews, plugin systems, or complex user management.
-
----
+If agent offline: hub calls `set_pending_update` (coalesced — replaces any
+prior pending; last write wins, no queue), returns
+`state: "pending_agent_reconnect"`, applies on reconnect.
+
+If agent rejects (e.g. path missing): hub stores the message as
+`config_error`, surfaces via SSE. **Bad updates never destroy last known
+good state.** Rejection is non-destructive.
+
+## Security
+
+- Users: bcrypt-hashed passwords in `hub.json`. Sessions: `HttpOnly;
+  Secure; SameSite=Strict` cookies.
+- Agents: bcrypt-hashed token in `hub.json`. Token separate from user
+  session.
+- Login is rate-limited per IP (`state.rate_limiter`).
+- **Path safety** (every file request):
+  1. Receive root name + relative path.
+  2. Resolve active root by name.
+  3. Join, normalize, canonicalize when possible.
+  4. Verify final path remains inside root.
+  5. Reject symlink escape.
+  6. Apply denylist.
+  7. Open read-only.
+
+  Never trust browser paths. Never allow `../`. Never follow symlinks
+  outside the root.
+- **Sensitive denylist** (`crates/protocol/src/denylist.rs`):
+  default-deny privacy-sensitive files even inside allowed roots. Covers
+  `.git/`, `.ssh/`, `.gnupg/`, `.env*`, shell rc + history files, cloud
+  CLI credential dirs (`.aws/`, `.azure/`, `.gcloud/`, `.kube/`,
+  `.docker/`, `.cargo/credentials*`), private keys (`*.pem`, `*.key`,
+  `id_*`), `credentials*.json`, `*.sqlite*`, `*.keychain`, and more.
+  Denied entries may be shown as "denied" (so the user knows they exist)
+  but never previewable. Read-only access can still leak secrets — that's
+  why the list is broad.
+
+## Preview Behavior
+
+- **Markdown**: fetch raw → render → sanitize HTML → safe mode for large.
+- **Code**: Prism via react-syntax-highlighter, word-wrap toggle. Disable
+  highlighter for large files (plain `<pre>` fallback). Partial /
+  virtualized for very large.
+- **PDF**: react-pdf, range requests honored, never force full download,
+  slow detection at 8s.
+- **Image**: large OK (30MB+); judge by decoded dimensions/memory not
+  just size; downscaled preview when needed; slow detection at 8s.
+- **HTML**: Blob URL with `<base>` injection. Toolbar with open-in-new-tab
+  + copy-HTML. Sanitization not enforced — previewing attacker-controlled
+  HTML is out of threat-model scope for this trusted-internal tool.
+- **CSV**: rendered as table.
+- **Long ops**: `LoadingOverlay` shows spinner + (after 8s) slow warning.
+  Does not force cancel — user waits or cancels.
 
 ## Repo Layout
 
 ```text
 filebox/
   CLAUDE.md
-  Cargo.toml               # Rust workspace config
-  Cargo.lock
+  Cargo.toml                # Rust workspace
   README.md
   crates/
-    protocol/
-      src/
-        lib.rs
-        message.rs          # WebSocket message types
-        agent.rs            # Agent identity and status types (AgentInfo, AgentStatus)
-        resources.rs        # Resource definitions (roots, ports)
-        denylist.rs         # Sensitive file denylist
-    hub/
-      src/
-        main.rs             # Entry point, Axum server
-        config.rs           # hub.json loading
-        routes.rs           # API route handlers
-        state.rs            # Shared app state
-        ws.rs               # WebSocket agent connections
-        auth.rs             # bcrypt auth, session cookies
-        agent_registry.rs   # Agent tracking (online/offline)
-        events.rs           # SSE event stream
-        fs_proxy.rs         # File list/stat/read proxy
-        health.rs           # Health API
-    agent/
-      src/
-        main.rs             # Entry point, reconnect loop
-        config.rs           # agent.toml + env var loading
-        config_store.rs     # Local persistence (roots, ports, id)
-        connection.rs       # WebSocket connection to Hub
-        resources.rs        # Resource validation and application
-        fs.rs               # File operations (list, stat, read)
-        sysinfo.rs          # System stats (CPU, memory, processes)
+    protocol/src/           # message.rs (tagged enums), agent.rs, resources.rs,
+                            # denylist.rs
+    hub/src/                # main.rs, config.rs, routes.rs, state.rs, ws.rs,
+                            # auth.rs, agent_registry.rs, events.rs, fs_proxy.rs,
+                            # health.rs
+    agent/src/              # main.rs, config.rs, config_store.rs, connection.rs,
+                            # resources.rs, fs.rs, sysinfo.rs
   frontend/
-    package.json
-    index.html
-    vite.config.ts
+    vite.config.ts          # manualChunks: react / highlighter / markdown vendor
     src/
-      main.tsx              # Entry point
-      App.tsx               # Layout, sidebar, routing, toasts
-      index.css             # Global styles, markdown, scrollbar
-      theme.ts              # Design tokens (colors, radius, shadow, font)
-      api/
-        client.ts           # API client (fetch wrapper)
-      state/
-        session.ts          # Login state, token management
-        events.ts           # SSE event handling
-        health.ts           # Health data polling
-        useIsMobile.ts      # Responsive breakpoint hook
+      App.tsx               # layout, sidebar, routing, mobile drawer, toasts
+      theme.ts              # all design tokens
+      api/client.ts         # fetch wrapper + types
+      state/                # session, events (SSE), health, useIsMobile
       components/
-        Login.tsx           # Login form
-        BackendList.tsx     # Agent sidebar list
-        FileBrowser.tsx     # File table with SVG icons
-        PreviewPane.tsx     # All preview types + LoadingOverlay
-        AgentSettings.tsx   # Agent config + root management
-        RootManager.tsx     # Root add/remove/enable UI
-        HealthPanel.tsx     # Health status display
-        SystemStats.tsx     # CPU/memory gauges, process table
+        Login BackendList FileBrowser PreviewPane previewShared
+        {Pdf,Text,Markdown,Html,Csv}Preview   # lazy
+        AgentSettings RootManager HealthPanel SystemStats
   scripts/
-    release.sh              # Local entry point for tagging a new release
-    gen_config.sh           # Prints hub.json / agent.toml to stdout
-    README.md               # scripts/ docs (release flow + config gen)
+    release.sh              # bump + commit + tag + push → triggers release.yml
+    gen_config.sh           # prints hub.json / agent.toml to stdout
+  .github/workflows/
+    release.yml             # v* tag → musl tarballs + GitHub Release
 ```
-
-Key modules:
-
-```text
-hub/auth              - bcrypt password/token validation, session cookies
-hub/agent_registry    - Agent lifecycle tracking, online/offline/slow
-hub/events            - SSE broadcast to connected browsers
-hub/fs_proxy          - Proxy file operations to agents
-hub/health            - Health status aggregation
-
-agent/config_store    - Persist agent_id, roots, ports, resource revision
-agent/resources       - Validate and atomically apply resource updates
-agent/fs              - Read-only file operations with path safety
-agent/sysinfo         - CPU, memory, top processes via sysinfo crate
-```
-
----
-
-## Implementation Patterns
-
-### LoadingOverlay and Slow Detection
-
-Long-running previews (images, PDFs) use a slow loading detection pattern:
-
-```tsx
-const [slow, setSlow] = useState(false);
-useEffect(() => {
-  const t = setTimeout(() => setSlow(true), 8000);
-  return () => clearTimeout(t);
-}, [src]);
-```
-
-The `LoadingOverlay` component shows a spinner and optional slow warning message. It does not force cancel -- the user can still wait or cancel manually.
-
-### useMounted Hook
-
-Prevents state updates after component unmount:
-
-```tsx
-const useMounted = () => {
-  const ref = useRef(true);
-  useEffect(() => { return () => { ref.current = false; }; }, []);
-  return ref;
-};
-```
-
-### Key-Based Forced Remount
-
-PreviewPane uses `key={`${preview.root}:${preview.path}`}` to force a clean remount when switching files, preventing stale state from previous previews.
-
-### Custom SVG Icons
-
-FileBrowser uses inline SVG icon components (16x16, stroke-based, slate-colored) instead of emoji:
-
-* `IconFolder` -- folder outline
-* `IconFile` -- document outline
-* `IconSymlink` -- arrow/chain link
-* `IconUpDir` -- up arrow for parent directory
-
-### Flex Overflow for Long Paths
-
-RootManager handles long directory paths with flex overflow:
-
-```tsx
-// Container
-itemInfo: { flex: 1, minWidth: 0 }
-// Path text
-rootPath: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
-// Buttons never shrink
-actions: { flexShrink: 0, marginLeft: 12 }
-```
-
----
 
 ## Deployment
 
-### Pre-built Release (Recommended)
+**Pre-built Release (recommended):** static musl Linux x86_64 binaries on
+the [Releases page](https://github.com/ZhimingYe/filebox/releases). The
+pipeline (`.github/workflows/release.yml`) fires on `v*` tag, which
+`scripts/release.sh` creates and pushes. Each release ships:
 
-Static musl Linux x86_64 binaries for hub and agent are published on the
-GitHub [Releases page](https://github.com/ZhimingYe/filebox/releases). The
-release pipeline (`.github/workflows/release.yml`) is triggered by a `v*`
-tag, which `scripts/release.sh` creates and pushes for you.
+- `filebox-hub-<version>-x86_64-musl.tar.gz` — `bin/hub` + bundled
+  `frontend/dist` + `hub.json.example`
+- `filebox-agent-<version>-x86_64-musl.tar.gz` — `agent` binary +
+  `agent.toml.example`
+- `SHA256SUMS.txt`
 
-Each release ships:
-- `filebox-hub-<version>-x86_64-musl.tar.gz` — `bin/hub` + bundled `frontend/dist` + `hub.json.example`
-- `filebox-agent-<version>-x86_64-musl.tar.gz` — `agent` binary + `agent.toml.example`
-- `SHA256SUMS.txt` — checksums for both tarballs
-
-Install on target machines: download the matching tarball, extract, run
-`scripts/gen_config.sh {hub,agent}` to generate the config file, then
-start the binary. No Rust / Node / compilation needed.
-
-### Build From Source
+Install:
 
 ```bash
-# Frontend
-cd frontend && npm install && npm run build && cd ..
+tar xzf filebox-hub-*-x86_64-musl.tar.gz
+./scripts/gen_config.sh hub > hub.json     # openssl + mkpasswd, no Python
+./bin/hub
+```
 
-# Backend
+**Build from source:**
+
+```bash
+cd frontend && npm install && npm run build && cd ..
 cargo build --release
 ```
 
-### Running
+**Behind nginx:** proxy to `127.0.0.1:3000`; for `/` set
+`proxy_http_version 1.1` + `Upgrade`/`Connection: "upgrade"` (WebSocket);
+set `proxy_buffering off` + `proxy_cache off` (SSE). Forward
+`X-Forwarded-For` and `X-Forwarded-Proto`.
 
-```bash
-# Hub
-FILEBOX_CONFIG_PATH=~/filebox/config/hub.json ~/filebox/bin/hub
+## Final Notes
 
-# Agent
-~/filebox-agent/agent
-```
-
----
-
-## Implementation Rules
-
-1. Build the MVP above before adding extras.
-2. Prefer frontend management over CLI.
-3. CLI must not be required for normal daily work.
-4. Keep bootstrap config minimal.
-5. Do not add write features.
-6. Do not add shell or command execution.
-7. Do not add arbitrary network proxying.
-8. Do not trust browser paths.
-9. Do not trust frontend resource changes without Hub permission checks and Agent validation.
-10. Do not read large files fully into memory.
-11. Do not render huge files fully in browser.
-12. Do not let large transfers block control messages.
-13. Do not create infinite queues.
-14. Do not create infinite buffers.
-15. Do not show infinite loading UI.
-16. Support cancellation for long operations.
-17. Expose progress for slow operations.
-18. Distinguish long-running from stalled.
-19. Allow large files to run while progress continues.
-20. Mark stalled only when progress stops.
-21. Make Agent reconnect forever.
-22. Persist Agent identity.
-23. Persist accepted runtime resources.
-24. Keep Agent token separate from user session.
-25. Keep frontend hosted by Hub.
-26. Fail clearly, not silently.
-27. Default-deny privacy-sensitive files.
-28. Bad resource updates must never destroy last known good Agent state.
-29. Dynamic resource changes must not create duplicate backends.
-30. Security and stability beat feature breadth.
-31. No emojis in frontend -- use SVG icons.
-32. All UI tokens come from theme.ts -- no hardcoded colors.
+- When touching the reconnect path or the sysinfo cache, re-read the code
+  first. Both have non-obvious invariants (abort-on-reregister,
+  `same_channel` ownership check, atomic `refreshing` flag, stable-conn
+  backoff reset) that a "small" refactor can break silently.
+- Hub body limit is 1MB. Resource payloads are tiny by design — don't
+  raise this without reason.
+- The Hub→Agent WS is a single JSON channel; large file reads stream as
+  `FileChunk` on the same channel but never block control messages
+  (agent's read loop is independent of its writer; writes have a 10s
+  timeout).
