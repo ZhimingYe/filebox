@@ -53,23 +53,36 @@ Agents connect outward to the Hub. No public IPs, port mapping, or VPN required.
 
 ## Quick Start
 
-### Option 1: Install Scripts (Recommended)
+### Option 1: Pre-built Release (Recommended)
+
+Pre-built static Linux x86_64 (musl) binaries are published on the
+[Releases page](https://github.com/ZhimingYe/filebox/releases/latest).
+No Rust toolchain, no Node, no compilation needed on the target machine.
 
 ```bash
-# Server (Hub)
-chmod +x scripts/serve_at_server.sh
-./scripts/serve_at_server.sh
+# 1. Download the matching tarball from the latest release page:
+#    filebox-hub-<version>-x86_64-musl.tar.gz     (Hub machine)
+#    filebox-agent-<version>-x86_64-musl.tar.gz   (Agent machine)
 
-# Client (Agent)
-chmod +x scripts/serve_at_client.sh
-./scripts/serve_at_client.sh
+# 2. Extract
+tar xzf filebox-hub-*-x86_64-musl.tar.gz     # Hub
+tar xzf filebox-agent-*-x86_64-musl.tar.gz   # Agent
+
+# 3. Generate config interactively (prints to stdout — redirect to file)
+./scripts/gen_config.sh hub   > config/hub.json     # on Hub machine
+./scripts/gen_config.sh agent > agent.toml          # on Agent machine
+
+# 4. Run
+filebox-hub-*/bin/hub          # Hub
+filebox-agent-*/agent          # Agent
 ```
 
-The scripts walk you through configuration, build, and installation interactively. No root required.
+`gen_config.sh` only needs `openssl` (already on every Linux) and `mkpasswd`
+(from the `whois` package, for bcrypt hashing). The tarball also bundles a
+`hub.json.example` / `agent.toml.example` if you'd rather fill in values by
+hand.
 
-See [scripts/README.md](scripts/README.md) for details.
-
-### Option 2: Manual Build
+### Option 2: Build From Source
 
 ```bash
 # Clone
@@ -243,13 +256,12 @@ Full list in `crates/protocol/src/denylist.rs`.
 Filebox is designed to run fully rootless:
 
 ```bash
-# Using install scripts
-./scripts/serve_at_server.sh
-./scripts/serve_at_client.sh
+# Download pre-built tarballs from the Releases page, then extract into
+# a user-owned directory — no root, no system service files needed.
 
-# Or manually install to user directory
 mkdir -p ~/filebox/bin
-cp target/release/hub ~/filebox/bin/
+tar xzf filebox-hub-*-x86_64-musl.tar.gz -C ~/filebox --strip-components=1
+~/filebox/bin/hub
 ```
 
 Then run directly or with your preferred process manager.

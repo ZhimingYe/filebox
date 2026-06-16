@@ -1,214 +1,63 @@
-# Filebox Install Scripts
+# scripts/
 
-Rootless install scripts. No root required. All files go into user directories.
+Helper scripts that live alongside the source. None of them are required to
+use filebox — pre-built binaries and step-by-step instructions live on the
+[Releases page](https://github.com/ZhimingYe/filebox/releases). These are
+developer-facing tools.
 
-Scripts only handle configuration, build, and installation. How you run the services is up to you.
+## What's here
 
-## Quick Start
+| Script | Who runs it | What it does |
+|---|---|---|
+| `release.sh` | Maintainer, on dev machine | Bumps workspace version, commits, tags `v{version}`, pushes. The pushed tag triggers `.github/workflows/release.yml` which builds the musl binaries and publishes a GitHub Release. |
+| `gen_config.sh` | Anyone with the binary already downloaded | Generates `hub.json` or `agent.toml` from interactive prompts and prints to stdout. Uses `openssl` + `mkpasswd` for bcrypt hashing — no Python, no pip pollution. |
 
-### Server (Hub)
-
-```bash
-cd filebox
-chmod +x scripts/serve_at_server.sh
-./scripts/serve_at_server.sh
-```
-
-The script walks you through:
-- Listen port
-- Admin username and password
-- Agent token generation
-- Auto build and install
-
-### Client (Agent)
-
-On the machine you want to access:
+## Releasing a new version
 
 ```bash
-cd filebox
-chmod +x scripts/serve_at_client.sh
-./scripts/serve_at_client.sh
+./scripts/release.sh v0.3.0
 ```
 
-The script walks you through:
-- Hub server URL
-- Agent token
-- Agent name
-- Builds the Agent binary locally (Rust toolchain required)
+The script:
+1. Bumps `version = "..."` under `[workspace.package]` in `Cargo.toml` (awk-tracked so it doesn't touch `[workspace.dependencies]`)
+2. Refreshes `Cargo.lock` via `cargo check`
+3. Commits "Release v0.3.0", tags `v0.3.0`, pushes both
 
-## System Requirements
+GitHub Actions then builds `x86_64-unknown-linux-musl` binaries for hub and
+agent, bundles the frontend into the hub tarball, generates `SHA256SUMS.txt`,
+and publishes a Release with auto-generated notes. The whole flow takes
+~5-8 minutes on a warm cache.
 
-### Server
-- Linux (x86_64 or aarch64)
-- Rust >= 1.75
-- Node.js >= 18
-- Python 3 + bcrypt module
-- ~2GB disk space (for compilation)
-
-### Client
-- Linux (x86_64 or aarch64)
-- Rust >= 1.75 (Agent is built locally on each client machine)
-
-## Install Locations
-
-```
-Server:
-~/.local/share/filebox/
-├── bin/hub              # Hub binary
-├── frontend/dist/       # Frontend static files
-├── config/hub.json      # Configuration
-└── logs/                # Log directory
-
-Client:
-~/filebox-agent/
-├── agent                # Agent binary
-├── agent.toml           # Configuration
-└── data/                # Persistent data
-```
-
-Both scripts honor `FILEBOX_INSTALL_DIR` to override the install location. The
-install dir must NOT be the same as the source dir you cloned the repo into —
-the scripts will refuse with an error if so.
-
-## Running
-
-After installation, start services manually:
+## Generating a config (after downloading a release tarball)
 
 ```bash
-# Hub (auto-discovers config/hub.json next to the binary)
-~/.local/share/filebox/bin/hub
+# Hub config — prints hub.json to stdout, prompts on stderr
+./gen_config.sh hub > ~/.local/share/filebox/config/hub.json
 
-# Agent
-~/filebox-agent/agent
+# Agent config
+./gen_config.sh agent > ~/filebox-agent/agent.toml
 ```
 
-Run in background:
+Requirements:
+- `openssl` (for random token)
+- `mkpasswd` (from the `whois` package, for bcrypt hashing)
 
-```bash
-# Hub
-nohup ~/.local/share/filebox/bin/hub > ~/.local/share/filebox/logs/hub.log 2>&1 &
+If `mkpasswd` isn't installed, the script prints install hints for the
+common package managers and exits.
 
-# Agent
-nohup ~/filebox-agent/agent &
-```
+## What's NOT here anymore
 
-Capture logs to a file:
+The old `serve_at_server.sh` / `serve_at_client.sh` (build-from-source)
+and `install_hub.sh` / `install_agent.sh` (download-from-release) scripts
+were removed once the GitHub Release pipeline was in place. To install
+filebox now:
 
-```bash
-~/.local/share/filebox/bin/hub > ~/.local/share/filebox/logs/hub.log 2>&1 &
-tail -f ~/.local/share/filebox/logs/hub.log
-```
+1. Download the appropriate tarball from the
+   [latest release](https://github.com/ZhimingYe/filebox/releases/latest)
+2. Extract: `tar xzf filebox-{hub,agent}-VERSION-x86_64-musl.tar.gz`
+3. Generate config: `./gen_config.sh {hub,agent} > config-file`
+4. Run the binary
 
-## Environment Variables
-
-| Variable | Scope | Purpose |
-|----------|-------|---------|
-| `FILEBOX_INSTALL_DIR` | Install scripts | Override install location (default: `~/.local/share/filebox` server, `~/filebox-agent` client) |
-| `FILEBOX_CONFIG_PATH` | Hub | Override config file location |
-| `FILEBOX_FRONTEND_DIR` | Hub | Override `frontend/dist` location (useful if frontend lives elsewhere) |
-| `FILEBOX_LISTEN_ADDR` | Hub | Override listen address (e.g. `0.0.0.0:3000`) |
-| `FILEBOX_AGENT_HUB` | Agent | Override `hub` from agent.toml |
-| `FILEBOX_AGENT_TOKEN` | Agent | Override `token` from agent.toml |
-| `FILEBOX_AGENT_NAME` | Agent | Override `name` from agent.toml |
-| `FILEBOX_AGENT_DATA_DIR` | Agent | Override `data_dir` from agent.toml |
-
-## Configuration Files
-
-### Hub (hub.json)
-
-```json
-{
-  "listen_addr": "0.0.0.0:3000",
-  "agent_token_hash": "$2b$12$...",
-  "users": [
-    { "username": "admin", "password_hash": "$2b$12$..." }
-  ]
-}
-```
-
-### Agent (agent.toml)
-
-```toml
-hub = "https://filebox.example.com"
-token = "your-agent-token"
-name = "My Server"
-data_dir = "/home/user/filebox-agent/data"
-```
-
-Environment variable overrides:
-- `FILEBOX_AGENT_HUB`
-- `FILEBOX_AGENT_TOKEN`
-- `FILEBOX_AGENT_NAME`
-- `FILEBOX_AGENT_DATA_DIR`
-
-## Uninstall
-
-```bash
-# Server
-rm -rf ~/.local/share/filebox
-
-# Client
-rm -rf ~/filebox-agent
-```
-
-## FAQ
-
-### Q: How do I change the configuration?
-
-Edit the config file directly, then restart the process.
-
-### Q: Agent cannot connect to Hub?
-
-1. Check the Hub URL is correct
-2. Check the token matches
-3. Check network connectivity
-4. Check Agent stdout/stderr
-
-### Q: How do I add multiple users?
-
-Edit `hub.json` and add entries to the `users` array:
-
-```json
-{
-  "users": [
-    { "username": "admin", "password_hash": "..." },
-    { "username": "user2", "password_hash": "..." }
-  ]
-}
-```
-
-### Q: How do I set up Nginx as a reverse proxy?
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name filebox.example.com;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # WebSocket
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        # SSE
-        proxy_buffering off;
-        proxy_cache off;
-    }
-}
-```
-
-## Security
-
-1. **Use HTTPS**: Nginx + Let's Encrypt in production
-2. **Strong passwords**: Use strong passwords and rotate regularly
-3. **Firewall**: Only open necessary ports
-4. **Updates**: Keep up to date with the latest release
+The release tarballs bundle a per-package `README.md` and a config
+example (`hub.json.example` / `agent.toml.example`) that walk through
+the specifics.

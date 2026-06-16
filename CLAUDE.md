@@ -709,9 +709,9 @@ filebox/
         HealthPanel.tsx     # Health status display
         SystemStats.tsx     # CPU/memory gauges, process table
   scripts/
-    serve_at_server.sh      # Rootless Hub install script
-    serve_at_client.sh      # Rootless Agent install script
-    README.md               # Install script documentation
+    release.sh              # Local entry point for tagging a new release
+    gen_config.sh           # Prints hub.json / agent.toml to stdout
+    README.md               # scripts/ docs (release flow + config gen)
 ```
 
 Key modules:
@@ -789,23 +789,23 @@ actions: { flexShrink: 0, marginLeft: 12 }
 
 ## Deployment
 
-### Rootless Install Scripts
+### Pre-built Release (Recommended)
 
-Two interactive scripts handle configuration, build, and installation without root:
+Static musl Linux x86_64 binaries for hub and agent are published on the
+GitHub [Releases page](https://github.com/ZhimingYe/filebox/releases). The
+release pipeline (`.github/workflows/release.yml`) is triggered by a `v*`
+tag, which `scripts/release.sh` creates and pushes for you.
 
-```bash
-# Server (Hub)
-./scripts/serve_at_server.sh
-# -> installs to ~/filebox/
+Each release ships:
+- `filebox-hub-<version>-x86_64-musl.tar.gz` — `bin/hub` + bundled `frontend/dist` + `hub.json.example`
+- `filebox-agent-<version>-x86_64-musl.tar.gz` — `agent` binary + `agent.toml.example`
+- `SHA256SUMS.txt` — checksums for both tarballs
 
-# Client (Agent)
-./scripts/serve_at_client.sh
-# -> installs to ~/filebox-agent/
-```
+Install on target machines: download the matching tarball, extract, run
+`scripts/gen_config.sh {hub,agent}` to generate the config file, then
+start the binary. No Rust / Node / compilation needed.
 
-See `scripts/README.md` for full documentation.
-
-### Manual Build
+### Build From Source
 
 ```bash
 # Frontend
