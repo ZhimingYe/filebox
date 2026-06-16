@@ -285,7 +285,12 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
         <span style={styles.icon}>
           {isBack ? <IconUpDir /> : getEntryIcon(displayEntry!.entry_type)}
         </span>
-        <span style={styles.entryName}>{isBack ? '..' : displayEntry!.name}</span>
+        <span
+          style={styles.entryName}
+          title={isBack ? undefined : displayEntry!.name}
+        >
+          {isBack ? '..' : displayEntry!.name}
+        </span>
         {!isBack && displayEntry!.modified && (
           <span style={isMobile ? styles.entryDateMobile : styles.entryDate}>
             {isMobile ? formatDateShort(displayEntry!.modified) : formatDate(displayEntry!.modified)}
