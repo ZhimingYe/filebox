@@ -1,10 +1,14 @@
-import { useState, useEffect, useRef, useCallback, memo } from 'react';
+import { useState, useEffect, useRef, useCallback, memo, lazy, Suspense } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { fileRawUrl, fsStat } from '../api/client';
 import { c, radius, font, shadow } from '../theme';
+
+// Lazy-load so the ~500KB pdfjs-dist bundle only downloads when a PDF is
+// actually opened. Without code-splitting, every visitor would pay the cost.
+const PdfPreview = lazy(() => import('./PdfPreview').then(m => ({ default: m.PdfPreview })));
 
 interface Props {
   agentId: string;
@@ -120,7 +124,17 @@ export const PreviewPane = memo(function PreviewPane({ agentId, root, path, entr
   }
 
   if (ext === 'pdf') {
-    return <PdfPreview url={url} />;
+    return (
+      <Suspense fallback={
+        <div style={styles.container}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: c.textMuted }}>
+            Loading PDF viewer...
+          </div>
+        </div>
+      }>
+        <PdfPreview url={url} />
+      </Suspense>
+    );
   }
 
   if (['md', 'markdown'].includes(ext)) {
@@ -460,101 +474,6 @@ function ImagePreview({ agentId, root, path, url }: { agentId: string; root: str
           <button onClick={handleReset} style={styles.imgToolBtn} title="Reset view">Reset</button>
         </div>
       )}
-    </div>
-  );
-}
-
-// ── PDF Preview ───────────────────────────────────────────────────────────
-
-function PdfPreview({ url }: { url: string }) {
-  const [loading, setLoading] = useState(true);
-  const [slowLoading, setSlowLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mounted = useMounted();
-
-  // Detect slow loading (after 8 seconds)
-  useEffect(() => {
-    if (!loading) return;
-
-    slowTimerRef.current = setTimeout(() => {
-      if (mounted.current && loading) {
-        setSlowLoading(true);
-      }
-    }, 8000);
-
-    return () => {
-      if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
-    };
-  }, [loading, mounted]);
-
-  const handleLoad = useCallback(() => {
-    if (mounted.current) {
-      setLoading(false);
-      setSlowLoading(false);
-    }
-    if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
-  }, [mounted]);
-
-  const handleError = useCallback(() => {
-    if (mounted.current) {
-      setLoading(false);
-      setSlowLoading(false);
-      setError('Failed to load PDF');
-    }
-    if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
-  }, [mounted]);
-
-  const cancelLoad = useCallback(() => {
-    if (iframeRef.current) {
-      iframeRef.current.src = 'about:blank';
-    }
-    if (mounted.current) {
-      setLoading(false);
-      setSlowLoading(false);
-      setError('Cancelled');
-    }
-    if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
-  }, [mounted]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
-      if (iframeRef.current) {
-        iframeRef.current.onload = null;
-        iframeRef.current.onerror = null;
-        iframeRef.current.src = 'about:blank';
-      }
-    };
-  }, []);
-
-  return (
-    <div style={styles.container}>
-      {loading && (
-        <LoadingOverlay
-          message={slowLoading ? "PDF is large, still loading..." : "Loading PDF..."}
-          onCancel={cancelLoad}
-        />
-      )}
-      {error && (
-        <div style={styles.largeImageWarning}>
-          <p style={styles.errorText}>{error}</p>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <button onClick={() => { setError(null); setLoading(true); setSlowLoading(false); }} style={styles.retryBtn}>Retry</button>
-            <a href={url} download style={styles.downloadLink}>Download</a>
-          </div>
-        </div>
-      )}
-      <iframe
-        ref={iframeRef}
-        src={url}
-        style={{ ...styles.pdf, display: error ? 'none' : 'block' }}
-        title="PDF Preview"
-        onLoad={handleLoad}
-        onError={handleError}
-      />
     </div>
   );
 }
