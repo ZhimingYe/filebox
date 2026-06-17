@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::http::{header, Method, StatusCode};
+use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
@@ -110,7 +110,36 @@ pub fn create_router(state: AppState) -> Router {
         .fallback_service(frontend)
         .layer(cors)
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)) // 1MB max request body
+        .layer(axum::middleware::from_fn(cache_headers))
         .with_state(state)
+}
+
+// Set Cache-Control on frontend static responses. Skips /api/ and /ws/ so the
+// existing API/SSE caching semantics are untouched. Only touches 2xx responses;
+// errors keep their default headers.
+async fn cache_headers(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path().to_string();
+    let mut resp = next.run(req).await;
+    if !resp.status().is_success() || path.starts_with("/api/") || path.starts_with("/ws/") {
+        return resp;
+    }
+    // index.html must always be revalidated so a stale cached copy can never
+    // reference hashed JS that has been removed by a newer deployment.
+    // /assets/* filenames are content-hashed by Vite, so immutable is safe.
+    let cc = if path == "/" || path.ends_with(".html") {
+        "no-cache, must-revalidate"
+    } else if path.starts_with("/assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    if let Ok(v) = HeaderValue::from_str(cc) {
+        resp.headers_mut().insert(header::CACHE_CONTROL, v);
+    }
+    resp
 }
 
 // ── Session Middleware ─────────────────────────────────────────────────────

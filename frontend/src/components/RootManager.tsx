@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
+import { useIsMobile } from '../state/useIsMobile';
 import { c, radius, font } from '../theme';
 
 interface Props {
@@ -14,6 +15,7 @@ export function RootManager({ agentId, roots, onUpdate }: Props) {
   const [newPath, setNewPath] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const isMobile = useIsMobile();
 
   const handleAdd = async () => {
     if (!newName.trim() || !newPath.trim()) return;
@@ -58,20 +60,24 @@ export function RootManager({ agentId, roots, onUpdate }: Props) {
       )}
 
       {/* Add form */}
-      <div style={styles.addRow}>
+      <div style={isMobile ? styles.addRowMobile : styles.addRow}>
         <input
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           placeholder="Name"
-          style={styles.input}
+          style={isMobile ? styles.inputMobile : styles.input}
         />
         <input
           value={newPath}
           onChange={(e) => setNewPath(e.target.value)}
           placeholder="/path/to/directory"
-          style={{ ...styles.input, flex: 2 }}
+          style={isMobile ? styles.inputMobile : { ...styles.input, flex: 2 }}
         />
-        <button onClick={handleAdd} disabled={loading || !newName.trim() || !newPath.trim()} style={styles.addBtn}>
+        <button
+          onClick={handleAdd}
+          disabled={loading || !newName.trim() || !newPath.trim()}
+          style={isMobile ? styles.addBtnMobile : styles.addBtn}
+        >
           Add
         </button>
       </div>
@@ -82,12 +88,12 @@ export function RootManager({ agentId, roots, onUpdate }: Props) {
       ) : (
         <div style={styles.list}>
           {roots.map((r) => (
-            <div key={r.name} style={styles.item}>
+            <div key={r.name} style={isMobile ? styles.itemMobile : styles.item}>
               <div style={styles.itemInfo}>
                 <span style={styles.rootName}>{r.name}</span>
                 <span style={styles.rootPath}>{r.path_display}</span>
               </div>
-              <div style={styles.actions}>
+              <div style={isMobile ? styles.actionsMobile : styles.actions}>
                 <button
                   onClick={() => handleToggle(r.name, r.enabled)}
                   style={{
@@ -117,15 +123,31 @@ const styles: Record<string, React.CSSProperties> = {
   },
   error: { color: c.danger, fontSize: 13, margin: 0 },
   addRow: { display: 'flex', gap: 10, marginBottom: 20 },
+  addRowMobile: {
+    display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20,
+  },
   input: {
     padding: '9px 14px', borderRadius: radius.md, border: `1px solid ${c.border}`,
     background: c.surface, color: c.text, fontSize: 13, flex: 1, outline: 'none',
+    fontFamily: font.sans, transition: 'border-color 0.15s',
+  },
+  // Same as `input` but without `flex` — in the column mobile layout, `flex: 1`
+  // would affect vertical growth (meaningless without a fixed-height container)
+  // and width is already full via the default `align-items: stretch`.
+  inputMobile: {
+    padding: '9px 14px', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    background: c.surface, color: c.text, fontSize: 13, outline: 'none',
     fontFamily: font.sans, transition: 'border-color 0.15s',
   },
   addBtn: {
     padding: '9px 22px', borderRadius: radius.md, border: 'none',
     background: c.accent, color: '#fff', cursor: 'pointer', fontSize: 13,
     fontWeight: 500, transition: 'background 0.15s',
+  },
+  addBtnMobile: {
+    padding: '9px 22px', borderRadius: radius.md, border: 'none',
+    background: c.accent, color: '#fff', cursor: 'pointer', fontSize: 13,
+    fontWeight: 500, width: '100%', transition: 'background 0.15s',
   },
   empty: { color: c.textMuted, fontSize: 13, padding: '24px 0' },
   list: { display: 'flex', flexDirection: 'column', gap: 10 },
@@ -134,10 +156,16 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '12px 16px', borderRadius: radius.lg, border: `1px solid ${c.border}`,
     background: c.surface,
   },
+  itemMobile: {
+    display: 'flex', flexDirection: 'column', alignItems: 'stretch',
+    padding: '12px 16px', borderRadius: radius.lg, border: `1px solid ${c.border}`,
+    background: c.surface, gap: 10,
+  },
   itemInfo: { display: 'flex', flexDirection: 'column', gap: 3, flex: 1, minWidth: 0 },
   rootName: { color: c.text, fontSize: 13, fontWeight: 500 },
   rootPath: { color: c.textMuted, fontSize: 12, fontFamily: font.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   actions: { display: 'flex', gap: 8, flexShrink: 0, marginLeft: 12 },
+  actionsMobile: { display: 'flex', gap: 8, marginLeft: 0 },
   actionBtn: {
     padding: '5px 14px', borderRadius: radius.sm, border: `1px solid ${c.border}`,
     background: 'transparent', cursor: 'pointer', fontSize: 12,

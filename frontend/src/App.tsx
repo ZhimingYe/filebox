@@ -14,6 +14,24 @@ import type { FsEntry } from './api/client';
 import { fileRawUrl } from './api/client';
 import { c, radius, shadow, font } from './theme';
 
+const VERSION_TOAST_DISMISS_KEY = 'filebox.newVersionDismissed';
+
+function getDismissedVersion(): string | null {
+  try {
+    return sessionStorage.getItem(VERSION_TOAST_DISMISS_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function setDismissedVersion(v: string) {
+  try {
+    sessionStorage.setItem(VERSION_TOAST_DISMISS_KEY, v);
+  } catch {
+    /* ignore */
+  }
+}
+
 type View = 'files' | 'settings' | 'health' | 'stats';
 
 interface ProgressEvent {
@@ -35,6 +53,36 @@ export default function App() {
   const [progressMap, setProgressMap] = useState<Map<string, ProgressEvent>>(new Map());
   const progressTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // ── Version tracking: detect when the running Hub has been upgraded ──
+  // First non-empty version seen is the version this bundle shipped with.
+  // Subsequent differing values trigger the "new version available" toast.
+  const initialVersionRef = useRef<string | null>(null);
+  const [newVersion, setNewVersion] = useState<string | null>(null);
+  useEffect(() => {
+    const v = health?.hub.version;
+    if (!v) return;
+    if (initialVersionRef.current === null) {
+      initialVersionRef.current = v;
+      // If user already dismissed this version earlier in the session, respect it.
+      if (getDismissedVersion() === v) {
+        setNewVersion(null);
+      }
+      return;
+    }
+    if (v !== initialVersionRef.current && v !== getDismissedVersion()) {
+      setNewVersion(v);
+    }
+  }, [health?.hub.version]);
+
+  const handleReload = useCallback(() => {
+    window.location.reload();
+  }, []);
+
+  const handleDismissVersion = useCallback(() => {
+    if (newVersion) setDismissedVersion(newVersion);
+    setNewVersion(null);
+  }, [newVersion]);
 
   // ── Desktop split: persisted file/preview width ratio ──
   const splitContainerRef = useRef<HTMLDivElement>(null);
@@ -213,6 +261,9 @@ export default function App() {
       )}
       <div style={{ flex: 1 }} />
       <div style={styles.sidebarFooter}>
+        {health?.hub.version && (
+          <div style={styles.versionLine}>v{health.hub.version}</div>
+        )}
         <button onClick={logout} style={styles.logoutBtn}>Logout</button>
       </div>
     </>
@@ -374,6 +425,20 @@ export default function App() {
           ))}
         </div>
       )}
+
+      {/* New version available toast (bottom-left so it doesn't clash with progress).
+          Suppressed on mobile while the sidebar drawer is open to avoid overlap. */}
+      {newVersion && !(isMobile && sidebarOpen) && (
+        <div style={styles.versionToast}>
+          <div style={styles.versionToastText}>
+            New version available (v{newVersion}). Reload to update.
+          </div>
+          <div style={styles.versionToastActions}>
+            <button onClick={handleReload} style={styles.versionToastReload}>Reload</button>
+            <button onClick={handleDismissVersion} style={styles.versionToastDismiss}>Dismiss</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -435,6 +500,10 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '6px 12px', borderRadius: radius.md, border: `1px solid ${c.border}`,
     background: 'transparent', color: c.textSecondary, cursor: 'pointer', fontSize: 12,
     width: '100%', transition: 'all 0.15s',
+  },
+  versionLine: {
+    fontSize: 11, color: c.textFaint, textAlign: 'center', marginBottom: 6,
+    fontFamily: font.mono,
   },
   // ── Mobile overlay ──
   overlay: {
@@ -518,4 +587,25 @@ const styles: Record<string, React.CSSProperties> = {
   progressPhase: { color: c.accent, fontWeight: 600 },
   progressMsg: { color: c.text },
   progressBytes: { color: c.textMuted, fontFamily: font.mono },
+  // ── Version toast ──
+  versionToast: {
+    position: 'fixed', bottom: 16, left: 16, zIndex: 1000,
+    padding: '12px 16px', borderRadius: radius.lg,
+    background: c.surface, border: `1px solid ${c.accent}`,
+    boxShadow: shadow.lg,
+    display: 'flex', flexDirection: 'column', gap: 10,
+    maxWidth: 'calc(100vw - 32px)', minWidth: 240,
+  },
+  versionToastText: { color: c.text, fontSize: 13, lineHeight: 1.4 },
+  versionToastActions: { display: 'flex', gap: 8 },
+  versionToastReload: {
+    padding: '6px 16px', borderRadius: radius.md, border: 'none',
+    background: c.accent, color: '#fff', cursor: 'pointer', fontSize: 12,
+    fontWeight: 500, transition: 'background 0.15s',
+  },
+  versionToastDismiss: {
+    padding: '6px 16px', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    background: 'transparent', color: c.textSecondary, cursor: 'pointer', fontSize: 12,
+    fontWeight: 500, transition: 'all 0.15s',
+  },
 };
