@@ -10,6 +10,15 @@ import { PreviewPane } from './components/PreviewPane';
 import { AgentSettings } from './components/AgentSettings';
 import { HealthPanel } from './components/HealthPanel';
 import { SystemStats } from './components/SystemStats';
+import {
+  IconChevronLeft,
+  IconChevronRight,
+  IconFolder,
+  IconSettings,
+  IconHealth,
+  IconStats,
+  IconLogout,
+} from './components/icons';
 import type { FsEntry } from './api/client';
 import { fileRawUrl } from './api/client';
 import { c, radius, shadow, font } from './theme';
@@ -53,6 +62,18 @@ export default function App() {
   const [progressMap, setProgressMap] = useState<Map<string, ProgressEvent>>(new Map());
   const progressTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // ── Desktop sidebar collapse (icon-only rail) ──
+  // Mobile drawer ignores this — `collapsed` below is gated on !isMobile.
+  // Persisted to localStorage the same way splitRatio is.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('filebox.sidebarCollapsed') === '1'; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('filebox.sidebarCollapsed', sidebarCollapsed ? '1' : '0'); }
+    catch { /* ignore */ }
+  }, [sidebarCollapsed]);
 
   // ── Version tracking: detect when the running Hub has been upgraded ──
   // First non-empty version seen is the version this bundle shipped with.
@@ -228,43 +249,88 @@ export default function App() {
   }
 
   // ── Sidebar content (shared between desktop inline & mobile drawer) ──
+  // collapsed only applies to the desktop inline sidebar; the mobile drawer
+  // forces expanded (text labels + 280px width) regardless of the persisted
+  // preference.
+  const collapsed = !isMobile && sidebarCollapsed;
+
+  const navItems = [
+    { v: 'files' as const, label: 'Files', Icon: IconFolder },
+    { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
+    { v: 'health' as const, label: 'Health', Icon: IconHealth },
+    { v: 'stats' as const, label: 'Stats', Icon: IconStats },
+  ];
+
   const sidebarContent = (
     <>
-      <div style={styles.sidebarHeader}>
-        <h1 style={styles.logo}>filebox</h1>
-        {isMobile && (
-          <button onClick={() => setSidebarOpen(false)} style={styles.closeSidebarBtn}>&times;</button>
+      <div style={collapsed ? styles.sidebarHeaderCollapsed : styles.sidebarHeader}>
+        {collapsed ? (
+          <button
+            onClick={() => setSidebarCollapsed(false)}
+            style={styles.collapseToggleCollapsed}
+            title="Expand sidebar"
+          >
+            <IconChevronRight />
+          </button>
+        ) : (
+          <>
+            <h1 style={styles.logo}>filebox</h1>
+            {isMobile ? (
+              <button onClick={() => setSidebarOpen(false)} style={styles.closeSidebarBtn} title="Close">&times;</button>
+            ) : (
+              <button
+                onClick={() => setSidebarCollapsed(true)}
+                style={styles.collapseToggle}
+                title="Collapse sidebar"
+              >
+                <IconChevronLeft />
+              </button>
+            )}
+          </>
         )}
       </div>
-      <div style={styles.sidebarSection}>
-        <div style={styles.sectionHeader}>Agents</div>
-        <BackendList agents={agents} selectedId={selectedAgentId} onSelect={selectAgent} />
+      <div style={collapsed ? styles.sidebarSectionCollapsed : styles.sidebarSection}>
+        {!collapsed && <div style={styles.sectionHeader}>Agents</div>}
+        <BackendList
+          agents={agents}
+          selectedId={selectedAgentId}
+          onSelect={selectAgent}
+          collapsed={collapsed}
+        />
       </div>
       {selectedAgent && (
-        <div style={styles.sidebarSection}>
-          <div style={styles.sectionHeader}>Navigation</div>
-          <div style={styles.nav}>
-            {(['files', 'settings', 'health', 'stats'] as View[]).map((v) => (
+        <div style={collapsed ? styles.sidebarSectionCollapsed : styles.sidebarSection}>
+          {!collapsed && <div style={styles.sectionHeader}>Navigation</div>}
+          <div style={collapsed ? styles.navCollapsed : styles.nav}>
+            {navItems.map(({ v, label, Icon }) => (
               <button
                 key={v}
                 onClick={() => navigate(v)}
+                title={label}
                 style={{
-                  ...styles.navBtn,
-                  ...(view === v ? styles.navBtnActive : {}),
+                  ...(collapsed ? styles.navBtnCollapsed : styles.navBtn),
+                  ...(view === v ? (collapsed ? styles.navBtnCollapsedActive : styles.navBtnActive) : {}),
                 }}
               >
-                {v === 'files' ? 'Files' : v === 'settings' ? 'Settings' : v === 'health' ? 'Health' : 'Stats'}
+                <Icon />
+                {!collapsed && <span>{label}</span>}
               </button>
             ))}
           </div>
         </div>
       )}
       <div style={{ flex: 1 }} />
-      <div style={styles.sidebarFooter}>
-        {health?.hub.version && (
+      <div style={collapsed ? styles.sidebarFooterCollapsed : styles.sidebarFooter}>
+        {!collapsed && health?.hub.version && (
           <div style={styles.versionLine}>v{health.hub.version}</div>
         )}
-        <button onClick={logout} style={styles.logoutBtn}>Logout</button>
+        <button
+          onClick={logout}
+          title="Logout"
+          style={collapsed ? styles.logoutBtnCollapsed : styles.logoutBtn}
+        >
+          {collapsed ? <IconLogout /> : 'Logout'}
+        </button>
       </div>
     </>
   );
@@ -281,11 +347,11 @@ export default function App() {
 
       {/* Sidebar */}
       {isMobile ? (
-        <div style={{ ...styles.sidebar, ...styles.sidebarDrawer, transform: sidebarOpen ? 'translateX(0)' : 'translateX(-100%)' }}>
+        <div style={{ ...styles.sidebarExpanded, ...styles.sidebarDrawer, transform: sidebarOpen ? 'translateX(0)' : 'translateX(-100%)' }}>
           {sidebarContent}
         </div>
       ) : (
-        <div style={styles.sidebar}>{sidebarContent}</div>
+        <div style={collapsed ? styles.sidebarCollapsed : styles.sidebarExpanded}>{sidebarContent}</div>
       )}
 
       {/* Main content */}
@@ -460,18 +526,30 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: font.sans, position: 'relative', overflow: 'hidden',
   },
   // ── Sidebar ──
-  sidebar: {
-    width: 260, borderRight: `1px solid ${c.border}`, display: 'flex',
+  // Expanded (220px, down from 260) and collapsed (56px icon rail) variants.
+  // Mobile drawer overrides width to 280 via sidebarDrawer.
+  sidebarExpanded: {
+    width: 220, borderRight: `1px solid ${c.border}`, display: 'flex',
     flexDirection: 'column', flexShrink: 0, background: c.bgSubtle,
+    transition: 'width 0.18s ease',
+  },
+  sidebarCollapsed: {
+    width: 56, borderRight: `1px solid ${c.border}`, display: 'flex',
+    flexDirection: 'column', flexShrink: 0, background: c.bgSubtle,
+    transition: 'width 0.18s ease',
   },
   sidebarDrawer: {
     position: 'absolute', top: 0, left: 0, bottom: 0, zIndex: 200,
     width: 280, transition: 'transform 0.25s ease',
     boxShadow: shadow.lg,
-  },
+  } as React.CSSProperties,
   sidebarHeader: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    padding: '14px 16px', borderBottom: `1px solid ${c.border}`,
+    padding: '14px 12px', borderBottom: `1px solid ${c.border}`,
+  },
+  sidebarHeaderCollapsed: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    padding: '10px 0', borderBottom: `1px solid ${c.border}`,
   },
   logo: { margin: 0, fontSize: 17, color: c.accent, fontWeight: 700, letterSpacing: -0.3 },
   closeSidebarBtn: {
@@ -479,27 +557,61 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 20, cursor: 'pointer', padding: '0 4px', lineHeight: 1,
     borderRadius: radius.sm,
   },
+  collapseToggle: {
+    background: 'none', border: 'none', color: c.textMuted, cursor: 'pointer',
+    padding: 6, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    borderRadius: radius.sm,
+  },
+  collapseToggleCollapsed: {
+    background: 'none', border: 'none', color: c.textMuted, cursor: 'pointer',
+    width: '100%', padding: '8px 0', display: 'flex',
+    alignItems: 'center', justifyContent: 'center',
+  },
   sidebarSection: { padding: '12px 12px', borderBottom: `1px solid ${c.border}` },
+  sidebarSectionCollapsed: { padding: '10px 6px', borderBottom: `1px solid ${c.border}` },
   sectionHeader: {
     fontSize: 11, textTransform: 'uppercase', color: c.textMuted,
     letterSpacing: 0.8, marginBottom: 6, fontWeight: 500, paddingLeft: 4,
   },
   nav: { display: 'flex', flexDirection: 'column', gap: 1 },
+  navCollapsed: { display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' },
   navBtn: {
     padding: '7px 10px', borderRadius: radius.md, border: 'none',
     color: c.textSecondary, cursor: 'pointer', fontSize: 13, textAlign: 'left',
     background: 'transparent', fontWeight: 400, transition: 'all 0.15s',
+    display: 'flex', alignItems: 'center', gap: 10,
   },
   navBtnActive: {
     background: c.bgMuted, color: c.text, fontWeight: 500,
   },
+  navBtnCollapsed: {
+    padding: '8px 0', borderRadius: radius.md, border: 'none',
+    color: c.textSecondary, cursor: 'pointer',
+    background: 'transparent', transition: 'all 0.15s',
+    width: 40, height: 36, display: 'flex',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  navBtnCollapsedActive: {
+    background: c.accentBg, color: c.accent,
+  },
   sidebarFooter: {
     padding: '12px 12px', borderTop: `1px solid ${c.border}`,
+  },
+  sidebarFooterCollapsed: {
+    padding: '10px 0', borderTop: `1px solid ${c.border}`,
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
   },
   logoutBtn: {
     padding: '6px 12px', borderRadius: radius.md, border: `1px solid ${c.border}`,
     background: 'transparent', color: c.textSecondary, cursor: 'pointer', fontSize: 12,
     width: '100%', transition: 'all 0.15s',
+  },
+  logoutBtnCollapsed: {
+    padding: '8px 0', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    background: 'transparent', color: c.textSecondary, cursor: 'pointer',
+    width: 40, height: 36, display: 'flex',
+    alignItems: 'center', justifyContent: 'center',
+    transition: 'all 0.15s',
   },
   versionLine: {
     fontSize: 11, color: c.textFaint, textAlign: 'center', marginBottom: 6,

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { c, radius, font, shadow } from '../theme';
+import { fsStat } from '../api/client';
 
 // ── useMounted ────────────────────────────────────────────────────────────
 // Prevents state updates after a component unmounts. Reset on each setup so
@@ -142,6 +143,82 @@ export function LoadingOverlay({ message, onCancel }: {
         {onCancel && (
           <button onClick={onCancel} style={styles.overlayCancelBtn}>Cancel</button>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Large-file gate ──────────────────────────────────────────────────────
+// Shared across every text/markdown/html/csv/image preview. Asks the agent
+// for the file size up-front via fsStat; if it exceeds the threshold we
+// render a warning + "Load anyway" button instead of fetching the body.
+// Matches the policy ImagePreview already had: if fsStat itself fails
+// (network blip, momentary offline), sizeUnknown flips false so we don't
+// strand the user on "Checking file size..." forever — the preview
+// proceeds and the per-preview slow-load overlay catches genuinely huge
+// files.
+
+export const PREVIEW_SIZE_THRESHOLDS = {
+  image: 10 * 1024 * 1024,
+  text: 2 * 1024 * 1024,
+  markdown: 2 * 1024 * 1024,
+  html: 2 * 1024 * 1024,
+  csv: 5 * 1024 * 1024,
+} as const;
+
+export function useFileGate(opts: {
+  agentId: string;
+  root: string;
+  path: string;
+  threshold: number;
+}) {
+  const { agentId, root, path, threshold } = opts;
+  const [size, setSize] = useState<number | null>(null);
+  const [statError, setStatError] = useState(false);
+  const [bypassed, setBypassed] = useState(false);
+  const mounted = useMounted();
+
+  useEffect(() => {
+    let cancelled = false;
+    setSize(null);
+    setStatError(false);
+    setBypassed(false);
+    fsStat(agentId, root, path).then((data) => {
+      if (!cancelled && mounted.current && data.stat) {
+        setSize(data.stat.size ?? 0);
+      }
+    }).catch(() => {
+      if (!cancelled && mounted.current) setStatError(true);
+    });
+    return () => { cancelled = true; };
+  }, [agentId, root, path, threshold, mounted]);
+
+  const sizeUnknown = size === null && !statError;
+  const isLarge = size !== null && size > threshold;
+
+  return {
+    size,
+    sizeUnknown,
+    isLarge,
+    bypassed,
+    forceLoad: useCallback(() => setBypassed(true), []),
+  };
+}
+
+export function LargeFileWarning({ size, flavor, onForceLoad, url }: {
+  size: number;
+  flavor: string;
+  onForceLoad: () => void;
+  url: string;
+}) {
+  const sizeMB = (size / (1024 * 1024)).toFixed(1);
+  return (
+    <div style={styles.container}>
+      <div style={styles.largeImageWarning}>
+        <p style={styles.largeImageTitle}>Large {flavor} ({sizeMB} MB)</p>
+        <p style={styles.largeImageText}>Loading may use significant memory or freeze the tab.</p>
+        <button onClick={onForceLoad} style={styles.loadImageBtn}>Load anyway</button>
+        <a href={url} download style={styles.downloadLink}>Download instead</a>
       </div>
     </div>
   );

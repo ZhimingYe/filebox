@@ -3,6 +3,9 @@ import { fileRawUrl } from '../api/client';
 
 import {
   useFetchText,
+  useFileGate,
+  LargeFileWarning,
+  PREVIEW_SIZE_THRESHOLDS,
   useMounted,
   LoadingOverlay,
   styles,
@@ -45,7 +48,26 @@ function injectBaseTag(html: string, baseUrl: string): string {
 }
 
 export function HtmlPreview({ agentId, root, path, url }: Props) {
+  const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.html });
   const { text, error, loading, cancel, retry } = useFetchText(url);
+
+  if (gate.sizeUnknown) {
+    return (
+      <div style={styles.container}>
+        <LoadingOverlay message="Checking file size..." />
+      </div>
+    );
+  }
+  if (gate.isLarge && !gate.bypassed) {
+    return (
+      <LargeFileWarning
+        size={gate.size!}
+        flavor="HTML"
+        onForceLoad={gate.forceLoad}
+        url={url}
+      />
+    );
+  }
   const [iframeLoading, setIframeLoading] = useState(true);
   const [slowRendering, setSlowRendering] = useState(false);
   const [showSource, setShowSource] = useState(false);

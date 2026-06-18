@@ -2,6 +2,9 @@ import { useState } from 'react';
 
 import {
   useFetchText,
+  useFileGate,
+  LargeFileWarning,
+  PREVIEW_SIZE_THRESHOLDS,
   CopyButton,
   LoadingOverlay,
   styles,
@@ -11,6 +14,8 @@ interface Props {
   url: string;
   ext: string;
   path: string;
+  agentId: string;
+  root: string;
 }
 
 const CSV_PREVIEW_ROWS = 100;
@@ -61,9 +66,28 @@ function splitCsvLine(line: string, delim: string): string[] {
   return result;
 }
 
-export function CsvPreview({ url, ext }: Props) {
+export function CsvPreview({ url, ext, agentId, root, path }: Props) {
+  const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.csv });
   const { text, error, loading, cancel, retry } = useFetchText(url);
   const [view, setView] = useState<'table' | 'raw'>('table');
+
+  if (gate.sizeUnknown) {
+    return (
+      <div style={styles.container}>
+        <LoadingOverlay message="Checking file size..." />
+      </div>
+    );
+  }
+  if (gate.isLarge && !gate.bypassed) {
+    return (
+      <LargeFileWarning
+        size={gate.size!}
+        flavor="CSV"
+        onForceLoad={gate.forceLoad}
+        url={url}
+      />
+    );
+  }
 
   if (loading) {
     return (

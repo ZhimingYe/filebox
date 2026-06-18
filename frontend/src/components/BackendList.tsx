@@ -5,11 +5,42 @@ interface Props {
   agents: AgentInfo[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  collapsed?: boolean;
 }
 
-export function BackendList({ agents, selectedId, onSelect }: Props) {
+export function BackendList({ agents, selectedId, onSelect, collapsed = false }: Props) {
   if (agents.length === 0) {
-    return <div style={styles.empty}>No agents connected</div>;
+    return <div style={styles.empty}>{collapsed ? '' : 'No agents connected'}</div>;
+  }
+
+  if (collapsed) {
+    return (
+      <div style={styles.collapsedList}>
+        {agents.map((a) => {
+          const statusColor = a.status === 'online' ? c.success : a.status === 'slow' ? c.warning : c.textFaint;
+          const statusLabel = a.status === 'online' ? 'Online' : a.status === 'slow' ? 'Slow' : 'Offline';
+          const selected = selectedId === a.id;
+          const initial = (a.name.trim()[0] || '?').toUpperCase();
+          return (
+            <div
+              key={a.id}
+              onClick={() => onSelect(a.id)}
+              title={`${a.name} · ${statusLabel}${a.rtt_ms !== null ? ` · ${a.rtt_ms}ms` : ''}${a.pending_resource_update ? ' · pending' : ''}`}
+              style={{
+                ...styles.collapsedItem,
+                ...(selected ? styles.collapsedItemSelected : {}),
+                borderLeftColor: selected ? c.accent : 'transparent',
+              }}
+            >
+              <div style={{ ...styles.avatar, background: `${statusColor}20`, color: statusColor }}>
+                {initial}
+              </div>
+              <span style={{ ...styles.avatarDot, background: statusColor }} />
+            </div>
+          );
+        })}
+      </div>
+    );
   }
 
   return (
@@ -61,4 +92,24 @@ const styles: Record<string, React.CSSProperties> = {
   statusLabel: { fontSize: 11, fontWeight: 500 },
   meta: { display: 'flex', gap: 8, marginTop: 3, fontSize: 12, color: c.textMuted, paddingLeft: 15 },
   pending: { color: c.warning },
+  // ── Collapsed rail ──
+  collapsedList: { display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' },
+  collapsedItem: {
+    position: 'relative', width: 36, height: 36, borderRadius: radius.md, cursor: 'pointer',
+    border: '1px solid transparent', borderLeft: '3px solid transparent',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    transition: 'all 0.15s',
+  },
+  collapsedItemSelected: {
+    background: c.accentBg,
+  },
+  avatar: {
+    width: 26, height: 26, borderRadius: '50%',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 12, fontWeight: 600, fontFamily: font.sans,
+  },
+  avatarDot: {
+    position: 'absolute', top: 4, right: 4, width: 7, height: 7,
+    borderRadius: '50%', border: `1.5px solid ${c.bgSubtle}`, boxSizing: 'border-box',
+  },
 };

@@ -34,8 +34,8 @@ function IconSymlink() {
     <svg style={iconStyle} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M4 2h5.59a1 1 0 0 1 .7.29l2.71 2.71a1 1 0 0 1 .29.7V13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z" fill="#e2e8f0"/>
       <path d="M10 2.5V5a.5.5 0 0 0 .5.5h2.5" stroke="#94a3b8" strokeWidth="1" strokeLinecap="round"/>
-      <path d="M7 10.5a2 2 0 0 0 2.83 0l1.17-1.17" stroke="#6366f1" strokeWidth="1" strokeLinecap="round"/>
-      <path d="M12 7.5v3h-3" stroke="#6366f1" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"/>
+      <path d="M5 11L10 6" stroke="#6366f1" strokeWidth="1.3" strokeLinecap="round"/>
+      <path d="M7 6h3v3" stroke="#6366f1" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
     </svg>
   );
 }

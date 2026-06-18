@@ -4,6 +4,9 @@ import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 import {
   useFetchText,
+  useFileGate,
+  LargeFileWarning,
+  PREVIEW_SIZE_THRESHOLDS,
   CopyButton,
   LoadingOverlay,
   wrapPref,
@@ -15,11 +18,33 @@ import {
 interface Props {
   url: string;
   ext: string;
+  agentId: string;
+  root: string;
+  path: string;
 }
 
-export function TextPreview({ url, ext }: Props) {
+export function TextPreview({ url, ext, agentId, root, path }: Props) {
+  const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.text });
   const { text, error, loading, cancel, retry } = useFetchText(url);
   const [wrap, setWrap] = useState(wrapPref);
+
+  if (gate.sizeUnknown) {
+    return (
+      <div style={styles.container}>
+        <LoadingOverlay message="Checking file size..." />
+      </div>
+    );
+  }
+  if (gate.isLarge && !gate.bypassed) {
+    return (
+      <LargeFileWarning
+        size={gate.size!}
+        flavor="file"
+        onForceLoad={gate.forceLoad}
+        url={url}
+      />
+    );
+  }
 
   const toggleWrap = () => {
     const next = !wrap;

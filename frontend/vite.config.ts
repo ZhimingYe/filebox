@@ -62,6 +62,11 @@ export default defineConfig({
             ) {
               return 'markdown-vendor';
             }
+            // UTIF (TIFF decoder) + pako (deflate for some TIFFs). Only
+            // loaded when a .tif/.tiff is opened.
+            if (id.includes('/utif/') || id.includes('/pako/')) {
+              return 'tiff-vendor';
+            }
           }
         },
       },
