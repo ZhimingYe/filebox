@@ -28,3 +28,6 @@ Thumbs.db
 
 # Planning notes
 detailedplan.md
+
+# Security review notes (local audit, not for commit)
+SECURITY_REVIEW.md
