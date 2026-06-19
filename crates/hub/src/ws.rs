@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, Notify};
 use uuid::Uuid;
@@ -10,7 +12,8 @@ use uuid::Uuid;
 use filebox_protocol::message::{AgentMessage, HubMessage};
 use filebox_protocol::resources::Capabilities;
 
-use crate::state::AppState;
+use crate::net::client_ip;
+use crate::state::{AppState, PendingResponse};
 
 /// Per-write timeout for outbound WS frames. A half-open TCP can keep a
 /// `ws_sink.send()` future pending for the OS's TCP timeout (~hours on
@@ -26,15 +29,35 @@ const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Slow→Offline threshold in update_heartbeats so the registry view and
 /// the actual socket close stay in sync.
 const NO_AGENT_MESSAGE_TIMEOUT: Duration = Duration::from_secs(90);
+// Agent FileChunk payloads are capped at 4MiB raw bytes and serialize as
+// base64, so normal file chunks stay well below this. Keep a generous bound
+// for protocol overhead and rolling upgrades while still capping hostile
+// agent->hub messages.
+const MAX_AGENT_WS_MESSAGE_SIZE: usize = 24 * 1024 * 1024;
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-) -> impl axum::response::IntoResponse {
-    ws.on_upgrade(|socket| handle_socket(socket, state))
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    let ip = client_ip(&headers, addr);
+    if let Err(remaining) = state.ws_rate_limiter.check(&ip) {
+        tracing::warn!("Agent WS pre-auth rate limited for {} ({}s remaining)", ip, remaining);
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+
+    // Count the pre-auth connection immediately so clients that never send
+    // Auth still consume from a bounded budget. A valid token clears it below.
+    state.ws_rate_limiter.record_failure(&ip);
+
+    ws.max_message_size(MAX_AGENT_WS_MESSAGE_SIZE)
+        .max_frame_size(MAX_AGENT_WS_MESSAGE_SIZE)
+        .on_upgrade(|socket| handle_socket(socket, state, ip))
+        .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState) {
+async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
     let (mut ws_sink, mut ws_stream) = socket.split();
 
     let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
@@ -58,11 +81,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     {
         let inner = state.inner.read().await;
         if !inner.sessions.validate_agent_token(&token) {
-            tracing::warn!("Agent auth failed: invalid token");
+            tracing::warn!("Agent auth failed from {}: invalid token", client_ip);
+            tracing::warn!(target: "audit", ip = %client_ip, "agent_auth_failed");
             send_auth_fail(&mut ws_sink).await;
             return;
         }
     }
+    state.ws_rate_limiter.clear(&client_ip);
 
     let temp_id = Uuid::new_v4().to_string();
 
@@ -133,6 +158,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     };
 
     tracing::info!("Agent registered: {} ({})", name, agent_id);
+    tracing::info!(
+        target: "audit",
+        ip = %client_ip,
+        agent_id = %agent_id,
+        name = %name,
+        "agent_registered"
+    );
 
     // Emit SSE event for agent connection
     state.emit_sse("agent_connected", serde_json::json!({
@@ -182,12 +214,19 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         // Send pending update if any
         if let Some(agent) = inner.agents.get(&agent_id) {
             if let Some(pending) = &agent.pending_update {
-                let req_id = format!("pending_{}", Uuid::new_v4());
-                let _ = tx.send(HubMessage::ResourcesSetDesired {
-                    req_id,
-                    desired_revision: agent.resource_revision + 1,
-                    roots: pending.roots.clone(),
-                });
+                if let Some(desired_revision) = agent.resource_revision.checked_add(1) {
+                    let req_id = format!("pending_{}", Uuid::new_v4());
+                    let _ = tx.send(HubMessage::ResourcesSetDesired {
+                        req_id,
+                        desired_revision,
+                        roots: pending.roots.clone(),
+                    });
+                } else {
+                    tracing::error!(
+                        "Cannot send pending resource update to agent {}: revision overflow",
+                        agent_id
+                    );
+                }
             }
         }
     }
@@ -259,19 +298,20 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             }
                             Ok(AgentMessage::ResourcesApplied {
                                 req_id,
-                                agent_id: aid,
+                                agent_id: _aid,
                                 resource_revision,
                             }) => {
-                                let pending_resp = {
-                                    let inner = state.inner.read().await;
-                                    let mut pending = inner.pending_responses.write().await;
-                                    pending.remove(&req_id)
-                                };
+                                let pending_resp =
+                                    take_pending_for_agent(&state, &req_id, &agent_id_for_msgs).await;
                                 if let Some(pending_resp) = pending_resp {
                                     let roots = pending_resp.desired_roots.unwrap_or_default();
                                     {
                                         let mut inner = state.inner.write().await;
-                                        inner.agents.update_resources(&aid, resource_revision, roots);
+                                        inner.agents.update_resources(
+                                            &agent_id_for_msgs,
+                                            resource_revision,
+                                            roots,
+                                        );
                                     }
                                     let _ = pending_resp.tx
                                         .send(serde_json::json!({
@@ -282,7 +322,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                         .await;
 
                                     state.emit_sse("resources_updated", serde_json::json!({
-                                        "agent_id": aid,
+                                        "agent_id": agent_id_for_msgs,
                                         "resource_revision": resource_revision,
                                         "state": "applied",
                                     })).await;
@@ -290,20 +330,17 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             }
                             Ok(AgentMessage::ResourcesRejected {
                                 req_id,
-                                agent_id: aid,
+                                agent_id: _aid,
                                 error,
                                 message,
                                 ..
                             }) => {
-                                let pending_resp = {
-                                    let inner = state.inner.read().await;
-                                    let mut pending = inner.pending_responses.write().await;
-                                    pending.remove(&req_id)
-                                };
+                                let pending_resp =
+                                    take_pending_for_agent(&state, &req_id, &agent_id_for_msgs).await;
                                 {
                                     let mut inner = state.inner.write().await;
                                     let err_msg = if message.is_empty() { error.clone() } else { message.clone() };
-                                    inner.agents.set_config_error(&aid, err_msg);
+                                    inner.agents.set_config_error(&agent_id_for_msgs, err_msg);
                                 }
                                 if let Some(pending_resp) = pending_resp {
                                     let _ = pending_resp.tx
@@ -317,12 +354,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 }
 
                                 state.emit_sse("resources_updated", serde_json::json!({
-                                    "agent_id": aid,
+                                    "agent_id": agent_id_for_msgs,
                                     "state": "rejected",
                                 })).await;
                             }
                             Ok(AgentMessage::ResourcesUpdated {
-                                agent_id: aid,
+                                agent_id: _aid,
                                 resource_revision,
                                 roots,
                             }) => {
@@ -330,10 +367,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     let mut inner = state.inner.write().await;
                                     inner
                                         .agents
-                                        .update_resources(&aid, resource_revision, roots);
+                                        .update_resources(&agent_id_for_msgs, resource_revision, roots);
                                 }
                                 state.emit_sse("resources_updated", serde_json::json!({
-                                    "agent_id": aid,
+                                    "agent_id": agent_id_for_msgs,
                                     "resource_revision": resource_revision,
                                     "state": "applied",
                                 })).await;
@@ -342,11 +379,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             | Ok(AgentMessage::FsStatResponse { req_id, .. })
                             | Ok(AgentMessage::FileChunk { req_id, .. })
                             | Ok(AgentMessage::SysStatsResponse { req_id, .. }) => {
-                                let pending_resp = {
-                                    let inner = state.inner.read().await;
-                                    let mut pending = inner.pending_responses.write().await;
-                                    pending.remove(&req_id)
-                                };
+                                let pending_resp =
+                                    take_pending_for_agent(&state, &req_id, &agent_id_for_msgs).await;
                                 if let Some(pending_resp) = pending_resp {
                                     let parsed: serde_json::Value =
                                         serde_json::from_str(&text).unwrap_or_default();
@@ -412,6 +446,36 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
 }
 
+async fn take_pending_for_agent(
+    state: &AppState,
+    req_id: &str,
+    agent_id: &str,
+) -> Option<PendingResponse> {
+    let pending_arc = {
+        let inner = state.inner.read().await;
+        inner.pending_responses.clone()
+    };
+    let mut pending = pending_arc.write().await;
+    match pending.remove(req_id) {
+        Some(resp) => {
+            if resp.agent_id == agent_id {
+                Some(resp)
+            } else {
+                let owner = resp.agent_id.clone();
+                tracing::warn!(
+                    "Ignoring response for req_id {} from agent {}; pending owner is {}",
+                    req_id,
+                    agent_id,
+                    owner
+                );
+                pending.insert(req_id.to_string(), resp);
+                None
+            }
+        }
+        None => None,
+    }
+}
+
 async fn send_auth_fail(ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>) {
     let _ = ws_sink
         .send(Message::Text(
@@ -423,4 +487,29 @@ async fn send_auth_fail(ws_sink: &mut futures_util::stream::SplitSink<WebSocket,
             .into(),
         ))
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_ws_message_size_allows_worst_case_agent_file_chunk() {
+        let chunk = AgentMessage::FileChunk {
+            req_id: "file_test".to_string(),
+            offset: 0,
+            data: vec![255; 4 * 1024 * 1024],
+            done: false,
+            error: None,
+        };
+
+        let serialized = serde_json::to_string(&chunk).unwrap();
+
+        assert!(
+            serialized.len() < MAX_AGENT_WS_MESSAGE_SIZE,
+            "serialized 4MiB FileChunk was {} bytes; WS limit is {}",
+            serialized.len(),
+            MAX_AGENT_WS_MESSAGE_SIZE
+        );
+    }
 }

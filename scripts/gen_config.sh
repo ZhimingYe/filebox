@@ -125,13 +125,23 @@ EOF
 gen_agent() {
     echo "── Agent config ──" >&2
 
+    insecure_hub=0
     while true; do
         read -rp "Hub URL (e.g. https://hub.example.com): " hub
         hub="${hub%/}"
-        if [[ "$hub" =~ ^https?:// ]] || [[ "$hub" =~ ^wss?:// ]]; then
+        if [[ "$hub" =~ ^https:// ]] || [[ "$hub" =~ ^wss:// ]]; then
             break
         fi
-        echo "URL must start with http(s):// or ws(s)://" >&2
+        if [[ "$hub" =~ ^http:// ]] || [[ "$hub" =~ ^ws:// ]]; then
+            echo "Plaintext hub URLs require FILEBOX_ALLOW_INSECURE_HUB=1 when starting the agent." >&2
+            read -rp "Use plaintext for local development anyway? [y/N]: " allow_insecure
+            if [[ "$allow_insecure" =~ ^[Yy]$ ]]; then
+                insecure_hub=1
+                break
+            fi
+        else
+            echo "URL must start with https:// or wss://." >&2
+        fi
     done
 
     while true; do
@@ -148,18 +158,37 @@ gen_agent() {
     # Expand ~ in case user typed it literally
     data_dir="${data_dir/#\~/$HOME}"
 
-    cat <<EOF
+    if [[ "$insecure_hub" -eq 1 ]]; then
+        cat <<EOF
+# WARNING: plaintext hub URLs are for local development only.
+# Start the agent with FILEBOX_ALLOW_INSECURE_HUB=1 to use this URL.
 hub = "${hub}"
 token = "${token}"
 name = "${name}"
 data_dir = "${data_dir}"
 EOF
+    else
+        cat <<EOF
+hub = "${hub}"
+token = "${token}"
+name = "${name}"
+data_dir = "${data_dir}"
+EOF
+    fi
 
     cat >&2 <<EOF
 
 ────────────────────────────────────────────────────
   agent.toml ready.
   Make sure the token matches the Agent token from the Hub config.
+EOF
+    if [[ "$insecure_hub" -eq 1 ]]; then
+        cat >&2 <<EOF
+  Plaintext local development:
+    FILEBOX_ALLOW_INSECURE_HUB=1 ./agent
+EOF
+    fi
+    cat >&2 <<EOF
 ────────────────────────────────────────────────────
 EOF
 }

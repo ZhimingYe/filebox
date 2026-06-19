@@ -53,7 +53,7 @@ interface ProgressEvent {
 
 export default function App() {
   const { loggedIn, login, logout } = useSession();
-  const { health, error: healthError, refresh } = useHealth(loggedIn === true);
+  const { health, agents, error: healthError, refresh } = useHealth(loggedIn === true);
   const isMobile = useIsMobile();
 
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -194,7 +194,6 @@ export default function App() {
     return () => document.removeEventListener('keydown', onKey);
   }, [preview]);
 
-  const agents = health?.agents || [];
   const selectedAgent = agents.find((a) => a.id === selectedAgentId) || null;
 
   const handleFileSelect = useCallback((root: string, path: string, entry: FsEntry) => {
@@ -215,7 +214,12 @@ export default function App() {
 
   // Auto-refresh health and track progress when SSE events arrive
   useSse(useCallback((evt) => {
-    if (evt.event === 'agent_connected' || evt.event === 'agent_disconnected' || evt.event === 'resources_updated') {
+    if (
+      evt.event === 'agent_connected' ||
+      evt.event === 'agent_disconnected' ||
+      evt.event === 'resources_updated' ||
+      evt.event === 'sync_required'
+    ) {
       refresh();
     }
     if (evt.event === 'progress') {
@@ -236,7 +240,7 @@ export default function App() {
         timers.delete(d.req_id);
       }, 5000));
     }
-  }, [refresh]));
+  }, [refresh]), loggedIn === true);
 
   const activeProgress = Array.from(progressMap.values());
 
@@ -470,7 +474,7 @@ export default function App() {
           ) : view === 'stats' ? (
             <SystemStats agentId={selectedAgent.id} />
           ) : (
-            <HealthPanel health={health} error={healthError} />
+            <HealthPanel health={health} agents={agents} error={healthError} />
           )}
         </div>
       </div>

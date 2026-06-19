@@ -54,6 +54,19 @@ fn is_path_denied(relative_path: &str) -> bool {
     denylist::is_denied(relative_path)
 }
 
+#[cfg(unix)]
+fn is_sensitive_virtual_path(path: &Path) -> bool {
+    ["/proc", "/sys", "/dev/fd", "/dev/mapper"]
+        .iter()
+        .map(Path::new)
+        .any(|blocked| path == blocked || path.starts_with(blocked))
+}
+
+#[cfg(not(unix))]
+fn is_sensitive_virtual_path(_path: &Path) -> bool {
+    false
+}
+
 /// Compute the relative path from root to the given absolute path.
 fn relative_path(root_path: &Path, abs_path: &Path) -> String {
     abs_path
@@ -84,6 +97,9 @@ pub fn list_directory(
     if !abs_path.is_dir() {
         return Err(format!("Not a directory: {}", path));
     }
+    if is_sensitive_virtual_path(&abs_path) {
+        return Err("Access denied: sensitive virtual filesystem".to_string());
+    }
 
     let entries = fs::read_dir(&abs_path)
         .map_err(|e| format!("Failed to read directory: {}", e))?;
@@ -93,11 +109,15 @@ pub fn list_directory(
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
         let file_name = entry.file_name().to_string_lossy().to_string();
+        let entry_path = entry.path();
 
         // Skip hidden files starting with . (but not the directory itself)
         // Actually, we show them but mark as denied if sensitive
-        let rel = relative_path(&root_canonical, &entry.path());
-        let denied = is_path_denied(&rel);
+        let rel = relative_path(&root_canonical, &entry_path);
+        let entry_canonical = entry_path
+            .canonicalize()
+            .unwrap_or_else(|_| entry_path.clone());
+        let denied = is_path_denied(&rel) || is_sensitive_virtual_path(&entry_canonical);
 
         let metadata = entry
             .file_type()
@@ -111,19 +131,25 @@ pub fn list_directory(
             FsEntryType::File
         };
 
-        let size = if metadata.is_file() {
-            fs::metadata(entry.path()).ok().map(|m| m.len())
+        let size = if denied {
+            None
+        } else if metadata.is_file() {
+            fs::metadata(&entry_path).ok().map(|m| m.len())
         } else {
             None
         };
 
-        let modified = fs::metadata(entry.path())
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| {
-                let dt: chrono::DateTime<chrono::Local> = t.into();
-                Some(dt.to_rfc3339())
-            });
+        let modified = if denied {
+            None
+        } else {
+            fs::metadata(&entry_path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| {
+                    let dt: chrono::DateTime<chrono::Local> = t.into();
+                    Some(dt.to_rfc3339())
+                })
+        };
 
         items.push(FsEntry {
             name: file_name,
@@ -182,6 +208,9 @@ pub fn stat_file(
 
     let rel = relative_path(&root_canonical, &abs_path);
     let denied = is_path_denied(&rel);
+    if denied || is_sensitive_virtual_path(&abs_path) {
+        return Err("Access denied: sensitive file".to_string());
+    }
 
     let metadata = fs::metadata(&abs_path)
         .map_err(|e| format!("Failed to stat file: {}", e))?;
@@ -243,7 +272,7 @@ pub fn read_file_range(
         .map_err(|e| format!("Cannot resolve root path: {}", e))?;
 
     let rel = relative_path(&root_canonical, &abs_path);
-    if is_path_denied(&rel) {
+    if is_path_denied(&rel) || is_sensitive_virtual_path(&abs_path) {
         return Err("Access denied: sensitive file".to_string());
     }
 
@@ -375,8 +404,12 @@ mod tests {
         let (items, _) = list_directory(&roots, "test", "", 100, None).unwrap();
         let env = items.iter().find(|i| i.name == ".env").unwrap();
         assert!(env.denied, ".env must be marked denied");
+        assert!(env.size.is_none(), "denied file size must be hidden");
+        assert!(env.modified.is_none(), "denied file mtime must be hidden");
         let safe = items.iter().find(|i| i.name == "safe.txt").unwrap();
         assert!(!safe.denied);
+        assert_eq!(safe.size, Some(4));
+        assert!(safe.modified.is_some());
     }
 
     #[test]
@@ -447,13 +480,13 @@ mod tests {
     }
 
     #[test]
-    fn stat_file_marks_denied_files() {
+    fn stat_file_rejects_denied_files() {
         let sb = Sandbox::new();
         sb.write_file("server.key", b"PRIVATE KEY");
         let roots = vec![sb.root()];
 
-        let stat = stat_file(&roots, "test", "server.key").unwrap();
-        assert!(stat.denied);
+        let err = stat_file(&roots, "test", "server.key").unwrap_err();
+        assert!(err.contains("denied") || err.contains("sensitive"));
     }
 
     #[test]
@@ -600,6 +633,17 @@ mod tests {
             result.is_err(),
             "symlink escaping the root must be rejected"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sensitive_virtual_path_detection_rejects_absolute_virtual_paths() {
+        assert!(is_sensitive_virtual_path(Path::new("/proc")));
+        assert!(is_sensitive_virtual_path(Path::new("/proc/self")));
+        assert!(is_sensitive_virtual_path(Path::new("/sys/kernel")));
+        assert!(is_sensitive_virtual_path(Path::new("/dev/fd")));
+        assert!(!is_sensitive_virtual_path(Path::new("/tmp/project/proc/readme.txt")));
+        assert!(!is_sensitive_virtual_path(Path::new("/tmp/project/src/sys/mod.rs")));
     }
 
     #[test]

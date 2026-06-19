@@ -11,7 +11,14 @@ use crate::config::HubConfig;
 
 pub struct PendingResponse {
     pub tx: mpsc::Sender<serde_json::Value>,
+    pub agent_id: String,
+    pub session_id: Option<String>,
     pub desired_roots: Option<Vec<RootConfig>>,
+}
+
+#[derive(Clone)]
+pub struct AuthenticatedSession {
+    pub id: String,
 }
 
 /// Simple in-memory rate limiter for login attempts.
@@ -67,6 +74,7 @@ impl LoginRateLimiter {
 pub struct AppState {
     pub inner: Arc<RwLock<AppStateInner>>,
     pub rate_limiter: Arc<LoginRateLimiter>,
+    pub ws_rate_limiter: Arc<LoginRateLimiter>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -105,6 +113,10 @@ impl AppState {
                 sse_tx,
             })),
             rate_limiter: Arc::new(LoginRateLimiter::new(5, std::time::Duration::from_secs(30))),
+            // Agent fleets commonly reconnect in cohorts after a hub restart
+            // or network partition. Keep this high enough for same-IP NATed
+            // agents while still bounding unauthenticated WS auth attempts.
+            ws_rate_limiter: Arc::new(LoginRateLimiter::new(300, std::time::Duration::from_secs(30))),
         }
     }
 }
@@ -232,6 +244,7 @@ mod tests {
         assert_eq!(inner.agents.list_all().len(), 0);
         // Verify rate limiter is initialized with default thresholds
         assert!(state.rate_limiter.check("any-ip").is_ok());
+        assert!(state.ws_rate_limiter.check("any-ip").is_ok());
     }
 
     #[test]

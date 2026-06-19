@@ -35,6 +35,13 @@ impl ResourceManager {
         desired_revision: u64,
         roots: Vec<RootConfig>,
     ) -> Result<u64, String> {
+        if desired_revision <= self.config.resource_revision {
+            return Err(format!(
+                "Stale revision {} (current {}); ignoring",
+                desired_revision, self.config.resource_revision
+            ));
+        }
+
         // Validate all roots
         for root in &roots {
             validate_root(root)?;
@@ -88,9 +95,29 @@ fn validate_root(root: &RootConfig) -> Result<(), String> {
         ));
     }
 
+    if is_sensitive_virtual_root(&canonical) {
+        return Err(format!(
+            "Root '{}' path '{}' is a sensitive virtual filesystem",
+            root.name, root.path
+        ));
+    }
+
     // Ensure the canonical path is what we expect (no symlink tricks)
     // We store the original path for display but use canonical for operations
     Ok(())
+}
+
+#[cfg(unix)]
+fn is_sensitive_virtual_root(path: &Path) -> bool {
+    ["/proc", "/sys", "/dev/fd", "/dev/mapper"]
+        .iter()
+        .map(Path::new)
+        .any(|blocked| path == blocked || path.starts_with(blocked))
+}
+
+#[cfg(not(unix))]
+fn is_sensitive_virtual_root(_path: &Path) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -203,6 +230,26 @@ mod tests {
         }];
         let err = mgr.apply_desired(1, roots).unwrap_err();
         assert!(err.contains("not a directory"));
+    }
+
+    #[test]
+    fn apply_desired_rejects_stale_revision() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+
+        let real_root = tempdir().unwrap();
+        let roots = vec![RootConfig {
+            name: "data".to_string(),
+            path: real_root.path().to_str().unwrap().to_string(),
+            enabled: true,
+        }];
+
+        mgr.apply_desired(5, roots.clone()).unwrap();
+        let err = mgr.apply_desired(5, roots.clone()).unwrap_err();
+        assert!(err.contains("Stale revision 5"));
+        let err = mgr.apply_desired(4, roots).unwrap_err();
+        assert!(err.contains("Stale revision 4"));
+        assert_eq!(mgr.resource_revision(), 5);
     }
 
     #[test]
@@ -380,6 +427,16 @@ mod tests {
         };
         let err = validate_root(&root).unwrap_err();
         assert!(err.contains("not a directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sensitive_virtual_root_detection_rejects_nested_paths() {
+        assert!(is_sensitive_virtual_root(Path::new("/proc")));
+        assert!(is_sensitive_virtual_root(Path::new("/proc/self")));
+        assert!(is_sensitive_virtual_root(Path::new("/sys/kernel")));
+        assert!(is_sensitive_virtual_root(Path::new("/dev/fd")));
+        assert!(!is_sensitive_virtual_root(Path::new("/var/log")));
     }
 
     #[test]

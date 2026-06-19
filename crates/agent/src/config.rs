@@ -77,11 +77,63 @@ impl AgentConfig {
                     .join("filebox")
             });
 
+        enforce_secure_hub_url(&hub_url);
+
         Self {
             hub_url,
             token,
             agent_name,
             data_dir,
         }
+    }
+}
+
+fn enforce_secure_hub_url(hub_url: &str) {
+    if is_secure_hub_url(hub_url) {
+        return;
+    }
+
+    if allow_insecure_hub() {
+        eprintln!(
+            "[agent] WARNING: connecting to hub over plaintext (FILEBOX_ALLOW_INSECURE_HUB=1)"
+        );
+        return;
+    }
+
+    eprintln!(
+        "[agent] FATAL: hub URL must use https:// or wss://. Got: {}",
+        hub_url
+    );
+    eprintln!("[agent] Set FILEBOX_ALLOW_INSECURE_HUB=1 to override for local development only.");
+    std::process::exit(1);
+}
+
+fn is_secure_hub_url(hub_url: &str) -> bool {
+    let url = hub_url.trim_start().to_ascii_lowercase();
+    url.starts_with("https://") || url.starts_with("wss://")
+}
+
+fn allow_insecure_hub() -> bool {
+    std::env::var("FILEBOX_ALLOW_INSECURE_HUB")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_secure_hub_url;
+
+    #[test]
+    fn secure_hub_url_accepts_https_and_wss() {
+        assert!(is_secure_hub_url("https://hub.example.com"));
+        assert!(is_secure_hub_url("wss://hub.example.com/ws/agent"));
+        assert!(is_secure_hub_url(" HTTPS://hub.example.com"));
+    }
+
+    #[test]
+    fn secure_hub_url_rejects_plaintext_and_missing_scheme() {
+        assert!(!is_secure_hub_url("http://hub.example.com"));
+        assert!(!is_secure_hub_url("ws://hub.example.com"));
+        assert!(!is_secure_hub_url("hub.example.com:3000"));
     }
 }

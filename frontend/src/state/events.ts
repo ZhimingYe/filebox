@@ -52,6 +52,12 @@ class SseManager {
     es.addEventListener('resources_updated', (e) => {
       this.dispatch('resources_updated', e.data);
     });
+    es.addEventListener('progress', (e) => {
+      this.dispatch('progress', e.data);
+    });
+    es.addEventListener('sync_required', (e) => {
+      this.dispatch('sync_required', e.data);
+    });
 
     es.onerror = () => {
       es.close();
@@ -87,7 +93,7 @@ class SseManager {
 
 const manager = new SseManager();
 
-export function useSse(listener: Listener) {
+export function useSse(listener: Listener, enabled = true) {
   const ref = useRef(listener);
   ref.current = listener;
 
@@ -96,6 +102,9 @@ export function useSse(listener: Listener) {
   }, []);
 
   useEffect(() => {
+    if (!enabled) {
+      return undefined;
+    }
     return manager.subscribe(stableListener);
-  }, [stableListener]);
+  }, [enabled, stableListener]);
 }

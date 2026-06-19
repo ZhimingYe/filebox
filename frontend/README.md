@@ -75,7 +75,7 @@ Output goes to `dist/`. The Hub serves these static files in production.
 |----------|--------|-------------|
 | `/api/session/exchange` | POST | Login with username/password |
 | `/api/session/logout` | POST | Logout |
-| `/api/health` | GET | Hub and agent health |
+| `/api/health` | GET | Public hub health |
 | `/api/agents` | GET | List connected agents |
 | `/api/agents/:id` | GET | Get agent details |
 | `/api/agents/:id/resources` | GET | Get agent resources |

@@ -147,6 +147,10 @@ export FILEBOX_AGENT_NAME="My Server"
 export FILEBOX_AGENT_DATA_DIR="/var/lib/filebox"
 ```
 
+Agents require `https://` or `wss://` hub URLs by default so the agent token
+is not sent in plaintext. For local development against a plaintext hub only,
+start the agent with `FILEBOX_ALLOW_INSECURE_HUB=1`.
+
 ### 4. Start Services
 
 ```bash
@@ -199,7 +203,7 @@ data_dir = "/var/lib/filebox"
 
 | Field | Env Var | Description | Default |
 |-------|---------|-------------|---------|
-| `hub` | `FILEBOX_AGENT_HUB` | Hub server URL | Required |
+| `hub` | `FILEBOX_AGENT_HUB` | Hub server URL (`https://` or `wss://` by default) | Required |
 | `token` | `FILEBOX_AGENT_TOKEN` | Agent auth token | Required |
 | `name` | `FILEBOX_AGENT_NAME` | Agent display name | `unknown` |
 | `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Data storage directory | `./data` |

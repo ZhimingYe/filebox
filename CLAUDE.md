@@ -36,6 +36,11 @@ machines need no public IP, inbound port, VPN, or port mapping.
 - **No emojis in the frontend.** Custom 16×16 SVG icons.
 - **All UI tokens come from `frontend/src/theme.ts`.** No hardcoded colors.
   Inline styles only — no CSS modules, no Tailwind.
+- **No drive-by formatting.** Do not run broad formatting tools such as
+  `cargo fmt`, `rustfmt`, Prettier, or similar formatters unless the user
+  explicitly asks for it, or unless formatting the touched file is strictly
+  necessary to make a targeted change pass. Keep diffs focused on behavior
+  and the lines you intentionally changed.
 
 ## Stack
 

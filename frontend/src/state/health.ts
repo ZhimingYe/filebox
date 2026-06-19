@@ -3,13 +3,18 @@ import * as api from '../api/client';
 
 export function useHealth(enabled: boolean, intervalMs = 5000) {
   const [health, setHealth] = useState<api.HealthResponse | null>(null);
+  const [agents, setAgents] = useState<api.AgentInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const data = await api.getHealth();
-      setHealth(data);
+      const [healthData, agentData] = await Promise.all([
+        api.getHealth(),
+        api.getAgents(),
+      ]);
+      setHealth(healthData);
+      setAgents(agentData);
       setError(null);
     } catch (e: any) {
       setError(e.message || 'Failed to fetch health');
@@ -23,6 +28,7 @@ export function useHealth(enabled: boolean, intervalMs = 5000) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
+      setAgents([]);
       return;
     }
 
@@ -40,5 +46,5 @@ export function useHealth(enabled: boolean, intervalMs = 5000) {
     };
   }, [enabled, refresh, intervalMs]);
 
-  return { health, error, refresh };
+  return { health, agents, error, refresh };
 }

@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::de::{Error as DeError, SeqAccess, Visitor};
 use crate::resources::{Capabilities, FileStat, FsEntry, RootConfig, SysStats};
 
 // ── Agent → Hub ──────────────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ pub enum AgentMessage {
     FileChunk {
         req_id: String,
         offset: u64,
+        #[serde(with = "base64_bytes")]
         data: Vec<u8>,
         done: bool,
         error: Option<String>,
@@ -65,6 +67,57 @@ pub enum AgentMessage {
         stats: Option<SysStats>,
         error: Option<String>,
     },
+}
+
+mod base64_bytes {
+    use super::*;
+    use base64::Engine;
+    use std::fmt;
+
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        serializer.serialize_str(&encoded)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(BytesVisitor)
+    }
+
+    struct BytesVisitor;
+
+    impl<'de> Visitor<'de> for BytesVisitor {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("base64 string or legacy JSON byte array")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: DeError,
+        {
+            base64::engine::general_purpose::STANDARD
+                .decode(value)
+                .map_err(E::custom)
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+            while let Some(byte) = seq.next_element::<u8>()? {
+                bytes.push(byte);
+            }
+            Ok(bytes)
+        }
+    }
 }
 
 // ── Hub → Agent ──────────────────────────────────────────────────────────────
@@ -210,6 +263,42 @@ mod tests {
                 assert_eq!(data, vec![0xde, 0xad, 0xbe, 0xef]);
                 assert!(!done);
                 assert!(error.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn agent_file_chunk_serializes_data_as_base64_string() {
+        let msg = AgentMessage::FileChunk {
+            req_id: "req_1".to_string(),
+            offset: 0,
+            data: vec![0xde, 0xad, 0xbe, 0xef],
+            done: true,
+            error: None,
+        };
+
+        let json = serde_json::to_value(&msg).unwrap();
+
+        assert_eq!(json["data"], "3q2+7w==");
+    }
+
+    #[test]
+    fn agent_file_chunk_accepts_legacy_json_byte_array() {
+        let json = r#"{
+            "type":"file_chunk",
+            "req_id":"legacy",
+            "offset":0,
+            "data":[222,173,190,239],
+            "done":true,
+            "error":null
+        }"#;
+
+        let msg: AgentMessage = serde_json::from_str(json).unwrap();
+
+        match msg {
+            AgentMessage::FileChunk { data, .. } => {
+                assert_eq!(data, vec![0xde, 0xad, 0xbe, 0xef]);
             }
             _ => panic!("wrong variant"),
         }

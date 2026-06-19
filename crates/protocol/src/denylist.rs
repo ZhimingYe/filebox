@@ -20,6 +20,9 @@ const DENIED_EXACT: &[&str] = &[
     "known_hosts", "authorized_keys",
     "credentials", "credentials.json", "token.json", "secrets.json",
     "kubeconfig",
+    "environ", "cmdline", "maps", "mem",
+    "machine-id",
+    "auth.log", "secure",
 ];
 
 /// Specific files inside directories that are otherwise allowed
@@ -51,8 +54,14 @@ pub fn is_denied(relative_path: &str) -> bool {
     // filesystems (macOS, Windows) treat .AWS/credentials the same as
     // .aws/credentials, so the denylist must too. Original case is not
     // needed for matching decisions.
-    let relative_path: String = relative_path.to_lowercase();
+    let relative_path: String = relative_path.trim_start_matches('/').to_lowercase();
     let path = Path::new(&relative_path);
+
+    for dir in DENIED_DIRS {
+        if path_contains_denied_dir(&relative_path, dir) {
+            return true;
+        }
+    }
 
     // Check each component of the path
     let mut prev_name: Option<String> = None;
@@ -61,11 +70,6 @@ pub fn is_denied(relative_path: &str) -> bool {
             std::path::Component::Normal(n) => n.to_string_lossy().to_string(),
             _ => { prev_name = None; continue; }
         };
-
-        // Check denied directories
-        if DENIED_DIRS.contains(&name.as_str()) {
-            return true;
-        }
 
         // Check exact matches
         if DENIED_EXACT.contains(&name.as_str()) {
@@ -140,6 +144,13 @@ pub fn is_denied(relative_path: &str) -> bool {
     false
 }
 
+fn path_contains_denied_dir(path: &str, dir: &str) -> bool {
+    path == dir
+        || path.starts_with(&format!("{}/", dir))
+        || path.ends_with(&format!("/{}", dir))
+        || path.contains(&format!("/{}/", dir))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +181,12 @@ mod tests {
         assert!(is_denied(".config/rclone/rclone.conf"));
         assert!(is_denied("server.jks"));
         assert!(is_denied("kubeconfig"));
+        assert!(is_denied("proc/self/environ"));
+        assert!(is_denied("/proc/self/cmdline"));
+        assert!(is_denied("self/environ"));
+        assert!(is_denied("etc/machine-id"));
+        assert!(is_denied("var/log/auth.log"));
+        assert!(is_denied("var/log/secure"));
         // Allowed paths
         assert!(!is_denied("src/main.rs"));
         assert!(!is_denied("README.md"));
@@ -180,6 +197,10 @@ mod tests {
         assert!(!is_denied(".config/gh/hosts.yml"));
         assert!(!is_denied(".cargo-bad/config.toml"));
         assert!(!is_denied("my.cargo/config.toml"));
+        assert!(!is_denied("src/procfile/readme.txt"));
+        assert!(!is_denied("src/sys/mod.rs"));
+        assert!(!is_denied("project/proc/readme.md"));
+        assert!(!is_denied("dev/fd-notes.txt"));
         // Case-insensitive matching (macOS/Windows filesystems treat these the same)
         assert!(is_denied(".GIT/config"));
         assert!(is_denied(".SSH/id_rsa"));

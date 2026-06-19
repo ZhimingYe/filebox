@@ -1,5 +1,5 @@
-use axum::extract::{Path, State};
-use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::extract::{Extension, Path, State};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
@@ -9,7 +9,8 @@ use tower_http::services::ServeDir;
 use filebox_protocol::resources::{DesiredResources, RootConfig};
 
 use crate::agent_registry::AgentStatus;
-use crate::state::{AppState, PendingResponse};
+use crate::net::client_ip;
+use crate::state::{AppState, AuthenticatedSession, PendingResponse};
 use crate::{events, fs_proxy, health, ws};
 
 pub fn create_router(state: AppState) -> Router {
@@ -110,8 +111,38 @@ pub fn create_router(state: AppState) -> Router {
         .fallback_service(frontend)
         .layer(cors)
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)) // 1MB max request body
+        .layer(axum::middleware::from_fn(security_headers))
         .layer(axum::middleware::from_fn(cache_headers))
         .with_state(state)
+}
+
+async fn security_headers(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("frame-ancestors 'none'"),
+    );
+    resp
 }
 
 // Set Cache-Control on frontend static responses. Skips /api/ and /ws/ so the
@@ -146,24 +177,11 @@ async fn cache_headers(
 
 async fn require_session(
     State(state): State<AppState>,
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    // Extract session cookie
-    let session_id = req
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|cookies| {
-            cookies.split(';').find_map(|c| {
-                let c = c.trim();
-                if c.starts_with("filebox_session=") {
-                    Some(c[16..].to_string())
-                } else {
-                    None
-                }
-            })
-        });
+    let is_logout = req.uri().path() == "/api/session/logout";
+    let session_id = session_cookie(req.headers());
 
     let Some(sid) = session_id else {
         return (
@@ -177,21 +195,77 @@ async fn require_session(
             .into_response();
     };
 
-    let inner = state.inner.read().await;
-    if inner.sessions.get_session(&sid).is_none() {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({
-                "error": "session_expired",
-                "message": "Session expired or invalid. Please login again.",
-                "retryable": false,
-            })),
-        )
-            .into_response();
-    }
-    drop(inner);
+    let rotated_cookie = {
+        let mut inner = state.inner.write().await;
+        let session_result = if is_logout {
+            inner.sessions.get_session(&sid).cloned().map(|s| (s, None))
+        } else {
+            inner.sessions.get_session_rotating(&sid)
+        };
+        match session_result {
+            Some((session, rotated)) => {
+                req.extensions_mut().insert(AuthenticatedSession {
+                    id: session.session_id.clone(),
+                });
+                rotated.map(|(new_id, max_age)| session_cookie_header(&new_id, max_age))
+            }
+            None => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "error": "session_expired",
+                        "message": "Session expired or invalid. Please login again.",
+                        "retryable": false,
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    };
 
-    next.run(req).await
+    let mut resp = next.run(req).await;
+    if let Some(cookie) = rotated_cookie {
+        resp.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    resp
+}
+
+fn session_cookie(headers: &HeaderMap) -> Option<String> {
+    let cookies = headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        ?;
+
+    cookie_value(cookies, "__Host-filebox_session")
+        .or_else(|| cookie_value(cookies, "filebox_session"))
+}
+
+fn cookie_value(cookies: &str, name: &str) -> Option<String> {
+    let prefix = format!("{}=", name);
+    cookies.split(';').find_map(|c| {
+        c.trim()
+            .strip_prefix(&prefix)
+            .map(|sid| sid.to_string())
+    })
+}
+
+fn session_cookie_header(session_id: &str, max_age: u64) -> HeaderValue {
+    HeaderValue::from_str(&format!(
+        "__Host-filebox_session={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}",
+        session_id, max_age
+    ))
+    .unwrap()
+}
+
+fn clear_session_cookie_headers() -> [HeaderValue; 2] {
+    [
+        HeaderValue::from_static(
+            "__Host-filebox_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
+        ),
+        HeaderValue::from_static(
+            "filebox_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
+        ),
+    ]
 }
 
 // ── Session ──────────────────────────────────────────────────────────────────
@@ -209,13 +283,7 @@ async fn session_exchange_handler(
     headers: axum::http::HeaderMap,
     Json(req): Json<SessionExchangeRequest>,
 ) -> Response {
-    // Extract client IP (prefer X-Forwarded-For for reverse proxy setups)
-    let ip = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| addr.ip().to_string());
+    let ip = client_ip(&headers, addr);
 
     // Rate limit check
     if let Err(remaining) = state.rate_limiter.check(&ip) {
@@ -235,6 +303,7 @@ async fn session_exchange_handler(
     if !inner.sessions.validate_login(&req.username, &req.password) {
         drop(inner);
         state.rate_limiter.record_failure(&ip);
+        tracing::warn!(target: "audit", ip = %ip, user = %req.username, "login_failed");
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
@@ -254,32 +323,49 @@ async fn session_exchange_handler(
     // Clear rate limit on successful login
     state.rate_limiter.clear(&ip);
 
-    let cookie = format!(
-        "filebox_session={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}",
-        session_id, ttl
-    );
+    tracing::info!(target: "audit", ip = %ip, user = %req.username, "login_success");
 
-    (
+    let mut resp = (
         StatusCode::OK,
-        [(header::SET_COOKIE, cookie)],
         Json(serde_json::json!({
             "ok": true,
-            "session_id": session_id,
             "permissions": session.permissions,
         })),
     )
-        .into_response()
+        .into_response();
+    resp.headers_mut()
+        .append(header::SET_COOKIE, session_cookie_header(&session_id, ttl));
+    resp.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_static(
+            "filebox_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
+        ),
+    );
+    resp
 }
 
-async fn session_logout_handler(State(_state): State<AppState>) -> Response {
-    // Clear cookie
-    let cookie = "filebox_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0";
-    (
+async fn session_logout_handler(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
+    headers: HeaderMap,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let ip = client_ip(&headers, addr);
+    let mut inner = state.inner.write().await;
+    inner.sessions.remove(&session.id);
+    drop(inner);
+
+    tracing::info!(target: "audit", ip = %ip, "logout");
+
+    let mut resp = (
         StatusCode::OK,
-        [(header::SET_COOKIE, cookie)],
         Json(serde_json::json!({ "ok": true })),
     )
-        .into_response()
+        .into_response();
+    for cookie in clear_session_cookie_headers() {
+        resp.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    resp
 }
 
 // ── Cancel ───────────────────────────────────────────────────────────────────
@@ -292,15 +378,57 @@ struct CancelRequest {
 
 async fn cancel_handler(
     State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
     Json(req): Json<CancelRequest>,
 ) -> Response {
+    let pending_arc = {
+        let inner = state.inner.read().await;
+        inner.pending_responses.clone()
+    };
+    {
+        let pending = pending_arc.read().await;
+        let Some(pending_resp) = pending.get(&req.req_id) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "request_not_found",
+                    "message": "Request not found or already completed",
+                    "retryable": false,
+                })),
+            )
+                .into_response();
+        };
+        if pending_resp.session_id.as_deref() != Some(session.id.as_str()) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "permission_denied",
+                    "message": "Cannot cancel a request owned by another session",
+                    "retryable": false,
+                })),
+            )
+                .into_response();
+        }
+        if pending_resp.agent_id != req.agent_id {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_request",
+                    "message": "Request does not belong to the selected agent",
+                    "retryable": false,
+                })),
+            )
+                .into_response();
+        }
+    }
+
     let inner = state.inner.read().await;
     let msg = filebox_protocol::message::HubMessage::Cancel {
         req_id: req.req_id.clone(),
     };
     if inner.agents.send_to_agent(&req.agent_id, msg) {
         // Also clean up pending response
-        let mut pending = inner.pending_responses.write().await;
+        let mut pending = pending_arc.write().await;
         if let Some(p) = pending.remove(&req.req_id) {
             let _ = p.tx.send(serde_json::json!({
                 "ok": false,
@@ -376,10 +504,18 @@ async fn agent_resources_handler(
 
 async fn agent_resources_put_handler(
     State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
     Path(agent_id): Path<String>,
     Json(desired): Json<DesiredResources>,
 ) -> Response {
-    apply_desired_state(state, agent_id, desired).await
+    tracing::info!(
+        target: "audit",
+        session = %session.id,
+        agent_id = %agent_id,
+        roots = desired.roots.len(),
+        "resources_put_requested"
+    );
+    apply_desired_state(state, agent_id, desired, session.id).await
 }
 
 // ── Root Management ──────────────────────────────────────────────────────────
@@ -393,6 +529,7 @@ struct AddRootRequest {
 
 async fn add_root_handler(
     State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
     Path(agent_id): Path<String>,
     Json(req): Json<AddRootRequest>,
 ) -> Response {
@@ -452,7 +589,15 @@ async fn add_root_handler(
 
     drop(inner);
 
-    apply_desired_state(state, agent_id, DesiredResources { roots }).await
+    tracing::info!(
+        target: "audit",
+        session = %session.id,
+        agent_id = %agent_id,
+        root = %roots.last().map(|r| r.name.as_str()).unwrap_or(""),
+        "root_add_requested"
+    );
+
+    apply_desired_state(state, agent_id, DesiredResources { roots }, session.id).await
 }
 
 #[derive(serde::Deserialize)]
@@ -464,6 +609,7 @@ struct PatchRootRequest {
 
 async fn patch_root_handler(
     State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
     Path((agent_id, root_name)): Path<(String, String)>,
     Json(req): Json<PatchRootRequest>,
 ) -> Response {
@@ -515,11 +661,20 @@ async fn patch_root_handler(
 
     drop(inner);
 
-    apply_desired_state(state, agent_id, DesiredResources { roots }).await
+    tracing::info!(
+        target: "audit",
+        session = %session.id,
+        agent_id = %agent_id,
+        root = %root_name,
+        "root_patch_requested"
+    );
+
+    apply_desired_state(state, agent_id, DesiredResources { roots }, session.id).await
 }
 
 async fn delete_root_handler(
     State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
     Path((agent_id, root_name)): Path<(String, String)>,
 ) -> Response {
     let inner = state.inner.read().await;
@@ -543,7 +698,15 @@ async fn delete_root_handler(
 
     drop(inner);
 
-    apply_desired_state(state, agent_id, DesiredResources { roots }).await
+    tracing::info!(
+        target: "audit",
+        session = %session.id,
+        agent_id = %agent_id,
+        root = %root_name,
+        "root_delete_requested"
+    );
+
+    apply_desired_state(state, agent_id, DesiredResources { roots }, session.id).await
 }
 
 // ── Helper ───────────────────────────────────────────────────────────────────
@@ -552,6 +715,7 @@ async fn apply_desired_state(
     state: AppState,
     agent_id: String,
     desired: DesiredResources,
+    session_id: String,
 ) -> Response {
     let inner = state.inner.read().await;
     let agent = match inner.agents.get(&agent_id) {
@@ -577,7 +741,20 @@ async fn apply_desired_state(
         .into_response();
     }
 
-    let next_revision = agent.resource_revision + 1;
+    let next_revision = match agent.resource_revision.checked_add(1) {
+        Some(revision) => revision,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "revision_overflow",
+                    "message": "Resource revision overflow",
+                    "retryable": false,
+                })),
+            )
+                .into_response();
+        }
+    };
     let req_id = format!("res_{}", uuid::Uuid::new_v4());
 
     // Clone desired state for the message and save for later registry update
@@ -596,6 +773,8 @@ async fn apply_desired_state(
             req_id.clone(),
             PendingResponse {
                 tx: resp_tx,
+                agent_id: agent_id.clone(),
+                session_id: Some(session_id),
                 desired_roots: Some(desired_roots.clone()),
             },
         );

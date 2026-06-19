@@ -1,13 +1,14 @@
-import type { HealthResponse } from '../api/client';
+import type { AgentInfo, HealthResponse } from '../api/client';
 import { friendlyMessage } from '../api/client';
 import { c, radius, shadow, font } from '../theme';
 
 interface Props {
   health: HealthResponse | null;
+  agents: AgentInfo[];
   error?: string | null;
 }
 
-export function HealthPanel({ health, error }: Props) {
+export function HealthPanel({ health, agents, error }: Props) {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
@@ -36,10 +37,10 @@ export function HealthPanel({ health, error }: Props) {
             </div>
           </div>
 
-          {health.agents.length > 0 && (
+          {agents.length > 0 && (
             <div style={styles.card}>
               <div style={styles.cardTitle}>Agents</div>
-              {health.agents.map((a) => {
+              {agents.map((a) => {
                 const statusColor = a.status === 'online' ? c.success : a.status === 'slow' ? c.warning : c.textFaint;
                 const statusLabel = a.status === 'online' ? 'Online' : a.status === 'slow' ? 'Slow' : 'Offline';
                 return (

@@ -6,6 +6,7 @@ mod config;
 mod events;
 mod fs_proxy;
 mod health;
+mod net;
 mod routes;
 mod state;
 mod ws;

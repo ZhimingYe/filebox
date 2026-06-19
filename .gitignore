@@ -31,3 +31,4 @@ detailedplan.md
 
 # Security review notes (local audit, not for commit)
 SECURITY_REVIEW.md
+SECURITY_REVIEW_ADDITIONAL_LOCAL.md

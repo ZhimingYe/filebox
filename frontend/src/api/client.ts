@@ -44,7 +44,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // ── Session ──────────────────────────────────────────────────────────────────
 
 export async function exchangeSession(username: string, password: string, remember: boolean) {
-  return request<{ ok: boolean; session_id: string; permissions: string[] }>(
+  return request<{ ok: boolean; permissions: string[] }>(
     '/api/session/exchange',
     { method: 'POST', body: JSON.stringify({ username, password, remember }) },
   );
@@ -71,7 +71,6 @@ export interface AgentInfo {
 
 export interface HealthResponse {
   hub: { status: string; version: string; uptime_sec: number };
-  agents: AgentInfo[];
 }
 
 export async function getHealth() {

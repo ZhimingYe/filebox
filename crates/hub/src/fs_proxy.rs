@@ -1,9 +1,10 @@
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use base64::Engine;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -40,7 +41,7 @@ fn is_inline_type(content_type: &str) -> bool {
 
 use filebox_protocol::message::HubMessage;
 
-use crate::state::{AppState, PendingResponse};
+use crate::state::{AppState, AuthenticatedSession, PendingResponse};
 
 #[derive(Debug, serde::Deserialize)]
 pub struct FsListParams {
@@ -67,6 +68,7 @@ pub struct FileRawParams {
 
 pub async fn fs_list_handler(
     State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
     Query(params): Query<FsListParams>,
 ) -> Response {
     let inner = state.inner.read().await;
@@ -107,6 +109,8 @@ pub async fn fs_list_handler(
         let mut pending = inner.pending_responses.write().await;
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
+            agent_id: params.agent_id.clone(),
+            session_id: Some(session.id.clone()),
             desired_roots: None,
         });
     }
@@ -139,6 +143,7 @@ pub async fn fs_list_handler(
 
 pub async fn fs_stat_handler(
     State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
     Query(params): Query<FsStatParams>,
 ) -> Response {
     let inner = state.inner.read().await;
@@ -176,6 +181,8 @@ pub async fn fs_stat_handler(
         let mut pending = inner.pending_responses.write().await;
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
+            agent_id: params.agent_id.clone(),
+            session_id: Some(session.id.clone()),
             desired_roots: None,
         });
     }
@@ -213,6 +220,7 @@ const HUB_FILE_MAX: usize = 256 * 1024 * 1024;
 
 pub async fn file_raw_handler(
     State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
     Query(params): Query<FileRawParams>,
     req: axum::extract::Request,
 ) -> Response {
@@ -272,6 +280,8 @@ pub async fn file_raw_handler(
             let mut pending = inner.pending_responses.write().await;
             pending.insert(req_id.clone(), PendingResponse {
                 tx: resp_tx,
+                agent_id: params.agent_id.clone(),
+                session_id: Some(session.id.clone()),
                 desired_roots: None,
             });
             drop(pending);
@@ -313,11 +323,17 @@ pub async fn file_raw_handler(
             );
         }
 
-        let chunk_data: Vec<u8> = value["data"].as_array().map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_u64().map(|n| n as u8))
-                .collect::<Vec<u8>>()
-        }).unwrap_or_default();
+        let chunk_data = match decode_file_chunk_data(&value["data"]) {
+            Ok(data) => data,
+            Err(err) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "file_read_error",
+                    &err,
+                    false,
+                );
+            }
+        };
 
         let done = value["done"].as_bool().unwrap_or(true);
 
@@ -374,6 +390,14 @@ pub async fn file_raw_handler(
 
     if length_opt.is_some() {
         // Partial content response
+        if data.is_empty() {
+            let resp = Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(header::CONTENT_RANGE, "bytes */*")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            return resp.into_response();
+        }
         let end = offset_start + data.len() as u64 - 1;
         let resp = Response::builder()
             .status(StatusCode::PARTIAL_CONTENT)
@@ -398,6 +422,7 @@ pub async fn file_raw_handler(
 
 pub async fn sys_stats_handler(
     State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
 ) -> Response {
     let inner = state.inner.read().await;
@@ -433,6 +458,8 @@ pub async fn sys_stats_handler(
         let mut pending = inner.pending_responses.write().await;
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
+            agent_id: agent_id.clone(),
+            session_id: Some(session.id.clone()),
             desired_roots: None,
         });
     }
@@ -509,6 +536,28 @@ fn error_response(status: StatusCode, error: &str, message: &str, retryable: boo
         })),
     )
         .into_response()
+}
+
+fn decode_file_chunk_data(value: &serde_json::Value) -> Result<Vec<u8>, String> {
+    if let Some(encoded) = value.as_str() {
+        return base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|e| format!("Invalid file chunk data: {}", e));
+    }
+
+    // Backward compatibility for agents that still send JSON number arrays.
+    if let Some(arr) = value.as_array() {
+        return arr
+            .iter()
+            .map(|v| {
+                v.as_u64()
+                    .and_then(|n| u8::try_from(n).ok())
+                    .ok_or_else(|| "Invalid legacy file chunk byte".to_string())
+            })
+            .collect();
+    }
+
+    Ok(Vec::new())
 }
 
 async fn cleanup_pending(state: &AppState, req_id: &str) {
@@ -740,6 +789,30 @@ mod tests {
         assert!(!is_inline_type("application/zip"));
     }
 
+    #[test]
+    fn decode_file_chunk_data_accepts_base64_string() {
+        let value = serde_json::Value::String("3q2+7w==".to_string());
+        assert_eq!(
+            decode_file_chunk_data(&value).unwrap(),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+    }
+
+    #[test]
+    fn decode_file_chunk_data_accepts_legacy_byte_array() {
+        let value = serde_json::json!([222, 173, 190, 239]);
+        assert_eq!(
+            decode_file_chunk_data(&value).unwrap(),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+    }
+
+    #[test]
+    fn decode_file_chunk_data_rejects_invalid_legacy_byte() {
+        let value = serde_json::json!([256]);
+        assert!(decode_file_chunk_data(&value).is_err());
+    }
+
     // ── file_raw_handler multi-chunk loop ───────────────────────────────────
     //
     // Mock-agent harness: spin up a tokio task that consumes FileReadRequest
@@ -823,6 +896,12 @@ mod tests {
         builder.body(axum::body::Body::empty()).unwrap()
     }
 
+    fn test_session() -> Extension<AuthenticatedSession> {
+        Extension(AuthenticatedSession {
+            id: "test-session".to_string(),
+        })
+    }
+
     #[tokio::test]
     async fn file_raw_handler_accumulates_multi_chunk_responses() {
         // 5MB file with 4MB agent-side cap → must produce 2 chunks
@@ -840,6 +919,7 @@ mod tests {
         };
         let response = file_raw_handler(
             State(state.clone()),
+            test_session(),
             Query(params),
             build_raw_request(None),
         )
@@ -872,6 +952,7 @@ mod tests {
         };
         let response = file_raw_handler(
             State(state.clone()),
+            test_session(),
             Query(params),
             build_raw_request(Some("bytes=0-9")),
         )
@@ -895,6 +976,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_raw_handler_returns_416_for_empty_range_body() {
+        let state = AppState::new(&test_config());
+        let (tx, agent_handle) =
+            spawn_mock_file_agent(state.clone(), "a1", 2, 4 * 1024 * 1024);
+        register_mock_agent(&state, "a1", tx).await;
+
+        let params = FileRawParams {
+            agent_id: "a1".to_string(),
+            root: "test".to_string(),
+            path: "tiny.bin".to_string(),
+        };
+        let response = file_raw_handler(
+            State(state.clone()),
+            test_session(),
+            Query(params),
+            build_raw_request(Some("bytes=10-20")),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
     async fn file_raw_handler_returns_413_when_exceeding_hub_max() {
         // File larger than HUB_FILE_MAX (256MB) must fail with 413 instead
         // of silently truncating. Mock claims a 300MB file and would happily
@@ -913,6 +1019,7 @@ mod tests {
         };
         let response = file_raw_handler(
             State(state.clone()),
+            test_session(),
             Query(params),
             build_raw_request(None),
         )
@@ -966,6 +1073,7 @@ mod tests {
         };
         let response = file_raw_handler(
             State(state.clone()),
+            test_session(),
             Query(params),
             build_raw_request(None),
         )
