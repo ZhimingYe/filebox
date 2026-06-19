@@ -2,6 +2,11 @@
 
 A minimal, secure, read-only remote file browser.
 
+> **[Live site →](https://zhimingye.github.io/filebox/)** — an interactive
+> product tour with a working hub UI demo, architecture diagram, and install
+> walkthrough. Homepage source lives on the `gh-pages` branch and is published
+> by `.github/workflows/pages.yml`.
+
 ## Overview
 
 Filebox is a read-only remote file browsing system that lets you access files on remote servers through a web browser. It consists of three parts:
