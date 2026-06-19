@@ -23,6 +23,7 @@ reqwest = { workspace = true }
 toml = { workspace = true }
 sysinfo = { workspace = true }
 rand = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

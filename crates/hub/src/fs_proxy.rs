@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use axum::extract::{Extension, Query, State};
-use axum::http::{header, StatusCode};
+use axum::extract::{Extension, Path, Query, State};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::Engine;
@@ -30,18 +30,52 @@ fn guess_content_type(path: &str) -> &'static str {
     }
 }
 
+fn media_type(content_type: &str) -> &str {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+}
+
+fn is_active_content_type(content_type: &str) -> bool {
+    matches!(
+        media_type(content_type),
+        "text/html"
+            | "text/css"
+            | "image/svg+xml"
+            | "application/javascript"
+            | "text/javascript"
+            | "application/xml"
+            | "text/xml"
+    )
+}
+
 fn is_inline_type(content_type: &str) -> bool {
-    content_type.starts_with("image/")
-        || content_type.starts_with("text/")
-        || content_type == "application/pdf"
-        || content_type == "application/json"
-        || content_type == "application/javascript"
-        || content_type == "application/xml"
+    let media = media_type(content_type);
+    matches!(
+        media,
+        "application/pdf"
+            | "application/json"
+            | "image/png"
+            | "image/jpeg"
+            | "image/gif"
+            | "image/webp"
+            | "image/bmp"
+            | "image/x-icon"
+            | "image/tiff"
+            | "text/plain"
+            | "text/csv"
+            | "text/tab-separated-values"
+    )
 }
 
 use filebox_protocol::message::HubMessage;
 
-use crate::state::{AppState, AuthenticatedSession, PendingResponse};
+use crate::state::{
+    AppState, AuthenticatedSession, PendingResponse, PreviewSession,
+    PREVIEW_SESSION_MAX_BYTES, PREVIEW_SESSION_MAX_REQUESTS,
+};
 
 #[derive(Debug, serde::Deserialize)]
 pub struct FsListParams {
@@ -218,10 +252,112 @@ pub async fn fs_stat_handler(
 // file from exhausting Hub memory under concurrent requests.
 const HUB_FILE_MAX: usize = 256 * 1024 * 1024;
 
+struct RawFileTarget {
+    agent_id: String,
+    root: String,
+    path: String,
+    session_id: Option<String>,
+    preview_token: Option<String>,
+}
+
 pub async fn file_raw_handler(
     State(state): State<AppState>,
     Extension(session): Extension<AuthenticatedSession>,
     Query(params): Query<FileRawParams>,
+    req: axum::extract::Request,
+) -> Response {
+    serve_raw_file(
+        state,
+        RawFileTarget {
+            agent_id: params.agent_id,
+            root: params.root,
+            path: params.path,
+            session_id: Some(session.id),
+            preview_token: None,
+        },
+        req,
+    )
+    .await
+}
+
+pub async fn preview_resource_handler(
+    State(state): State<AppState>,
+    Path((token, resource_path)): Path<(String, String)>,
+    req: axum::extract::Request,
+) -> Response {
+    let Some(normalized_resource_path) = normalize_preview_resource_path(&resource_path) else {
+        let mut resp = error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_preview_path",
+            "Invalid preview resource path",
+            false,
+        );
+        apply_preview_headers(&mut resp);
+        return resp;
+    };
+
+    let preview = match claim_preview_request(&state, &token).await {
+        Ok(preview) => preview,
+        Err(mut resp) => {
+            apply_preview_headers(&mut resp);
+            return resp;
+        }
+    };
+
+    if !owner_session_is_active(&state, &preview).await {
+        remove_preview_session(&state, &token).await;
+        let mut resp = error_response(
+            StatusCode::UNAUTHORIZED,
+            "preview_expired",
+            "Preview session expired",
+            false,
+        );
+        apply_preview_headers(&mut resp);
+        return resp;
+    }
+
+    let Some(path) = preview_resource_path_within_base(
+        &preview.base_path,
+        &normalized_resource_path,
+    ) else {
+        let mut resp = error_response(
+            StatusCode::FORBIDDEN,
+            "preview_path_outside_scope",
+            "Preview resource is outside the HTML file directory",
+            false,
+        );
+        apply_preview_headers(&mut resp);
+        return resp;
+    };
+    let mut resp = serve_raw_file(
+        state.clone(),
+        RawFileTarget {
+            agent_id: preview.agent_id.clone(),
+            root: preview.root.clone(),
+            path,
+            session_id: Some(preview.session_id.clone()),
+            preview_token: Some(token.clone()),
+        },
+        req,
+    )
+    .await;
+
+    apply_preview_headers(&mut resp);
+    resp
+}
+
+pub async fn preview_options_handler() -> Response {
+    let mut resp = Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    apply_preview_headers(&mut resp);
+    resp
+}
+
+async fn serve_raw_file(
+    state: AppState,
+    target: RawFileTarget,
     req: axum::extract::Request,
 ) -> Response {
     // One-shot check that the agent is registered and online. We acquire
@@ -230,12 +366,12 @@ pub async fn file_raw_handler(
     // whole multi-chunk transfer.
     {
         let inner = state.inner.read().await;
-        let agent = match inner.agents.get(&params.agent_id) {
+        let agent = match inner.agents.get(&target.agent_id) {
             Some(a) => a,
             None => return error_response(
                 StatusCode::NOT_FOUND,
                 "backend_offline",
-                &format!("Agent {} not found or offline", params.agent_id),
+                &format!("Agent {} not found or offline", target.agent_id),
                 true,
             ),
         };
@@ -243,7 +379,7 @@ pub async fn file_raw_handler(
             return error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "backend_offline",
-                &format!("Agent {} is offline", params.agent_id),
+                &format!("Agent {} is offline", target.agent_id),
                 true,
             );
         }
@@ -251,7 +387,7 @@ pub async fn file_raw_handler(
 
     // Parse Range header
     let (offset_start, length_opt) = parse_range_header(req.headers().get(header::RANGE));
-    let file_path = params.path.clone();
+    let file_path = target.path.clone();
 
     // Agent caps each FileChunk at 4MB (crates/agent/src/fs.rs). Loop here
     // and re-request subsequent offsets until done so the browser gets the
@@ -268,8 +404,8 @@ pub async fn file_raw_handler(
         let req_id = format!("file_{}", Uuid::new_v4());
         let msg = HubMessage::FileReadRequest {
             req_id: req_id.clone(),
-            root: params.root.clone(),
-            path: params.path.clone(),
+            root: target.root.clone(),
+            path: target.path.clone(),
             offset: current_offset,
             length: current_length,
         };
@@ -280,12 +416,12 @@ pub async fn file_raw_handler(
             let mut pending = inner.pending_responses.write().await;
             pending.insert(req_id.clone(), PendingResponse {
                 tx: resp_tx,
-                agent_id: params.agent_id.clone(),
-                session_id: Some(session.id.clone()),
+                agent_id: target.agent_id.clone(),
+                session_id: target.session_id.clone(),
                 desired_roots: None,
             });
             drop(pending);
-            inner.agents.send_to_agent(&params.agent_id, msg)
+            inner.agents.send_to_agent(&target.agent_id, msg)
         };
         // inner dropped here — agent register/unregister can proceed while
         // we await the agent's FileChunk.
@@ -363,6 +499,11 @@ pub async fn file_raw_handler(
                 false,
             );
         }
+        if let Some(token) = target.preview_token.clone() {
+            if let Err(resp) = reserve_preview_bytes(&state, &token, chunk_data.len() as u64).await {
+                return resp;
+            }
+        }
 
         accumulated.extend_from_slice(&chunk_data);
 
@@ -399,7 +540,7 @@ pub async fn file_raw_handler(
             return resp.into_response();
         }
         let end = offset_start + data.len() as u64 - 1;
-        let resp = Response::builder()
+        let mut resp = Response::builder()
             .status(StatusCode::PARTIAL_CONTENT)
             .header(header::CONTENT_TYPE, content_type)
             .header(header::CONTENT_LENGTH, data.len())
@@ -407,17 +548,173 @@ pub async fn file_raw_handler(
             .header(header::CONTENT_DISPOSITION, format!("{}; filename=\"{}\"", disposition, safe_filename))
             .body(axum::body::Body::from(data))
             .unwrap();
+        apply_raw_file_headers(&mut resp, content_type);
         resp.into_response()
     } else {
-        let resp = Response::builder()
+        let mut resp = Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, content_type)
             .header(header::CONTENT_LENGTH, data.len())
             .header(header::CONTENT_DISPOSITION, format!("{}; filename=\"{}\"", disposition, safe_filename))
             .body(axum::body::Body::from(data))
             .unwrap();
+        apply_raw_file_headers(&mut resp, content_type);
         resp.into_response()
     }
+}
+
+const RAW_ACTIVE_CONTENT_CSP: &str =
+    "sandbox; default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
+
+fn apply_raw_file_headers(resp: &mut Response, content_type: &str) {
+    if is_active_content_type(content_type) {
+        resp.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(RAW_ACTIVE_CONTENT_CSP),
+        );
+    }
+}
+
+fn normalize_preview_resource_path(raw: &str) -> Option<String> {
+    if raw.is_empty() || raw.len() > 4096 || raw.contains('\\') || raw.contains('\0') {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    for part in raw.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            return None;
+        }
+        parts.push(part);
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
+    }
+}
+
+fn preview_resource_path_within_base(base_path: &str, resource_path: &str) -> Option<String> {
+    let base = base_path.trim_matches('/');
+    if base.is_empty() {
+        return Some(resource_path.to_string());
+    }
+    if resource_path.strip_prefix(base) == Some("") {
+        return None;
+    }
+    if resource_path.starts_with(&format!("{}/", base)) {
+        Some(resource_path.to_string())
+    } else {
+        None
+    }
+}
+
+async fn claim_preview_request(state: &AppState, token: &str) -> Result<PreviewSession, Response> {
+    let preview_sessions = {
+        let inner = state.inner.read().await;
+        inner.preview_sessions.clone()
+    };
+    let now = std::time::Instant::now();
+    let mut previews = preview_sessions.write().await;
+    previews.retain(|_, preview| preview.expires_at > now);
+
+    let Some(preview) = previews.get_mut(token) else {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            "preview_expired",
+            "Preview session expired or not found",
+            false,
+        ));
+    };
+
+    if preview.requests_served >= PREVIEW_SESSION_MAX_REQUESTS {
+        return Err(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "preview_budget_exceeded",
+            "Preview session request limit exceeded",
+            false,
+        ));
+    }
+    if preview.bytes_served >= PREVIEW_SESSION_MAX_BYTES {
+        return Err(error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "preview_budget_exceeded",
+            "Preview session byte limit exceeded",
+            false,
+        ));
+    }
+
+    preview.requests_served = preview.requests_served.saturating_add(1);
+    Ok(preview.clone())
+}
+
+async fn owner_session_is_active(state: &AppState, preview: &PreviewSession) -> bool {
+    let inner = state.inner.read().await;
+    inner.sessions.get_session(&preview.session_id).is_some()
+}
+
+async fn remove_preview_session(state: &AppState, token: &str) {
+    let preview_sessions = {
+        let inner = state.inner.read().await;
+        inner.preview_sessions.clone()
+    };
+    let mut previews = preview_sessions.write().await;
+    previews.remove(token);
+}
+
+async fn reserve_preview_bytes(state: &AppState, token: &str, bytes: u64) -> Result<(), Response> {
+    if bytes == 0 {
+        return Ok(());
+    }
+    let preview_sessions = {
+        let inner = state.inner.read().await;
+        inner.preview_sessions.clone()
+    };
+    let now = std::time::Instant::now();
+    let mut previews = preview_sessions.write().await;
+    previews.retain(|_, preview| preview.expires_at > now);
+    let Some(preview) = previews.get_mut(token) else {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            "preview_expired",
+            "Preview session expired or not found",
+            false,
+        ));
+    };
+    let projected = preview.bytes_served.saturating_add(bytes);
+    if projected > PREVIEW_SESSION_MAX_BYTES {
+        return Err(error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "preview_budget_exceeded",
+            "Preview session byte limit exceeded",
+            false,
+        ));
+    }
+    preview.bytes_served = projected;
+    Ok(())
+}
+
+fn apply_preview_headers(resp: &mut Response) {
+    let headers = resp.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"),
+    );
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("null"));
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, HEAD, OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Range, Content-Type"),
+    );
+    headers.insert(header::VARY, HeaderValue::from_static("Origin"));
 }
 
 pub async fn sys_stats_handler(
@@ -511,16 +808,29 @@ fn parse_range_header(value: Option<&axum::http::HeaderValue>) -> (u64, Option<u
     }
 
     let range = &s[6..];
-    let parts: Vec<&str> = range.split('-').collect();
-    if parts.len() != 2 {
+    if range.contains(',') {
+        return (0, None);
+    }
+    let Some((start_raw, end_raw)) = range.split_once('-') else {
+        return (0, None);
+    };
+    if start_raw.is_empty() || end_raw.contains('-') {
         return (0, None);
     }
 
-    let start: u64 = parts[0].parse().unwrap_or(0);
-    let length = if parts[1].is_empty() {
+    let Ok(start) = start_raw.parse::<u64>() else {
+        return (0, None);
+    };
+    let length = if end_raw.is_empty() {
         None
     } else {
-        parts[1].parse::<u64>().ok().map(|end| end - start + 1)
+        let Ok(end) = end_raw.parse::<u64>() else {
+            return (start, None);
+        };
+        if end < start {
+            return (0, None);
+        }
+        Some(end - start + 1)
     };
 
     (start, length)
@@ -674,6 +984,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_range_rejects_end_before_start() {
+        let h = hv("bytes=20-10");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 0);
+        assert!(length.is_none());
+    }
+
+    #[test]
+    fn parse_range_rejects_suffix_range() {
+        let h = hv("bytes=-500");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 0);
+        assert!(length.is_none());
+    }
+
+    #[test]
+    fn parse_range_rejects_multi_range() {
+        let h = hv("bytes=0-99,200-299");
+        let (offset, length) = parse_range_header(Some(&h));
+        assert_eq!(offset, 0);
+        assert!(length.is_none());
+    }
+
+    #[test]
     fn parse_range_handles_extra_whitespace() {
         let h = hv("  bytes=10-20  ");
         let (offset, length) = parse_range_header(Some(&h));
@@ -765,22 +1099,31 @@ mod tests {
     fn inline_type_images_are_inline() {
         assert!(is_inline_type("image/png"));
         assert!(is_inline_type("image/jpeg"));
-        assert!(is_inline_type("image/svg+xml"));
+        assert!(!is_inline_type("image/svg+xml"));
     }
 
     #[test]
     fn inline_type_text_is_inline() {
         assert!(is_inline_type("text/plain; charset=utf-8"));
-        assert!(is_inline_type("text/html; charset=utf-8"));
-        assert!(is_inline_type("text/css; charset=utf-8"));
+        assert!(!is_inline_type("text/html; charset=utf-8"));
+        assert!(!is_inline_type("text/css; charset=utf-8"));
     }
 
     #[test]
     fn inline_type_pdf_json_xml_js_are_inline() {
         assert!(is_inline_type("application/pdf"));
         assert!(is_inline_type("application/json"));
-        assert!(is_inline_type("application/xml"));
-        assert!(is_inline_type("application/javascript"));
+        assert!(!is_inline_type("application/xml"));
+        assert!(!is_inline_type("application/javascript"));
+    }
+
+    #[test]
+    fn active_content_types_are_detected() {
+        assert!(is_active_content_type("text/html; charset=utf-8"));
+        assert!(is_active_content_type("image/svg+xml"));
+        assert!(is_active_content_type("application/javascript; charset=utf-8"));
+        assert!(!is_active_content_type("application/json; charset=utf-8"));
+        assert!(!is_active_content_type("application/pdf"));
     }
 
     #[test]
@@ -811,6 +1154,62 @@ mod tests {
     fn decode_file_chunk_data_rejects_invalid_legacy_byte() {
         let value = serde_json::json!([256]);
         assert!(decode_file_chunk_data(&value).is_err());
+    }
+
+    #[test]
+    fn preview_resource_path_normalizes_relative_segments() {
+        assert_eq!(
+            normalize_preview_resource_path("./report_files//plot.js"),
+            Some("report_files/plot.js".to_string())
+        );
+    }
+
+    #[test]
+    fn preview_resource_path_rejects_escape_segments() {
+        assert!(normalize_preview_resource_path("../secret.txt").is_none());
+        assert!(normalize_preview_resource_path("report_files/../../secret.txt").is_none());
+        assert!(normalize_preview_resource_path("report_files\\plot.js").is_none());
+    }
+
+    #[test]
+    fn preview_resource_scope_allows_paths_under_base_path() {
+        assert_eq!(
+            preview_resource_path_within_base("reports/run1", "reports/run1/report_files/plot.js"),
+            Some("reports/run1/report_files/plot.js".to_string())
+        );
+        assert_eq!(
+            preview_resource_path_within_base("", "report_files/plot.js"),
+            Some("report_files/plot.js".to_string())
+        );
+    }
+
+    #[test]
+    fn preview_resource_scope_rejects_paths_outside_base_path() {
+        assert!(preview_resource_path_within_base("reports/run1", "reports/shared/plot.js").is_none());
+        assert!(preview_resource_path_within_base("reports/run1", "reports/run10/plot.js").is_none());
+        assert!(preview_resource_path_within_base("reports/run1", "reports/run1").is_none());
+    }
+
+    #[tokio::test]
+    async fn preview_byte_reservation_rejects_projected_over_budget() {
+        let state = AppState::new(&test_config());
+        let token = "preview-token".to_string();
+        let now = std::time::Instant::now();
+        let preview = PreviewSession {
+            session_id: "session".to_string(),
+            agent_id: "agent".to_string(),
+            root: "root".to_string(),
+            base_path: "".to_string(),
+            created_at: now,
+            expires_at: now + std::time::Duration::from_secs(60),
+            requests_served: 0,
+            bytes_served: PREVIEW_SESSION_MAX_BYTES - 1,
+        };
+        let preview_sessions = state.inner.read().await.preview_sessions.clone();
+        preview_sessions.write().await.insert(token.clone(), preview);
+
+        assert!(reserve_preview_bytes(&state, &token, 1).await.is_ok());
+        assert!(reserve_preview_bytes(&state, &token, 1).await.is_err());
     }
 
     // ── file_raw_handler multi-chunk loop ───────────────────────────────────
@@ -971,6 +1370,45 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bytes.len(), 10);
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn file_raw_handler_serves_active_content_as_attachment_with_csp() {
+        let state = AppState::new(&test_config());
+        let (tx, agent_handle) =
+            spawn_mock_file_agent(state.clone(), "a1", 128, 4 * 1024 * 1024);
+        register_mock_agent(&state, "a1", tx).await;
+
+        let params = FileRawParams {
+            agent_id: "a1".to_string(),
+            root: "test".to_string(),
+            path: "report.html".to_string(),
+        };
+        let response = file_raw_handler(
+            State(state.clone()),
+            test_session(),
+            Query(params),
+            build_raw_request(None),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let disposition = response
+            .headers()
+            .get(header::CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(disposition.starts_with("attachment;"), "got: {}", disposition);
+        let csp = response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("sandbox"), "got: {}", csp);
 
         agent_handle.abort();
     }

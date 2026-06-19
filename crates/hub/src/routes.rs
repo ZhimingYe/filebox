@@ -3,14 +3,19 @@ use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode}
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
+use filebox_protocol::message::HubMessage;
+use filebox_protocol::resources::{DesiredResources, FileStat, FsEntryType, RootConfig};
+use rand::Rng;
+use tokio::sync::mpsc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 
-use filebox_protocol::resources::{DesiredResources, RootConfig};
-
 use crate::agent_registry::AgentStatus;
 use crate::net::client_ip;
-use crate::state::{AppState, AuthenticatedSession, PendingResponse};
+use crate::state::{
+    AppState, AuthenticatedSession, PendingResponse, PreviewSession,
+    PREVIEW_SESSION_MAX_PER_SESSION, PREVIEW_SESSION_MAX_TOTAL, PREVIEW_SESSION_TTL,
+};
 use crate::{events, fs_proxy, health, ws};
 
 pub fn create_router(state: AppState) -> Router {
@@ -19,6 +24,11 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/health", get(health::health_handler))
         .route("/api/session/exchange", post(session_exchange_handler))
         .route("/ws/agent", get(ws::ws_handler));
+
+    let preview_resources = Router::new().route(
+        "/api/preview/{token}/{*resource_path}",
+        get(fs_proxy::preview_resource_handler).options(fs_proxy::preview_options_handler),
+    );
 
     // Protected routes (session cookie required)
     let protected = Router::new()
@@ -46,6 +56,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/fs/list", get(fs_proxy::fs_list_handler))
         .route("/api/fs/stat", get(fs_proxy::fs_stat_handler))
         .route("/api/file/raw", get(fs_proxy::file_raw_handler))
+        .route("/api/preview/sessions", post(preview_session_create_handler))
         .route("/api/agents/{agent_id}/sys-stats", get(fs_proxy::sys_stats_handler))
         .route("/api/cancel", post(cancel_handler))
         .layer(axum::middleware::from_fn_with_state(
@@ -102,14 +113,18 @@ pub fn create_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::mirror_request())
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::PUT, Method::DELETE])
-        .allow_headers([header::CONTENT_TYPE, header::COOKIE])
+        .allow_headers([header::CONTENT_TYPE, header::COOKIE, header::RANGE])
         .allow_credentials(true);
 
-    Router::new()
+    let cors_app = Router::new()
         .merge(public)
         .merge(protected)
         .fallback_service(frontend)
-        .layer(cors)
+        .layer(cors);
+
+    Router::new()
+        .merge(preview_resources)
+        .merge(cors_app)
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)) // 1MB max request body
         .layer(axum::middleware::from_fn(security_headers))
         .layer(axum::middleware::from_fn(cache_headers))
@@ -138,10 +153,12 @@ async fn security_headers(
         header::REFERRER_POLICY,
         HeaderValue::from_static("same-origin"),
     );
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("frame-ancestors 'none'"),
-    );
+    if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("frame-ancestors 'none'"),
+        );
+    }
     resp
 }
 
@@ -181,6 +198,23 @@ async fn require_session(
     next: axum::middleware::Next,
 ) -> Response {
     let is_logout = req.uri().path() == "/api/session/logout";
+    if req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        == Some("null")
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "permission_denied",
+                "message": "Sandboxed previews cannot call Filebox control APIs",
+                "retryable": false,
+            })),
+        )
+            .into_response();
+    }
+
     let session_id = session_cookie(req.headers());
 
     let Some(sid) = session_id else {
@@ -353,7 +387,12 @@ async fn session_logout_handler(
     let ip = client_ip(&headers, addr);
     let mut inner = state.inner.write().await;
     inner.sessions.remove(&session.id);
+    let preview_sessions = inner.preview_sessions.clone();
     drop(inner);
+    {
+        let mut previews = preview_sessions.write().await;
+        previews.retain(|_, preview| preview.session_id != session.id);
+    }
 
     tracing::info!(target: "audit", ip = %ip, "logout");
 
@@ -366,6 +405,423 @@ async fn session_logout_handler(
         resp.headers_mut().append(header::SET_COOKIE, cookie);
     }
     resp
+}
+
+// ── Sandboxed HTML Preview Sessions ─────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct PreviewSessionCreateRequest {
+    agent_id: String,
+    root: String,
+    path: String,
+}
+
+#[derive(serde::Serialize)]
+struct PreviewSessionCreateResponse {
+    base_url: String,
+    expires_in_sec: u64,
+}
+
+async fn preview_session_create_handler(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
+    Json(req): Json<PreviewSessionCreateRequest>,
+) -> Response {
+    let Some(file_path) = normalize_preview_file_path(&req.path) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_preview_path",
+                "message": "Invalid HTML preview path",
+                "retryable": false,
+            })),
+        )
+            .into_response();
+    };
+    if !is_html_preview_path(&file_path) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_preview_path",
+                "message": "Preview sessions are only available for HTML files",
+                "retryable": false,
+            })),
+        )
+            .into_response();
+    }
+
+    let base_path = preview_base_path(&file_path);
+
+    let preview_sessions = {
+        let inner = state.inner.read().await;
+        let Some(agent) = inner.agents.get(&req.agent_id) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "backend_offline",
+                    "message": format!("Agent {} not found or offline", req.agent_id),
+                    "retryable": true,
+                })),
+            )
+                .into_response();
+        };
+        if agent.status == AgentStatus::Offline {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": "backend_offline",
+                    "message": format!("Agent {} is offline", req.agent_id),
+                    "retryable": true,
+                })),
+            )
+                .into_response();
+        }
+        if !agent.roots.iter().any(|r| r.name == req.root && r.enabled) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "root_unavailable",
+                    "message": "Root is no longer available",
+                    "retryable": true,
+                })),
+            )
+                .into_response();
+        }
+        inner.preview_sessions.clone()
+    };
+
+    let stat = match request_preview_stat(
+        &state,
+        &session.id,
+        &req.agent_id,
+        &req.root,
+        &file_path,
+    )
+    .await
+    {
+        Ok(stat) => stat,
+        Err(resp) => return resp,
+    };
+    if stat.denied || stat.entry_type != FsEntryType::File {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_preview_path",
+                "message": "Preview path must be a readable HTML file",
+                "retryable": false,
+            })),
+        )
+            .into_response();
+    }
+    if let Err(resp) = request_preview_read_probe(
+        &state,
+        &session.id,
+        &req.agent_id,
+        &req.root,
+        &file_path,
+    )
+    .await
+    {
+        return resp;
+    }
+
+    let now = std::time::Instant::now();
+    let token = generate_preview_token();
+    let expires_at = now + PREVIEW_SESSION_TTL;
+    let preview = PreviewSession {
+        session_id: session.id.clone(),
+        agent_id: req.agent_id.clone(),
+        root: req.root.clone(),
+        base_path: base_path.clone(),
+        created_at: now,
+        expires_at,
+        requests_served: 0,
+        bytes_served: 0,
+    };
+
+    {
+        let now = std::time::Instant::now();
+        let mut previews = preview_sessions.write().await;
+        previews.retain(|_, preview| preview.expires_at > now);
+        prune_preview_sessions_for_insert(&mut previews, &session.id);
+        previews.insert(token.clone(), preview);
+    }
+
+    Json(PreviewSessionCreateResponse {
+        base_url: preview_base_url(&token, &base_path),
+        expires_in_sec: PREVIEW_SESSION_TTL.as_secs(),
+    })
+    .into_response()
+}
+
+async fn request_preview_stat(
+    state: &AppState,
+    session_id: &str,
+    agent_id: &str,
+    root: &str,
+    path: &str,
+) -> Result<FileStat, Response> {
+    let req_id = format!("preview_stat_{}", uuid::Uuid::new_v4());
+    let msg = HubMessage::FsStatRequest {
+        req_id: req_id.clone(),
+        root: root.to_string(),
+        path: path.to_string(),
+    };
+    let value = request_agent_once(state, session_id, agent_id, req_id, msg).await?;
+    if let Some(err) = value["error"].as_str() {
+        return Err(preview_invalid_response(err));
+    }
+    let Some(stat_value) = value.get("stat").filter(|v| !v.is_null()) else {
+        return Err(preview_invalid_response("Preview path not found"));
+    };
+    serde_json::from_value::<FileStat>(stat_value.clone())
+        .map_err(|_| preview_invalid_response("Invalid stat response from agent"))
+}
+
+async fn request_preview_read_probe(
+    state: &AppState,
+    session_id: &str,
+    agent_id: &str,
+    root: &str,
+    path: &str,
+) -> Result<(), Response> {
+    let req_id = format!("preview_read_{}", uuid::Uuid::new_v4());
+    let msg = HubMessage::FileReadRequest {
+        req_id: req_id.clone(),
+        root: root.to_string(),
+        path: path.to_string(),
+        offset: 0,
+        length: Some(0),
+    };
+    let value = request_agent_once(state, session_id, agent_id, req_id, msg).await?;
+    if let Some(err) = value["error"].as_str() {
+        return Err(preview_invalid_response(err));
+    }
+    Ok(())
+}
+
+async fn request_agent_once(
+    state: &AppState,
+    session_id: &str,
+    agent_id: &str,
+    req_id: String,
+    msg: HubMessage,
+) -> Result<serde_json::Value, Response> {
+    let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let send_ok = {
+        let inner = state.inner.read().await;
+        let mut pending = inner.pending_responses.write().await;
+        pending.insert(
+            req_id.clone(),
+            PendingResponse {
+                tx: resp_tx,
+                agent_id: agent_id.to_string(),
+                session_id: Some(session_id.to_string()),
+                desired_roots: None,
+            },
+        );
+        drop(pending);
+        inner.agents.send_to_agent(agent_id, msg)
+    };
+
+    if !send_ok {
+        cleanup_pending_request(state, &req_id).await;
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "backend_offline",
+                "message": "Failed to send request to agent",
+                "retryable": true,
+            })),
+        )
+        .into_response());
+    }
+
+    let cleanup = PendingRequestCleanup::new(state.clone(), req_id.clone());
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx.recv()).await;
+    cleanup.cleanup().await;
+    match resp {
+        Ok(Some(value)) => Ok(value),
+        _ => Err((
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(serde_json::json!({
+                "error": "request_timeout",
+                "message": "Agent did not respond in time",
+                "retryable": true,
+            })),
+        )
+            .into_response()),
+    }
+}
+
+async fn cleanup_pending_request(state: &AppState, req_id: &str) {
+    let pending = state.inner.read().await.pending_responses.clone();
+    let mut pending = pending.write().await;
+    pending.remove(req_id);
+}
+
+struct PendingRequestCleanup {
+    state: AppState,
+    req_id: String,
+    active: bool,
+}
+
+impl PendingRequestCleanup {
+    fn new(state: AppState, req_id: String) -> Self {
+        Self {
+            state,
+            req_id,
+            active: true,
+        }
+    }
+
+    async fn cleanup(mut self) {
+        cleanup_pending_request(&self.state, &self.req_id).await;
+        self.active = false;
+    }
+}
+
+impl Drop for PendingRequestCleanup {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let state = self.state.clone();
+        let req_id = self.req_id.clone();
+        tokio::spawn(async move {
+            cleanup_pending_request(&state, &req_id).await;
+        });
+    }
+}
+
+fn preview_invalid_response(message: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "error": "invalid_preview_path",
+            "message": message,
+            "retryable": false,
+        })),
+    )
+        .into_response()
+}
+
+fn normalize_preview_file_path(raw: &str) -> Option<String> {
+    if raw.is_empty() || raw.len() > 4096 || raw.contains('\\') || raw.contains('\0') {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    for part in raw.trim_start_matches('/').split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            return None;
+        }
+        parts.push(part);
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
+    }
+}
+
+fn preview_base_path(file_path: &str) -> String {
+    file_path
+        .rsplit_once('/')
+        .map(|(base, _)| base.to_string())
+        .unwrap_or_default()
+}
+
+fn preview_base_url(token: &str, base_path: &str) -> String {
+    if base_path.is_empty() {
+        format!("/api/preview/{}/", token)
+    } else {
+        format!("/api/preview/{}/{}/", token, percent_encode_path(base_path))
+    }
+}
+
+fn percent_encode_path(path: &str) -> String {
+    path.split('/')
+        .map(percent_encode_path_component)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn percent_encode_path_component(component: &str) -> String {
+    let mut encoded = String::new();
+    for byte in component.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(*byte as char);
+            }
+            _ => {
+                use std::fmt::Write;
+                let _ = write!(encoded, "%{:02X}", byte);
+            }
+        }
+    }
+    encoded
+}
+
+fn is_html_preview_path(path: &str) -> bool {
+    path.rsplit('.')
+        .next()
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "html" | "htm"))
+        .unwrap_or(false)
+}
+
+fn generate_preview_token() -> String {
+    let mut rng = rand::rng();
+    let mut bytes = [0u8; 32];
+    rng.fill(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn prune_preview_sessions_for_insert(
+    previews: &mut std::collections::HashMap<String, PreviewSession>,
+    session_id: &str,
+) {
+    prune_oldest_preview_sessions(
+        previews,
+        |preview| preview.session_id == session_id,
+        PREVIEW_SESSION_MAX_PER_SESSION.saturating_sub(1),
+    );
+    prune_oldest_preview_sessions(
+        previews,
+        |_| true,
+        PREVIEW_SESSION_MAX_TOTAL.saturating_sub(1),
+    );
+}
+
+fn prune_oldest_preview_sessions<F>(
+    previews: &mut std::collections::HashMap<String, PreviewSession>,
+    should_count: F,
+    max_remaining: usize,
+) where
+    F: Fn(&PreviewSession) -> bool,
+{
+    loop {
+        let count = previews
+            .values()
+            .filter(|preview| should_count(preview))
+            .count();
+        if count <= max_remaining {
+            break;
+        }
+        let oldest_key = previews
+            .iter()
+            .filter(|(_, preview)| should_count(preview))
+            .min_by_key(|(_, preview)| preview.created_at)
+            .map(|(token, _)| token.clone());
+        let Some(token) = oldest_key else {
+            break;
+        };
+        previews.remove(&token);
+    }
 }
 
 // ── Cancel ───────────────────────────────────────────────────────────────────
@@ -837,5 +1293,275 @@ async fn apply_desired_state(
             })),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filebox_protocol::message::AgentMessage;
+    use filebox_protocol::resources::Capabilities;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+    use tower::ServiceExt;
+
+    fn test_preview(session_id: &str, created_at: std::time::Instant) -> PreviewSession {
+        PreviewSession {
+            session_id: session_id.to_string(),
+            agent_id: "agent".to_string(),
+            root: "root".to_string(),
+            base_path: "".to_string(),
+            created_at,
+            expires_at: created_at + PREVIEW_SESSION_TTL,
+            requests_served: 0,
+            bytes_served: 0,
+        }
+    }
+
+    fn test_config() -> crate::config::HubConfig {
+        crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            agent_token_hash: "fake-hash".to_string(),
+            users: vec![],
+        }
+    }
+
+    fn test_session() -> Extension<AuthenticatedSession> {
+        Extension(AuthenticatedSession {
+            id: "test-session".to_string(),
+        })
+    }
+
+    async fn register_preview_agent(
+        state: &AppState,
+        tx: mpsc::UnboundedSender<HubMessage>,
+    ) {
+        let mut inner = state.inner.write().await;
+        inner.agents.register(
+            "agent".to_string(),
+            "MockAgent".to_string(),
+            tx,
+            Arc::new(Notify::new()),
+            0,
+            vec![RootConfig {
+                name: "root".to_string(),
+                path: "/tmp".to_string(),
+                enabled: true,
+            }],
+            Capabilities::default(),
+        );
+    }
+
+    async fn send_agent_value(state: &AppState, req_id: &str, value: serde_json::Value) {
+        let pending_arc = state.inner.read().await.pending_responses.clone();
+        let mut pending = pending_arc.write().await;
+        if let Some(pending) = pending.remove(req_id) {
+            let _ = pending.tx.send(value).await;
+        }
+    }
+
+    fn html_file_stat(path: &str) -> FileStat {
+        FileStat {
+            path: path.to_string(),
+            entry_type: FsEntryType::File,
+            size: 128,
+            modified: None,
+            permissions: None,
+            denied: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn preview_resource_route_does_not_mirror_third_party_origin() {
+        let app = create_router(AppState::new(&test_config()));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/preview/missing/index.js")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("null"))
+        );
+    }
+
+    #[tokio::test]
+    async fn regular_api_routes_still_mirror_request_origin() {
+        let app = create_router(AppState::new(&test_config()));
+        let origin = HeaderValue::from_static("https://app.example");
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/health")
+                    .header(header::ORIGIN, origin.clone())
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&origin)
+        );
+    }
+
+    #[test]
+    fn preview_file_path_normalizes_without_allowing_escape() {
+        assert_eq!(
+            normalize_preview_file_path("/reports/run1/./index.HTML"),
+            Some("reports/run1/index.HTML".to_string())
+        );
+        assert!(normalize_preview_file_path("../secret.html").is_none());
+        assert!(normalize_preview_file_path("reports\\secret.html").is_none());
+    }
+
+    #[test]
+    fn preview_base_path_uses_html_parent_directory() {
+        assert_eq!(preview_base_path("reports/run1/index.html"), "reports/run1");
+        assert_eq!(preview_base_path("index.html"), "");
+    }
+
+    #[test]
+    fn preview_base_url_includes_encoded_html_parent_directory() {
+        assert_eq!(preview_base_url("tok", ""), "/api/preview/tok/");
+        assert_eq!(
+            preview_base_url("tok", "reports/run 1/#figures"),
+            "/api/preview/tok/reports/run%201/%23figures/"
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_session_create_requires_agent_stat_success() {
+        let state = AppState::new(&test_config());
+        let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+        let state_for_agent = state.clone();
+        let agent_handle = tokio::spawn(async move {
+            if let Some(HubMessage::FsStatRequest { req_id, .. }) = rx.recv().await {
+                let response = AgentMessage::FsStatResponse {
+                    req_id: req_id.clone(),
+                    stat: None,
+                    error: Some("missing".to_string()),
+                };
+                send_agent_value(&state_for_agent, &req_id, serde_json::to_value(response).unwrap()).await;
+            }
+        });
+        register_preview_agent(&state, tx).await;
+
+        let response = preview_session_create_handler(
+            State(state.clone()),
+            test_session(),
+            Json(PreviewSessionCreateRequest {
+                agent_id: "agent".to_string(),
+                root: "root".to_string(),
+                path: "missing.html".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let preview_sessions = state.inner.read().await.preview_sessions.clone();
+        assert!(preview_sessions.read().await.is_empty());
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn preview_session_create_verifies_read_before_issuing_token() {
+        let state = AppState::new(&test_config());
+        let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+        let state_for_agent = state.clone();
+        let agent_handle = tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    HubMessage::FsStatRequest { req_id, path, .. } => {
+                        let response = AgentMessage::FsStatResponse {
+                            req_id: req_id.clone(),
+                            stat: Some(html_file_stat(&path)),
+                            error: None,
+                        };
+                        send_agent_value(&state_for_agent, &req_id, serde_json::to_value(response).unwrap()).await;
+                    }
+                    HubMessage::FileReadRequest { req_id, length, .. } => {
+                        assert_eq!(length, Some(0));
+                        let response = AgentMessage::FileChunk {
+                            req_id: req_id.clone(),
+                            offset: 0,
+                            data: vec![],
+                            done: true,
+                            error: None,
+                        };
+                        send_agent_value(&state_for_agent, &req_id, serde_json::to_value(response).unwrap()).await;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+        register_preview_agent(&state, tx).await;
+
+        let response = preview_session_create_handler(
+            State(state.clone()),
+            test_session(),
+            Json(PreviewSessionCreateRequest {
+                agent_id: "agent".to_string(),
+                root: "root".to_string(),
+                path: "reports/run 1/index.html".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("/api/preview/"), "body: {}", body);
+        assert!(body.contains("/reports/run%201/"), "body: {}", body);
+        let preview_sessions = state.inner.read().await.preview_sessions.clone();
+        let previews = preview_sessions.read().await;
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews.values().next().unwrap().base_path, "reports/run 1");
+
+        agent_handle.abort();
+    }
+
+    #[test]
+    fn preview_session_only_accepts_html_extensions() {
+        assert!(is_html_preview_path("report.HTML"));
+        assert!(is_html_preview_path("report.htm"));
+        assert!(!is_html_preview_path("report.md"));
+        assert!(!is_html_preview_path("report"));
+    }
+
+    #[test]
+    fn preview_pruning_keeps_per_session_token_count_bounded() {
+        let base = std::time::Instant::now();
+        let mut previews = std::collections::HashMap::new();
+        for i in 0..(PREVIEW_SESSION_MAX_PER_SESSION + 5) {
+            previews.insert(
+                format!("s1-{}", i),
+                test_preview("s1", base + std::time::Duration::from_millis(i as u64)),
+            );
+        }
+        previews.insert("s2-keep".to_string(), test_preview("s2", base));
+
+        prune_preview_sessions_for_insert(&mut previews, "s1");
+
+        let s1_count = previews
+            .values()
+            .filter(|preview| preview.session_id == "s1")
+            .count();
+        assert_eq!(s1_count, PREVIEW_SESSION_MAX_PER_SESSION - 1);
+        assert!(previews.contains_key("s2-keep"));
+        assert!(!previews.contains_key("s1-0"));
     }
 }

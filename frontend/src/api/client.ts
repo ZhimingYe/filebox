@@ -185,6 +185,14 @@ export function fileRawUrl(agentId: string, root: string, path: string) {
   return `/api/file/raw?${params}`;
 }
 
+export async function createPreviewSession(agentId: string, root: string, path: string, signal?: AbortSignal) {
+  return request<{ base_url: string; expires_in_sec: number }>('/api/preview/sessions', {
+    method: 'POST',
+    signal,
+    body: JSON.stringify({ agent_id: agentId, root, path }),
+  });
+}
+
 export async function cancelRequest(agentId: string, reqId: string) {
   return request<{ ok: boolean }>('/api/cancel', {
     method: 'POST',

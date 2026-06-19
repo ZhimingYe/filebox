@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 use filebox_protocol::resources::RootConfig;
@@ -15,6 +15,24 @@ pub struct PendingResponse {
     pub session_id: Option<String>,
     pub desired_roots: Option<Vec<RootConfig>>,
 }
+
+#[derive(Clone, Debug)]
+pub struct PreviewSession {
+    pub session_id: String,
+    pub agent_id: String,
+    pub root: String,
+    pub base_path: String,
+    pub created_at: Instant,
+    pub expires_at: Instant,
+    pub requests_served: u32,
+    pub bytes_served: u64,
+}
+
+pub const PREVIEW_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
+pub const PREVIEW_SESSION_MAX_REQUESTS: u32 = 500;
+pub const PREVIEW_SESSION_MAX_BYTES: u64 = 512 * 1024 * 1024;
+pub const PREVIEW_SESSION_MAX_TOTAL: usize = 1024;
+pub const PREVIEW_SESSION_MAX_PER_SESSION: usize = 32;
 
 #[derive(Clone)]
 pub struct AuthenticatedSession {
@@ -89,6 +107,8 @@ pub struct AppStateInner {
     pub start_time: Instant,
     /// Pending responses from agents keyed by req_id
     pub pending_responses: Arc<RwLock<std::collections::HashMap<String, PendingResponse>>>,
+    /// Short-lived, directory-scoped bearer tokens for sandboxed HTML previews.
+    pub preview_sessions: Arc<RwLock<std::collections::HashMap<String, PreviewSession>>>,
     /// Broadcast channel for SSE events
     pub sse_tx: broadcast::Sender<SseEvent>,
 }
@@ -110,6 +130,7 @@ impl AppState {
                 agents: AgentRegistry::new(),
                 start_time: Instant::now(),
                 pending_responses: Arc::new(RwLock::new(std::collections::HashMap::new())),
+                preview_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
                 sse_tx,
             })),
             rate_limiter: Arc::new(LoginRateLimiter::new(5, std::time::Duration::from_secs(30))),

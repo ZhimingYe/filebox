@@ -347,6 +347,7 @@ dependencies = [
  "dirs",
  "filebox-protocol",
  "futures-util",
+ "libc",
  "rand",
  "reqwest",
  "serde",

@@ -20,7 +20,7 @@ export function useMounted() {
 // Shared fetch hook with cancel + retry. Uses credentials: 'include' so the
 // hub's session cookie is sent for /api/file/raw.
 
-export function useFetchText(url: string) {
+export function useFetchText(url: string, enabled = true) {
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -28,6 +28,15 @@ export function useFetchText(url: string) {
   const cancelRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
+    if (!enabled) {
+      cancelRef.current?.abort();
+      cancelRef.current = null;
+      setText(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
     const controller = new AbortController();
     cancelRef.current = controller;
@@ -54,7 +63,7 @@ export function useFetchText(url: string) {
       controller.abort();
       cancelRef.current = null;
     };
-  }, [url, retryToken]);
+  }, [url, retryToken, enabled]);
 
   const cancel = useCallback(() => {
     cancelRef.current?.abort();

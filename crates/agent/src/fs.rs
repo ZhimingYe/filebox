@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use filebox_protocol::resources::{FileStat, FsEntry, FsEntryType, RootConfig};
 use filebox_protocol::denylist;
@@ -74,6 +74,91 @@ fn relative_path(root_path: &Path, abs_path: &Path) -> String {
         .unwrap_or(abs_path)
         .to_string_lossy()
         .to_string()
+}
+
+#[cfg(unix)]
+fn open_resolved_leaf(
+    root_canonical: &Path,
+    rel_path: &Path,
+    _abs_path: &Path,
+) -> Result<fs::File, String> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    fn cstring_path(path: &Path) -> Result<CString, String> {
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| "Invalid path: NUL byte".to_string())
+    }
+
+    fn cstring_component(component: &std::ffi::OsStr) -> Result<CString, String> {
+        CString::new(component.as_bytes())
+            .map_err(|_| "Invalid path component: NUL byte".to_string())
+    }
+
+    let mut components = Vec::new();
+    for component in rel_path.components() {
+        match component {
+            Component::Normal(name) => components.push(name),
+            Component::CurDir => {}
+            _ => return Err("Invalid path component".to_string()),
+        }
+    }
+
+    let root_c = cstring_path(root_canonical)?;
+    let root_fd = unsafe {
+        libc::open(
+            root_c.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if root_fd < 0 {
+        return Err(format!(
+            "Failed to open root directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let mut dir = unsafe { OwnedFd::from_raw_fd(root_fd) };
+    if components.is_empty() {
+        return Ok(fs::File::from(dir));
+    }
+
+    for (idx, component) in components.iter().enumerate() {
+        let name = cstring_component(component)?;
+        let is_last = idx + 1 == components.len();
+        let mut flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+        if is_last {
+            flags |= libc::O_NONBLOCK;
+        } else {
+            flags |= libc::O_DIRECTORY;
+        }
+
+        let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(format!(
+                "Failed to open path safely: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let child = unsafe { OwnedFd::from_raw_fd(fd) };
+        if is_last {
+            return Ok(fs::File::from(child));
+        }
+        dir = child;
+    }
+
+    Err("Invalid path".to_string())
+}
+
+#[cfg(not(unix))]
+fn open_resolved_leaf(
+    _root_canonical: &Path,
+    _rel_path: &Path,
+    abs_path: &Path,
+) -> Result<fs::File, String> {
+    fs::File::open(abs_path).map_err(|e| format!("Failed to open file: {}", e))
 }
 
 pub fn list_directory(
@@ -206,7 +291,10 @@ pub fn stat_file(
         .canonicalize()
         .map_err(|e| format!("Cannot resolve root path: {}", e))?;
 
-    let rel = relative_path(&root_canonical, &abs_path);
+    let rel_path = abs_path
+        .strip_prefix(&root_canonical)
+        .map_err(|_| "Path not found or outside root".to_string())?;
+    let rel = rel_path.to_string_lossy().to_string();
     let denied = is_path_denied(&rel);
     if denied || is_sensitive_virtual_path(&abs_path) {
         return Err("Access denied: sensitive file".to_string());
@@ -271,22 +359,24 @@ pub fn read_file_range(
         .canonicalize()
         .map_err(|e| format!("Cannot resolve root path: {}", e))?;
 
-    let rel = relative_path(&root_canonical, &abs_path);
+    let rel_path = abs_path
+        .strip_prefix(&root_canonical)
+        .map_err(|_| "Path not found or outside root".to_string())?;
+    let rel = rel_path.to_string_lossy().to_string();
     if is_path_denied(&rel) || is_sensitive_virtual_path(&abs_path) {
         return Err("Access denied: sensitive file".to_string());
     }
 
-    if !abs_path.is_file() {
+    let mut file = open_resolved_leaf(&root_canonical, rel_path, &abs_path)?;
+    let file_metadata = file
+        .metadata()
+        .map_err(|e| format!("Failed to stat file: {}", e))?;
+
+    if !file_metadata.is_file() {
         return Err(format!("Not a file: {}", path));
     }
 
-    let mut file = fs::File::open(&abs_path)
-        .map_err(|e| format!("Failed to open file: {}", e))?;
-
-    let file_len = file
-        .metadata()
-        .map_err(|e| format!("Failed to stat file: {}", e))?
-        .len();
+    let file_len = file_metadata.len();
 
     if offset >= file_len {
         return Ok((vec![], true));
@@ -633,6 +723,55 @@ mod tests {
             result.is_err(),
             "symlink escaping the root must be rejected"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_file_range_allows_stable_symlink_inside_root() {
+        let sb = Sandbox::new();
+        sb.write_file("target.txt", b"inside");
+        let link_path = sb.root_path.join("link.txt");
+        std::os::unix::fs::symlink(sb.root_path.join("target.txt"), &link_path).unwrap();
+        let roots = vec![sb.root()];
+
+        let (data, done) = read_file_range(&roots, "test", "link.txt", 0, None).unwrap();
+        assert_eq!(data, b"inside");
+        assert!(done);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_open_rejects_final_symlink_after_resolution() {
+        let sb = Sandbox::new();
+        sb.write_file("victim.txt", b"safe");
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        fs::remove_file(sb.root_path.join("victim.txt")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), sb.root_path.join("victim.txt")).unwrap();
+
+        let result = open_resolved_leaf(
+            &sb.root_path,
+            std::path::Path::new("victim.txt"),
+            &sb.root_path.join("victim.txt"),
+        );
+        assert!(result.is_err(), "replaced final symlink must not be followed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_open_rejects_intermediate_symlink_after_resolution() {
+        let sb = Sandbox::new();
+        sb.write_file("dir/file.txt", b"safe");
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("file.txt"), b"outside").unwrap();
+        fs::remove_dir_all(sb.root_path.join("dir")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), sb.root_path.join("dir")).unwrap();
+
+        let result = open_resolved_leaf(
+            &sb.root_path,
+            std::path::Path::new("dir/file.txt"),
+            &sb.root_path.join("dir/file.txt"),
+        );
+        assert!(result.is_err(), "replaced directory symlink must not be followed");
     }
 
     #[cfg(unix)]
