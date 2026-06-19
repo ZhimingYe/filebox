@@ -1,16 +1,14 @@
 name: pages
 
-# Deploys the static marketing/landing site from the gh-pages branch root.
-# The homepage intentionally lives outside main so the development branch only
-# carries product source and release automation. No build step is needed; the
-# workflow checks out gh-pages and uploads that branch as the Pages artifact.
+# Deploys the static landing site from the gh-pages branch root when a release
+# version tag is pushed by scripts/release.sh.
 #
 # To enable: repo Settings → Pages → Source = "GitHub Actions".
 
 on:
   push:
-    branches: [gh-pages]
-  workflow_dispatch:
+    tags:
+      - 'v*'
 
 permissions:
   contents: read
