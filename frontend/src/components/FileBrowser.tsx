@@ -90,6 +90,11 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
   const [filterText, setFilterText] = useState('');
   const [filterError, setFilterError] = useState(false);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
+  // Remember last visited path per agent+root (keyed as "agentId:rootName")
+  const pathMemory = useRef<Map<string, string>>(new Map());
+  const memKey = (root: string) => `${agentId}:${root}`;
+  const prevAgentIdRef = useRef(agentId); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadSeq = useRef(0); // request versioning — discard stale responses
 
   const enabledRoots = useMemo(() => roots.filter((r) => r.enabled), [roots]);
 
@@ -123,19 +128,37 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
     return () => obs.disconnect();
   }, []);
 
+  // Unified: handles agent switch (restore saved path) and root config changes (pick valid root)
   useEffect(() => {
+    const agentChanged = prevAgentIdRef.current !== agentId;
+    if (agentChanged) {
+      // Clear stale data immediately so the UI doesn't flash old agent's entries or errors.
+      // loadDir will fire in the same render cycle with the OLD selectedRoot/closure values,
+      // but entries are now empty so the user sees a loading spinner, not stale content.
+      setEntries([]);
+      setError(null);
+      prevAgentIdRef.current = agentId;
+    }
+
     if (enabledRoots.length === 0) {
       setSelectedRoot(null);
       return;
     }
     if (!selectedRoot || !enabledRoots.some((r) => r.name === selectedRoot)) {
-      setSelectedRoot(enabledRoots[0].name);
-      setCurrentPath('/');
+      // Root invalid (first load, or agent switch where old root name doesn't exist in new agent)
+      const fallback = enabledRoots[0].name;
+      setSelectedRoot(fallback);
+      setCurrentPath(pathMemory.current.get(memKey(fallback)) || '/');
+    } else {
+      // Root name valid but agentId changed — restore this agent's saved path
+      setCurrentPath(pathMemory.current.get(memKey(selectedRoot)) || '/');
     }
-  }, [enabledRoots, selectedRoot]);
+  }, [enabledRoots, agentId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadDir = useCallback(async (append = false) => {
     if (!selectedRoot) return;
+
+    const seq = ++loadSeq.current;
 
     if (append) {
       setLoadingMore(true);
@@ -149,6 +172,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
     try {
       const cursor = append && nextCursor ? nextCursor : undefined;
       const data = await api.fsList(agentId, selectedRoot, currentPath, PAGE_LIMIT, cursor);
+      if (seq !== loadSeq.current) return; // stale response — discard
       if (data.error) {
         setError(data.error);
         if (!append) setEntries([]);
@@ -157,11 +181,14 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
         setNextCursor(data.next_cursor);
       }
     } catch (e: any) {
+      if (seq !== loadSeq.current) return; // stale response — discard
       setError(e.message || 'Failed to list directory');
       if (!append) setEntries([]);
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (seq === loadSeq.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   }, [agentId, selectedRoot, currentPath, nextCursor]);
 
@@ -186,9 +213,12 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
   };
 
   const handleNavigate = useCallback((root: string, path: string) => {
+    if (selectedRoot) {
+      pathMemory.current.set(memKey(selectedRoot), currentPath);
+    }
     setSelectedRoot(root);
     setCurrentPath(path);
-  }, []);
+  }, [agentId, selectedRoot, currentPath]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleSort = (key: SortKey) => {
     if (sortBy === key) {
@@ -317,7 +347,12 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
       <div style={styles.toolbar}>
         <select
           value={selectedRoot || ''}
-          onChange={(e) => { setSelectedRoot(e.target.value); setCurrentPath('/'); }}
+          onChange={(e) => {
+            const next = e.target.value;
+            if (selectedRoot) pathMemory.current.set(memKey(selectedRoot), currentPath);
+            setSelectedRoot(next);
+            setCurrentPath(pathMemory.current.get(memKey(next)) || '/');
+          }}
           style={styles.select}
         >
           {enabledRoots.map((r) => (
