@@ -89,6 +89,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
   const [sortAsc, setSortAsc] = useState(true);
   const [filterText, setFilterText] = useState('');
   const [filterError, setFilterError] = useState(false);
+  const [nameAlignRight, setNameAlignRight] = useState(false);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   // Remember last visited path per agent+root (keyed as "agentId:rootName")
   const pathMemory = useRef<Map<string, string>>(new Map());
@@ -129,30 +130,36 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
   }, []);
 
   // Unified: handles agent switch (restore saved path) and root config changes (pick valid root)
+  const prevRootRef = useRef<string | null>(null);
   useEffect(() => {
     const agentChanged = prevAgentIdRef.current !== agentId;
     if (agentChanged) {
-      // Clear stale data immediately so the UI doesn't flash old agent's entries or errors.
-      // loadDir will fire in the same render cycle with the OLD selectedRoot/closure values,
-      // but entries are now empty so the user sees a loading spinner, not stale content.
       setEntries([]);
       setError(null);
       prevAgentIdRef.current = agentId;
     }
 
     if (enabledRoots.length === 0) {
-      setSelectedRoot(null);
+      if (prevRootRef.current !== null) {
+        setSelectedRoot(null);
+        prevRootRef.current = null;
+      }
       return;
     }
-    if (!selectedRoot || !enabledRoots.some((r) => r.name === selectedRoot)) {
-      // Root invalid (first load, or agent switch where old root name doesn't exist in new agent)
+
+    const rootValid = selectedRoot && enabledRoots.some((r) => r.name === selectedRoot);
+    if (!rootValid) {
       const fallback = enabledRoots[0].name;
       setSelectedRoot(fallback);
       setCurrentPath(pathMemory.current.get(memKey(fallback)) || '/');
-    } else {
-      // Root name valid but agentId changed — restore this agent's saved path
-      setCurrentPath(pathMemory.current.get(memKey(selectedRoot)) || '/');
+      prevRootRef.current = fallback;
+    } else if (agentChanged) {
+      // Only restore saved path when agent actually changed, not on every re-render
+      const savedPath = pathMemory.current.get(memKey(selectedRoot)) || '/';
+      setCurrentPath(savedPath);
+      prevRootRef.current = selectedRoot;
     }
+    // If root is valid and agent didn't change — do nothing (prevents spurious reloads)
   }, [enabledRoots, agentId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadDir = useCallback(async (append = false) => {
@@ -312,7 +319,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
           {isBack ? <IconUpDir /> : getEntryIcon(displayEntry!.entry_type)}
         </span>
         <span
-          style={styles.entryName}
+          style={nameAlignRight ? { ...styles.entryName, textAlign: 'right' } : styles.entryName}
           title={isBack ? undefined : displayEntry!.name}
         >
           {isBack ? '..' : displayEntry!.name}
@@ -360,6 +367,17 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
           ))}
         </select>
         <button onClick={() => loadDir(false)} style={styles.refreshBtn} title="Refresh">&#x21bb;</button>
+        <button
+          onClick={() => setNameAlignRight((v) => !v)}
+          style={nameAlignRight ? styles.alignBtnActive : styles.alignBtn}
+          title={nameAlignRight ? 'Left-align filenames' : 'Right-align filenames'}
+        >
+          <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="1" y="2" width="14" height="1.5" rx="0.75" fill="currentColor" />
+            <rect x="1" y="6.5" width="10" height="1.5" rx="0.75" fill="currentColor" />
+            <rect x="1" y="11" width="14" height="1.5" rx="0.75" fill="currentColor" />
+          </svg>
+        </button>
         {loading && <span style={styles.spinner} />}
       </div>
       <div style={styles.filterBar}>
@@ -391,7 +409,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
       {/* Column headers */}
       <div style={styles.colHeader}>
         <span style={styles.colIcon} />
-        <span style={{ ...styles.colName, cursor: 'pointer' }} onClick={() => toggleSort('name')}>
+        <span style={{ ...styles.colName, cursor: 'pointer', ...(nameAlignRight ? { textAlign: 'right' } : {}) }} onClick={() => toggleSort('name')}>
           Name{sortIndicator('name')}
         </span>
         {isMobile ? (
@@ -519,6 +537,20 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'transparent', color: c.textSecondary, cursor: 'pointer',
     fontSize: 16, lineHeight: 1, transition: 'all 0.15s',
   },
+  alignBtn: {
+    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    background: 'transparent', color: c.textSecondary, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, width: 34, height: 28,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', flexShrink: 0,
+  },
+  alignBtnActive: {
+    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.accent}`,
+    background: c.accentBg, color: c.accent, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, width: 34, height: 28,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', flexShrink: 0,
+  },
   spinner: {
     width: 14, height: 14, border: `2px solid ${c.border}`,
     borderTopColor: c.accent, borderRadius: '50%',
@@ -579,7 +611,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: c.bgMuted,
   },
   icon: { fontSize: 14, width: 20, textAlign: 'center', flexShrink: 0 },
-  entryName: { color: c.text, fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  entryName: { color: c.text, fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   entryDate: { color: c.textMuted, fontSize: 12, width: 130, textAlign: 'right', flexShrink: 0 },
   entryDateMobile: { color: c.textMuted, fontSize: 10, textAlign: 'right', flexShrink: 0, width: 72 },
   entryMeta: { color: c.textFaint, fontSize: 12, width: 80, textAlign: 'right', flexShrink: 0 },

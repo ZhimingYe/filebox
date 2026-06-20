@@ -6,6 +6,8 @@ export function useHealth(enabled: boolean, intervalMs = 5000) {
   const [agents, setAgents] = useState<api.AgentInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const prevAgentIdsRef = useRef<string>('');
+  const prevHealthRef = useRef<string>('');
 
   const refresh = useCallback(async () => {
     try {
@@ -13,8 +15,17 @@ export function useHealth(enabled: boolean, intervalMs = 5000) {
         api.getHealth(),
         api.getAgents(),
       ]);
-      setHealth(healthData);
-      setAgents(agentData);
+      // Only update state if data actually changed to prevent unnecessary re-renders
+      const agentKey = JSON.stringify(agentData);
+      if (agentKey !== prevAgentIdsRef.current) {
+        prevAgentIdsRef.current = agentKey;
+        setAgents(agentData);
+      }
+      const healthKey = JSON.stringify(healthData);
+      if (healthKey !== prevHealthRef.current) {
+        prevHealthRef.current = healthKey;
+        setHealth(healthData);
+      }
       setError(null);
     } catch (e: any) {
       setError(e.message || 'Failed to fetch health');

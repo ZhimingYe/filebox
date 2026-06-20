@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useSession } from './state/session';
 import { useHealth } from './state/health';
 import { useSse } from './state/events';
@@ -194,7 +194,7 @@ export default function App() {
     return () => document.removeEventListener('keydown', onKey);
   }, [preview]);
 
-  const selectedAgent = agents.find((a) => a.id === selectedAgentId) || null;
+  const selectedAgent = useMemo(() => agents.find((a) => a.id === selectedAgentId) || null, [agents, selectedAgentId]);
 
   const handleFileSelect = useCallback((root: string, path: string, entry: FsEntry) => {
     setPreview({ root, path, entry });
