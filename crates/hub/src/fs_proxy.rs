@@ -1192,7 +1192,7 @@ mod tests {
 
     #[tokio::test]
     async fn preview_byte_reservation_rejects_projected_over_budget() {
-        let state = AppState::new(&test_config());
+        let state = AppState::new(&test_config(), true);
         let token = "preview-token".to_string();
         let now = std::time::Instant::now();
         let preview = PreviewSession {
@@ -1305,7 +1305,7 @@ mod tests {
     async fn file_raw_handler_accumulates_multi_chunk_responses() {
         // 5MB file with 4MB agent-side cap → must produce 2 chunks
         // (4MB + 1MB) that the handler should coalesce into one body.
-        let state = AppState::new(&test_config());
+        let state = AppState::new(&test_config(), true);
         let file_total: u64 = 5 * 1024 * 1024;
         let (tx, agent_handle) =
             spawn_mock_file_agent(state.clone(), "a1", file_total, 4 * 1024 * 1024);
@@ -1339,7 +1339,7 @@ mod tests {
     async fn file_raw_handler_honors_range_header() {
         // 1MB file but request only 10 bytes via Range — single chunk,
         // handler should truncate and return PARTIAL_CONTENT.
-        let state = AppState::new(&test_config());
+        let state = AppState::new(&test_config(), true);
         let (tx, agent_handle) =
             spawn_mock_file_agent(state.clone(), "a1", 1024 * 1024, 4 * 1024 * 1024);
         register_mock_agent(&state, "a1", tx).await;
@@ -1376,7 +1376,7 @@ mod tests {
 
     #[tokio::test]
     async fn file_raw_handler_serves_active_content_as_attachment_with_csp() {
-        let state = AppState::new(&test_config());
+        let state = AppState::new(&test_config(), true);
         let (tx, agent_handle) =
             spawn_mock_file_agent(state.clone(), "a1", 128, 4 * 1024 * 1024);
         register_mock_agent(&state, "a1", tx).await;
@@ -1415,7 +1415,7 @@ mod tests {
 
     #[tokio::test]
     async fn file_raw_handler_returns_416_for_empty_range_body() {
-        let state = AppState::new(&test_config());
+        let state = AppState::new(&test_config(), true);
         let (tx, agent_handle) =
             spawn_mock_file_agent(state.clone(), "a1", 2, 4 * 1024 * 1024);
         register_mock_agent(&state, "a1", tx).await;
@@ -1444,7 +1444,7 @@ mod tests {
         // of silently truncating. Mock claims a 300MB file and would happily
         // emit chunks forever; the handler must bail on the first chunk that
         // would push accumulated past the cap.
-        let state = AppState::new(&test_config());
+        let state = AppState::new(&test_config(), true);
         let file_total: u64 = (HUB_FILE_MAX as u64) + 1024 * 1024;
         let (tx, agent_handle) =
             spawn_mock_file_agent(state.clone(), "a1", file_total, 4 * 1024 * 1024);
@@ -1478,7 +1478,7 @@ mod tests {
     async fn file_raw_handler_breaks_on_empty_chunk_without_done() {
         // Dead-loop defense: if agent returns empty data + done=false, the
         // handler must stop instead of infinitely re-requesting.
-        let state = AppState::new(&test_config());
+        let state = AppState::new(&test_config(), true);
         let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
         let state_for_agent = state.clone();
         let agent_handle = tokio::spawn(async move {

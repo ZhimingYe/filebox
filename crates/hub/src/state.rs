@@ -93,6 +93,7 @@ pub struct AppState {
     pub inner: Arc<RwLock<AppStateInner>>,
     pub rate_limiter: Arc<LoginRateLimiter>,
     pub ws_rate_limiter: Arc<LoginRateLimiter>,
+    pub secure_cookies: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -122,7 +123,7 @@ impl AppState {
         });
     }
 
-    pub fn new(config: &HubConfig) -> Self {
+    pub fn new(config: &HubConfig, secure_cookies: bool) -> Self {
         let (sse_tx, _) = broadcast::channel(256);
         Self {
             inner: Arc::new(RwLock::new(AppStateInner {
@@ -138,6 +139,7 @@ impl AppState {
             // or network partition. Keep this high enough for same-IP NATed
             // agents while still bounding unauthenticated WS auth attempts.
             ws_rate_limiter: Arc::new(LoginRateLimiter::new(300, std::time::Duration::from_secs(30))),
+            secure_cookies,
         }
     }
 }

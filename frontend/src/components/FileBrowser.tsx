@@ -4,6 +4,7 @@ import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
 import { useIsMobile } from '../state/useIsMobile';
 import { c, radius, font } from '../theme';
+import { AddressBar } from './AddressBar';
 
 // ── Inline SVG Icons (16x16) ───────────────────────────────────────────
 
@@ -111,14 +112,6 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
     }
   }, []);
 
-  // Build full path for current directory
-  const fullPath = useMemo(() => {
-    if (!selectedRoot) return '';
-    const rootObj = roots.find(r => r.name === selectedRoot);
-    const rootPath = rootObj?.path_display || selectedRoot;
-    return currentPath === '/' ? rootPath : rootPath + currentPath;
-  }, [selectedRoot, currentPath, roots]);
-
   // Measure container height for virtualized list
   useEffect(() => {
     const el = containerRef.current;
@@ -192,7 +185,10 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
     setCurrentPath('/' + parts.join('/'));
   };
 
-  const breadcrumbs = currentPath.split('/').filter(Boolean);
+  const handleNavigate = useCallback((root: string, path: string) => {
+    setSelectedRoot(root);
+    setCurrentPath(path);
+  }, []);
 
   const toggleSort = (key: SortKey) => {
     if (sortBy === key) {
@@ -348,28 +344,14 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
         {filterError && <span style={styles.filterError}>Invalid regex</span>}
       </div>
 
-      <div style={styles.breadcrumb}>
-        <span onClick={() => setCurrentPath('/')} style={styles.crumb}>/</span>
-        {breadcrumbs.map((part, i) => (
-          <span key={i}>
-            <span
-              onClick={() => setCurrentPath('/' + breadcrumbs.slice(0, i + 1).join('/'))}
-              style={styles.crumb}
-            >
-              {part}
-            </span>
-            {i < breadcrumbs.length - 1 && <span style={styles.sep}>/</span>}
-          </span>
-        ))}
-        <span style={{ flex: 1 }} />
-        <button
-          onClick={() => copyToClipboard(fullPath, 'path')}
-          style={styles.copyPathBtn}
-          title="Copy full path"
-        >
-          {copiedPath === 'path' ? 'Copied' : 'Copy path'}
-        </button>
-      </div>
+      <AddressBar
+        selectedRoot={selectedRoot}
+        currentPath={currentPath}
+        roots={roots}
+        entries={entries}
+        agentId={agentId}
+        onNavigate={handleNavigate}
+      />
 
       {/* Column headers */}
       <div style={styles.colHeader}>
@@ -523,13 +505,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   filterCount: { color: c.textMuted, fontSize: 12, flexShrink: 0 },
   filterError: { color: c.danger, fontSize: 12, flexShrink: 0 },
-  breadcrumb: {
-    padding: '6px 12px', fontSize: 12, color: c.textMuted,
-    borderBottom: `1px solid ${c.border}`, display: 'flex', gap: 2,
-    overflowX: 'auto', whiteSpace: 'nowrap', background: c.bgSubtle,
-  },
-  crumb: { cursor: 'pointer', color: c.accent },
-  sep: { color: c.textFaint },
   // ── Column headers ──
   colHeader: {
     display: 'flex', alignItems: 'center', gap: 8,
@@ -576,11 +551,6 @@ const styles: Record<string, React.CSSProperties> = {
   deniedBadge: {
     color: c.warning, fontSize: 10, fontStyle: 'normal', fontWeight: 500,
     padding: '1px 6px', background: c.warningBg, borderRadius: radius.pill, flexShrink: 0,
-  },
-  copyPathBtn: {
-    padding: '2px 6px', borderRadius: radius.sm, border: 'none',
-    background: 'transparent', color: c.textMuted, cursor: 'pointer',
-    fontSize: 12, lineHeight: 1, flexShrink: 0,
   },
   copyNameBtn: {
     padding: '2px 4px', borderRadius: radius.sm, border: 'none',

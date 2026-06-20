@@ -241,7 +241,7 @@ async fn require_session(
                 req.extensions_mut().insert(AuthenticatedSession {
                     id: session.session_id.clone(),
                 });
-                rotated.map(|(new_id, max_age)| session_cookie_header(&new_id, max_age))
+                rotated.map(|(new_id, max_age)| session_cookie_header(&new_id, max_age, state.secure_cookies))
             }
             None => {
                 return (
@@ -283,23 +283,27 @@ fn cookie_value(cookies: &str, name: &str) -> Option<String> {
     })
 }
 
-fn session_cookie_header(session_id: &str, max_age: u64) -> HeaderValue {
+fn session_cookie_header(session_id: &str, max_age: u64, secure: bool) -> HeaderValue {
+    let name = if secure { "__Host-filebox_session" } else { "filebox_session" };
+    let secure_flag = if secure { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
-        "__Host-filebox_session={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={}",
-        session_id, max_age
+        "{}={}; HttpOnly{}; SameSite=Strict; Path=/; Max-Age={}",
+        name, session_id, secure_flag, max_age
     ))
     .unwrap()
 }
 
-fn clear_session_cookie_headers() -> [HeaderValue; 2] {
-    [
-        HeaderValue::from_static(
-            "__Host-filebox_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
-        ),
-        HeaderValue::from_static(
-            "filebox_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
-        ),
-    ]
+fn clear_session_cookie_headers(secure: bool) -> [HeaderValue; 2] {
+    let secure_flag = if secure { "; Secure" } else { "" };
+    let host_header = HeaderValue::from_str(&format!(
+        "__Host-filebox_session=; HttpOnly{}; SameSite=Strict; Path=/; Max-Age=0",
+        secure_flag
+    )).unwrap();
+    let plain_header = HeaderValue::from_str(&format!(
+        "filebox_session=; HttpOnly{}; SameSite=Strict; Path=/; Max-Age=0",
+        secure_flag
+    )).unwrap();
+    [host_header, plain_header]
 }
 
 // ── Session ──────────────────────────────────────────────────────────────────
@@ -368,7 +372,7 @@ async fn session_exchange_handler(
     )
         .into_response();
     resp.headers_mut()
-        .append(header::SET_COOKIE, session_cookie_header(&session_id, ttl));
+        .append(header::SET_COOKIE, session_cookie_header(&session_id, ttl, state.secure_cookies));
     resp.headers_mut().append(
         header::SET_COOKIE,
         HeaderValue::from_static(
@@ -401,7 +405,7 @@ async fn session_logout_handler(
         Json(serde_json::json!({ "ok": true })),
     )
         .into_response();
-    for cookie in clear_session_cookie_headers() {
+    for cookie in clear_session_cookie_headers(state.secure_cookies) {
         resp.headers_mut().append(header::SET_COOKIE, cookie);
     }
     resp
@@ -1373,7 +1377,7 @@ mod tests {
 
     #[tokio::test]
     async fn preview_resource_route_does_not_mirror_third_party_origin() {
-        let app = create_router(AppState::new(&test_config()));
+        let app = create_router(AppState::new(&test_config(), true));
         let response = app
             .oneshot(
                 axum::http::Request::builder()
@@ -1394,7 +1398,7 @@ mod tests {
 
     #[tokio::test]
     async fn regular_api_routes_still_mirror_request_origin() {
-        let app = create_router(AppState::new(&test_config()));
+        let app = create_router(AppState::new(&test_config(), true));
         let origin = HeaderValue::from_static("https://app.example");
         let response = app
             .oneshot(
@@ -1441,7 +1445,7 @@ mod tests {
 
     #[tokio::test]
     async fn preview_session_create_requires_agent_stat_success() {
-        let state = AppState::new(&test_config());
+        let state = AppState::new(&test_config(), true);
         let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
         let state_for_agent = state.clone();
         let agent_handle = tokio::spawn(async move {
@@ -1476,7 +1480,7 @@ mod tests {
 
     #[tokio::test]
     async fn preview_session_create_verifies_read_before_issuing_token() {
-        let state = AppState::new(&test_config());
+        let state = AppState::new(&test_config(), true);
         let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
         let state_for_agent = state.clone();
         let agent_handle = tokio::spawn(async move {

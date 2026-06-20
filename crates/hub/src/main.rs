@@ -20,7 +20,10 @@ async fn main() {
         .init();
 
     let config = config::HubConfig::load();
-    let state = state::AppState::new(&config);
+    let dev_mode = std::env::var("FILEBOX_DEV_MODE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let state = state::AppState::new(&config, !dev_mode);
 
     // Spawn background heartbeat task
     let heartbeat_state = state.clone();

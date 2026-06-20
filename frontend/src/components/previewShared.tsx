@@ -284,7 +284,7 @@ export const styles: Record<string, React.CSSProperties> = {
   },
   markdown: {
     padding: 20, color: c.text, fontSize: 14, lineHeight: 1.7,
-    maxWidth: 800, overflowWrap: 'break-word', wordBreak: 'break-word',
+    overflowWrap: 'break-word', wordBreak: 'break-word',
     fontFamily: font.sans,
   },
   codeContainer: {
