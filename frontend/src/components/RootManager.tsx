@@ -122,13 +122,13 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: radius.md, marginBottom: 16,
   },
   error: { color: c.danger, fontSize: 13, margin: 0 },
-  addRow: { display: 'flex', gap: 10, marginBottom: 20 },
+  addRow: { display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' },
   addRowMobile: {
     display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20,
   },
   input: {
     padding: '9px 14px', borderRadius: radius.md, border: `1px solid ${c.border}`,
-    background: c.surface, color: c.text, fontSize: 13, flex: 1, outline: 'none',
+    background: c.surface, color: c.text, fontSize: 13, flex: 1, minWidth: 0, outline: 'none',
     fontFamily: font.sans, transition: 'border-color 0.15s',
   },
   // Same as `input` but without `flex` — in the column mobile layout, `flex: 1`
@@ -142,7 +142,7 @@ const styles: Record<string, React.CSSProperties> = {
   addBtn: {
     padding: '9px 22px', borderRadius: radius.md, border: 'none',
     background: c.accent, color: '#fff', cursor: 'pointer', fontSize: 13,
-    fontWeight: 500, transition: 'background 0.15s',
+    fontWeight: 500, flexShrink: 0, transition: 'background 0.15s',
   },
   addBtnMobile: {
     padding: '9px 22px', borderRadius: radius.md, border: 'none',
@@ -153,8 +153,8 @@ const styles: Record<string, React.CSSProperties> = {
   list: { display: 'flex', flexDirection: 'column', gap: 10 },
   item: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    padding: '12px 16px', borderRadius: radius.lg, border: `1px solid ${c.border}`,
-    background: c.surface,
+    gap: 12, padding: '12px 16px', borderRadius: radius.lg, border: `1px solid ${c.border}`,
+    background: c.surface, minWidth: 0,
   },
   itemMobile: {
     display: 'flex', flexDirection: 'column', alignItems: 'stretch',

@@ -39,10 +39,14 @@ export function AgentSettings({ agent, onRefresh }: Props) {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  container: { display: 'flex', flexDirection: 'column', height: '100%', fontFamily: font.sans },
-  header: { padding: '20px 24px', borderBottom: `1px solid ${c.border}` },
-  title: { margin: 0, color: c.text, fontSize: 16, fontWeight: 600 },
-  meta: { display: 'flex', gap: 14, marginTop: 10, alignItems: 'center' },
+  container: { display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0, fontFamily: font.sans },
+  // Header is NOT inside the scroll area, so it must never overflow — every
+  // flex child below is given minWidth:0 / flexWrap so it wraps or ellipses
+  // instead of pushing past the right edge (the cause of "settings cut off"
+  // at narrow widths or high browser zoom).
+  header: { padding: '16px 24px', borderBottom: `1px solid ${c.border}`, minWidth: 0 },
+  title: { margin: 0, color: c.text, fontSize: 16, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  meta: { display: 'flex', flexWrap: 'wrap', rowGap: 6, columnGap: 14, marginTop: 10, alignItems: 'center' },
   badge: {
     padding: '3px 12px', borderRadius: radius.pill,
     fontSize: 12, fontWeight: 500,
@@ -52,7 +56,7 @@ const styles: Record<string, React.CSSProperties> = {
   configError: {
     color: c.danger, fontSize: 12, marginTop: 12,
     padding: '10px 14px', background: c.dangerBg, borderRadius: radius.md,
-    border: `1px solid ${c.danger}20`,
+    border: `1px solid ${c.danger}20`, overflowWrap: 'break-word',
   },
-  content: { flex: 1, overflow: 'auto', padding: '20px 24px' },
+  content: { flex: 1, overflow: 'auto', padding: '20px 24px', minWidth: 0 },
 };
