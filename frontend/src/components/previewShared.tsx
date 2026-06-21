@@ -103,6 +103,11 @@ export const extToLang: Record<string, string> = {
   sql: 'sql', rb: 'ruby', php: 'php',
   swift: 'swift', kt: 'kotlin', kts: 'kotlin', scala: 'scala',
   r: 'r', R: 'r',
+  // R dotfiles: ".Rprofile" and ".Renviron" are R source/config files with no
+  // real extension — `path.split('.').pop()` yields the lowercased basename
+  // ("rprofile"/"renviron"), so they're keyed here the same way Dockerfile/
+  // Makefile are. Both preview as R.
+  rprofile: 'r', renviron: 'r',
   lua: 'lua', pl: 'perl', pm: 'perl',
   erl: 'erlang', ex: 'elixir', exs: 'elixir',
   hs: 'haskell', ml: 'ocaml', mli: 'ocaml',
