@@ -49,4 +49,8 @@ export const shadow = {
 export const font = {
   sans: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   mono: '"JetBrains Mono", "SF Mono", "Fira Code", monospace',
+  // Screen-optimized serif stack: Georgia ships everywhere (Win/macOS/Linux);
+  // Iowan Old Style (macOS), Palatino Linotype / Book Antiqua (Win) as
+  // fallbacks. Used only as an optional toggle for filenames.
+  serif: 'Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif',
 } as const;

@@ -8,6 +8,10 @@ All notable changes to Filebox are listed here. Dates are UTC.
 - **Address bar** with auto-complete, breadcrumb navigation, full-path paste support, and pencil edit button
 - **Path memory** — switching between roots or agents now remembers and restores the last visited path for each agent+root combination
 - **Filename alignment toggle** — toolbar button to switch between left-align and right-align filenames, making the varying suffix of long AI-generated filenames visible without scrolling
+- **Filename font toggle** — toolbar button to switch filenames between sans-serif (default) and a screen-optimized serif (Georgia stack). Serif shapes read more distinctly than sans when fatigued, helping tell similar filenames apart. Affects filenames only; dates/sizes stay sans. Preference persisted in localStorage.
+
+### Changed
+- **Filename readability** — filenames bumped from 13px Regular to 14px Medium (500). The heavier weight resolves confusable glyph pairs (I/l/1, O/0/o) that made names blur together. Row height unchanged (stays compact).
 
 ### Fixed
 - Dev-mode cookies (`FILEBOX_DEV_MODE=1`) — `Secure` flag no longer breaks HTTP localhost sessions
@@ -15,6 +19,7 @@ All notable changes to Filebox are listed here. Dates are UTC.
 - HSTS only sent over TLS — the hub previously emitted `Strict-Transport-Security` unconditionally, including on plaintext HTTP, which poisoned browsers into force-upgrading `http://` to `https://` against a hub that only listens on plain HTTP. HSTS is now gated on the request actually arriving over TLS (direct `https` or `X-Forwarded-Proto: https`). Production behind nginx is unaffected.
 - Race condition on agent switch — stale API responses from the old agent can no longer overwrite correct data from the new agent
 - Polling-induced layout jumping — health polling previously created new array references every 5 seconds, triggering spurious directory reloads; now only updates state when data actually changes
+- Filename right-align actually keeps the suffix — the toggle previously only set `text-align:right`, which still clipped the suffix; it now uses RTL direction + bidi-isolated text so long filenames show `…suffix` (e.g. `…_REWIND_A_1708.md`). Also: new align-edge icon glyph, Copy/denied controls stay anchored, preference persisted in localStorage
 
 ---
 

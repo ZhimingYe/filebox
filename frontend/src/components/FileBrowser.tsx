@@ -89,7 +89,27 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
   const [sortAsc, setSortAsc] = useState(true);
   const [filterText, setFilterText] = useState('');
   const [filterError, setFilterError] = useState(false);
-  const [nameAlignRight, setNameAlignRight] = useState(false);
+  // When true, names stick to the right edge and OVERFLOW IS CLIPPED AT THE
+  // FRONT (ellipsis on the left) so the suffix of long filenames stays
+  // visible. Achieved with direction:rtl on the cell + <bdi dir="ltr"> on the
+  // text. Plain text-align:right would still cut the suffix off, which is the
+  // exact failure mode this toggle is meant to fix.
+  const [nameAlignRight, setNameAlignRight] = useState<boolean>(() => {
+    try { return localStorage.getItem('filebox.nameAlignRight') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('filebox.nameAlignRight', nameAlignRight ? '1' : '0'); } catch { /* ignore */ }
+  }, [nameAlignRight]);
+  // Optional serif rendering for filenames — when tired, a serif face reads
+  // more distinctly than the default sans (different letter shapes break up
+  // the "wall of similar names" effect). Affects filenames only; dates /
+  // sizes stay sans so digits keep their alignment.
+  const [fileNameSerif, setFileNameSerif] = useState<boolean>(() => {
+    try { return localStorage.getItem('filebox.fileNameSerif') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('filebox.fileNameSerif', fileNameSerif ? '1' : '0'); } catch { /* ignore */ }
+  }, [fileNameSerif]);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   // Remember last visited path per agent+root (keyed as "agentId:rootName")
   const pathMemory = useRef<Map<string, string>>(new Map());
@@ -319,19 +339,24 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
           {isBack ? <IconUpDir /> : getEntryIcon(displayEntry!.entry_type)}
         </span>
         <span
-          style={nameAlignRight ? { ...styles.entryName, textAlign: 'right' } : styles.entryName}
+          style={{
+            ...styles.entryName,
+            fontFamily: fileNameSerif ? font.serif : font.sans,
+            ...(!isBack && nameAlignRight ? { direction: 'rtl', textAlign: 'right' } : {}),
+          }}
           title={isBack ? undefined : displayEntry!.name}
         >
-          {isBack ? '..' : displayEntry!.name}
+          {isBack ? (
+            '..'
+          ) : nameAlignRight ? (
+            // bidi-isolate the name so characters still render LTR while the
+            // cell is RTL: overflow + ellipsis then clip the PREFIX, keeping
+            // the filename suffix pinned to the right edge of the cell.
+            <bdi dir="ltr">{displayEntry!.name}</bdi>
+          ) : (
+            displayEntry!.name
+          )}
         </span>
-        {!isBack && displayEntry!.modified && (
-          <span style={isMobile ? styles.entryDateMobile : styles.entryDate}>
-            {isMobile ? formatDateShort(displayEntry!.modified) : formatDate(displayEntry!.modified)}
-          </span>
-        )}
-        {!isBack && displayEntry!.size !== null && !isMobile && (
-          <span style={styles.entryMeta}>{formatSize(displayEntry!.size)}</span>
-        )}
         {!isBack && displayEntry!.denied && <span style={styles.deniedBadge}>denied</span>}
         {!isBack && isHovered && (
           <button
@@ -344,6 +369,14 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
           >
             {copiedPath === `name-${index}` ? 'Copied' : 'Copy'}
           </button>
+        )}
+        {!isBack && displayEntry!.modified && (
+          <span style={isMobile ? styles.entryDateMobile : styles.entryDate}>
+            {isMobile ? formatDateShort(displayEntry!.modified) : formatDate(displayEntry!.modified)}
+          </span>
+        )}
+        {!isBack && displayEntry!.size !== null && !isMobile && (
+          <span style={styles.entryMeta}>{formatSize(displayEntry!.size)}</span>
         )}
       </div>
     );
@@ -370,13 +403,55 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
         <button
           onClick={() => setNameAlignRight((v) => !v)}
           style={nameAlignRight ? styles.alignBtnActive : styles.alignBtn}
-          title={nameAlignRight ? 'Left-align filenames' : 'Right-align filenames'}
+          title={nameAlignRight
+            ? 'Filenames pinned right (long names show …suffix)'
+            : 'Filenames pinned left (long names show prefix…)'}
+          aria-pressed={nameAlignRight}
         >
-          <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <rect x="1" y="2" width="14" height="1.5" rx="0.75" fill="currentColor" />
-            <rect x="1" y="6.5" width="10" height="1.5" rx="0.75" fill="currentColor" />
-            <rect x="1" y="11" width="14" height="1.5" rx="0.75" fill="currentColor" />
-          </svg>
+          {/* Align-edge bars: bars hug the LEFT when left-aligned, the RIGHT
+              when right-aligned — so the glyph itself shows which edge names
+              stick to. The same bar lengths render in both states; only the
+              x-offset flips, which reads as "the block moved to the other side". */}
+          {nameAlignRight ? (
+            <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="1" y="2.5" width="14" height="1.5" rx="0.75" fill="currentColor" />
+              <rect x="5" y="7.25" width="10" height="1.5" rx="0.75" fill="currentColor" />
+              <rect x="1" y="12" width="14" height="1.5" rx="0.75" fill="currentColor" />
+            </svg>
+          ) : (
+            <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="1" y="2.5" width="14" height="1.5" rx="0.75" fill="currentColor" />
+              <rect x="1" y="7.25" width="10" height="1.5" rx="0.75" fill="currentColor" />
+              <rect x="1" y="12" width="14" height="1.5" rx="0.75" fill="currentColor" />
+            </svg>
+          )}
+        </button>
+        <button
+          onClick={() => setFileNameSerif((v) => !v)}
+          style={fileNameSerif ? styles.fontBtnActive : styles.fontBtn}
+          title={fileNameSerif
+            ? 'Filename font: serif (click for sans-serif)'
+            : 'Filename font: sans-serif (click for serif)'}
+          aria-pressed={fileNameSerif}
+        >
+          {/* Font glyph: a capital A. In serif mode it carries serifs (the
+              little feet/finials); in sans mode it is a plain geometric A.
+              The glyph itself signals the current font. */}
+          {fileNameSerif ? (
+            <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M8 2.5L2.7 13h2l0.85-2h4.9l0.85 2h2L8 2.5z" fill="currentColor" />
+              <path d="M6.2 9.3L8 5l1.8 4.3H6.2z" fill="#fff" />
+              {/* serifs */}
+              <rect x="2" y="12.9" width="4.5" height="0.8" fill="currentColor" />
+              <rect x="9.5" y="12.9" width="4.5" height="0.8" fill="currentColor" />
+              <rect x="6.7" y="2.6" width="2.6" height="0.7" fill="currentColor" />
+            </svg>
+          ) : (
+            <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M8 2.5L2.7 13h2l0.85-2h4.9l0.85 2h2L8 2.5z" fill="currentColor" />
+              <path d="M6.2 9.3L8 5l1.8 4.3H6.2z" fill="#fff" />
+            </svg>
+          )}
         </button>
         {loading && <span style={styles.spinner} />}
       </div>
@@ -533,9 +608,11 @@ const styles: Record<string, React.CSSProperties> = {
     outline: 'none',
   },
   refreshBtn: {
-    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    padding: 0, borderRadius: radius.md, border: `1px solid ${c.border}`,
     background: 'transparent', color: c.textSecondary, cursor: 'pointer',
     fontSize: 16, lineHeight: 1, transition: 'all 0.15s',
+    width: 34, height: 28, flexShrink: 0, boxSizing: 'border-box',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
   alignBtn: {
     padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.border}`,
@@ -545,6 +622,20 @@ const styles: Record<string, React.CSSProperties> = {
     boxSizing: 'border-box', flexShrink: 0,
   },
   alignBtnActive: {
+    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.accent}`,
+    background: c.accentBg, color: c.accent, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, width: 34, height: 28,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', flexShrink: 0,
+  },
+  fontBtn: {
+    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    background: 'transparent', color: c.textSecondary, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, width: 34, height: 28,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', flexShrink: 0,
+  },
+  fontBtnActive: {
     padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.accent}`,
     background: c.accentBg, color: c.accent, cursor: 'pointer',
     fontSize: 16, lineHeight: 1, width: 34, height: 28,
@@ -611,7 +702,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: c.bgMuted,
   },
   icon: { fontSize: 14, width: 20, textAlign: 'center', flexShrink: 0 },
-  entryName: { color: c.text, fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  entryName: { color: c.text, fontSize: 14, fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   entryDate: { color: c.textMuted, fontSize: 12, width: 130, textAlign: 'right', flexShrink: 0 },
   entryDateMobile: { color: c.textMuted, fontSize: 10, textAlign: 'right', flexShrink: 0, width: 72 },
   entryMeta: { color: c.textFaint, fontSize: 12, width: 80, textAlign: 'right', flexShrink: 0 },
