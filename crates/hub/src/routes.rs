@@ -135,6 +135,19 @@ async fn security_headers(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    // HSTS only makes sense over TLS: sending it on a plaintext HTTP response
+    // poisons browsers (some engines remember it anyway, especially with
+    // includeSubDomains), which then force-upgrade http://127.0.0.1 to https://
+    // and break against a hub that only listens on plain HTTP. Only emit HSTS
+    // when this request actually arrived over TLS — either directly (scheme
+    // https) or behind a reverse proxy that advertised it via X-Forwarded-Proto.
+    let is_https = req.uri().scheme_str() == Some("https")
+        || req
+            .headers()
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("https"))
+            .unwrap_or(false);
     let mut resp = next.run(req).await;
     let headers = resp.headers_mut();
     headers.insert(
@@ -145,10 +158,12 @@ async fn security_headers(
         HeaderName::from_static("x-frame-options"),
         HeaderValue::from_static("DENY"),
     );
-    headers.insert(
-        header::STRICT_TRANSPORT_SECURITY,
-        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
-    );
+    if is_https {
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        );
+    }
     headers.insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("same-origin"),
@@ -373,12 +388,6 @@ async fn session_exchange_handler(
         .into_response();
     resp.headers_mut()
         .append(header::SET_COOKIE, session_cookie_header(&session_id, ttl, state.secure_cookies));
-    resp.headers_mut().append(
-        header::SET_COOKIE,
-        HeaderValue::from_static(
-            "filebox_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0",
-        ),
-    );
     resp
 }
 

@@ -1,5 +1,12 @@
 # CLAUDE.md
 
+> **Bringing the stack up locally or debugging a "nothing works" symptom?**
+> Read **[`docs/local-debugging.md`](docs/local-debugging.md)** first. It is a
+> runbook for local bring-up, backend API probes, and the environment traps
+> (stale processes, HSTS poisoning, cookie clearing, proxy interception) that
+> reading code will never reveal. Default discipline: make `curl` work
+> end-to-end before blaming the frontend.
+
 ## What This Is
 
 Filebox is a **read-only remote file browser with system monitoring**. User

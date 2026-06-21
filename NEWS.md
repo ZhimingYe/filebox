@@ -11,6 +11,8 @@ All notable changes to Filebox are listed here. Dates are UTC.
 
 ### Fixed
 - Dev-mode cookies (`FILEBOX_DEV_MODE=1`) — `Secure` flag no longer breaks HTTP localhost sessions
+- Login response no longer wipes the session it just set — `/api/session/exchange` previously appended a second `filebox_session=; Max-Age=0; Secure` Set-Cookie on the login response, which cleared the valid session cookie immediately, leaving every subsequent `/api/*` request unauthenticated (manifested as "No agents connected" right after a successful login). Removed the stray clear; login now emits a single Set-Cookie.
+- HSTS only sent over TLS — the hub previously emitted `Strict-Transport-Security` unconditionally, including on plaintext HTTP, which poisoned browsers into force-upgrading `http://` to `https://` against a hub that only listens on plain HTTP. HSTS is now gated on the request actually arriving over TLS (direct `https` or `X-Forwarded-Proto: https`). Production behind nginx is unaffected.
 - Race condition on agent switch — stale API responses from the old agent can no longer overwrite correct data from the new agent
 - Polling-induced layout jumping — health polling previously created new array references every 5 seconds, triggering spurious directory reloads; now only updates state when data actually changes
 
