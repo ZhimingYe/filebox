@@ -3,7 +3,7 @@ import { FixedSizeList as VList } from 'react-window';
 import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
 import { useIsMobile } from '../state/useIsMobile';
-import { c, radius, font } from '../theme';
+import { c, radius, font, shadow } from '../theme';
 import { AddressBar } from './AddressBar';
 
 // ── Inline SVG Icons (16x16) ───────────────────────────────────────────
@@ -84,6 +84,13 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Custom root-selector dropdown state. We hand-roll the dropdown instead of
+  // using a native <select> so the panel can carry richer content per root
+  // (path, status) and the trigger matches the toolbar's inline-style system.
+  // `rootOpen` is whether the panel is shown; `rootRef` wraps trigger+panel so
+  // the click-outside handler can tell "inside the selector" from "elsewhere".
+  const [rootOpen, setRootOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const [listHeight, setListHeight] = useState(400);
   const [sortBy, setSortBy] = useState<SortKey>('name');
   const [sortAsc, setSortAsc] = useState(true);
@@ -119,6 +126,23 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
 
   const enabledRoots = useMemo(() => roots.filter((r) => r.enabled), [roots]);
 
+  // Resolve the active root object so we can reconstruct the *full* server-side
+  // address (path_display + currentPath) for the copy-address button. This
+  // mirrors what AddressBar does internally. null until a root is selected.
+  const activeRootObj = useMemo(
+    () => roots.find((r) => r.name === selectedRoot) || null,
+    [roots, selectedRoot],
+  );
+  // Full address = the root's absolute path_display joined with currentPath.
+  // Both halves already start with '/'; we must avoid producing a "//" when
+  // currentPath is the root ('/'). e.g. "/home/user" + "/" => "/home/user".
+  const fullAddress = useMemo(() => {
+    if (!activeRootObj) return '';
+    const base = activeRootObj.path_display.replace(/\/+$/, '');
+    const rel = currentPath === '/' ? '' : currentPath;
+    return base + rel;
+  }, [activeRootObj, currentPath]);
+
   // Copy to clipboard helper
   const copyToClipboard = useCallback(async (text: string, label: string) => {
     try {
@@ -148,6 +172,26 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
     obs.observe(el);
     return () => obs.disconnect();
   }, []);
+
+  // Close the root dropdown when clicking outside it or pressing Escape.
+  // The panel is anchored to the trigger via the shared `rootRef` wrapper.
+  useEffect(() => {
+    if (!rootOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setRootOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setRootOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [rootOpen]);
 
   // Unified: handles agent switch (restore saved path) and root config changes (pick valid root)
   const prevRootRef = useRef<string | null>(null);
@@ -362,12 +406,29 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
           <button
             onClick={(e) => {
               e.stopPropagation();
-              copyToClipboard(displayEntry!.name, `name-${index}`);
+              // Copy the FULL path to this entry (directory + filename), not
+              // just the bare name. fullAddress already ends at the current
+              // directory (no trailing slash except at root), so we only add a
+              // separator when we're deeper than the root.
+              const sep = currentPath === '/' ? '' : '/';
+              copyToClipboard(fullAddress + sep + displayEntry!.name, `name-${index}`);
             }}
             style={styles.copyNameBtn}
-            title="Copy filename"
+            title="Copy full path"
           >
-            {copiedPath === `name-${index}` ? 'Copied' : 'Copy'}
+            {copiedPath === `name-${index}` ? (
+              // checkmark — shown for ~2s after a successful copy
+              <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3.5 8.5l3 3 6-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            ) : (
+              // clipboard glyph — matches the toolbar copy-address button
+              <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="4" width="9" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
+                <path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                <path d="M6 8h4M6 10.5h2.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
+              </svg>
+            )}
           </button>
         )}
         {!isBack && displayEntry!.modified && (
@@ -384,22 +445,96 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
 
   return (
     <div style={styles.container}>
-      <div style={styles.toolbar}>
-        <select
-          value={selectedRoot || ''}
-          onChange={(e) => {
-            const next = e.target.value;
-            if (selectedRoot) pathMemory.current.set(memKey(selectedRoot), currentPath);
-            setSelectedRoot(next);
-            setCurrentPath(pathMemory.current.get(memKey(next)) || '/');
-          }}
-          style={styles.select}
-        >
-          {enabledRoots.map((r) => (
-            <option key={r.name} value={r.name}>{r.name}</option>
-          ))}
-        </select>
-        <button onClick={() => loadDir(false)} style={styles.refreshBtn} title="Refresh">&#x21bb;</button>
+      <div style={{
+        ...styles.toolbar,
+        // On small screens let the toolbar wrap so the root selector + the
+        // four icon buttons don't crowd or overflow. `flexWrap` + `rowGap`
+        // keeps a tidy second row when the controls no longer fit on one.
+        ...(isMobile ? { flexWrap: 'wrap', rowGap: 8 } : {}),
+      }}>
+        {/* Root selector — a hand-rolled dropdown instead of native <select>.
+            The native control renders an OS-styled popup we can't theme, and
+            can't carry per-root extra info. The trigger shows the current root
+            + a chevron; the panel lists enabled roots with their server path.
+            Behavior matches the old <select>: remember the path of the root
+            we're leaving, then swap root and restore that root's last path. */}
+        <div ref={rootRef} style={{ ...styles.rootSelect, ...(isMobile ? { flex: '1 1 100%' } : {}) }}>
+          <button
+            type="button"
+            onClick={() => setRootOpen((v) => !v)}
+            style={{
+              ...styles.rootTrigger,
+              ...(rootOpen ? styles.rootTriggerOpen : {}),
+              // On mobile the trigger spans the full row width so long root
+              // names stay readable; on desktop it caps at 220px to leave room
+              // for the icon buttons beside it.
+              ...(isMobile ? { width: '100%', maxWidth: 'none' } : {}),
+            }}
+            aria-haspopup="listbox"
+            aria-expanded={rootOpen}
+            title={selectedRoot ? `Root: ${selectedRoot}` : 'Select root'}
+          >
+            <span style={styles.rootTriggerLabel}>
+              {selectedRoot || 'Select root…'}
+            </span>
+            <svg
+              style={{ display: 'block', transition: 'transform 0.15s', transform: rootOpen ? 'rotate(180deg)' : 'none' }}
+              width="12" height="12" viewBox="0 0 16 16" fill="none"
+            >
+              <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+          {rootOpen && (
+            <div
+              style={{
+                ...styles.rootPanel,
+                // On small screens pin the panel to the wrapper's right edge
+                // instead of its left, so a trigger near the viewport's right
+                // side can't push the panel off-screen. On desktop keep
+                // left-aligned (matches the trigger's left edge).
+                ...(isMobile ? { left: 0, right: 0, minWidth: 0 } : {}),
+              }}
+              role="listbox"
+            >
+              {enabledRoots.map((r) => {
+                const isSel = r.name === selectedRoot;
+                return (
+                  <button
+                    key={r.name}
+                    type="button"
+                    role="option"
+                    aria-selected={isSel}
+                    style={{
+                      ...styles.rootItem,
+                      ...(isSel ? styles.rootItemSelected : {}),
+                    }}
+                    onClick={() => {
+                      const next = r.name;
+                      if (selectedRoot) pathMemory.current.set(memKey(selectedRoot), currentPath);
+                      setSelectedRoot(next);
+                      setCurrentPath(pathMemory.current.get(memKey(next)) || '/');
+                      setRootOpen(false);
+                    }}
+                    title={r.path_display}
+                  >
+                    <span style={styles.rootItemName}>{r.name}</span>
+                    <span style={styles.rootItemPath}>{r.path_display}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <button onClick={() => loadDir(false)} style={styles.refreshBtn} title="Refresh">
+          {/* Circular-arrow refresh glyph. Drawn as SVG (not the ↻ text char)
+              so it renders identically across fonts/platforms. Kept compact
+              (radius 4, stroke 1.3) to match the visual weight of the align /
+              font / copy toolbar icons. */}
+          <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 8a4 4 0 1 1-1.2-2.8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            <path d="M12 3.5v3h-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
         <button
           onClick={() => setNameAlignRight((v) => !v)}
           style={nameAlignRight ? styles.alignBtnActive : styles.alignBtn}
@@ -450,6 +585,33 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
             <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M8 2.5L2.7 13h2l0.85-2h4.9l0.85 2h2L8 2.5z" fill="currentColor" />
               <path d="M6.2 9.3L8 5l1.8 4.3H6.2z" fill="#fff" />
+            </svg>
+          )}
+        </button>
+        {/* Copy the FULL server-side address of the directory currently being
+            viewed (root path_display + currentPath). Disabled when no root is
+            selected yet (e.g. agent has no enabled roots). Reuses copyToClipboard
+            so the same fallback + transient "Copied" feedback applies. */}
+        <button
+          onClick={() => copyToClipboard(fullAddress, 'toolbar-path')}
+          style={{
+            ...(copiedPath === 'toolbar-path' ? styles.copyPathBtnActive : styles.copyPathBtn),
+            ...(activeRootObj ? {} : { opacity: 0.4, cursor: 'not-allowed' }),
+          }}
+          title={copiedPath === 'toolbar-path' ? 'Copied!' : 'Copy full directory address'}
+          disabled={!activeRootObj}
+        >
+          {copiedPath === 'toolbar-path' ? (
+            // checkmark glyph shown for ~2s after a successful copy
+            <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M3.5 8.5l3 3 6-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          ) : (
+            // clipboard glyph
+            <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="3" y="4" width="9" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
+              <path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+              <path d="M6 8h4M6 10.5h2.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
             </svg>
           )}
         </button>
@@ -602,10 +764,75 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', gap: 8,
     background: c.bg,
   },
-  select: {
-    padding: '6px 10px', borderRadius: radius.md, border: `1px solid ${c.border}`,
-    background: c.surface, color: c.text, fontSize: 13, fontFamily: font.sans,
-    outline: 'none',
+  // ── Root selector (custom dropdown) ──
+  // Wrapper establishes the positioning context for the absolutely-positioned
+  // panel. `position: relative` here anchors the panel to the trigger.
+  // `minWidth: 0` lets the trigger shrink within a flex row so the toolbar
+  // can't be pushed off-screen by a long root name on narrow widths.
+  rootSelect: { position: 'relative', flexShrink: 1, minWidth: 0 },
+  // Trigger: same height (28) and radius as the toolbar icon buttons so the
+  // root selector reads as part of the same control row. Uses a transparent
+  // background + the same border/text token as the icon buttons — a filled
+  // surface made it visually heavier than its neighbors. Inline-styled only
+  // (no CSS) per the project's theme-token rule.
+  //
+  // IMPORTANT: use the border LONGHANDs (borderWidth/borderStyle/borderColor),
+  // NOT the `border` shorthand. The open state overrides `borderColor`; if the
+  // base used the shorthand (one `border` key) while the override used the
+  // longhand (a separate `borderColor` key), React's style-diff would, on
+  // close, re-apply `border` then CLEAR the now-absent `borderColor` key —
+  // leaving border-color unset and falling back to currentColor (the text
+  // color = near-black). Keeping borderColor as its own key in BOTH states
+  // means React never clears it, so the color always has an explicit value.
+  rootTrigger: {
+    display: 'flex', alignItems: 'center', gap: 6,
+    padding: '0 10px', height: 28, minWidth: 0, maxWidth: 220,
+    borderRadius: radius.md,
+    borderWidth: 1, borderStyle: 'solid', borderColor: c.border,
+    background: 'transparent', color: c.text, cursor: 'pointer',
+    fontSize: 13, fontFamily: font.sans, fontWeight: 500,
+    outline: 'none', transition: 'border-color 0.15s, box-shadow 0.15s',
+  },
+  rootTriggerOpen: {
+    borderColor: c.accent,
+    boxShadow: `0 0 0 2px ${c.accentBg}`,
+  },
+  rootTriggerLabel: {
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    // allow the label to shrink so the chevron stays visible on narrow widths
+    flex: '1 1 auto', minWidth: 0,
+  },
+  // Panel: absolutely positioned under the trigger. z-index sits above the
+  // list/column headers but below modal overlays. minWidth keeps short root
+  // names from making the panel too narrow; maxWidth truncates long paths.
+  // `right: 0` is NOT set here because the panel should align to the trigger's
+  // left edge on desktop; the mobile case overrides alignment inline.
+  rootPanel: {
+    position: 'absolute', top: 'calc(100% + 4px)', left: 0,
+    minWidth: '100%', maxWidth: 360, zIndex: 50,
+    background: c.surface, border: `1px solid ${c.border}`,
+    borderRadius: radius.md, boxShadow: shadow.md,
+    padding: 4, maxHeight: 320, overflowY: 'auto',
+    display: 'flex', flexDirection: 'column', gap: 2,
+  },
+  // Each item shows the root name on top + the server path below (muted,
+  // smaller). Full-width buttons so the whole row is clickable; left-aligned
+  // text to match the rest of the UI.
+  rootItem: {
+    display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
+    padding: '6px 8px', borderRadius: radius.sm, border: 'none',
+    background: 'transparent', color: c.text, cursor: 'pointer',
+    fontFamily: font.sans, textAlign: 'left', width: '100%',
+    transition: 'background 0.1s',
+  },
+  rootItemSelected: {
+    background: c.accentBg, color: c.accent,
+  },
+  rootItemName: { fontSize: 13, fontWeight: 500 },
+  rootItemPath: {
+    fontSize: 11, color: c.textMuted, fontWeight: 400,
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    maxWidth: '100%',
   },
   refreshBtn: {
     padding: 0, borderRadius: radius.md, border: `1px solid ${c.border}`,
@@ -642,6 +869,28 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     boxSizing: 'border-box', flexShrink: 0,
   },
+  // Copy-address button: same box model as the align / font toggle buttons so
+  // the four toolbar buttons read as one consistent group. Default = idle
+  // outline; the "Active" variant is the transient success state shown right
+  // after a copy (green accent + checkmark). `:disabled` (no root selected)
+  // is handled via inline opacity — see button style below.
+  copyPathBtn: {
+    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    background: 'transparent', color: c.textSecondary, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, width: 34, height: 28,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', flexShrink: 0,
+    transition: 'all 0.15s',
+    // Note: the disabled visual (dimmed + not-allowed) is applied via inline
+    // style override in the JSX — React inline styles can't express :disabled.
+  },
+  copyPathBtnActive: {
+    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.success}`,
+    background: c.successBg, color: c.success, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, width: 34, height: 28,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', flexShrink: 0,
+  },
   spinner: {
     width: 14, height: 14, border: `2px solid ${c.border}`,
     borderTopColor: c.accent, borderRadius: '50%',
@@ -652,8 +901,13 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', gap: 6,
     background: c.bg,
   },
+  // NOTE: border longhands (not the shorthand) because the JSX overrides
+  // `borderColor` to flag an invalid regex — same React style-diff trap as
+  // rootTrigger (shorthand base + longhand override => borderColor gets
+  // cleared on next render => falls back to currentColor = black).
   filterInput: {
-    flex: 1, padding: '6px 10px', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    flex: 1, padding: '6px 10px', borderRadius: radius.md,
+    borderWidth: 1, borderStyle: 'solid', borderColor: c.border,
     background: c.surface, color: c.text, fontSize: 13, outline: 'none',
     fontFamily: font.sans, transition: 'border-color 0.15s',
   },
@@ -710,10 +964,17 @@ const styles: Record<string, React.CSSProperties> = {
     color: c.warning, fontSize: 10, fontStyle: 'normal', fontWeight: 500,
     padding: '1px 6px', background: c.warningBg, borderRadius: radius.pill, flexShrink: 0,
   },
+  // Per-row copy button. Square icon-only button (no text) so it visually
+  // matches the toolbar copy-address button — same clipboard glyph, same
+  // checkmark on success. Kept compact (24×24) to fit inside a 32px-tall row
+  // without crowding the date/size columns.
   copyNameBtn: {
-    padding: '2px 4px', borderRadius: radius.sm, border: 'none',
+    padding: 0, borderRadius: radius.sm, border: 'none',
     background: 'transparent', color: c.textMuted, cursor: 'pointer',
-    fontSize: 11, lineHeight: 1, flexShrink: 0, marginLeft: 4,
+    lineHeight: 1, flexShrink: 0, marginLeft: 4,
+    width: 24, height: 24,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', transition: 'color 0.15s',
   },
   empty: { padding: 16, color: c.textMuted, fontSize: 13 },
   loadMore: {
