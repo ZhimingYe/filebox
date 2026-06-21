@@ -180,7 +180,15 @@ export function PdfPreview({ url }: Props) {
               }}
               style={{
                 ...styles.pageWrap,
+                // Keep the slot at least placeholderHeight tall while the real
+                // <Page> canvas loads. Without this the wrap collapses to the
+                // spinner's ~20px height, which shifts total document height,
+                // toggles the container scrollbar, and — because the
+                // ResizeObserver feeds that width back into pageWidth — kicks
+                // off a self-sustaining flicker/jump loop (see scrollbarGutter
+                // note below).
                 height: isVisible ? 'auto' : placeholderHeight,
+                minHeight: placeholderHeight,
               }}
             >
               {isVisible ? (
@@ -215,6 +223,15 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
     fontFamily: font.sans,
     position: 'relative',
+    // Reserve a stable gutter for the scrollbar even when content doesn't
+    // overflow. The ResizeObserver feeds contentRect.width back into
+    // pageWidth, so without this, the scrollbar appearing/disappearing as
+    // pages mount/unmount changes the available width a few pixels each way,
+    // which re-renders every page, which shifts total height, which toggles
+    // the scrollbar again — a self-sustaining flicker/jump loop even with no
+    // user interaction. `stable` keeps the gutter constant so the width is
+    // invariant to overflow state, breaking the feedback loop.
+    scrollbarGutter: 'stable',
   },
   pageWrap: {
     background: c.surface, borderRadius: radius.md,
