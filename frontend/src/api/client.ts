@@ -90,8 +90,33 @@ export async function getAgent(agentId: string) {
 export interface ProcessInfo {
   pid: number;
   name: string;
+  user: string;
+  uid: number;
+  state: string;          // R/S/D/Z/I/T/...
   mem_bytes: number;
   cpu_usage: number;
+  accumulated_cpu_ms: number;
+  start_time: number;     // epoch seconds
+  run_time_secs: number;
+  parent_pid: number | null;
+  command: string;        // full argv joined; length-capped on agent
+  nproc: number | null;   // HPC parallelism hint parsed from argv
+}
+
+export interface UserAgg {
+  user: string;
+  uid: number;
+  cpu_usage: number;
+  mem_bytes: number;
+  accumulated_cpu_ms: number;
+  process_count: number;
+}
+
+export interface UserTotals {
+  user_count: number;
+  total_cpu_usage: number;
+  total_mem_bytes: number;
+  total_processes: number;
 }
 
 export interface SysStats {
@@ -100,8 +125,13 @@ export interface SysStats {
   mem_total_bytes: number;
   swap_used_bytes: number;
   swap_total_bytes: number;
-  top_processes: ProcessInfo[];
   load_avg: [number, number, number];
+  uptime_secs: number;
+  boot_time: number;
+  top_processes: ProcessInfo[];
+  total_processes: number;
+  top_users: UserAgg[];
+  user_totals: UserTotals;
 }
 
 export async function getSysStats(agentId: string): Promise<SysStats & { error?: string }> {
@@ -119,8 +149,18 @@ function emptyStats(): SysStats {
     mem_total_bytes: 0,
     swap_used_bytes: 0,
     swap_total_bytes: 0,
-    top_processes: [],
     load_avg: [0, 0, 0],
+    uptime_secs: 0,
+    boot_time: 0,
+    top_processes: [],
+    total_processes: 0,
+    top_users: [],
+    user_totals: {
+      user_count: 0,
+      total_cpu_usage: 0,
+      total_mem_bytes: 0,
+      total_processes: 0,
+    },
   };
 }
 
