@@ -415,7 +415,7 @@ async fn run_one_connection(
                                 tracing::debug!("Sys stats request");
                                 let stats = stats_cache.get().await;
                                 let response = AgentMessage::SysStatsResponse {
-                                    req_id, stats: Some(stats), error: None,
+                                    req_id, stats: Some((*stats).clone()), error: None,
                                 };
                                 let _ = send_with_timeout(&mut write, Message::Text(
                                     serde_json::to_string(&response).unwrap().into(),

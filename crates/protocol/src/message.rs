@@ -357,8 +357,18 @@ mod tests {
             mem_total_bytes: 200,
             swap_used_bytes: 0,
             swap_total_bytes: 0,
-            top_processes: vec![],
             load_avg: [0.0, 0.0, 0.0],
+            uptime_secs: 0,
+            boot_time: 0,
+            top_processes: vec![],
+            total_processes: 0,
+            top_users: vec![],
+            user_totals: crate::resources::UserTotals {
+                user_count: 0,
+                total_cpu_usage: 0.0,
+                total_mem_bytes: 0,
+                total_processes: 0,
+            },
         };
         let msg = AgentMessage::SysStatsResponse {
             req_id: "r".to_string(),
