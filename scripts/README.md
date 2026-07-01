@@ -11,6 +11,7 @@ developer-facing tools.
 |---|---|---|
 | `release.sh` | Maintainer, on dev machine | Bumps workspace version, commits, tags `v{version}`, pushes. The pushed tag triggers `.github/workflows/release.yml` which builds the musl binaries and publishes a GitHub Release. |
 | `gen_config.sh` | Anyone with the binary already downloaded | Generates `hub.json` or `agent.toml` from interactive prompts and prints to stdout. Uses `openssl` + `mkpasswd` for bcrypt hashing — no Python, no pip pollution. |
+| `gen_notice.sh` | Maintainer, before a release | Generates the third-party license attribution manifests (`NOTICE` summary + `NOTICE.csv` per-package) for Rust (`Cargo.lock`) and the frontend (`package-lock.json`). Required because release binaries strip the upstream `LICENSE` files. |
 
 ## Releasing a new version
 
@@ -44,6 +45,37 @@ Requirements:
 
 If `mkpasswd` isn't installed, the script prints install hints for the
 common package managers and exits.
+
+## Regenerating the license attribution manifests
+
+```bash
+./scripts/gen_notice.sh              # both Rust + frontend
+./scripts/gen_notice.sh rust         # Cargo.lock only  -> ./NOTICE(.csv)
+./scripts/gen_notice.sh frontend     # package-lock.json only -> frontend/NOTICE(.csv)
+```
+
+This refreshes `NOTICE` + `NOTICE.csv` (Rust, repo root) and
+`frontend/NOTICE` + `frontend/NOTICE.csv` (frontend). Run it whenever
+`Cargo.lock` or `frontend/package-lock.json` changes meaningfully —
+ideally as part of the release checklist.
+
+Why this matters: filebox statically links its Rust dependencies into a
+single binary and bundles the frontend through Vite, so the per-package
+`LICENSE` files that crates.io / npm ship are no longer present in the
+distributed artifact. The wide licenses used here (MIT, Apache-2.0, BSD,
+ISC) literally require "include the license text in copies", and this
+manifest is the lightweight way to stay compliant.
+
+Requirements:
+- `python3` (stdlib only — `urllib`, `json`, `re`, `concurrent.futures`)
+- `npx` (for the frontend; pulls `license-checker` on first run)
+- network access to `crates.io` for Rust license metadata
+
+The project's own packages (`filebox-*`, `frontend`) are excluded from
+the counts since they are MIT-licensed by the repo `LICENSE`.
+`license-checker` misreports the `private: true` root package as
+`UNLICENSED`; the script strips that row so the manifest reflects only
+real third-party packages.
 
 ## What's NOT here anymore
 
