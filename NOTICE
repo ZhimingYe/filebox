@@ -1,0 +1,25 @@
+Third-party license summary for Rust dependencies (Cargo.lock).
+This file is auto-generated. The project itself (filebox) is MIT-licensed and excluded.
+
+├─ MIT OR Apache-2.0: 154
+├─ MIT: 47
+├─ Unicode-3.0: 18
+├─ Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT: 15
+├─ Apache-2.0 OR MIT: 12
+├─ MIT/Apache-2.0: 10
+├─ Unlicense OR MIT: 3
+├─ Zlib OR Apache-2.0 OR MIT: 3
+├─ Apache-2.0 OR ISC OR MIT: 2
+├─ BSD-2-Clause OR Apache-2.0 OR MIT: 2
+├─ CDLA-Permissive-2.0: 2
+├─ ISC: 2
+├─ MIT OR Apache-2.0 OR LGPL-2.1-or-later: 2
+├─ MIT OR Apache-2.0 OR Zlib: 2
+├─ (MIT OR Apache-2.0) AND Unicode-3.0: 1
+├─ Apache-2.0: 1
+├─ Apache-2.0 AND ISC: 1
+├─ Apache-2.0 OR BSL-1.0: 1
+├─ BSD-3-Clause: 1
+├─ MIT AND BSD-3-Clause: 1
+├─ MPL-2.0: 1
+├─ Zlib: 1
