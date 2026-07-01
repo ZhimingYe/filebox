@@ -210,15 +210,20 @@ function OverviewTab({ stats }: { stats: SysStats }) {
 function UsersTab({ stats }: { stats: SysStats }) {
   const [sortKey, setSortKey] = useState<UserSortKey>('cpu_usage');
 
-  // Per-user share of the node totals (percent, 0..100). CPU share is the
-  // user's instant CPU% over the node's global CPU%; mem share is the user's
-  // RSS over total RAM.
+  // Per-user share of total CPU consumed across ALL users (percent, 0..100).
+  // We deliberately use user_totals.total_cpu_usage — the sum of every user's
+  // cpu_usage — as the denominator, NOT cpu_usage_percent. cpu_usage_percent is
+  // the node's normalized load (already divided by core count, always 0..100),
+  // while each user's cpu_usage is a raw per-core sum that legitimately exceeds
+  // 100 on a busy multi-core box. Dividing one by the other yields physically
+  // impossible values like "533% of node". Normalizing against the sum of all
+  // users keeps every share in [0,100] and the shares summing to 100%.
   const cpuShare = useMemo(() => {
     const m: Record<number, number> = {};
-    const denom = stats.cpu_usage_percent || 1;
+    const denom = stats.user_totals.total_cpu_usage || 1;
     for (const u of stats.top_users) m[u.uid] = (u.cpu_usage / denom) * 100;
     return m;
-  }, [stats.top_users, stats.cpu_usage_percent]);
+  }, [stats.top_users, stats.user_totals.total_cpu_usage]);
 
   const memShare = useMemo(() => {
     const m: Record<number, number> = {};
@@ -242,12 +247,17 @@ function UsersTab({ stats }: { stats: SysStats }) {
     <>
       <div style={styles.summaryRow}>
         <SummaryChip label="Distinct users" value={String(stats.user_totals.user_count)} />
-        <SummaryChip label="Total CPU" value={`${stats.user_totals.total_cpu_usage.toFixed(0)}%`} />
+        <SummaryChip label="Total CPU" value={`${stats.cpu_usage_percent.toFixed(0)}%`} />
         <SummaryChip label="Total mem" value={formatBytes(stats.user_totals.total_mem_bytes)} />
         <SummaryChip label="Total procs" value={formatCount(stats.user_totals.total_processes)} />
       </div>
 
-      {/* CPU share by user — biggest on top. */}
+      {/* CPU share by user — biggest on top.
+          Bar WIDTH = the user's share of total CPU across all users (pct,
+          0..100). Bar COLOR = the user's absolute CPU load (u.cpu_usage), NOT
+          the share: a user can hold 100% of the share on a nearly idle node
+          (their cpu_usage is tiny), and coloring that red would be a false
+          alarm. Width and color are intentionally decoupled. */}
       <div style={styles.card}>
         <div style={styles.cardTitle}>CPU share by user</div>
         {byCpu.map((u) => {
@@ -259,10 +269,10 @@ function UsersTab({ stats }: { stats: SysStats }) {
                 <div style={{
                   ...styles.barInner,
                   width: `${Math.min(pct, 100)}%`,
-                  background: barColor(pct),
+                  background: barColor(u.cpu_usage),
                 }} />
               </div>
-              <span style={styles.gaugeValue}>{u.cpu_usage.toFixed(1)}% · {pct.toFixed(0)}%node</span>
+              <span style={styles.gaugeValue}>{pct.toFixed(1)}%</span>
             </div>
           );
         })}
@@ -284,7 +294,7 @@ function UsersTab({ stats }: { stats: SysStats }) {
                   background: barColor(pct),
                 }} />
               </div>
-              <span style={styles.gaugeValue}>{formatBytes(u.mem_bytes)} · {pct.toFixed(0)}%node</span>
+              <span style={styles.gaugeValue}>{formatBytes(u.mem_bytes)} · {pct.toFixed(0)}% of RAM</span>
             </div>
           );
         })}
@@ -298,10 +308,10 @@ function UsersTab({ stats }: { stats: SysStats }) {
             <thead>
               <tr>
                 <ThSortable<UserSortKey> label="User" k="user" sortKey={sortKey} onSort={setSortKey} align="left" />
-                <ThSortable<UserSortKey> label="CPU%" k="cpu_usage" sortKey={sortKey} onSort={setSortKey} />
-                <ThSortable<UserSortKey> label="CPU·node" k="cpu_share" sortKey={sortKey} onSort={setSortKey} />
+                <ThSortable<UserSortKey> label="CPU (cores)" k="cpu_usage" sortKey={sortKey} onSort={setSortKey} />
+                <ThSortable<UserSortKey> label="CPU share" k="cpu_share" sortKey={sortKey} onSort={setSortKey} />
                 <ThSortable<UserSortKey> label="Memory" k="mem_bytes" sortKey={sortKey} onSort={setSortKey} />
-                <ThSortable<UserSortKey> label="Mem·node" k="mem_share" sortKey={sortKey} onSort={setSortKey} />
+                <ThSortable<UserSortKey> label="Mem share" k="mem_share" sortKey={sortKey} onSort={setSortKey} />
                 <ThSortable<UserSortKey> label="CPU·time" k="accumulated_cpu_ms" sortKey={sortKey} onSort={setSortKey} />
                 <ThSortable<UserSortKey> label="Procs" k="process_count" sortKey={sortKey} onSort={setSortKey} />
               </tr>
@@ -333,7 +343,7 @@ function UsersTab({ stats }: { stats: SysStats }) {
 
 const PROC_LIMIT_KEY = 'filebox.procLimit';
 const PROC_LIMIT_DEFAULT = 50;
-const PROC_LIMIT_CHOICES = [50, 100, 200];
+const PROC_LIMIT_CHOICES = [50, 100, 200, 500];
 
 function loadProcLimit(): number {
   const v = Number(localStorage.getItem(PROC_LIMIT_KEY));
@@ -708,8 +718,8 @@ function stateLabel(state: string): string {
 }
 
 // Multi-key comparison with a stable, non-recursive tiebreak. `cpuShare` and
-// `memShare` are the user's slice of the node total (percent, 0..100), passed
-// in because they're derived from node-level stats. Falling back to the same
+// `memShare` are the user's share of the total across all users (percent,
+// 0..100), passed in because they're derived from the user totals. Falling back to the same
 // key on a tie would recurse forever — common on HPC nodes running identical
 // jobs — so the tiebreak always lands on a different dimension and finally on
 // uid (unique), never recursing.

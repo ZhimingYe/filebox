@@ -105,6 +105,23 @@ export default function App() {
     setNewVersion(null);
   }, [newVersion]);
 
+  // ── About dialog ──
+  // Toggled by clicking the version number in the sidebar footer.
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const handleOpenAbout = useCallback(() => setAboutOpen(true), []);
+  const handleCloseAbout = useCallback(() => setAboutOpen(false), []);
+
+  // Dev-mode heuristic (purely client-side): a production hub binds 0.0.0.0 and
+  // is served over HTTPS, whereas a local dev hub binds 127.0.0.1 and runs on
+  // plain HTTP from the Vite/dev server. True dev status isn't exposed by the
+  // API, so this is a best-effort hint, not a guarantee.
+  const isLikelyDev = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    const host = window.location.hostname;
+    const isLoopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
+    return window.location.protocol !== 'https:' && isLoopback;
+  }, []);
+
   // ── Desktop split: persisted file/preview width ratio ──
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const [splitterHover, setSplitterHover] = useState(false);
@@ -326,7 +343,13 @@ export default function App() {
       <div style={{ flex: 1 }} />
       <div style={collapsed ? styles.sidebarFooterCollapsed : styles.sidebarFooter}>
         {!collapsed && health?.hub.version && (
-          <div style={styles.versionLine}>v{health.hub.version}</div>
+          <button
+            onClick={handleOpenAbout}
+            title="About filebox"
+            style={styles.versionLine}
+          >
+            v{health.hub.version}
+          </button>
         )}
         <button
           onClick={logout}
@@ -509,6 +532,42 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* About filebox dialog — opened by clicking the version number */}
+      {aboutOpen && (
+        <div style={styles.aboutOverlay} onClick={handleCloseAbout}>
+          <div style={styles.aboutCard} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.aboutHeader}>
+              <div style={styles.aboutLogo}>filebox</div>
+              <button onClick={handleCloseAbout} style={styles.aboutCloseBtn} aria-label="Close">×</button>
+            </div>
+            <div style={styles.aboutBody}>
+              <div style={styles.aboutRow}>
+                <span style={styles.aboutLabel}>Version</span>
+                <span style={styles.aboutValue}>v{health?.hub.version ?? '—'}</span>
+              </div>
+              <div style={styles.aboutRow}>
+                <span style={styles.aboutLabel}>Mode</span>
+                <span style={{ ...styles.aboutValue, color: isLikelyDev ? c.warning : c.success }}>
+                  {isLikelyDev ? 'development (local)' : 'production'}
+                </span>
+              </div>
+              <div style={styles.aboutRow}>
+                <span style={styles.aboutLabel}>Homepage</span>
+                <a
+                  href="https://zhimingye.github.io/filebox/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={styles.aboutLink}
+                >
+                  zhimingye.github.io/filebox
+                </a>
+              </div>
+            </div>
+            <button onClick={handleCloseAbout} style={styles.aboutDoneBtn}>Done</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -620,7 +679,11 @@ const styles: Record<string, React.CSSProperties> = {
   versionLine: {
     fontSize: 11, color: c.textFaint, textAlign: 'center', marginBottom: 6,
     fontFamily: font.mono,
-  },
+    background: 'none', border: 'none', cursor: 'pointer',
+    width: '100%', display: 'block',
+    padding: '2px 6px', borderRadius: radius.sm,
+    transition: 'color 0.15s',
+  } as React.CSSProperties,
   // ── Mobile overlay ──
   overlay: {
     position: 'fixed', inset: 0, zIndex: 150,
@@ -723,5 +786,55 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '6px 16px', borderRadius: radius.md, border: `1px solid ${c.border}`,
     background: 'transparent', color: c.textSecondary, cursor: 'pointer', fontSize: 12,
     fontWeight: 500, transition: 'all 0.15s',
+  },
+  // ── About dialog ──
+  aboutOverlay: {
+    position: 'fixed', inset: 0, zIndex: 2000,
+    background: c.bgOverlay,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    padding: 16,
+  },
+  aboutCard: {
+    width: '100%', maxWidth: 380,
+    background: c.surface, borderRadius: radius.lg,
+    border: `1px solid ${c.border}`, boxShadow: shadow.lg,
+    overflow: 'hidden',
+    display: 'flex', flexDirection: 'column',
+  },
+  aboutHeader: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '16px 18px', borderBottom: `1px solid ${c.border}`,
+    background: c.bgSubtle,
+  },
+  aboutLogo: {
+    fontSize: 16, fontWeight: 700, color: c.text, fontFamily: font.sans,
+    letterSpacing: '-0.01em',
+  },
+  aboutCloseBtn: {
+    background: 'none', border: 'none', fontSize: 22, lineHeight: 1,
+    color: c.textMuted, cursor: 'pointer', padding: '0 4px', borderRadius: radius.sm,
+    transition: 'color 0.15s',
+  },
+  aboutBody: {
+    padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12,
+  },
+  aboutRow: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+  },
+  aboutLabel: {
+    fontSize: 12, color: c.textMuted, fontWeight: 500,
+    textTransform: 'uppercase', letterSpacing: '0.04em',
+  },
+  aboutValue: {
+    fontSize: 13, color: c.text, fontFamily: font.mono, fontWeight: 600,
+  },
+  aboutLink: {
+    fontSize: 13, color: c.accent, textDecoration: 'none', fontWeight: 500,
+  },
+  aboutDoneBtn: {
+    margin: '4px 18px 18px',
+    padding: '9px 16px', borderRadius: radius.md, border: 'none',
+    background: c.accent, color: '#fff', cursor: 'pointer', fontSize: 13,
+    fontWeight: 600, transition: 'background 0.15s',
   },
 };

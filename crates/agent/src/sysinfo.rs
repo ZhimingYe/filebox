@@ -11,13 +11,13 @@ use filebox_protocol::resources::{ProcessInfo, SysStats, UserAgg, UserTotals};
 /// How many processes / users to keep after aggregation.
 ///
 /// `TOP_PROCESSES` is the per-request ceiling carried in the payload. The
-/// browser picks how many to actually show (default 50, up to 200), so we
+/// browser picks how many to actually show (default 50, up to 500), so we
 /// always send the full cap to let a viewer who wants more ("看多多") do so
 /// instantly without a second round-trip. select_top_n_by is O(N) in the
 /// process count regardless of k, so raising k costs nothing on the sweep;
-/// the cost is only payload size. 200 × ~1KB capped command ≈ 200KB worst
+/// the cost is only payload size. 500 × ~1KB capped command ≈ 500KB worst
 /// case, comfortably under the hub's 1MB body limit.
-const TOP_PROCESSES: usize = 200;
+const TOP_PROCESSES: usize = 500;
 const TOP_USERS: usize = 15;
 
 /// Hard cap on the serialized command line, purely a size guard. A hostile or
