@@ -237,12 +237,19 @@ async fn run_one_connection(
 
     // Step 4: Send Register with persisted resource state
     let (rev, roots) = resource_mgr.current_state();
+    // Advertise pinned_folders support explicitly. Capabilities::default()
+    // leaves it false (the legacy-detection sentinel), so a NEW agent must opt
+    // in here — this is what lets the hub tell a new agent from a pre-pin
+    // agent during a rolling upgrade and avoid pushing pins to one that can't
+    // store them.
+    let mut capabilities = Capabilities::default();
+    capabilities.pinned_folders = true;
     let register = AgentMessage::Register {
         agent_id: Some(stable_agent_id.to_string()),
         name: config.agent_name.clone(),
         resource_revision: rev,
         roots,
-        capabilities: Capabilities::default(),
+        capabilities,
     };
     let register_msg = Message::Text(serde_json::to_string(&register).unwrap().into());
     if !send_with_timeout(&mut write, register_msg).await {

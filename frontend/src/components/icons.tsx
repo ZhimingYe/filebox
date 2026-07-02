@@ -81,3 +81,59 @@ export function IconLogout({ style }: SvgProps) {
     </Svg>
   );
 }
+
+/// A pushpin tilted 45° (📌), drawn to match the toolbar's visual language:
+/// native 16×16 viewBox, strokeWidth 1.3, pure outline, NO fill — exactly
+/// like the refresh / align / font / clipboard icons it sits next to.
+/// Rotated so the head is upper-left and the needle points lower-right,
+/// the same orientation as the 📌 emoji.
+///
+/// The pinned/unpinned distinction is carried by the *button container*
+/// (accent border + accentBg in the toolbar; muted color when missing in the
+/// sidebar), NOT by the glyph itself — a fill made the pin visually heavier
+/// than its outlined neighbors.
+export function IconPin({ style }: SvgProps) {
+  return (
+    <svg
+      style={{ display: 'block', width: 16, height: 16, ...style }}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.3}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      {/* Tilt 45° about the icon center: head → upper-left, needle → lower-right. */}
+      <g transform="rotate(45 8 8)">
+        {/* Pin head — a small rounded cap at the top. */}
+        <path d="M5.5 2.5h5" />
+        <path d="M6.5 2.6c-.4 1.2-1.3 1.8-2.4 2.2-.7.3-1.1.9-1.1 1.6v.3h10v-.3c0-.7-.4-1.3-1.1-1.6-1.1-.4-2-1-2.4-2.2" />
+        {/* The needle pointing down to a sharp tip. */}
+        <path d="M8 7.2v6.3" />
+      </g>
+    </svg>
+  );
+}
+
+/// A thin outlined × (close / remove). Used by the sidebar Pinned-Folders
+/// unpin affordance. Stroke-based with currentColor so it inherits the row's
+/// muted color and matches the outlined visual language of the other nav
+/// icons — intentionally NOT a heavy filled glyph.
+export function IconClose({ style }: SvgProps) {
+  return (
+    <svg
+      style={{ display: 'block', width: 16, height: 16, ...style }}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path d="M4 4l8 8" />
+      <path d="M12 4l-8 8" />
+    </svg>
+  );
+}

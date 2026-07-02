@@ -23,6 +23,10 @@ export function friendlyMessage(error: any): string {
     hub_overloaded: 'Server is overloaded. Please retry later.',
     agent_overloaded: 'Agent is overloaded. Please retry later.',
     invalid_root_path: 'Path does not exist or is not accessible.',
+    invalid_root_name: 'Invalid root name.',
+    invalid_pinned_path: 'Invalid pinned folder path.',
+    resource_rejected: 'Agent rejected this change. The folder may be missing or the root changed.',
+    unsupported_feature: 'This agent version does not support pinned folders.',
   };
   if (code && map[code]) return map[code];
   return 'An unexpected error occurred.';
@@ -66,7 +70,16 @@ export interface AgentInfo {
   resource_revision: number;
   pending_resource_update: boolean;
   last_config_error: string | null;
-  roots: { name: string; path_display: string; enabled: boolean }[];
+  roots: RootInfo[];
+}
+
+/// A root as returned by the hub (display shape). `pinned_folders` holds
+/// root-relative paths (leading `/`) that the user pinned to the sidebar.
+export interface RootInfo {
+  name: string;
+  path_display: string;
+  enabled: boolean;
+  pinned_folders: string[];
 }
 
 export interface HealthResponse {
@@ -179,11 +192,39 @@ export async function addRoot(agentId: string, name: string, path: string, enabl
   });
 }
 
-export async function patchRoot(agentId: string, rootName: string, patch: { enabled?: boolean; name?: string; path?: string }) {
-  return request<any>(`/api/agents/${agentId}/roots/${rootName}`, {
+export async function patchRoot(
+  agentId: string,
+  rootName: string,
+  patch: {
+    enabled?: boolean;
+    name?: string;
+    path?: string;
+    pinned_folders?: string[];
+    /** Single-item delta: add this path to pinned_folders if absent. */
+    pin_add?: string;
+    /** Single-item delta: remove this path from pinned_folders if present. */
+    pin_remove?: string;
+  },
+) {
+  const res = await request<any>(`/api/agents/${agentId}/roots/${rootName}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
+  // The agent can REJECT the new resource state (e.g. a pinned path whose
+  // shape is bad, or a root path that vanished) while the hub still returns
+  // HTTP 200 with `{ ok: false, state: "rejected", error, message }`. A
+  // 2xx-only check in the shared `request()` would let that through as success,
+  // so togglePin / handleUnpin would refresh the UI as if the change landed.
+  // Throw here so callers' catch arms surface the rejection instead.
+  if (res && typeof res === 'object' && (res.ok === false || res.state === 'rejected')) {
+    throw {
+      status: 200,
+      error: res.error || 'resource_rejected',
+      message: res.message || 'Agent rejected the resource update.',
+      retryable: true,
+    };
+  }
+  return res;
 }
 
 export async function deleteRoot(agentId: string, rootName: string) {
@@ -215,9 +256,9 @@ export async function fsList(agentId: string, root: string, path: string, limit 
   );
 }
 
-export async function fsStat(agentId: string, root: string, path: string) {
+export async function fsStat(agentId: string, root: string, path: string, signal?: AbortSignal) {
   const params = new URLSearchParams({ agent_id: agentId, root, path });
-  return request<{ stat: FsEntry | null; error?: string }>(`/api/fs/stat?${params}`);
+  return request<{ stat: FsEntry | null; error?: string }>(`/api/fs/stat?${params}`, { signal });
 }
 
 export function fileRawUrl(agentId: string, root: string, path: string) {

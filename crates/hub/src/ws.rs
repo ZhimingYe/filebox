@@ -181,6 +181,17 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
         // someone with the shared token is trying to impersonate it. We allow
         // replacement (so real reconnects keep working) but log a warning so
         // operators can spot impersonation patterns.
+        //
+        // We also capture the existing entry's pending_update BEFORE register()
+        // overwrites it: register() builds a fresh AgentConnection with
+        // pending_update: None, so without this preservation an offline-queued
+        // resource change (e.g. a pin edit made while the agent was down) would
+        // be silently dropped on reconnect — the "pending_agent_reconnect"
+        // promise would be a lie.
+        let preserved_pending = inner
+            .agents
+            .get(&agent_id)
+            .and_then(|a| a.pending_update.clone());
         if let Some(existing) = inner.agents.get(&agent_id) {
             let since_heartbeat = existing.last_seen.elapsed().as_secs();
             tracing::warn!(
@@ -208,18 +219,34 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
             abort_notify.clone(),
             resource_revision,
             roots.clone(),
-            capabilities,
+            capabilities.clone(),
         );
 
-        // Send pending update if any
+        // Re-apply the preserved pending update onto the freshly registered
+        // entry. The block below then sends it to the agent.
+        if let Some(pending) = preserved_pending {
+            inner.agents.set_pending_update(&agent_id, pending);
+        }
+
+        // Send pending update if any. Rolling-upgrade safety: an old agent that
+        // never advertises the pinned_folders capability won't persist pin data
+        // (its serde just drops the unknown field). Rather than let the hub
+        // believe pins were applied, strip pinned_folders from the roots we
+        // push to such an agent. The hub's own mirror keeps the real pins; they
+        // re-apply once the agent is upgraded to a version that supports them.
         if let Some(agent) = inner.agents.get(&agent_id) {
             if let Some(pending) = &agent.pending_update {
                 if let Some(desired_revision) = agent.resource_revision.checked_add(1) {
                     let req_id = format!("pending_{}", Uuid::new_v4());
+                    let pushed_roots = if capabilities.pinned_folders {
+                        pending.roots.clone()
+                    } else {
+                        strip_pinned_folders(&pending.roots)
+                    };
                     let _ = tx.send(HubMessage::ResourcesSetDesired {
                         req_id,
                         desired_revision,
-                        roots: pending.roots.clone(),
+                        roots: pushed_roots,
                     });
                 } else {
                     tracing::error!(
@@ -444,6 +471,23 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
             "name": name,
         })).await;
     }
+}
+
+/// Return a copy of `roots` with every root's `pinned_folders` emptied. Used
+/// when pushing `ResourcesSetDesired` to an agent that doesn't advertise the
+/// `pinned_folders` capability (rolling upgrade): the old agent would silently
+/// drop the field and reply `applied`, fooling the hub into thinking pins were
+/// persisted when they weren't. The hub's own mirror keeps the real pins; this
+/// only controls what we send over the wire to a legacy agent.
+fn strip_pinned_folders(roots: &[filebox_protocol::resources::RootConfig]) -> Vec<filebox_protocol::resources::RootConfig> {
+    roots
+        .iter()
+        .map(|r| {
+            let mut r = r.clone();
+            r.pinned_folders.clear();
+            r
+        })
+        .collect()
 }
 
 async fn take_pending_for_agent(

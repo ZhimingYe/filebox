@@ -1,10 +1,28 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// A pinned folder is stored as the path **relative to its root**, with a
+/// leading `/` (so the root itself is `/`, a subdir is `/reports/2024`).
+/// Pins live per-root inside `RootConfig` so they ride the existing
+/// `ResourcesSetDesired` whole-state flow automatically, and deleting a
+/// root deletes its pins with it (no orphan references).
+///
+/// Paths are validated for *shape* only (see [`validate_pinned_path`]) —
+/// existence is deliberately NOT checked, so a folder that gets removed or
+/// lives behind a transiently-unmounted NFS/SSHFS mount never blocks a
+/// config apply. The UI marks missing pins and the user unpins explicitly.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct RootConfig {
     pub name: String,
     pub path: String,
     pub enabled: bool,
+    /// Pinned subfolders within this root. `#[serde(default)]` is
+    /// **mandatory**: every existing `agent_state.json` predates this field,
+    /// and without the default an old file would fail to parse — which, per
+    /// `PersistedConfig::load_or_create`, silently regenerates a new
+    /// `agent_id` and wipes all roots. Defaulting to an empty vec makes old
+    /// files parse cleanly with zero pins.
+    #[serde(default)]
+    pub pinned_folders: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -12,6 +30,45 @@ pub struct RootInfo {
     pub name: String,
     pub path_display: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub pinned_folders: Vec<String>,
+}
+
+/// Validate the *shape* of a pinned-folder path (relative to a root).
+///
+/// Rules:
+/// - Non-empty, ≤ 4096 chars, no NUL.
+/// - Must start with `/` (root-relative; the root itself is `/`).
+/// - No `..` path component — pins must stay inside their root.
+///
+/// Existence is intentionally NOT verified: a pinned folder may be deleted
+/// or live behind a transiently-unmounted network FS, and we never want a
+/// stale pin to block an otherwise-valid config change. The UI handles the
+/// "missing" case cosmetically; the user removes stale pins manually.
+pub fn validate_pinned_path(p: &str) -> Result<(), String> {
+    if p.is_empty() {
+        return Err("Pinned folder path cannot be empty".to_string());
+    }
+    if p.len() > 4096 {
+        return Err("Pinned folder path exceeds 4096 chars".to_string());
+    }
+    if p.contains('\0') {
+        return Err("Pinned folder path contains NUL".to_string());
+    }
+    if !p.starts_with('/') {
+        return Err(format!(
+            "Pinned folder path '{}' must start with '/' (root-relative)",
+            p
+        ));
+    }
+    // Reject any `..` segment — pins must remain inside their root.
+    if p.split('/').any(|seg| seg == "..") {
+        return Err(format!(
+            "Pinned folder path '{}' must not contain '..'",
+            p
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -24,6 +81,17 @@ pub struct Capabilities {
     pub serve_dir: bool,
     pub resource_management: bool,
     pub sys_stats: bool,
+    /// Whether this agent understands the `pinned_folders` field on roots and
+    /// will persist it. Used for rolling-upgrade safety: an old agent built
+    /// before this field existed never sends it, so the hub deserializes to
+    /// `false` (via `#[serde(default)]`) and strips pin data from any
+    /// `ResourcesSetDesired` it pushes — preventing the hub from believing
+    /// pins were persisted when the old agent actually dropped the unknown
+    /// field. New agents construct this explicitly as `true` (see the agent's
+    /// connection.rs). It deliberately defaults to `false` so the detection of
+    /// a legacy agent is unambiguous.
+    #[serde(default)]
+    pub pinned_folders: bool,
 }
 
 impl Default for Capabilities {
@@ -37,6 +105,7 @@ impl Default for Capabilities {
             serve_dir: false,
             resource_management: true,
             sys_stats: true,
+            pinned_folders: false,
         }
     }
 }
@@ -206,6 +275,32 @@ mod tests {
         assert!(!caps.image_preview);
         assert!(!caps.pdf_preview);
         assert!(!caps.serve_dir);
+        // pinned_folders defaults to false so the hub can unambiguously detect
+        // a legacy agent (which omits the field). A new agent must set it true.
+        assert!(
+            !caps.pinned_folders,
+            "pinned_folders must default to false (legacy-detection sentinel)"
+        );
+    }
+
+    #[test]
+    fn capabilities_legacy_json_without_pinned_folders_field_parses_as_false() {
+        // An old agent never sends pinned_folders in its Register. The hub must
+        // deserialize that to false (not error) so it can strip pins before
+        // pushing ResourcesSetDesired to the legacy agent.
+        let legacy_json = r#"{
+            "fs_list": true,
+            "fs_stat": true,
+            "fs_read_range": true,
+            "image_preview": false,
+            "pdf_preview": false,
+            "serve_dir": false,
+            "resource_management": true,
+            "sys_stats": true
+        }"#;
+        let caps: Capabilities = serde_json::from_str(legacy_json).unwrap();
+        assert!(!caps.pinned_folders);
+        assert!(caps.fs_list);
     }
 
     #[test]
@@ -229,10 +324,68 @@ mod tests {
             name: "docs".to_string(),
             path: "/var/docs".to_string(),
             enabled: true,
+            pinned_folders: vec!["/reports".to_string(), "/drafts/2024".to_string()],
         };
         let json = serde_json::to_string(&root).unwrap();
         let back: RootConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(root, back);
+    }
+
+    #[test]
+    fn root_config_parses_old_json_without_pinned_folders() {
+        // An agent_state.json written before pinned_folders existed. MUST parse
+        // (defaulting to empty pins) rather than fail — a parse failure triggers
+        // a fresh agent_id + wiped roots in load_or_create.
+        let old_json = r#"{
+            "name": "legacy",
+            "path": "/data",
+            "enabled": true
+        }"#;
+        let parsed: RootConfig = serde_json::from_str(old_json).unwrap();
+        assert_eq!(parsed.name, "legacy");
+        assert_eq!(parsed.path, "/data");
+        assert!(parsed.enabled);
+        assert!(parsed.pinned_folders.is_empty(), "missing field must default to empty");
+    }
+
+    #[test]
+    fn root_info_round_trips_with_pinned_folders() {
+        let info = RootInfo {
+            name: "logs".to_string(),
+            path_display: "/var/logs".to_string(),
+            enabled: false,
+            pinned_folders: vec!["/nginx".to_string()],
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let back: RootInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(info, back);
+    }
+
+    #[test]
+    fn validate_pinned_path_accepts_root_and_subdirs() {
+        assert!(validate_pinned_path("/").is_ok());
+        assert!(validate_pinned_path("/reports").is_ok());
+        assert!(validate_pinned_path("/a/b/c").is_ok());
+        assert!(validate_pinned_path("/reports/2024 q4").is_ok());
+    }
+
+    #[test]
+    fn validate_pinned_path_rejects_dotdot() {
+        assert!(validate_pinned_path("/..").is_err());
+        assert!(validate_pinned_path("/a/../b").is_err());
+        assert!(validate_pinned_path("/foo/..").is_err());
+    }
+
+    #[test]
+    fn validate_pinned_path_rejects_no_leading_slash_and_empty() {
+        assert!(validate_pinned_path("").is_err());
+        assert!(validate_pinned_path("reports").is_err());
+        assert!(validate_pinned_path("a/b").is_err());
+    }
+
+    #[test]
+    fn validate_pinned_path_rejects_nul() {
+        assert!(validate_pinned_path("/a\0b").is_err());
     }
 
     #[test]
@@ -341,6 +494,7 @@ mod tests {
             name: "logs".to_string(),
             path_display: "/var/logs".to_string(),
             enabled: false,
+            pinned_folders: vec![],
         };
         let json = serde_json::to_string(&info).unwrap();
         let back: RootInfo = serde_json::from_str(&json).unwrap();
@@ -366,6 +520,7 @@ mod tests {
                 name: "data".to_string(),
                 path: "/data".to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             }],
         };
         let json = serde_json::to_string(&desired).unwrap();

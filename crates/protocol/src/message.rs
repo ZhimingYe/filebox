@@ -202,6 +202,7 @@ mod tests {
                 name: "logs".to_string(),
                 path: "/var/logs".to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             }],
             capabilities: Capabilities::default(),
         };
@@ -427,11 +428,13 @@ mod tests {
                     name: "a".to_string(),
                     path: "/a".to_string(),
                     enabled: true,
+                    pinned_folders: vec![],
                 },
                 RootConfig {
                     name: "b".to_string(),
                     path: "/b".to_string(),
                     enabled: false,
+                    pinned_folders: vec![],
                 },
             ],
         };
@@ -651,6 +654,7 @@ mod tests {
                 name: "x".to_string(),
                 path: "/x".to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             }],
         };
         let back = round_trip_agent(&msg);

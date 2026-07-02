@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use filebox_protocol::resources::RootConfig;
+use filebox_protocol::resources::{validate_pinned_path, RootConfig};
 
 use crate::config_store::PersistedConfig;
 
@@ -102,6 +102,14 @@ fn validate_root(root: &RootConfig) -> Result<(), String> {
         ));
     }
 
+    // Validate pinned-folder paths (shape only — no existence check, so a
+    // deleted/unmounted folder never blocks a config apply). Runs inside the
+    // all-or-nothing apply_desired loop, so a bad pin rejects the whole apply
+    // and preserves the last-good state.
+    for pin in &root.pinned_folders {
+        validate_pinned_path(pin).map_err(|e| format!("Root '{}': {}", root.name, e))?;
+    }
+
     // Ensure the canonical path is what we expect (no symlink tricks)
     // We store the original path for display but use canonical for operations
     Ok(())
@@ -167,6 +175,7 @@ mod tests {
             name: "data".to_string(),
             path: real_root.path().to_str().unwrap().to_string(),
             enabled: true,
+            pinned_folders: vec![],
         }];
 
         let new_rev = mgr.apply_desired(5, roots).unwrap();
@@ -186,6 +195,7 @@ mod tests {
             name: "".to_string(),
             path: real_root.path().to_str().unwrap().to_string(),
             enabled: true,
+            pinned_folders: vec![],
         }];
 
         let err = mgr.apply_desired(1, roots).unwrap_err();
@@ -202,6 +212,7 @@ mod tests {
             name: "empty".to_string(),
             path: "".to_string(),
             enabled: true,
+            pinned_folders: vec![],
         }];
         let err = mgr.apply_desired(1, roots).unwrap_err();
         assert!(err.contains("path cannot be empty"));
@@ -214,6 +225,7 @@ mod tests {
             name: "ghost".to_string(),
             path: "/this/path/definitely/does/not/exist/xyz".to_string(),
             enabled: true,
+            pinned_folders: vec![],
         }];
         let err = mgr.apply_desired(1, roots).unwrap_err();
         assert!(err.contains("cannot be resolved") || err.contains("not a directory"));
@@ -227,6 +239,7 @@ mod tests {
             name: "file".to_string(),
             path: file.path().to_str().unwrap().to_string(),
             enabled: true,
+            pinned_folders: vec![],
         }];
         let err = mgr.apply_desired(1, roots).unwrap_err();
         assert!(err.contains("not a directory"));
@@ -242,6 +255,7 @@ mod tests {
             name: "data".to_string(),
             path: real_root.path().to_str().unwrap().to_string(),
             enabled: true,
+            pinned_folders: vec![],
         }];
 
         mgr.apply_desired(5, roots.clone()).unwrap();
@@ -263,6 +277,7 @@ mod tests {
             name: "good".to_string(),
             path: good_root.path().to_str().unwrap().to_string(),
             enabled: true,
+            pinned_folders: vec![],
         }];
         mgr.apply_desired(3, good_roots).unwrap();
         assert_eq!(mgr.resource_revision(), 3);
@@ -272,6 +287,7 @@ mod tests {
             name: "".to_string(),
             path: "/anything".to_string(),
             enabled: true,
+            pinned_folders: vec![],
         }];
         let result = mgr.apply_desired(99, bad_roots);
         assert!(result.is_err());
@@ -294,11 +310,13 @@ mod tests {
                 name: "valid".to_string(),
                 path: good_root.path().to_str().unwrap().to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             },
             RootConfig {
                 name: "".to_string(),
                 path: "/anywhere".to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             },
         ];
 
@@ -319,6 +337,7 @@ mod tests {
             name: "persisted".to_string(),
             path: real_root.path().to_str().unwrap().to_string(),
             enabled: true,
+            pinned_folders: vec![],
         }];
 
         // Apply in one manager
@@ -352,6 +371,7 @@ mod tests {
                 name: "old".to_string(),
                 path: r1.path().to_str().unwrap().to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             }],
         )
         .unwrap();
@@ -363,6 +383,7 @@ mod tests {
                 name: "new".to_string(),
                 path: r2.path().to_str().unwrap().to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             }],
         )
         .unwrap();
@@ -385,6 +406,7 @@ mod tests {
                 name: "temp".to_string(),
                 path: r.path().to_str().unwrap().to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             }],
         )
         .unwrap();
@@ -406,6 +428,7 @@ mod tests {
             name: "off".to_string(),
             path: real_root.path().to_str().unwrap().to_string(),
             enabled: false,
+            pinned_folders: vec![],
         }];
 
         mgr.apply_desired(1, roots).unwrap();
@@ -424,9 +447,75 @@ mod tests {
             name: "link".to_string(),
             path: link_path.to_str().unwrap().to_string(),
             enabled: true,
+            pinned_folders: vec![],
         };
         let err = validate_root(&root).unwrap_err();
         assert!(err.contains("not a directory"));
+    }
+
+    #[test]
+    fn validate_root_rejects_bad_pinned_folder_path() {
+        let real_root = tempdir().unwrap();
+        let root = RootConfig {
+            name: "data".to_string(),
+            path: real_root.path().to_str().unwrap().to_string(),
+            enabled: true,
+            // Leading slash so the check reaches the `..` component rule
+            pinned_folders: vec!["/ok".to_string(), "/../escape".to_string()],
+        };
+        let err = validate_root(&root).unwrap_err();
+        assert!(err.contains("must not contain '..'"), "got: {err}");
+    }
+
+    #[test]
+    fn apply_desired_accepts_valid_pinned_folders_and_persists_them() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+        let real_root = tempdir().unwrap();
+
+        let roots = vec![RootConfig {
+            name: "data".to_string(),
+            path: real_root.path().to_str().unwrap().to_string(),
+            enabled: true,
+            pinned_folders: vec!["/".to_string(), "/reports".to_string()],
+        }];
+        mgr.apply_desired(1, roots).unwrap();
+        assert_eq!(mgr.roots()[0].pinned_folders.len(), 2);
+    }
+
+    #[test]
+    fn apply_desired_preserves_state_when_pinned_folder_invalid() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+
+        // Establish good state
+        let good_root = tempdir().unwrap();
+        mgr.apply_desired(
+            1,
+            vec![RootConfig {
+                name: "good".to_string(),
+                path: good_root.path().to_str().unwrap().to_string(),
+                enabled: true,
+                pinned_folders: vec![],
+            }],
+        )
+        .unwrap();
+
+        // Bad pin shape — must reject and preserve last-good state
+        let err = mgr
+            .apply_desired(
+                2,
+                vec![RootConfig {
+                    name: "good".to_string(),
+                    path: good_root.path().to_str().unwrap().to_string(),
+                    enabled: true,
+                    pinned_folders: vec!["/../escape".to_string()],
+                }],
+            )
+            .unwrap_err();
+        assert!(err.contains("must not contain '..'"));
+        assert_eq!(mgr.resource_revision(), 1, "revision must not advance on failure");
+        assert!(mgr.roots()[0].pinned_folders.is_empty());
     }
 
     #[cfg(unix)]

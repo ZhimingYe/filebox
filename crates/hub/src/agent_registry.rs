@@ -68,6 +68,7 @@ impl AgentConnection {
                     name: r.name.clone(),
                     path_display: r.path.clone(),
                     enabled: r.enabled,
+                    pinned_folders: r.pinned_folders.clone(),
                 })
                 .collect(),
         }
@@ -84,6 +85,7 @@ impl AgentConnection {
                     name: r.name.clone(),
                     path_display: r.path.clone(),
                     enabled: r.enabled,
+                    pinned_folders: r.pinned_folders.clone(),
                 })
                 .collect(),
         }
@@ -592,6 +594,7 @@ mod tests {
                 name: "r".to_string(),
                 path: "/r".to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             }],
         );
 
@@ -612,6 +615,7 @@ mod tests {
                 name: "old".to_string(),
                 path: "/old".to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             }],
         };
         let r2 = DesiredResources {
@@ -619,6 +623,7 @@ mod tests {
                 name: "new".to_string(),
                 path: "/new".to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             }],
         };
 
@@ -641,6 +646,141 @@ mod tests {
             reg.get("a1").unwrap().last_config_error.as_deref(),
             Some("bad path")
         );
+    }
+
+    #[test]
+    fn offline_pin_deltas_chain_onto_pending() {
+        // Regression for P2: when the agent is offline, consecutive pin
+        // deltas must accumulate in pending_update, not overwrite each other.
+        // routes.rs::patch_root_handler bases its clone on the existing
+        // pending_update (when present) rather than agent.roots, so a second
+        // offline pin sees the first one already in the base and adds to it.
+        // This test fixes the registry-level contract that the routes logic
+        // depends on: set_pending_update with a chained desired state, then a
+        // second set_pending_update built from that same pending base, produces
+        // a pending containing BOTH pins.
+        let mut reg = AgentRegistry::new();
+        register_simple(&mut reg, "a1");
+
+        // Seed the agent with a root that has no pins yet (the "last applied"
+        // state, reflected in agent.roots).
+        {
+            let agent = reg.get_mut("a1").unwrap();
+            agent.roots = vec![RootConfig {
+                name: "demo".to_string(),
+                path: "/demo".to_string(),
+                enabled: true,
+                pinned_folders: vec![],
+            }];
+        }
+
+        // Simulate the routes.rs offline flow: patch_root_handler reads
+        // pending_update as the base (None first → agent.roots), applies the
+        // pin_add delta, and set_pending_update stores it.
+        let base1 = reg
+            .get("a1")
+            .and_then(|a| a.pending_update.as_ref().map(|p| p.roots.clone()))
+            .unwrap_or_else(|| reg.get("a1").unwrap().roots.clone());
+        let mut chained1 = base1;
+        for r in chained1.iter_mut() {
+            if r.name == "demo" && !r.pinned_folders.iter().any(|p| p == "/a") {
+                r.pinned_folders.push("/a".to_string());
+            }
+        }
+        reg.set_pending_update("a1", DesiredResources { roots: chained1 });
+
+        // Second offline pin: patch_root_handler now reads the PENDING as the
+        // base (which already has /a), adds /b, and set_pending_update stores.
+        let base2 = reg
+            .get("a1")
+            .and_then(|a| a.pending_update.as_ref().map(|p| p.roots.clone()))
+            .expect("pending must be present after first pin");
+        let mut chained2 = base2;
+        for r in chained2.iter_mut() {
+            if r.name == "demo" && !r.pinned_folders.iter().any(|p| p == "/b") {
+                r.pinned_folders.push("/b".to_string());
+            }
+        }
+        reg.set_pending_update("a1", DesiredResources { roots: chained2 });
+
+        // The pending state must now contain BOTH pins. The old whole-state-
+        // replace bug would have left only /b (the second delta overwrote the
+        // first because it was computed from agent.roots, which had no pins).
+        let pending = reg
+            .get("a1")
+            .unwrap()
+            .pending_update
+            .as_ref()
+            .expect("pending must be present");
+        let demo = pending
+            .roots
+            .iter()
+            .find(|r| r.name == "demo")
+            .expect("demo root must be in pending");
+        assert!(
+            demo.pinned_folders.iter().any(|p| p == "/a"),
+            "first offline pin /a must survive the second pin (chained, not overwritten)"
+        );
+        assert!(
+            demo.pinned_folders.iter().any(|p| p == "/b"),
+            "second offline pin /b must be present"
+        );
+    }
+
+    #[test]
+    fn pending_update_survives_re_register() {
+        // Regression for P0: an offline-queued resource change (e.g. a pin edit
+        // made while the agent was down) MUST survive re-registration. The hub's
+        // ws.rs handle_socket captures the old pending_update before register()
+        // and re-applies it after; this test pins the registry-level contract
+        // that the ws.rs path depends on: set_pending_update on a live entry,
+        // then register() a fresh entry (simulating reconnect) — the caller is
+        // responsible for re-applying, so register() itself must NOT be what
+        // preserves it (it resets to None). We assert the capture+re-apply
+        // sequence works, mirroring the ws.rs flow exactly.
+        let mut reg = AgentRegistry::new();
+        register_simple(&mut reg, "a1");
+
+        let desired = DesiredResources {
+            roots: vec![RootConfig {
+                name: "pinned".to_string(),
+                path: "/p".to_string(),
+                enabled: true,
+                pinned_folders: vec!["/sub".to_string()],
+            }],
+        };
+        reg.set_pending_update("a1", desired.clone());
+
+        // Reconnect flow (as ws.rs does it): capture, register, re-apply.
+        let captured = reg.get("a1").and_then(|a| a.pending_update.clone());
+        reg.register(
+            "a1".to_string(),
+            "reconnected".to_string(),
+            make_sender(),
+            Arc::new(Notify::new()),
+            0,
+            vec![],
+            Capabilities::default(),
+        );
+        // After register() the fresh entry has NO pending — this is the bug
+        // surface, and exactly why ws.rs must re-apply rather than rely on
+        // register().
+        assert!(
+            reg.get("a1").unwrap().pending_update.is_none(),
+            "register() resets pending_update to None; ws.rs must re-apply"
+        );
+        if let Some(pending) = captured {
+            reg.set_pending_update("a1", pending);
+        }
+
+        // Now the pending update must be present and intact, including pins.
+        let agent = reg.get("a1").unwrap();
+        let pending = agent
+            .pending_update
+            .as_ref()
+            .expect("re-applied pending must be present");
+        assert_eq!(pending.roots.len(), 1);
+        assert_eq!(pending.roots[0].pinned_folders, vec!["/sub".to_string()]);
     }
 
     #[test]
@@ -683,11 +823,13 @@ mod tests {
                     name: "r1".to_string(),
                     path: "/path/one".to_string(),
                     enabled: true,
+                    pinned_folders: vec![],
                 },
                 RootConfig {
                     name: "r2".to_string(),
                     path: "/path/two".to_string(),
                     enabled: false,
+                    pinned_folders: vec![],
                 },
             ],
             Capabilities::default(),
@@ -714,6 +856,7 @@ mod tests {
                 name: "x".to_string(),
                 path: "/x".to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             }],
             Capabilities::default(),
         );

@@ -4,7 +4,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use filebox_protocol::message::HubMessage;
-use filebox_protocol::resources::{DesiredResources, FileStat, FsEntryType, RootConfig};
+use filebox_protocol::resources::{validate_pinned_path, DesiredResources, FileStat, FsEntryType, RootConfig};
 use rand::Rng;
 use tokio::sync::mpsc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -975,8 +975,19 @@ async fn agent_resources_put_handler(
     State(state): State<AppState>,
     Extension(session): Extension<AuthenticatedSession>,
     Path(agent_id): Path<String>,
-    Json(desired): Json<DesiredResources>,
+    Json(value): Json<serde_json::Value>,
 ) -> Response {
+    // Parse to a Value first so we can detect whether each root EXPLICITLY
+    // carried a pinned_folders key. Backward-compat: a legacy automation /
+    // recovery script that omits the field must NOT wipe existing pins (the
+    // struct's #[serde(default)] would otherwise turn a missing field into an
+    // empty vec and clear them). Here we inherit the agent's current pins for
+    // any root whose JSON object omits the key; an explicit `[]` still clears.
+    let desired = match reconcile_put_pins(&state, &agent_id, value).await {
+        Ok(d) => d,
+        Err(resp) => return resp,
+    };
+
     tracing::info!(
         target: "audit",
         session = %session.id,
@@ -985,6 +996,66 @@ async fn agent_resources_put_handler(
         "resources_put_requested"
     );
     apply_desired_state(state, agent_id, desired, session.id).await
+}
+
+/// Reconcile a whole-state PUT body so that a root whose JSON object OMITS the
+/// `pinned_folders` key inherits the agent's current pins for that root (by
+/// name), while an explicit value (including `[]`) is honored as-is. This
+/// preserves legacy clients that predate the field; without it, serde's default
+/// would silently clear pins on every such PUT.
+async fn reconcile_put_pins(
+    state: &AppState,
+    agent_id: &str,
+    mut value: serde_json::Value,
+) -> Result<DesiredResources, Response> {
+    // Snapshot existing pins by root name (for inheritance).
+    let existing_pins: std::collections::HashMap<String, Vec<String>> = {
+        let inner = state.inner.read().await;
+        inner
+            .agents
+            .get(agent_id)
+            .map(|a| {
+                a.roots
+                    .iter()
+                    .map(|r| (r.name.clone(), r.pinned_folders.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    if let Some(roots) = value.get_mut("roots").and_then(|r| r.as_array_mut()) {
+        for root in roots.iter_mut() {
+            let obj = match root.as_object_mut() {
+                Some(o) => o,
+                None => continue,
+            };
+            if obj.contains_key("pinned_folders") {
+                continue; // explicit (incl. []) — honor it
+            }
+            // Missing key → inherit current pins for this root name, if any.
+            if let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
+                if let Some(pins) = existing_pins.get(name) {
+                    obj.insert(
+                        "pinned_folders".to_string(),
+                        serde_json::to_value(pins).unwrap_or(serde_json::Value::Array(vec![])),
+                    );
+                }
+            }
+        }
+    }
+
+    match serde_json::from_value::<DesiredResources>(value) {
+        Ok(d) => Ok(d),
+        Err(e) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_body",
+                "message": format!("Invalid desired resources: {}", e),
+                "retryable": false,
+            })),
+        )
+            .into_response()),
+    }
 }
 
 // ── Root Management ──────────────────────────────────────────────────────────
@@ -1054,6 +1125,7 @@ async fn add_root_handler(
         name: req.name,
         path: req.path,
         enabled: req.enabled.unwrap_or(true),
+        pinned_folders: vec![],
     });
 
     drop(inner);
@@ -1074,6 +1146,16 @@ struct PatchRootRequest {
     enabled: Option<bool>,
     name: Option<String>,
     path: Option<String>,
+    /// Replace the whole pinned-folders array (relative paths within the
+    /// root). `None` = leave untouched; `Some(vec)` = set to exactly that.
+    pinned_folders: Option<Vec<String>>,
+    /// Single-item delta: add this path to pinned_folders if absent. Mutually
+    /// atomic with `pinned_folders` and `pin_remove`. The pin/unpin UI uses
+    /// these instead of sending the whole array, so rapid clicks or two tabs
+    /// editing the same root can't clobber each other (last-array-wins would).
+    pin_add: Option<String>,
+    /// Single-item delta: remove this path from pinned_folders if present.
+    pin_remove: Option<String>,
 }
 
 async fn patch_root_handler(
@@ -1107,7 +1189,46 @@ async fn patch_root_handler(
         }
     };
 
-    let mut roots = agent.roots.clone();
+    // Capability gate: a legacy agent that never advertises pinned_folders
+    // would silently drop pin data (serde ignores the unknown field) and reply
+    // "applied", fooling the hub + UI into thinking pins persisted. Rather than
+    // let that happen, reject any PATCH that touches pinned_folders against such
+    // an agent with a clear, retryable error. The user upgrades the agent and
+    // retries. We treat an explicit `pinned_folders: []` (unpin-all) against a
+    // legacy agent as a no-op success instead of an error — the agent already
+    // has no pins, so there's nothing to lose, and erroring on an unpin is a
+    // confusing UX. A delta (pin_add/pin_remove) is always a hard error though,
+    // since it asserts the agent can persist the result.
+    let req_touches_pins = req.pin_add.is_some()
+        || req.pin_remove.is_some()
+        || req.pinned_folders.as_ref().map_or(false, |v| !v.is_empty());
+    if req_touches_pins && !agent.capabilities.pinned_folders {
+        drop(inner);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "unsupported_feature",
+                "message": "This agent version does not support pinned folders. Update the agent and retry.",
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+
+    // Base the patch on the pending desired state when one exists (offline
+    // coalescing). Without this, two rapid offline pin_add calls would each
+    // clone agent.roots (the LAST APPLIED state, which has no pins yet), apply
+    // their single delta, and the second set_pending_update would overwrite the
+    // first — losing the earlier pin. Basing off the pending roots makes the
+    // deltas chain: pin /a → pending={/a}; pin /b → clone pending ({/a}), add
+    // /b → pending={/a,/b}. Online path: pending is None, so we fall back to
+    // agent.roots as before.
+    let base_roots = agent
+        .pending_update
+        .as_ref()
+        .map(|p| p.roots.clone())
+        .unwrap_or_else(|| agent.roots.clone());
+    let mut roots = base_roots;
     let root = match roots.iter_mut().find(|r| r.name == root_name) {
         Some(r) => r,
         None => {
@@ -1126,6 +1247,67 @@ async fn patch_root_handler(
     }
     if let Some(path) = req.path {
         root.path = path;
+    }
+    // Pinned folders. Three modes, processed in priority order:
+    //   1. pin_add / pin_remove — single-item atomic deltas. The pin/unpin UI
+    //      uses these so rapid clicks or two tabs editing the same root can't
+    //      lose updates (the alternative — client computing the whole new
+    //      array from a snapshot and us replacing it — is racy).
+    //   2. pinned_folders — explicit whole-array replace (incl. [] to clear).
+    // The delta and replace modes are mutually exclusive by convention; if both
+    // are sent, deltas win (applied to the CURRENT server array, ignoring the
+    // supplied whole-array value).
+    if req.pin_add.is_some() || req.pin_remove.is_some() {
+        if let Some(ref add) = req.pin_add {
+            if let Err(e) = validate_pinned_path(add) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_pinned_path",
+                        "message": format!("Invalid pinned folder path: {}", e),
+                        "retryable": false,
+                    })),
+                )
+                    .into_response();
+            }
+            if !root.pinned_folders.iter().any(|p| p == add) {
+                root.pinned_folders.push(add.clone());
+            }
+        }
+        if let Some(ref remove) = req.pin_remove {
+            // Validate shape for a clean 400 even on remove (defensive).
+            if let Err(e) = validate_pinned_path(remove) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_pinned_path",
+                        "message": format!("Invalid pinned folder path: {}", e),
+                        "retryable": false,
+                    })),
+                )
+                    .into_response();
+            }
+            root.pinned_folders.retain(|p| p != remove);
+        }
+    } else if let Some(ref pins) = req.pinned_folders {
+        // Replace-whole-array. Validate shape before mutating so a bad pin
+        // rejects cleanly (the agent would re-validate anyway, but failing
+        // here gives a synchronous 400 instead of an async rejected-config
+        // round trip). Empty vec is a valid "unpin everything" value.
+        for p in pins {
+            if let Err(e) = validate_pinned_path(p) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_pinned_path",
+                        "message": format!("Invalid pinned folder path: {}", e),
+                        "retryable": false,
+                    })),
+                )
+                    .into_response();
+            }
+        }
+        root.pinned_folders = pins.clone();
     }
 
     drop(inner);
@@ -1199,6 +1381,27 @@ async fn apply_desired_state(
     };
 
     if agent.status == AgentStatus::Offline {
+        // Capability gate for the offline path: a legacy agent (no
+        // pinned_folders capability) would never persist pin data, so queuing a
+        // pending update that carries pins is a lie — on reconnect the hub
+        // strips the pins before pushing, but then the registry mirror still
+        // holds them and the agent never does, so the UI shows pins that aren't
+        // real. Reject up front instead. (patch_root already gates this for the
+        // common pin flow; this catches PUT /resources and any future caller.)
+        if !agent.capabilities.pinned_folders
+            && desired.roots.iter().any(|r| !r.pinned_folders.is_empty())
+        {
+            drop(inner);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "unsupported_feature",
+                    "message": "This agent version does not support pinned folders. Update the agent and retry.",
+                    "retryable": true,
+                })),
+            )
+                .into_response();
+        }
         drop(inner);
         let mut inner = state.inner.write().await;
         inner.agents.set_pending_update(&agent_id, desired);
@@ -1229,10 +1432,33 @@ async fn apply_desired_state(
     // Clone desired state for the message and save for later registry update
     let desired_roots = desired.roots.clone();
 
+    // Rolling-upgrade safety: if this agent doesn't advertise the
+    // pinned_folders capability, strip pins from what we send over the wire so
+    // a legacy agent can't reply "applied" while silently dropping pin data.
+    // The hub's own mirror (desired_roots, set into the registry on success)
+    // keeps the real pins; they re-apply once the agent is upgraded.
+    let agent_supports_pins = agent.capabilities.pinned_folders;
+    let wire_roots = if agent_supports_pins {
+        desired.roots
+    } else {
+        tracing::warn!(
+            "Agent {} does not advertise pinned_folders capability; stripping pin data from ResourcesSetDesired",
+            agent_id
+        );
+        desired
+            .roots
+            .into_iter()
+            .map(|mut r| {
+                r.pinned_folders.clear();
+                r
+            })
+            .collect::<Vec<_>>()
+    };
+
     let msg = filebox_protocol::message::HubMessage::ResourcesSetDesired {
         req_id: req_id.clone(),
         desired_revision: next_revision,
-        roots: desired.roots,
+        roots: wire_roots,
     };
 
     let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel(1);
@@ -1250,6 +1476,15 @@ async fn apply_desired_state(
     }
 
     if !inner.agents.send_to_agent(&agent_id, msg) {
+        // P1 fix: the timeout-cleanup below is unreachable via this early
+        // return, so we must drop the pending_responses entry here too —
+        // otherwise a half-dead connection on every pin/unpin would leak an
+        // entry forever (the map is unbounded).
+        {
+            let mut pending = inner.pending_responses.write().await;
+            pending.remove(&req_id);
+        }
+        drop(inner);
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
@@ -1360,6 +1595,7 @@ mod tests {
                 name: "root".to_string(),
                 path: "/tmp".to_string(),
                 enabled: true,
+                pinned_folders: vec![],
             }],
             Capabilities::default(),
         );
@@ -1425,6 +1661,101 @@ mod tests {
             response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
             Some(&origin)
         );
+    }
+
+    #[tokio::test]
+    async fn patch_root_rejects_pin_against_legacy_agent() {
+        // P1 capability gate: a legacy agent (no pinned_folders capability)
+        // would silently drop pin data and reply "applied", fooling the hub +
+        // UI into thinking pins persisted. patch_root must reject any pin-touching
+        // PATCH against such an agent with 400 unsupported_feature instead. We
+        // register an agent with Capabilities::default() (pinned_folders=false)
+        // and assert a pin_add returns the gated error.
+        let state = AppState::new(&test_config(), true);
+        {
+            let (tx, _rx) = mpsc::unbounded_channel::<HubMessage>();
+            let mut inner = state.inner.write().await;
+            inner.agents.register(
+                "legacy-agent".to_string(),
+                "Legacy".to_string(),
+                tx,
+                Arc::new(Notify::new()),
+                1,
+                vec![RootConfig {
+                    name: "demo".to_string(),
+                    path: "/tmp".to_string(),
+                    enabled: true,
+                    pinned_folders: vec![],
+                }],
+                Capabilities::default(), // pinned_folders = false
+            );
+        }
+
+        let response = patch_root_handler(
+            State(state.clone()),
+            test_session(),
+            Path(("legacy-agent".to_string(), "demo".to_string())),
+            Json(PatchRootRequest {
+                enabled: None,
+                name: None,
+                path: None,
+                pinned_folders: None,
+                pin_add: Some("/sub".to_string()),
+                pin_remove: None,
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "unsupported_feature");
+    }
+
+    #[tokio::test]
+    async fn patch_root_rejects_unpin_all_against_legacy_agent() {
+        // Same gate, but for a non-empty pinned_folders array (replace-whole-
+        // array mode). An explicit `[]` (unpin-all) is treated as a no-op
+        // success against a legacy agent (there's nothing to lose), so only a
+        // NON-empty array triggers the gate.
+        let state = AppState::new(&test_config(), true);
+        {
+            let (tx, _rx) = mpsc::unbounded_channel::<HubMessage>();
+            let mut inner = state.inner.write().await;
+            inner.agents.register(
+                "legacy-agent".to_string(),
+                "Legacy".to_string(),
+                tx,
+                Arc::new(Notify::new()),
+                1,
+                vec![RootConfig {
+                    name: "demo".to_string(),
+                    path: "/tmp".to_string(),
+                    enabled: true,
+                    pinned_folders: vec![],
+                }],
+                Capabilities::default(),
+            );
+        }
+
+        // Non-empty array → rejected (legacy agent can't persist these).
+        let response = patch_root_handler(
+            State(state.clone()),
+            test_session(),
+            Path(("legacy-agent".to_string(), "demo".to_string())),
+            Json(PatchRootRequest {
+                enabled: None,
+                name: None,
+                path: None,
+                pinned_folders: Some(vec!["/a".to_string(), "/b".to_string()]),
+                pin_add: None,
+                pin_remove: None,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

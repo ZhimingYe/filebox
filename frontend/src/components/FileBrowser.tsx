@@ -5,6 +5,7 @@ import { friendlyMessage } from '../api/client';
 import { useIsMobile } from '../state/useIsMobile';
 import { c, radius, font, shadow } from '../theme';
 import { AddressBar } from './AddressBar';
+import { IconPin, IconClose } from './icons';
 
 // ── Inline SVG Icons (16x16) ───────────────────────────────────────────
 
@@ -60,22 +61,45 @@ function getEntryIcon(entryType: string) {
 
 interface Props {
   agentId: string;
-  roots: { name: string; path_display: string; enabled: boolean }[];
+  roots: api.RootInfo[];
   onFileSelect: (root: string, path: string, entry: api.FsEntry) => void;
   // Fired whenever the visible file list changes — used by parent for keyboard navigation
   onEntriesChange?: (info: { root: string; path: string; entries: api.FsEntry[] }) => void;
+  // Fired after a root's pinned_folders change so the parent (which owns the
+  // agent list + SSE refresh) can refetch and propagate the new pins down.
+  onRootsChange?: () => void;
+  // Imperative navigation request from the sidebar PinnedFolders section.
+  // Bumping `nonce` (even with the same root/path) triggers a fresh navigate.
+  navRequest?: { root: string; path: string; nonce: number } | null;
+  onNavHandled?: () => void;
+  // ── Controlled navigation state ──
+  // selectedRoot / currentPath are owned by the PARENT (App.tsx) so they
+  // survive view switches (Files → Settings → Files). Previously they lived
+  // as local state here, but FileBrowser unmounts when the user leaves the
+  // Files view — and remount reset the position to the first root's root,
+  // losing the user's place. Lifting the state to the never-unmounting App
+  // fixes that. The parent also owns the per-(agent,root) path memory map.
+  selectedRoot: string | null;
+  currentPath: string;
+  // Apply a navigation (set both root + path together, atomically). The parent
+  // implements this and also updates its path-memory map. Replaces the old
+  // internal handleNavigate / setSelectedRoot / setCurrentPath calls.
+  onApplyNav: (root: string, path: string) => void;
+  // Switch to a different root, restoring that root's remembered path. The
+  // parent owns the path-memory map so only it knows the target path; the
+  // root-selector dropdown calls this. Distinct from onApplyNav because the
+  // child doesn't (and shouldn't) know the remembered path.
+  onSwitchRoot: (root: string) => void;
 }
 
 type SortKey = 'name' | 'modified' | 'size';
 
 const PAGE_LIMIT = 200;
 
-export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: Props) {
+export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onRootsChange, navRequest, onNavHandled, selectedRoot, currentPath, onApplyNav, onSwitchRoot }: Props) {
   const isMobile = useIsMobile();
   const ROW_HEIGHT = isMobile ? 44 : 32;
 
-  const [selectedRoot, setSelectedRoot] = useState<string | null>(null);
-  const [currentPath, setCurrentPath] = useState('/');
   const [entries, setEntries] = useState<api.FsEntry[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -118,10 +142,6 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
     try { localStorage.setItem('filebox.fileNameSerif', fileNameSerif ? '1' : '0'); } catch { /* ignore */ }
   }, [fileNameSerif]);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
-  // Remember last visited path per agent+root (keyed as "agentId:rootName")
-  const pathMemory = useRef<Map<string, string>>(new Map());
-  const memKey = (root: string) => `${agentId}:${root}`;
-  const prevAgentIdRef = useRef(agentId); // eslint-disable-line react-hooks/exhaustive-deps
   const loadSeq = useRef(0); // request versioning — discard stale responses
 
   const enabledRoots = useMemo(() => roots.filter((r) => r.enabled), [roots]);
@@ -142,6 +162,60 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
     const rel = currentPath === '/' ? '' : currentPath;
     return base + rel;
   }, [activeRootObj, currentPath]);
+
+  // ── Pinning ──────────────────────────────────────────────────────────────
+  // Normalize a path for membership comparison AND storage: strip trailing
+  // slashes except for the root itself, and ensure a leading "/" (root-relative
+  // canonical shape, matching the backend's validate_pinned_path). So "/a/" and
+  // "/a" compare equal, "/" stays "/", and a bare "foo" becomes "/foo".
+  const normalizePinPath = (p: string) => {
+    let s = p.length > 1 && p.endsWith('/') ? p.replace(/\/+$/, '') : p;
+    if (!s.startsWith('/')) s = '/' + s;
+    return s;
+  };
+
+  const [pinBusy, setPinBusy] = useState(false);
+  const [pinError, setPinError] = useState<string | null>(null);
+
+  // Is the folder currently being viewed already pinned in this root?
+  const currentPinned = useMemo(() => {
+    if (!activeRootObj) return false;
+    const norm = normalizePinPath(currentPath);
+    return activeRootObj.pinned_folders.some((p) => normalizePinPath(p) === norm);
+  }, [activeRootObj, currentPath]);
+
+  // Toggle pin for the folder currently being viewed. Uses single-item atomic
+  // deltas (pin_add / pin_remove) instead of sending the whole array, so rapid
+  // clicks or two tabs editing the same root can't clobber each other. The
+  // parent's SSE-driven refresh then propagates the updated roots back down.
+  // Errors are surfaced inline via pinError rather than throwing to a toast —
+  // pinning is a small, local affordance and a transient toast would be jarring.
+  const togglePin = useCallback(async () => {
+    if (!activeRootObj || pinBusy) return;
+    setPinBusy(true);
+    setPinError(null);
+    try {
+      const norm = normalizePinPath(currentPath);
+      const patch = currentPinned ? { pin_remove: norm } : { pin_add: norm };
+      await api.patchRoot(agentId, activeRootObj.name, patch);
+      onRootsChange?.();
+    } catch (e: any) {
+      setPinError(friendlyMessage(e));
+    } finally {
+      setPinBusy(false);
+    }
+  }, [activeRootObj, currentPath, currentPinned, agentId, pinBusy, onRootsChange]);
+
+  // Imperative navigation from the sidebar's Pinned Folders section. We drive
+  // this off `nonce` rather than referential identity so clicking the SAME pin
+  // twice still navigates (e.g. after navigating away by hand). The parent
+  // clears its request via onNavHandled once we've acted on it.
+  useEffect(() => {
+    if (!navRequest || navRequest.nonce === 0) return;
+    handleNavigate(navRequest.root, navRequest.path);
+    onNavHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navRequest?.nonce]);
 
   // Copy to clipboard helper
   const copyToClipboard = useCallback(async (text: string, label: string) => {
@@ -193,38 +267,18 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
     };
   }, [rootOpen]);
 
-  // Unified: handles agent switch (restore saved path) and root config changes (pick valid root)
-  const prevRootRef = useRef<string | null>(null);
+  // Clear the local file list when the agent changes — the parent owns which
+  // root/path is shown, but the fetched entries (and any stale error) are this
+  // component's concern. Keeps a switching agent from flashing the previous
+  // agent's files before the new listing loads.
+  const prevAgentIdRef = useRef(agentId); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const agentChanged = prevAgentIdRef.current !== agentId;
-    if (agentChanged) {
+    if (prevAgentIdRef.current !== agentId) {
       setEntries([]);
       setError(null);
       prevAgentIdRef.current = agentId;
     }
-
-    if (enabledRoots.length === 0) {
-      if (prevRootRef.current !== null) {
-        setSelectedRoot(null);
-        prevRootRef.current = null;
-      }
-      return;
-    }
-
-    const rootValid = selectedRoot && enabledRoots.some((r) => r.name === selectedRoot);
-    if (!rootValid) {
-      const fallback = enabledRoots[0].name;
-      setSelectedRoot(fallback);
-      setCurrentPath(pathMemory.current.get(memKey(fallback)) || '/');
-      prevRootRef.current = fallback;
-    } else if (agentChanged) {
-      // Only restore saved path when agent actually changed, not on every re-render
-      const savedPath = pathMemory.current.get(memKey(selectedRoot)) || '/';
-      setCurrentPath(savedPath);
-      prevRootRef.current = selectedRoot;
-    }
-    // If root is valid and agent didn't change — do nothing (prevents spurious reloads)
-  }, [enabledRoots, agentId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agentId]);
 
   const loadDir = useCallback(async (append = false) => {
     if (!selectedRoot) return;
@@ -271,7 +325,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
     if (entry.denied) return;
     if (entry.entry_type === 'directory') {
       const sep = currentPath.endsWith('/') ? '' : '/';
-      setCurrentPath(currentPath + sep + entry.name);
+      onApplyNav(selectedRoot!, currentPath + sep + entry.name);
     } else {
       onFileSelect(selectedRoot!, currentPath === '/' ? `/${entry.name}` : `${currentPath}/${entry.name}`, entry);
     }
@@ -280,16 +334,15 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
   const navigateUp = () => {
     const parts = currentPath.split('/').filter(Boolean);
     parts.pop();
-    setCurrentPath('/' + parts.join('/'));
+    onApplyNav(selectedRoot!, '/' + parts.join('/'));
   };
 
+  // Delegate to the parent's atomic root+path setter (which also maintains the
+  // per-(agent,root) path memory). Same-root calls just update the path;
+  // cross-root calls restore that root's remembered path via the parent.
   const handleNavigate = useCallback((root: string, path: string) => {
-    if (selectedRoot) {
-      pathMemory.current.set(memKey(selectedRoot), currentPath);
-    }
-    setSelectedRoot(root);
-    setCurrentPath(path);
-  }, [agentId, selectedRoot, currentPath]); // eslint-disable-line react-hooks/exhaustive-deps
+    onApplyNav(root, path);
+  }, [onApplyNav]);
 
   const toggleSort = (key: SortKey) => {
     if (sortBy === key) {
@@ -509,10 +562,10 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
                       ...(isSel ? styles.rootItemSelected : {}),
                     }}
                     onClick={() => {
-                      const next = r.name;
-                      if (selectedRoot) pathMemory.current.set(memKey(selectedRoot), currentPath);
-                      setSelectedRoot(next);
-                      setCurrentPath(pathMemory.current.get(memKey(next)) || '/');
+                      // Switching roots: the parent restores the target root's
+                      // remembered path (it owns the path-memory map). We just
+                      // close the dropdown here.
+                      onSwitchRoot(r.name);
                       setRootOpen(false);
                     }}
                     title={r.path_display}
@@ -588,6 +641,31 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
             </svg>
           )}
         </button>
+        {/* Pin / unpin the folder currently being viewed. The pinned set lives
+            per-root in agent_state.json (backend-authoritative), so this PATCHes
+            a single-item delta (pin_add / pin_remove) — NOT the whole array —
+            so rapid clicks or two tabs editing the same root can't clobber each
+            other (last-array-wins would). Disabled when no root is selected.
+            Active (accent) when the current folder is already pinned. Errors are
+            surfaced inline just below the toolbar, not only in the title. */}
+        <button
+          onClick={togglePin}
+          style={{
+            ...(currentPinned ? styles.pinBtnActive : styles.pinBtn),
+            ...(!activeRootObj || pinBusy ? { opacity: 0.4, cursor: 'not-allowed' } : {}),
+          }}
+          title={
+            pinError
+              ? pinError
+              : currentPinned
+                ? 'Unpin this folder'
+                : 'Pin this folder to the sidebar'
+          }
+          aria-pressed={currentPinned}
+          disabled={!activeRootObj || pinBusy}
+        >
+          <IconPin />
+        </button>
         {/* Copy the FULL server-side address of the directory currently being
             viewed (root path_display + currentPath). Disabled when no root is
             selected yet (e.g. agent has no enabled roots). Reuses copyToClipboard
@@ -617,6 +695,25 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange }: P
         </button>
         {loading && <span style={styles.spinner} />}
       </div>
+      {/* Visible pin error. The pin button also carries the message in its
+          title, but a hover-only cue violates "never freeze silently" — a user
+          on touch or who never hovers wouldn't see that the pin was rejected
+          (e.g. by a legacy agent or a vanished folder). Shown here, just below
+          the toolbar, with a dismiss × so it doesn't linger after the user
+          reads it. */}
+      {pinError && (
+        <div style={styles.pinErrorRow} role="alert">
+          <span style={styles.pinErrorText}>{pinError}</span>
+          <button
+            onClick={() => setPinError(null)}
+            style={styles.pinErrorDismiss}
+            title="Dismiss"
+            aria-label="Dismiss pin error"
+          >
+            <IconClose />
+          </button>
+        </div>
+      )}
       <div style={styles.filterBar}>
         <input
           type="text"
@@ -868,6 +965,40 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 16, lineHeight: 1, width: 34, height: 28,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     boxSizing: 'border-box', flexShrink: 0,
+  },
+  // Pin toggle button: matches the align/font/copy box model. Idle = neutral
+  // outline with a hollow pin; active (pinned) = accent border + accentBg with
+  // a filled pin. `:disabled` (no root selected / busy) handled via inline opacity.
+  pinBtn: {
+    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    background: 'transparent', color: c.textSecondary, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, width: 34, height: 28,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', flexShrink: 0,
+    transition: 'all 0.15s',
+  },
+  pinBtnActive: {
+    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.accent}`,
+    background: c.accentBg, color: c.accent, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, width: 34, height: 28,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', flexShrink: 0,
+    transition: 'all 0.15s',
+  },
+  // Inline pin error: shown just below the toolbar when a pin/unpin was
+  // rejected (legacy agent, vanished folder, etc.). Dismissible so it doesn't
+  // outlive the user's attention; role="alert" for screen readers.
+  pinErrorRow: {
+    display: 'flex', alignItems: 'center', gap: 8,
+    padding: '6px 12px', margin: '6px 12px 0',
+    borderRadius: radius.md, background: c.dangerBg, border: `1px solid ${c.danger}`,
+  },
+  pinErrorText: { flex: 1, fontSize: 12, color: c.danger, fontFamily: font.sans },
+  pinErrorDismiss: {
+    flexShrink: 0, width: 22, height: 22, padding: 0, lineHeight: 1,
+    border: 'none', background: 'transparent', cursor: 'pointer',
+    color: c.danger, borderRadius: radius.sm,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
   // Copy-address button: same box model as the align / font toggle buttons so
   // the four toolbar buttons read as one consistent group. Default = idle
