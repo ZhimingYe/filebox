@@ -414,6 +414,7 @@ mod tests {
             name: name.to_string(),
             path: path.to_string_lossy().to_string(),
             enabled,
+            pinned_folders: vec![],
         }
     }
 

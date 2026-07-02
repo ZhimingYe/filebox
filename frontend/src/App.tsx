@@ -10,6 +10,7 @@ import { PreviewPane } from './components/PreviewPane';
 import { AgentSettings } from './components/AgentSettings';
 import { HealthPanel } from './components/HealthPanel';
 import { SystemStats } from './components/SystemStats';
+import { PinnedFolders } from './components/PinnedFolders';
 import {
   IconChevronLeft,
   IconChevronRight,
@@ -21,6 +22,7 @@ import {
 } from './components/icons';
 import type { FsEntry } from './api/client';
 import { fileRawUrl } from './api/client';
+import * as api from './api/client';
 import { c, radius, shadow, font } from './theme';
 
 const VERSION_TOAST_DISMISS_KEY = 'filebox.newVersionDismissed';
@@ -62,6 +64,43 @@ export default function App() {
   const [progressMap, setProgressMap] = useState<Map<string, ProgressEvent>>(new Map());
   const progressTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Imperative navigation request from the sidebar PinnedFolders section into
+  // the FileBrowser. Driven by `nonce` so re-clicking the same pin still
+  // navigates. Cleared via onNavHandled once the browser has acted on it.
+  const [navRequest, setNavRequest] = useState<{ root: string; path: string; nonce: number } | null>(null);
+
+  // ── File browsing position, owned HERE (not in FileBrowser) ──
+  // FileBrowser unmounts when the user leaves the Files view (Settings/Health/
+  // Stats), so any state it held was lost on remount — jumping back to the
+  // first root. Owning the position here (App never unmounts) makes it survive
+  // view switches, and remembering per-(agent,root) lets each combination
+  // keep its own place.
+  //
+  // - filePosByAgent: last viewed {root, path} per agent.
+  // - pathMemory: last path per (agent:root) — so switching roots within an
+  //   agent restores each root's own position.
+  const filePosByAgent = useRef<Map<string, { root: string; path: string }>>(new Map());
+  const pathMemory = useRef<Map<string, string>>(new Map());
+  const memKey = (agentId: string, root: string) => `${agentId}:${root}`;
+  // Unpin a single folder via an atomic pin_remove delta (not a whole-array
+  // replace), so two tabs or rapid clicks can't clobber each other. Returns
+  // true on success so the sidebar can surface a failure banner — the
+  // "never freeze silently" rule means a clicked × that silently no-ops on a
+  // flaky connection is a bug, not a graceful degradation.
+  const handleUnpin = useCallback(
+    async (agentId: string, root: string, path: string): Promise<boolean> => {
+      try {
+        await api.patchRoot(agentId, root, { pin_remove: path });
+        refresh();
+        return true;
+      } catch {
+        // Pin stays; the sidebar shows a transient "couldn't unpin" banner.
+        return false;
+      }
+    },
+    [refresh],
+  );
 
   // ── Desktop sidebar collapse (icon-only rail) ──
   // Mobile drawer ignores this — `collapsed` below is gated on !isMobile.
@@ -213,6 +252,99 @@ export default function App() {
 
   const selectedAgent = useMemo(() => agents.find((a) => a.id === selectedAgentId) || null, [agents, selectedAgentId]);
 
+  // Count pinned folders across the selected agent's ENABLED roots, so the
+  // sidebar Pinned Folders section can be hidden entirely when there are none
+  // (avoids rendering an empty section header). Pins on disabled roots still
+  // count as "exist" but aren't navigable, so we only surface enabled ones.
+  const pinnedCount = useMemo(() => {
+    if (!selectedAgent) return 0;
+    return selectedAgent.roots.reduce(
+      (n, r) => (r.enabled ? n + r.pinned_folders.length : n),
+      0,
+    );
+  }, [selectedAgent]);
+
+  // ── Current browse position (selectedRoot + currentPath) for the selected
+  // agent. Owned as state here so FileBrowser (a controlled child) re-renders
+  // on navigation, while the *memory* (per-agent, per-root) lives in the refs
+  // above so it survives view switches.
+  const [selectedRoot, setSelectedRoot] = useState<string | null>(null);
+  const [currentPath, setCurrentPath] = useState('/');
+
+  const enabledRoots = useMemo(
+    () => (selectedAgent ? selectedAgent.roots.filter((r) => r.enabled) : []),
+    [selectedAgent],
+  );
+
+  // Reconcile root/path when the agent changes OR the root config changes
+  // (root added/removed/renamed/disabled). This is the logic that used to live
+  // in FileBrowser's mount effect — moved here so it runs against state that
+  // isn't wiped by unmount.
+  const prevAgentIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedAgent) {
+      setSelectedRoot(null);
+      setCurrentPath('/');
+      prevAgentIdRef.current = null;
+      return;
+    }
+    const agentId = selectedAgent.id;
+    const agentChanged = prevAgentIdRef.current !== agentId;
+
+    if (enabledRoots.length === 0) {
+      setSelectedRoot(null);
+      prevAgentIdRef.current = agentId;
+      return;
+    }
+
+    // On agent switch, restore that agent's last position from filePosByAgent.
+    if (agentChanged) {
+      prevAgentIdRef.current = agentId;
+      const saved = filePosByAgent.current.get(agentId);
+      const root =
+        saved && enabledRoots.some((r) => r.name === saved.root)
+          ? saved.root
+          : enabledRoots[0].name;
+      const path = saved && saved.root === root
+        ? saved.path
+        : pathMemory.current.get(memKey(agentId, root)) || '/';
+      setSelectedRoot(root);
+      setCurrentPath(path);
+      return;
+    }
+
+    // Same agent, but root config may have changed: if current root is no
+    // longer valid, fall back to the first enabled root.
+    const rootValid = selectedRoot && enabledRoots.some((r) => r.name === selectedRoot);
+    if (!rootValid) {
+      const fallback = enabledRoots[0].name;
+      setSelectedRoot(fallback);
+      setCurrentPath(pathMemory.current.get(memKey(agentId, fallback)) || '/');
+    }
+  }, [selectedAgent, enabledRoots, selectedRoot]);
+
+  // Atomically apply a navigation for the current agent: update state + record
+  // both the per-agent position and the per-root path memory.
+  const applyNav = useCallback((root: string, path: string) => {
+    setSelectedRoot(root);
+    setCurrentPath(path);
+    if (selectedAgent) {
+      filePosByAgent.current.set(selectedAgent.id, { root, path });
+      pathMemory.current.set(memKey(selectedAgent.id, root), path);
+    }
+  }, [selectedAgent]);
+
+  // Switch to a different root within the current agent, restoring that root's
+  // remembered path (or '/' if none). Saves the outgoing root's current path
+  // first so it's restored on return.
+  const switchRoot = useCallback((root: string) => {
+    if (!selectedAgent) return;
+    if (selectedRoot) {
+      pathMemory.current.set(memKey(selectedAgent.id, selectedRoot), currentPath);
+    }
+    const restored = pathMemory.current.get(memKey(selectedAgent.id, root)) || '/';
+    applyNav(root, restored);
+  }, [selectedAgent, selectedRoot, currentPath, applyNav]);
   const handleFileSelect = useCallback((root: string, path: string, entry: FsEntry) => {
     setPreview({ root, path, entry });
   }, []);
@@ -310,37 +442,67 @@ export default function App() {
           </>
         )}
       </div>
-      <div style={collapsed ? styles.sidebarSectionCollapsed : styles.sidebarSection}>
-        {!collapsed && <div style={styles.sectionHeader}>Agents</div>}
-        <BackendList
-          agents={agents}
-          selectedId={selectedAgentId}
-          onSelect={selectAgent}
-          collapsed={collapsed}
-        />
-      </div>
-      {selectedAgent && (
+      {/* Scrollable middle region. On short viewports the agents / nav / pinned
+          sections can't all fit, and without an explicit overflow container the
+          footer (logout, version) gets pushed off-screen and becomes
+          unreachable. This wrapper scrolls instead; the header above and the
+          footer below stay pinned. `flex: 1` + `minHeight: 0` is the standard
+          incantation for "take remaining space and allow shrink-to-scroll" in a
+          flex column. */}
+      <div style={styles.sidebarScroll}>
         <div style={collapsed ? styles.sidebarSectionCollapsed : styles.sidebarSection}>
-          {!collapsed && <div style={styles.sectionHeader}>Navigation</div>}
-          <div style={collapsed ? styles.navCollapsed : styles.nav}>
-            {navItems.map(({ v, label, Icon }) => (
-              <button
-                key={v}
-                onClick={() => navigate(v)}
-                title={label}
-                style={{
-                  ...(collapsed ? styles.navBtnCollapsed : styles.navBtn),
-                  ...(view === v ? (collapsed ? styles.navBtnCollapsedActive : styles.navBtnActive) : {}),
-                }}
-              >
-                <Icon />
-                {!collapsed && <span>{label}</span>}
-              </button>
-            ))}
-          </div>
+          {!collapsed && <div style={styles.sectionHeader}>Agents</div>}
+          <BackendList
+            agents={agents}
+            selectedId={selectedAgentId}
+            onSelect={selectAgent}
+            collapsed={collapsed}
+          />
         </div>
-      )}
-      <div style={{ flex: 1 }} />
+        {selectedAgent && (
+          <div style={collapsed ? styles.sidebarSectionCollapsed : styles.sidebarSection}>
+            {!collapsed && <div style={styles.sectionHeader}>Navigation</div>}
+            <div style={collapsed ? styles.navCollapsed : styles.nav}>
+              {navItems.map(({ v, label, Icon }) => (
+                <button
+                  key={v}
+                  onClick={() => navigate(v)}
+                  title={label}
+                  style={{
+                    ...(collapsed ? styles.navBtnCollapsed : styles.navBtn),
+                    ...(view === v ? (collapsed ? styles.navBtnCollapsedActive : styles.navBtnActive) : {}),
+                  }}
+                >
+                  <Icon />
+                  {!collapsed && <span>{label}</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {selectedAgent && pinnedCount > 0 && (
+          <div style={collapsed ? styles.sidebarSectionCollapsed : styles.sidebarSection}>
+            {!collapsed && <div style={styles.sectionHeader}>Pinned</div>}
+            <PinnedFolders
+              agent={selectedAgent}
+              collapsed={collapsed}
+              onNavigate={(root, path) => {
+                // A pin click should always land in the Files view, even if the
+                // user is currently on Settings/Health/Stats. On mobile, an open
+                // preview would otherwise keep showing on top of the just-navigated
+                // file list (showMobilePreview only checks for preview existence),
+                // so close it explicitly — the user clicked a folder, they want to
+                // SEE that folder, not the file they were previewing before.
+                setPreview(null);
+                navigate('files');
+                setNavRequest({ root, path, nonce: Date.now() });
+              }}
+              onUnpin={(root, path) => handleUnpin(selectedAgent.id, root, path)}
+            />
+          </div>
+        )}
+        <div style={{ flex: 1 }} />
+      </div>
       <div style={collapsed ? styles.sidebarFooterCollapsed : styles.sidebarFooter}>
         {!collapsed && health?.hub.version && (
           <button
@@ -417,6 +579,13 @@ export default function App() {
                     roots={selectedAgent.roots}
                     onFileSelect={handleFileSelect}
                     onEntriesChange={handleEntriesChange}
+                    onRootsChange={refresh}
+                    navRequest={navRequest}
+                    onNavHandled={() => setNavRequest(null)}
+                    selectedRoot={selectedRoot}
+                    currentPath={currentPath}
+                    onApplyNav={applyNav}
+                    onSwitchRoot={switchRoot}
                   />
                 </div>
                 {showMobilePreview && (
@@ -453,6 +622,13 @@ export default function App() {
                     roots={selectedAgent.roots}
                     onFileSelect={handleFileSelect}
                     onEntriesChange={handleEntriesChange}
+                    onRootsChange={refresh}
+                    navRequest={navRequest}
+                    onNavHandled={() => setNavRequest(null)}
+                    selectedRoot={selectedRoot}
+                    currentPath={currentPath}
+                    onApplyNav={applyNav}
+                    onSwitchRoot={switchRoot}
                   />
                 </div>
                 {preview && (
@@ -632,6 +808,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
   sidebarSection: { padding: '12px 12px', borderBottom: `1px solid ${c.border}` },
   sidebarSectionCollapsed: { padding: '10px 6px', borderBottom: `1px solid ${c.border}` },
+  // Scrollable middle of the sidebar (between header and footer). The two
+  // non-obvious props: `flex: 1` so it absorbs the space the header/footer
+  // don't, and `minHeight: 0` to override the flex default `min-height:auto`,
+  // which would otherwise grow this box to fit content and push the footer off
+  // a short viewport (the exact bug this fixes). `overflowY:auto` then scrolls.
+  sidebarScroll: {
+    flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden',
+    display: 'flex', flexDirection: 'column',
+  } as React.CSSProperties,
   sectionHeader: {
     fontSize: 11, textTransform: 'uppercase', color: c.textMuted,
     letterSpacing: 0.8, marginBottom: 6, fontWeight: 500, paddingLeft: 4,

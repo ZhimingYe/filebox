@@ -261,7 +261,7 @@ mod tests {
                 password_hash: "fake-hash".to_string(),
             }],
         };
-        let state = AppState::new(&config);
+        let state = AppState::new(&config, false);
         // Verify the inner state is accessible
         let inner = state.inner.blocking_read();
         assert_eq!(inner.agents.list_all().len(), 0);
@@ -277,7 +277,7 @@ mod tests {
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],
         };
-        let state = AppState::new(&config);
+        let state = AppState::new(&config, false);
         let pending = state.inner.blocking_read().pending_responses.clone();
         let map = pending.blocking_read();
         assert!(map.is_empty());

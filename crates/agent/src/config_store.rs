@@ -117,6 +117,7 @@ mod tests {
             name: "logs".to_string(),
             path: "/var/logs".to_string(),
             enabled: true,
+            pinned_folders: vec![],
         });
         cfg.save(&path);
 
@@ -177,11 +178,13 @@ mod tests {
                     name: "a".to_string(),
                     path: "/a".to_string(),
                     enabled: true,
+                    pinned_folders: vec![],
                 },
                 RootConfig {
                     name: "b".to_string(),
                     path: "/b".to_string(),
                     enabled: false,
+                    pinned_folders: vec![],
                 },
             ],
         };
@@ -193,6 +196,37 @@ mod tests {
         assert_eq!(reloaded.roots.len(), 2);
         assert!(reloaded.roots[0].enabled);
         assert!(!reloaded.roots[1].enabled);
+    }
+
+    #[test]
+    fn load_preserves_agent_id_when_old_json_has_no_pinned_folders() {
+        // An agent_state.json written by a pre-pinned-folders agent. MUST load
+        // without losing the agent_id or roots — `#[serde(default)]` on the new
+        // field is what makes this work. This is the single most important
+        // backward-compat guard for this feature.
+        let dir = tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::fs::write(
+            path.join("agent_state.json"),
+            r#"{
+  "agent_id": "stable-id-from-old-agent",
+  "resource_revision": 3,
+  "roots": [
+    { "name": "data", "path": "/data", "enabled": true }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let cfg = PersistedConfig::load_or_create(&path);
+        assert_eq!(cfg.agent_id, "stable-id-from-old-agent");
+        assert_eq!(cfg.resource_revision, 3);
+        assert_eq!(cfg.roots.len(), 1);
+        assert_eq!(cfg.roots[0].name, "data");
+        assert!(
+            cfg.roots[0].pinned_folders.is_empty(),
+            "old roots must load with empty pins, not fail"
+        );
     }
 
     #[cfg(unix)]

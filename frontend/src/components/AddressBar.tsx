@@ -118,6 +118,10 @@ export function AddressBar({ selectedRoot, currentPath, roots, entries, agentId,
     if (!p || p === '/') return '/';
     let s = p.replace(/\/+/g, '/');
     if (s.length > 1 && s.endsWith('/')) s = s.slice(0, -1);
+    // Ensure leading "/" so the path is root-relative canonical shape. This
+    // matches the backend's pin-path validation (which requires a leading "/"),
+    // so a folder the user can browse via a typed "foo" is also pinnable.
+    if (!s.startsWith('/')) s = '/' + s;
     return s;
   };
 
