@@ -2,6 +2,29 @@
 
 All notable changes to Filebox are listed here. Dates are UTC.
 
+## v0.5.0 — 2026-07-03
+
+### Added
+- **System monitor rework** — rewritten sysinfo collector safe for HPC boxes (10k+ PIDs, terabyte memory). Uses `ProcessRefreshKind::without_tasks()` to skip the O(procs × threads) `/proc` recursion that froze 1 TB machines; sysinfo `multithread` feature for parallel scanning; single-pass aggregation into per-process, per-user, and global totals; O(N) quickselect for top-k instead of full sort; `Users::refresh()` throttled to 5 min. TTL-cached `StatsCache` with fresh/stale/cold states and CAS de-dup so readers never block the producer.
+- **Per-user & per-process UI** — three-tab SystemStats (Overview / Users / Processes). Processes tab: `react-window` virtualization, row → detail panel with full command + metric chips, filter by uid, hide-kthreads toggle, display limit 50/100/200/500 persisted to localStorage. Users tab: per-user CPU/memory share bars + sortable table with node-share %.
+- **About dialog** — click the version number in the sidebar footer to open an "About filebox" dialog (version, dev/production hint, homepage link).
+- **Pinned Folders** — per-root pinned-folders section in the sidebar. Collapsed sidebar shows a single Pinned entry with a count badge (popover). Pin/unpin via single-item atomic PATCH deltas; bounded, abortable, TTL-cached existence probe.
+- **License attribution** — NOTICE + NOTICE.csv manifests (282 Rust crates, 138 npm production packages; all permissive). `scripts/gen_notice.sh` reproduces them.
+
+### Changed
+- **Process cap raised** to 500 (`TOP_PROCESSES`), backed by real data; payload stays under the 1 MB limit.
+- **Users-tab CPU share math fixed** — denominator was `cpu_usage_percent` (node-normalized) but each user's `cpu_usage` is a raw per-core sum that can exceed 100, producing impossible values like "533% of node". Now normalized against the sum of all users so shares stay in [0, 100] and sum to 100%. Bar color decoupled from share (color by absolute load, width by share). Relabeled "CPU·node"/"%node" → "CPU share"/"% of RAM".
+
+### Security
+- **Dependency vulnerabilities patched** — anyhow 1.0.102 → 1.0.103 (RUSTSEC-2026-0190, soundness); quinn-proto 0.11.14 → 0.11.15 (RUSTSEC-2026-0185, CVSS 7.5 DoS). Frontend: 0 vulnerabilities across 138 production deps.
+- **Resource-update path hardened** — offline pin deltas now chain onto the existing pending update instead of overwriting each other; `patchRoot` rejects on `ok===false`/`state===rejected` so a rejected apply surfaces as an error; capability gate returns `400 unsupported_feature` for pin ops against legacy agents; `pending_update` survives re-register; pending responses cleaned up on send failure.
+
+### Fixed
+- **PDF preview flicker/jump loop** — while a visible page's canvas was still loading, `height:auto` collapsed the wrap to the spinner's ~20 px, shifting total document height, toggling the scrollbar, changing `contentRect.width`, and re-rendering every page in a self-sustaining loop. Fixed with `scrollbar-gutter: stable` (stable `contentRect.width`) + `minHeight: placeholderHeight` on page wraps (prevents collapse while loading).
+- **github-pages workflow trigger** — `pages.yml` was triggering on `v*` tags, but the `github-pages` environment's deployment-branch rule only permits the `gh-pages` branch, so tag-triggered runs were rejected before any step executed. Reverted to `gh-pages` branch push + `workflow_dispatch`.
+
+---
+
 ## v0.4.5 — 2026-06-21
 
 ### Added
