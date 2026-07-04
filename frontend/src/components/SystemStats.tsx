@@ -923,8 +923,16 @@ const styles: Record<string, React.CSSProperties> = {
   // Holds the virtualized list. The grid is always the card width (no
   // horizontal scroll), so just clip and let the list own vertical scrolling.
   procListContainer: { flex: 1, overflow: 'hidden', minHeight: 200 },
+  // INVARIANT: procHeaderRow and procRow MUST share the same horizontal box
+  // model (both have zero outer horizontal padding here). Name is flex:1, so
+  // it absorbs whatever width is left after the fixed columns. If the header
+  // had different side padding than the body rows, the header's Name column
+  // would be a few px narrower/wider than the body's, and EVERY column from
+  // State rightward (St, Memory, CPU%, CPU·time, Run) would shift sideways
+  // relative to the body — the "St header sits over the Name column" bug.
+  // Do NOT add padding here without adding the same padding to procRow.
   procHeaderRow: {
-    display: 'flex', alignItems: 'center', gap: 0, padding: '0 4px',
+    display: 'flex', alignItems: 'center', gap: 0,
     borderBottom: `1px solid ${c.border}`, color: c.textMuted,
     fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 500,
     height: 30, whiteSpace: 'nowrap', flexShrink: 0,
