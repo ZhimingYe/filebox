@@ -803,18 +803,20 @@ function formatBoot(epoch: number): string {
   return d.toLocaleString();
 }
 
-/// Best-effort kernel-thread filter. On Linux, kthreads have an empty argv
-/// (so command is blank) and live in PID space below the first userspace PID,
-/// owned by root. We also catch the common bracketed-name convention (`[kworker]`,
-/// `[kthreadd]`) so this works even if a future sysinfo change fills cmd.
+/// Best-effort kernel-thread filter. Mirrors the backend `is_kernel_thread`
+/// so the two sides agree on which PIDs are kthreads.
+///
+/// On Linux, kernel threads are named with brackets (`[kworker/0:0H]`,
+/// `[kthreadd]`, …) and have an empty argv. The bracketed name is the
+/// reliable kernel-set signal; we also require empty cmdline + root
+/// ownership so a userspace process named `[x]` can't sneak in. The earlier
+/// "uid==0 && cmd empty && mem==0" rule was too broad and misclassified real
+/// root processes on macOS / on Linux hosts with argv-dropping daemons.
 function isKernelThread(p: ProcessInfo): boolean {
-  if (p.uid === 0 && p.command === '' && p.name.startsWith('[') && p.name.endsWith(']')) {
-    return true;
-  }
-  if (p.uid === 0 && p.command === '' && p.mem_bytes === 0) {
-    return true;
-  }
-  return false;
+  return p.uid === 0
+    && p.command === ''
+    && p.name.startsWith('[')
+    && p.name.endsWith(']');
 }
 
 // ── styles ────────────────────────────────────────────────────────────────
