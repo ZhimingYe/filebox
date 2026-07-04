@@ -116,6 +116,11 @@ a:hover {
   border: 1px solid #e2e8f0;
   padding: 6px 10px;
   text-align: left;
+  /* Keep each cell on a single line so wide tables scroll horizontally
+     instead of being squeezed into one narrow wrapped column. Matches
+     CsvPreview's nowrap behavior. */
+  white-space: nowrap;
+  vertical-align: top;
 }
 .markdown th {
   background: #f8fafc;
