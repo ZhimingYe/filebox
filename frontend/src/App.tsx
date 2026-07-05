@@ -8,7 +8,7 @@ import { BackendList } from './components/BackendList';
 import { FileBrowser } from './components/FileBrowser';
 import { PreviewPane } from './components/PreviewPane';
 import { AgentSettings } from './components/AgentSettings';
-import { HealthPanel } from './components/HealthPanel';
+import { AboutDialog } from './components/AboutDialog';
 import { SystemStats } from './components/SystemStats';
 import { PinnedFolders } from './components/PinnedFolders';
 import {
@@ -16,7 +16,6 @@ import {
   IconChevronRight,
   IconFolder,
   IconSettings,
-  IconHealth,
   IconStats,
   IconLogout,
 } from './components/icons';
@@ -43,7 +42,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'settings' | 'health' | 'stats';
+type View = 'files' | 'settings' | 'stats';
 
 interface ProgressEvent {
   req_id: string;
@@ -71,7 +70,7 @@ export default function App() {
   const [navRequest, setNavRequest] = useState<{ root: string; path: string; nonce: number } | null>(null);
 
   // ── File browsing position, owned HERE (not in FileBrowser) ──
-  // FileBrowser unmounts when the user leaves the Files view (Settings/Health/
+  // FileBrowser unmounts when the user leaves the Files view (Settings/
   // Stats), so any state it held was lost on remount — jumping back to the
   // first root. Owning the position here (App never unmounts) makes it survive
   // view switches, and remembering per-(agent,root) lets each combination
@@ -410,7 +409,6 @@ export default function App() {
   const navItems = [
     { v: 'files' as const, label: 'Files', Icon: IconFolder },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
-    { v: 'health' as const, label: 'Health', Icon: IconHealth },
     { v: 'stats' as const, label: 'Stats', Icon: IconStats },
   ];
 
@@ -508,9 +506,9 @@ export default function App() {
           <button
             onClick={handleOpenAbout}
             title="About filebox"
-            style={styles.versionLine}
+            style={styles.aboutEntry}
           >
-            v{health.hub.version}
+            Status (v{health.hub.version})
           </button>
         )}
         <button
@@ -670,10 +668,8 @@ export default function App() {
             )
           ) : view === 'settings' ? (
             <AgentSettings agent={selectedAgent} onRefresh={refresh} />
-          ) : view === 'stats' ? (
-            <SystemStats agentId={selectedAgent.id} />
           ) : (
-            <HealthPanel health={health} agents={agents} error={healthError} />
+            <SystemStats agentId={selectedAgent.id} />
           )}
         </div>
       </div>
@@ -710,40 +706,14 @@ export default function App() {
       )}
 
       {/* About filebox dialog — opened by clicking the version number */}
-      {aboutOpen && (
-        <div style={styles.aboutOverlay} onClick={handleCloseAbout}>
-          <div style={styles.aboutCard} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.aboutHeader}>
-              <div style={styles.aboutLogo}>filebox</div>
-              <button onClick={handleCloseAbout} style={styles.aboutCloseBtn} aria-label="Close">×</button>
-            </div>
-            <div style={styles.aboutBody}>
-              <div style={styles.aboutRow}>
-                <span style={styles.aboutLabel}>Version</span>
-                <span style={styles.aboutValue}>v{health?.hub.version ?? '—'}</span>
-              </div>
-              <div style={styles.aboutRow}>
-                <span style={styles.aboutLabel}>Mode</span>
-                <span style={{ ...styles.aboutValue, color: isLikelyDev ? c.warning : c.success }}>
-                  {isLikelyDev ? 'development (local)' : 'production'}
-                </span>
-              </div>
-              <div style={styles.aboutRow}>
-                <span style={styles.aboutLabel}>Homepage</span>
-                <a
-                  href="https://zhimingye.github.io/filebox/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={styles.aboutLink}
-                >
-                  zhimingye.github.io/filebox
-                </a>
-              </div>
-            </div>
-            <button onClick={handleCloseAbout} style={styles.aboutDoneBtn}>Done</button>
-          </div>
-        </div>
-      )}
+      <AboutDialog
+        open={aboutOpen}
+        health={health}
+        agents={agents}
+        healthError={healthError}
+        isLikelyDev={isLikelyDev}
+        onClose={handleCloseAbout}
+      />
     </div>
   );
 }
@@ -869,6 +839,14 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '2px 6px', borderRadius: radius.sm,
     transition: 'color 0.15s',
   } as React.CSSProperties,
+  aboutEntry: {
+    display: 'block', textAlign: 'center',
+    width: '100%', padding: '4px 2px', background: 'none', border: 'none',
+    cursor: 'pointer', color: c.accent, transition: 'color 0.15s',
+    marginBottom: 6, fontSize: 12, fontFamily: font.sans,
+    textDecoration: 'underline',
+    textUnderlineOffset: 3,
+  } as React.CSSProperties,
   // ── Mobile overlay ──
   overlay: {
     position: 'fixed', inset: 0, zIndex: 150,
@@ -973,53 +951,4 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 500, transition: 'all 0.15s',
   },
   // ── About dialog ──
-  aboutOverlay: {
-    position: 'fixed', inset: 0, zIndex: 2000,
-    background: c.bgOverlay,
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    padding: 16,
-  },
-  aboutCard: {
-    width: '100%', maxWidth: 380,
-    background: c.surface, borderRadius: radius.lg,
-    border: `1px solid ${c.border}`, boxShadow: shadow.lg,
-    overflow: 'hidden',
-    display: 'flex', flexDirection: 'column',
-  },
-  aboutHeader: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '16px 18px', borderBottom: `1px solid ${c.border}`,
-    background: c.bgSubtle,
-  },
-  aboutLogo: {
-    fontSize: 16, fontWeight: 700, color: c.text, fontFamily: font.sans,
-    letterSpacing: '-0.01em',
-  },
-  aboutCloseBtn: {
-    background: 'none', border: 'none', fontSize: 22, lineHeight: 1,
-    color: c.textMuted, cursor: 'pointer', padding: '0 4px', borderRadius: radius.sm,
-    transition: 'color 0.15s',
-  },
-  aboutBody: {
-    padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12,
-  },
-  aboutRow: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-  },
-  aboutLabel: {
-    fontSize: 12, color: c.textMuted, fontWeight: 500,
-    textTransform: 'uppercase', letterSpacing: '0.04em',
-  },
-  aboutValue: {
-    fontSize: 13, color: c.text, fontFamily: font.mono, fontWeight: 600,
-  },
-  aboutLink: {
-    fontSize: 13, color: c.accent, textDecoration: 'none', fontWeight: 500,
-  },
-  aboutDoneBtn: {
-    margin: '4px 18px 18px',
-    padding: '9px 16px', borderRadius: radius.md, border: 'none',
-    background: c.accent, color: '#fff', cursor: 'pointer', fontSize: 13,
-    fontWeight: 600, transition: 'background 0.15s',
-  },
 };
