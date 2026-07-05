@@ -519,13 +519,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
 
   return (
     <div style={styles.container}>
-      <div style={{
-        ...styles.toolbar,
-        // On small screens let the toolbar wrap so the root selector + the
-        // four icon buttons don't crowd or overflow. `flexWrap` + `rowGap`
-        // keeps a tidy second row when the controls no longer fit on one.
-        ...(isMobile ? { flexWrap: 'wrap', rowGap: 8 } : {}),
-      }}>
+      <div style={styles.toolbar}>
         {/* Root selector — a hand-rolled dropdown instead of native <select>.
             The native control renders an OS-styled popup we can't theme, and
             can't carry per-root extra info. The trigger shows the current root
@@ -611,6 +605,23 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
           <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M12 8a4 4 0 1 1-1.2-2.8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
             <path d="M12 3.5v3h-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
+        {/* Tree view toggle: shows a directory tree for navigating deep paths
+            that overflow the horizontal address bar. On desktop it docks left of
+            the file list; on mobile it opens as a left drawer overlaying the
+            list (side-by-side would be too cramped on a narrow screen). Sits
+            beside Refresh so the two navigation controls stay together. */}
+        <button
+          onClick={() => setTreeOpen((v) => !v)}
+          style={treeOpen ? styles.treeBtnActive : styles.treeBtn}
+          title={treeOpen ? 'Hide directory tree' : 'Show directory tree'}
+          aria-pressed={treeOpen}
+        >
+          <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="2" y="2" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+            <rect x="2" y="10" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+            <path d="M6 4h8M6 12h4v-8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
         </button>
         <button
@@ -717,22 +728,6 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
               <path d="M6 8h4M6 10.5h2.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
             </svg>
           )}
-        </button>
-        {/* Tree view toggle: shows a directory tree for navigating deep paths
-            that overflow the horizontal address bar. On desktop it docks left of
-            the file list; on mobile it opens as a left drawer overlaying the
-            list (side-by-side would be too cramped on a narrow screen). */}
-        <button
-          onClick={() => setTreeOpen((v) => !v)}
-          style={treeOpen ? styles.treeBtnActive : styles.treeBtn}
-          title={treeOpen ? 'Hide directory tree' : 'Show directory tree'}
-          aria-pressed={treeOpen}
-        >
-          <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <rect x="2" y="2" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.3"/>
-            <rect x="2" y="10" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.3"/>
-            <path d="M6 4h8M6 12h4v-8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
         </button>
         {loading && <span style={styles.spinner} />}
       </div>
@@ -918,7 +913,7 @@ const styles: Record<string, React.CSSProperties> = {
   container: { display: 'flex', flexDirection: 'column', height: '100%', fontFamily: font.sans },
   toolbar: {
     padding: '8px 12px', borderBottom: `1px solid ${c.border}`,
-    display: 'flex', alignItems: 'center', gap: 8,
+    display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
     background: c.bg,
   },
   // ── Root selector (custom dropdown) ──
