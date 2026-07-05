@@ -141,6 +141,13 @@ pub enum HubMessage {
         path: String,
         limit: u32,
         cursor: Option<String>,
+        /// When true, the agent skips files entirely and returns only
+        /// directory entries (used by the directory-tree navigator). Omitting
+        /// it (None) preserves the legacy full-listing behavior. The field is
+        /// additive: old agents that don't know it simply ignore the unknown
+        /// serde field and return everything, and old hubs never send it.
+        #[serde(default)]
+        dirs_only: Option<bool>,
     },
     FsStatRequest {
         req_id: String,
@@ -506,6 +513,7 @@ mod tests {
             path: "p".to_string(),
             limit: 50,
             cursor: Some("next-page-token".to_string()),
+            dirs_only: None,
         };
         let back = round_trip_hub(&msg);
         match back {
@@ -515,12 +523,14 @@ mod tests {
                 path,
                 limit,
                 cursor,
+                dirs_only,
             } => {
                 assert_eq!(req_id, "l");
                 assert_eq!(root, "r");
                 assert_eq!(path, "p");
                 assert_eq!(limit, 50);
                 assert_eq!(cursor.as_deref(), Some("next-page-token"));
+                assert!(dirs_only.is_none());
             }
             _ => panic!("wrong variant"),
         }

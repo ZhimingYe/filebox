@@ -9,6 +9,7 @@ use filebox_protocol::message::{AgentMessage, HubMessage};
 use filebox_protocol::resources::Capabilities;
 
 use crate::config::AgentConfig;
+use crate::dir_cache::DirCache;
 use crate::resources::ResourceManager;
 use crate::sysinfo::StatsCache;
 
@@ -108,6 +109,11 @@ pub async fn run_connection_loop(config: &AgentConfig) {
     let mut resource_mgr = ResourceManager::new(config.data_dir.clone());
     let stable_agent_id = resource_mgr.agent_id().to_string();
     let stats_cache: Arc<StatsCache> = StatsCache::new(stats_ttl());
+    // Per-directory listing cache. Cuts the O(N)-per-page cost of paginating
+    // large directories to O(1) on cache hits (mtime-validated), benefiting
+    // both the main file list and the directory tree. Cleared on resource
+    // reconfigure inside the connection loop.
+    let dir_cache: Arc<DirCache> = DirCache::new();
 
     tracing::info!(
         "Agent ID: {}, data dir: {:?}",
@@ -124,6 +130,7 @@ pub async fn run_connection_loop(config: &AgentConfig) {
             &mut resource_mgr,
             &stable_agent_id,
             &stats_cache,
+            &dir_cache,
         )
         .await;
 
@@ -175,6 +182,7 @@ async fn run_one_connection(
     resource_mgr: &mut ResourceManager,
     stable_agent_id: &str,
     stats_cache: &Arc<StatsCache>,
+    dir_cache: &Arc<DirCache>,
 ) {
     tracing::info!("Connecting to {}", ws_url);
 
@@ -308,6 +316,13 @@ async fn run_one_connection(
 
                                 let response = match resource_mgr.apply_desired(desired_revision, roots) {
                                     Ok(new_rev) => {
+                                        // Roots may have changed (path/name/enabled/denylist
+                                        // semantics via root config), so cached listings could
+                                        // describe the wrong tree. Drop them all — they re-warm
+                                        // lazily on the next request. Cheaper and safer than
+                                        // trying to invalidate granularly.
+                                        dir_cache.clear();
+
                                         let update = AgentMessage::ResourcesUpdated {
                                             agent_id: assigned_agent_id.clone(),
                                             resource_revision: new_rev,
@@ -339,12 +354,15 @@ async fn run_one_connection(
                                     serde_json::to_string(&response).unwrap().into(),
                                 )).await;
                             }
-                            Ok(HubMessage::FsListRequest { req_id, root, path, limit, cursor }) => {
-                                tracing::debug!("FS list: root={}, path={}", root, path);
+                            Ok(HubMessage::FsListRequest { req_id, root, path, limit, cursor, dirs_only }) => {
+                                tracing::debug!("FS list: root={}, path={}, dirs_only={:?}", root, path, dirs_only);
                                 let roots_vec = resource_mgr.roots().to_vec();
+                                let dirs_only_flag = dirs_only.unwrap_or(false);
+                                let cache_clone = dir_cache.clone();
                                 let result = tokio::task::spawn_blocking(move || {
-                                    crate::fs::list_directory(
-                                        &roots_vec, &root, &path, limit as usize, cursor.as_deref(),
+                                    cache_clone.list(
+                                        &roots_vec, &root, &path, limit as usize,
+                                        cursor.as_deref(), dirs_only_flag,
                                     )
                                 }).await;
                                 let response = match result {

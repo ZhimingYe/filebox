@@ -5,6 +5,7 @@ import { friendlyMessage } from '../api/client';
 import { useIsMobile } from '../state/useIsMobile';
 import { c, radius, font, shadow } from '../theme';
 import { AddressBar } from './AddressBar';
+import { DirectoryTree } from './DirectoryTree';
 import { IconPin, IconClose } from './icons';
 
 // ── Inline SVG Icons (16x16) ───────────────────────────────────────────
@@ -142,6 +143,17 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     try { localStorage.setItem('filebox.fileNameSerif', fileNameSerif ? '1' : '0'); } catch { /* ignore */ }
   }, [fileNameSerif]);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
+  // Tree view toggle: persisted so the user keeps their preferred layout.
+  const [treeOpen, setTreeOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem('filebox.treeOpen') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('filebox.treeOpen', treeOpen ? '1' : '0'); } catch { /* ignore */ }
+  }, [treeOpen]);
+  // Refresh nonce: the toolbar Refresh button bumps this to ask the directory
+  // tree to reload its expanded nodes (retries stuck/errored nodes and picks up
+  // new subdirectories). Mirrors the pinned-folders navRequest nonce pattern.
+  const [treeRefreshNonce, setTreeRefreshNonce] = useState(0);
   const loadSeq = useRef(0); // request versioning — discard stale responses
 
   const enabledRoots = useMemo(() => roots.filter((r) => r.enabled), [roots]);
@@ -343,6 +355,15 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   const handleNavigate = useCallback((root: string, path: string) => {
     onApplyNav(root, path);
   }, [onApplyNav]);
+
+  // Stable callback the directory tree calls when a folder is clicked. Kept
+  // referentially stable (via useCallback) so the memoized tree rows don't all
+  // re-render on every FileBrowser render — without this the inline arrow
+  // would be a fresh function each render and bust React.memo on every row.
+  const handleTreeNavigate = useCallback((path: string) => {
+    if (selectedRoot) handleNavigate(selectedRoot, path);
+    if (isMobile) setTreeOpen(false);
+  }, [selectedRoot, handleNavigate, isMobile]);
 
   const toggleSort = (key: SortKey) => {
     if (sortBy === key) {
@@ -578,7 +599,11 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
             </div>
           )}
         </div>
-        <button onClick={() => loadDir(false)} style={styles.refreshBtn} title="Refresh">
+        <button
+          onClick={() => { loadDir(false); setTreeRefreshNonce((n) => n + 1); }}
+          style={styles.refreshBtn}
+          title="Refresh"
+        >
           {/* Circular-arrow refresh glyph. Drawn as SVG (not the ↻ text char)
               so it renders identically across fonts/platforms. Kept compact
               (radius 4, stroke 1.3) to match the visual weight of the align /
@@ -693,6 +718,22 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
             </svg>
           )}
         </button>
+        {/* Tree view toggle: shows a directory tree for navigating deep paths
+            that overflow the horizontal address bar. On desktop it docks left of
+            the file list; on mobile it opens as a left drawer overlaying the
+            list (side-by-side would be too cramped on a narrow screen). */}
+        <button
+          onClick={() => setTreeOpen((v) => !v)}
+          style={treeOpen ? styles.treeBtnActive : styles.treeBtn}
+          title={treeOpen ? 'Hide directory tree' : 'Show directory tree'}
+          aria-pressed={treeOpen}
+        >
+          <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="2" y="2" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+            <rect x="2" y="10" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+            <path d="M6 4h8M6 12h4v-8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
         {loading && <span style={styles.spinner} />}
       </div>
       {/* Visible pin error. The pin button also carries the message in its
@@ -731,77 +772,96 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
         {filterError && <span style={styles.filterError}>Invalid regex</span>}
       </div>
 
-      <AddressBar
-        selectedRoot={selectedRoot}
-        currentPath={currentPath}
-        roots={roots}
-        entries={entries}
-        agentId={agentId}
-        onNavigate={handleNavigate}
-      />
-
-      {/* Column headers */}
-      <div style={styles.colHeader}>
-        <span style={styles.colIcon} />
-        <span style={{ ...styles.colName, cursor: 'pointer', ...(nameAlignRight ? { textAlign: 'right' } : {}) }} onClick={() => toggleSort('name')}>
-          Name{sortIndicator('name')}
-        </span>
-        {isMobile ? (
-          <span
-            style={{ ...styles.colDate, width: 72, cursor: 'pointer' }}
-            onClick={() => toggleSort('modified')}
-          >
-            Modified{sortIndicator('modified')}
-          </span>
-        ) : (
-          <>
-            <span style={{ ...styles.colDate, cursor: 'pointer' }} onClick={() => toggleSort('modified')}>
-              Modified{sortIndicator('modified')}
-            </span>
-            <span style={{ ...styles.colSize, cursor: 'pointer' }} onClick={() => toggleSort('size')}>
-              Size{sortIndicator('size')}
-            </span>
-          </>
+      <div style={{ ...styles.contentWrap, position: 'relative' }}>
+        {treeOpen && selectedRoot && activeRootObj && isMobile && (
+          <div style={styles.treeBackdrop} onClick={() => setTreeOpen(false)} />
         )}
-      </div>
+        {treeOpen && selectedRoot && activeRootObj && (
+          <DirectoryTree
+            key={`${agentId}:${selectedRoot}`}
+            agentId={agentId}
+            rootName={selectedRoot}
+            rootPath={activeRootObj.path_display}
+            currentPath={currentPath}
+            overlay={isMobile}
+            refreshNonce={treeRefreshNonce}
+            onNavigate={handleTreeNavigate}
+          />
+        )}
+        <div style={styles.mainArea}>
+          <AddressBar
+            selectedRoot={selectedRoot}
+            currentPath={currentPath}
+            roots={roots}
+            entries={entries}
+            agentId={agentId}
+            onNavigate={handleNavigate}
+          />
 
-      <div ref={containerRef} style={styles.listContainer}>
-        {!selectedRoot && enabledRoots.length === 0 ? (
-          <div style={styles.emptyState}>
-            <p style={styles.emptyText}>No roots configured.</p>
-            <p style={styles.emptyHint}>Go to Settings to add a root directory.</p>
-          </div>
-        ) : error ? (
-          <div style={styles.errorContainer}>
-            <p style={styles.errorText}>{friendlyMessage({ error })}</p>
-            <button onClick={() => loadDir(false)} style={styles.retryBtn}>Retry</button>
-          </div>
-        ) : rows.length === 0 && !loading ? (
-          <div style={styles.empty}>Empty directory</div>
-        ) : (
-          <>
-            <VList
-              ref={listRef as any}
-              height={listHeight - (nextCursor ? 40 : 0)}
-              itemCount={rows.length}
-              itemSize={ROW_HEIGHT}
-              width="100%"
-            >
-              {Row}
-            </VList>
-            {nextCursor && (
-              <div style={styles.loadMore}>
-                <button
-                  onClick={() => loadDir(true)}
-                  disabled={loadingMore}
-                  style={styles.loadMoreBtn}
-                >
-                  {loadingMore ? 'Loading...' : 'Load more'}
-                </button>
-              </div>
+          {/* Column headers */}
+          <div style={styles.colHeader}>
+            <span style={styles.colIcon} />
+            <span style={{ ...styles.colName, cursor: 'pointer', ...(nameAlignRight ? { textAlign: 'right' } : {}) }} onClick={() => toggleSort('name')}>
+              Name{sortIndicator('name')}
+            </span>
+            {isMobile ? (
+              <span
+                style={{ ...styles.colDate, width: 72, cursor: 'pointer' }}
+                onClick={() => toggleSort('modified')}
+              >
+                Modified{sortIndicator('modified')}
+              </span>
+            ) : (
+              <>
+                <span style={{ ...styles.colDate, cursor: 'pointer' }} onClick={() => toggleSort('modified')}>
+                  Modified{sortIndicator('modified')}
+                </span>
+                <span style={{ ...styles.colSize, cursor: 'pointer' }} onClick={() => toggleSort('size')}>
+                  Size{sortIndicator('size')}
+                </span>
+              </>
             )}
-          </>
-        )}
+          </div>
+
+          <div ref={containerRef} style={styles.listContainer}>
+            {!selectedRoot && enabledRoots.length === 0 ? (
+              <div style={styles.emptyState}>
+                <p style={styles.emptyText}>No roots configured.</p>
+                <p style={styles.emptyHint}>Go to Settings to add a root directory.</p>
+              </div>
+            ) : error ? (
+              <div style={styles.errorContainer}>
+                <p style={styles.errorText}>{friendlyMessage({ error })}</p>
+                <button onClick={() => loadDir(false)} style={styles.retryBtn}>Retry</button>
+              </div>
+            ) : rows.length === 0 && !loading ? (
+              <div style={styles.empty}>Empty directory</div>
+            ) : (
+              <>
+                <VList
+                  ref={listRef as any}
+                  height={listHeight - (nextCursor ? 40 : 0)}
+                  itemCount={rows.length}
+                  itemSize={ROW_HEIGHT}
+                  width="100%"
+                >
+                  {Row}
+                </VList>
+                {nextCursor && (
+                  <div style={styles.loadMore}>
+                    <button
+                      onClick={() => loadDir(true)}
+                      disabled={loadingMore}
+                      style={styles.loadMoreBtn}
+                    >
+                      {loadingMore ? 'Loading...' : 'Load more'}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -1048,6 +1108,40 @@ const styles: Record<string, React.CSSProperties> = {
   },
   filterCount: { color: c.textMuted, fontSize: 12, flexShrink: 0 },
   filterError: { color: c.danger, fontSize: 12, flexShrink: 0 },
+  // ── Tree view layout ──
+  // The directory tree sits as a fixed-width left panel; the file list + address
+  // bar + column headers fill the remaining space. `overflow: hidden` on both
+  // axes keeps the layout from blowing out when the address bar or a filename
+  // is very long.
+  contentWrap: {
+    flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0,
+  },
+  mainArea: {
+    flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0,
+  },
+  // Mobile-only backdrop behind the tree drawer. Clicking it dismisses the
+  // tree (same pattern as the app's mobile sidebar). Desktop docks the tree
+  // inline so no backdrop is needed there.
+  treeBackdrop: {
+    position: 'absolute',
+    inset: 0,
+    background: c.bgOverlay,
+    zIndex: 55,
+  },
+  treeBtn: {
+    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    background: 'transparent', color: c.textSecondary, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, width: 34, height: 28,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', flexShrink: 0,
+  },
+  treeBtnActive: {
+    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.accent}`,
+    background: c.accentBg, color: c.accent, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, width: 34, height: 28,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', flexShrink: 0,
+  },
   // ── Column headers ──
   colHeader: {
     display: 'flex', alignItems: 'center', gap: 8,

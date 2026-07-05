@@ -161,16 +161,45 @@ fn open_resolved_leaf(
     fs::File::open(abs_path).map_err(|e| format!("Failed to open file: {}", e))
 }
 
-pub fn list_directory(
+/// Read a directory and return ALL of its entries, sorted (directories first,
+/// then alphabetically), plus the directory's own mtime (used by the cache to
+/// invalidate when contents change). This is the uncached primitive;
+/// `list_directory` paginates its output, and `DirCache` memoizes it.
+///
+/// When `dirs_only` is true, files are skipped ENTIRELY — we never canonicalize
+/// them or stat their size/mtime. That is the whole point: a directory with
+/// tens of thousands of files and a handful of subdirs is read in O(dirs)
+/// syscalls instead of O(files). Skipping is safe because we return nothing
+/// for files (no path-surface exposure); directories still go through the full
+/// canonicalize + deny check.
+/// Resolve a directory path through the security checks (root enabled,
+/// inside root, not a sensitive virtual fs) and return its mtime. This is the
+/// cache's cheap O(1) validity probe: on a cache hit we pay only this single
+/// stat instead of re-reading the whole directory.
+pub(crate) fn dir_mtime(
     roots: &[RootConfig],
     root_name: &str,
     path: &str,
-    limit: usize,
-    cursor: Option<&str>,
-) -> Result<(Vec<FsEntry>, Option<String>), String> {
+) -> Result<Option<std::time::SystemTime>, String> {
     let abs_path = resolve_path(roots, root_name, path)
         .ok_or_else(|| format!("Path not found or outside root: {}/{}", root_name, path))?;
+    if !abs_path.is_dir() {
+        return Err(format!("Not a directory: {}", path));
+    }
+    if is_sensitive_virtual_path(&abs_path) {
+        return Err("Access denied: sensitive virtual filesystem".to_string());
+    }
+    Ok(fs::metadata(&abs_path).ok().and_then(|m| m.modified().ok()))
+}
 
+pub(crate) fn read_dir_sorted(
+    roots: &[RootConfig],
+    root_name: &str,
+    path: &str,
+    dirs_only: bool,
+) -> Result<(Vec<FsEntry>, Option<std::time::SystemTime>), String> {
+    let abs_path = resolve_path(roots, root_name, path)
+        .ok_or_else(|| format!("Path not found or outside root: {}/{}", root_name, path))?;
     let root = roots
         .iter()
         .find(|r| r.name == root_name && r.enabled)
@@ -186,6 +215,12 @@ pub fn list_directory(
         return Err("Access denied: sensitive virtual filesystem".to_string());
     }
 
+    // Directory mtime — the cache's invalidation signal. A content
+    // add/remove/rename bumps the directory's mtime on virtually every real
+    // filesystem, so this single O(1) stat replaces the O(N) re-read on cache
+    // hits. None if unavailable (cache treats None as "always revalidate").
+    let dir_mtime = fs::metadata(&abs_path).ok().and_then(|m| m.modified().ok());
+
     let entries = fs::read_dir(&abs_path)
         .map_err(|e| format!("Failed to read directory: {}", e))?;
 
@@ -196,6 +231,18 @@ pub fn list_directory(
         let file_name = entry.file_name().to_string_lossy().to_string();
         let entry_path = entry.path();
 
+        let metadata = entry
+            .file_type()
+            .map_err(|e| format!("Failed to read file type: {}", e))?;
+
+        // dirs_only fast path: skip non-directories before any syscall-heavy
+        // work (canonicalize / metadata). Symlink-to-dir is classified as
+        // Symlink here (file_type does not follow), matching the legacy
+        // behavior, so it is skipped too — which is what the tree wants.
+        if dirs_only && !metadata.is_dir() {
+            continue;
+        }
+
         // Skip hidden files starting with . (but not the directory itself)
         // Actually, we show them but mark as denied if sensitive
         let rel = relative_path(&root_canonical, &entry_path);
@@ -203,10 +250,6 @@ pub fn list_directory(
             .canonicalize()
             .unwrap_or_else(|_| entry_path.clone());
         let denied = is_path_denied(&rel) || is_sensitive_virtual_path(&entry_canonical);
-
-        let metadata = entry
-            .file_type()
-            .map_err(|e| format!("Failed to read file type: {}", e))?;
 
         let entry_type = if metadata.is_dir() {
             FsEntryType::Directory
@@ -254,7 +297,19 @@ pub fn list_directory(
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
-    // Apply cursor pagination
+    Ok((items, dir_mtime))
+}
+
+/// Apply cursor pagination to a pre-sorted entry list. The cursor is the name
+/// of the last entry on the previous page; we resume right after it. Borrows
+/// the slice so callers (notably the cache, on a hit) don't have to clone the
+/// whole vec just to slice it — only the returned page (≤ limit items) is
+/// cloned. This is what makes cache-hit pagination genuinely O(limit).
+pub(crate) fn paginate(
+    items: &[FsEntry],
+    limit: usize,
+    cursor: Option<&str>,
+) -> (Vec<FsEntry>, Option<String>) {
     let start = if let Some(cursor) = cursor {
         items
             .iter()
@@ -265,14 +320,30 @@ pub fn list_directory(
         0
     };
 
-    let page: Vec<FsEntry> = items.into_iter().skip(start).take(limit).collect();
+    let page: Vec<FsEntry> = items.iter().skip(start).take(limit).cloned().collect();
     let next_cursor = if page.len() == limit {
         page.last().map(|e| e.name.clone())
     } else {
         None
     };
+    (page, next_cursor)
+}
 
-    Ok((page, next_cursor))
+/// Uncached, paginated directory listing. Production requests go through
+/// `DirCache::list` (which memoizes `read_dir_sorted`), so this wrapper is no
+/// longer on the hot path — but it remains the test surface that validates
+/// `read_dir_sorted` + `paginate`, which is exactly what the cache builds on.
+#[allow(dead_code)]
+pub fn list_directory(
+    roots: &[RootConfig],
+    root_name: &str,
+    path: &str,
+    limit: usize,
+    cursor: Option<&str>,
+    dirs_only: bool,
+) -> Result<(Vec<FsEntry>, Option<String>), String> {
+    let (items, _mtime) = read_dir_sorted(roots, root_name, path, dirs_only)?;
+    Ok(paginate(&items, limit, cursor))
 }
 
 pub fn stat_file(
@@ -456,7 +527,7 @@ mod tests {
         let sb = Sandbox::new();
         let roots = vec![sb.root()];
 
-        let (items, next) = list_directory(&roots, "test", "", 100, None).unwrap();
+        let (items, next) = list_directory(&roots, "test", "", 100, None, false).unwrap();
         assert!(items.is_empty());
         assert!(next.is_none());
     }
@@ -469,7 +540,7 @@ mod tests {
         sb.mkdir("subdir");
         let roots = vec![sb.root()];
 
-        let (items, _) = list_directory(&roots, "test", "", 100, None).unwrap();
+        let (items, _) = list_directory(&roots, "test", "", 100, None, false).unwrap();
         let names: Vec<_> = items.iter().map(|i| i.name.as_str()).collect();
 
         // Directory should come first, then files alphabetically
@@ -492,7 +563,7 @@ mod tests {
         sb.write_file("safe.txt", b"safe");
         let roots = vec![sb.root()];
 
-        let (items, _) = list_directory(&roots, "test", "", 100, None).unwrap();
+        let (items, _) = list_directory(&roots, "test", "", 100, None, false).unwrap();
         let env = items.iter().find(|i| i.name == ".env").unwrap();
         assert!(env.denied, ".env must be marked denied");
         assert!(env.size.is_none(), "denied file size must be hidden");
@@ -507,7 +578,7 @@ mod tests {
     fn list_directory_rejects_unknown_root_name() {
         let sb = Sandbox::new();
         let roots = vec![sb.root()];
-        let result = list_directory(&roots, "other", "", 100, None);
+        let result = list_directory(&roots, "other", "", 100, None, false);
         assert!(result.is_err());
     }
 
@@ -515,7 +586,7 @@ mod tests {
     fn list_directory_rejects_disabled_root() {
         let sb = Sandbox::new();
         let roots = vec![make_root("test", sb.root_path.clone(), false)];
-        let result = list_directory(&roots, "test", "", 100, None);
+        let result = list_directory(&roots, "test", "", 100, None, false);
         assert!(result.is_err());
     }
 
@@ -525,7 +596,7 @@ mod tests {
         sb.write_file("sub/file.txt", b"x");
         let roots = vec![sb.root()];
 
-        let (items, _) = list_directory(&roots, "test", "sub", 100, None).unwrap();
+        let (items, _) = list_directory(&roots, "test", "sub", 100, None, false).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "file.txt");
     }
@@ -540,19 +611,19 @@ mod tests {
         let roots = vec![sb.root()];
 
         // Page size 2: first page
-        let (page1, next1) = list_directory(&roots, "test", "", 2, None).unwrap();
+        let (page1, next1) = list_directory(&roots, "test", "", 2, None, false).unwrap();
         assert_eq!(page1.len(), 2);
         assert!(next1.is_some());
 
         // Page 2
         let (page2, next2) =
-            list_directory(&roots, "test", "", 2, next1.as_deref()).unwrap();
+            list_directory(&roots, "test", "", 2, next1.as_deref(), false).unwrap();
         assert_eq!(page2.len(), 2);
         assert!(next2.is_some());
 
         // Page 3 (partial)
         let (page3, next3) =
-            list_directory(&roots, "test", "", 2, next2.as_deref()).unwrap();
+            list_directory(&roots, "test", "", 2, next2.as_deref(), false).unwrap();
         assert_eq!(page3.len(), 1);
         assert!(next3.is_none());
     }
@@ -792,7 +863,7 @@ mod tests {
         sb.write_file("timestamped.txt", b"x");
         let roots = vec![sb.root()];
 
-        let (items, _) = list_directory(&roots, "test", "", 100, None).unwrap();
+        let (items, _) = list_directory(&roots, "test", "", 100, None, false).unwrap();
         let entry = items.iter().find(|i| i.name == "timestamped.txt").unwrap();
         assert!(entry.modified.is_some(), "modified timestamp must be present");
     }
@@ -803,7 +874,7 @@ mod tests {
         let roots = vec![sb.root()];
 
         // Try to list a path that escapes
-        let result = list_directory(&roots, "test", "../../..", 100, None);
+        let result = list_directory(&roots, "test", "../../..", 100, None, false);
         assert!(result.is_err());
     }
 
@@ -813,7 +884,7 @@ mod tests {
         sb.write_file("afile.txt", b"x");
         let roots = vec![sb.root()];
 
-        let result = list_directory(&roots, "test", "afile.txt", 100, None);
+        let result = list_directory(&roots, "test", "afile.txt", 100, None, false);
         assert!(result.is_err());
     }
 

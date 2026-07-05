@@ -243,7 +243,7 @@ export interface FsEntry {
   denied: boolean;
 }
 
-export async function fsList(agentId: string, root: string, path: string, limit = 200, cursor?: string) {
+export async function fsList(agentId: string, root: string, path: string, limit = 200, cursor?: string, dirsOnly = false) {
   const params = new URLSearchParams({
     agent_id: agentId,
     root,
@@ -251,6 +251,7 @@ export async function fsList(agentId: string, root: string, path: string, limit 
     limit: String(limit),
   });
   if (cursor) params.set('cursor', cursor);
+  if (dirsOnly) params.set('dirs_only', 'true');
   return request<{ items: FsEntry[]; next_cursor: string | null; error?: string }>(
     `/api/fs/list?${params}`,
   );

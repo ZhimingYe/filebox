@@ -3,6 +3,7 @@ use tracing_subscriber::EnvFilter;
 mod config;
 mod config_store;
 mod connection;
+mod dir_cache;
 mod fs;
 mod resources;
 mod sysinfo;

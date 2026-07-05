@@ -84,6 +84,11 @@ pub struct FsListParams {
     pub path: String,
     pub limit: Option<u32>,
     pub cursor: Option<String>,
+    /// When true, the agent returns only directory entries. Used by the
+    /// directory-tree navigator. Old agents ignore the field and return
+    /// everything; the tree filters client-side as a fallback.
+    #[serde(default)]
+    pub dirs_only: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -136,6 +141,7 @@ pub async fn fs_list_handler(
         path: params.path,
         limit,
         cursor: params.cursor,
+        dirs_only: params.dirs_only,
     };
 
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
