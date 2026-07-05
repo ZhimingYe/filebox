@@ -109,17 +109,18 @@ a:hover {
   border-collapse: collapse;
   margin: 0.5em 0;
   width: 100%;
-  display: block;
-  overflow-x: auto;
 }
 .markdown th, .markdown td {
   border: 1px solid #e2e8f0;
   padding: 6px 10px;
   text-align: left;
-  /* Keep each cell on a single line so wide tables scroll horizontally
-     instead of being squeezed into one narrow wrapped column. Matches
-     CsvPreview's nowrap behavior. */
-  white-space: nowrap;
+  /* Floor each column at a readable width so many-column tables scroll
+     horizontally (via the wrapper div) instead of being squeezed into
+     narrow vertical strips. Text still wraps within this floor, keeping
+     rows readable; long unbreakable tokens (paths, URLs) break instead
+     of overflowing. */
+  min-width: 150px;
+  overflow-wrap: break-word;
   vertical-align: top;
 }
 .markdown th {
