@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import type { CSSProperties } from 'react';
 import { createPreviewSession } from '../api/client';
 import { c } from '../theme';
 
@@ -71,6 +72,13 @@ function injectPreviewGuards(html: string, baseUrl: string): string {
   return `${guardTags}\n${withoutExistingBase}`;
 }
 
+function detectDocIssues(html: string): { missingHtml: boolean; missingCharset: boolean } {
+  const missingHtml = !/<html[\s>]/i.test(html);
+  const head = html.slice(0, 1024);
+  const hasCharset = /<meta\b[^>]*charset/i.test(head);
+  return { missingHtml, missingCharset: !hasCharset };
+}
+
 function makeSandboxWrapper(blobUrl: string): string {
   const escapedBlobUrl = escapeAttr(blobUrl);
   const escapedSandbox = escapeAttr(HTML_SANDBOX);
@@ -92,6 +100,23 @@ iframe{border:0;width:100%;height:100%;}
 </html>`;
 }
 
+const docWarningBanner: CSSProperties = {
+  display: 'flex', alignItems: 'flex-start', gap: 12,
+  padding: '10px 14px', background: c.warningBg,
+  borderBottom: `1px solid ${c.border}`, flexShrink: 0,
+};
+const docWarningTitle: CSSProperties = {
+  color: c.warning, fontWeight: 600, fontSize: 12.5, marginBottom: 2,
+};
+const docWarningBody: CSSProperties = {
+  color: c.textSecondary, fontSize: 12, lineHeight: 1.5,
+};
+const docWarningClose: CSSProperties = {
+  flexShrink: 0, border: 'none', background: 'transparent',
+  color: c.textMuted, cursor: 'pointer', fontSize: 16, lineHeight: 1,
+  padding: '0 2px', alignSelf: 'flex-start',
+};
+
 export function HtmlPreview({ agentId, root, path, url }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.html });
   const shouldLoad = !gate.sizeUnknown && (!gate.isLarge || gate.bypassed);
@@ -106,6 +131,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   const [iframeLoading, setIframeLoading] = useState(true);
   const [slowRendering, setSlowRendering] = useState(false);
   const [showSource, setShowSource] = useState(false);
+  const [dismissedFileKey, setDismissedFileKey] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const mounted = useMounted();
   const previewCancelRef = useRef<AbortController | null>(null);
@@ -113,6 +139,19 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wrapperUrlRef = useRef<string | null>(null);
   const wrapperRevokeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const docIssue = useMemo(() => {
+    if (!text) return null;
+    const { missingHtml, missingCharset } = detectDocIssues(text);
+    if (!missingHtml && !missingCharset) return null;
+    const parts: string[] = [];
+    if (missingHtml) parts.push('<html>');
+    if (missingCharset) parts.push('<meta charset="utf-8">');
+    return { missing: parts.join(' and/or ') };
+  }, [text]);
+
+  const fileKey = `${root}:${path}`;
+  const docWarningHidden = dismissedFileKey === fileKey;
 
   useEffect(() => {
     if (!previewShouldLoad) {
@@ -321,6 +360,25 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
           &#x2197;
         </button>
       </div>
+
+      {docIssue && !docWarningHidden && (
+        <div style={docWarningBanner}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={docWarningTitle}>This HTML may render incorrectly</div>
+            <div style={docWarningBody}>
+              The file is missing {docIssue.missing}. Non-ASCII characters (e.g. Chinese) may appear garbled in this sandboxed preview.{' '}
+              <a href={url} download style={styles.downloadLink}>Download</a> and open it directly, or manually add the missing tags near the top of the file.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDismissedFileKey(fileKey)}
+            style={docWarningClose}
+            aria-label="Dismiss warning"
+            title="Dismiss"
+          >&times;</button>
+        </div>
+      )}
 
       <div style={styles.htmlContent}>
         {!showSource && iframeLoading && (
