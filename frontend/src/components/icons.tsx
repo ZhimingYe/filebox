@@ -47,8 +47,12 @@ export function IconFolder({ style }: SvgProps) {
 export function IconSettings({ style }: SvgProps) {
   return (
     <Svg style={style}>
-      <circle cx="8" cy="8" r="2.2" />
-      <path d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8L3.4 3.4" />
+      <line x1="2" y1="4" x2="14" y2="4" />
+      <circle cx="10.5" cy="4" r="1.7" fill="currentColor" stroke="none" />
+      <line x1="2" y1="8" x2="14" y2="8" />
+      <circle cx="5.5" cy="8" r="1.7" fill="currentColor" stroke="none" />
+      <line x1="2" y1="12" x2="14" y2="12" />
+      <circle cx="11" cy="12" r="1.7" fill="currentColor" stroke="none" />
     </Svg>
   );
 }

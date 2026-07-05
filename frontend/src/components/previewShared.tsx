@@ -292,6 +292,9 @@ export const styles: Record<string, React.CSSProperties> = {
     overflowWrap: 'break-word', wordBreak: 'break-word',
     fontFamily: font.sans,
   },
+  tableWrap: {
+    overflowX: 'auto',
+  },
   codeContainer: {
     height: '100%', overflow: 'auto',
     background: c.bg, minWidth: 0,

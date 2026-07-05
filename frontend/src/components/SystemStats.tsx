@@ -803,18 +803,20 @@ function formatBoot(epoch: number): string {
   return d.toLocaleString();
 }
 
-/// Best-effort kernel-thread filter. On Linux, kthreads have an empty argv
-/// (so command is blank) and live in PID space below the first userspace PID,
-/// owned by root. We also catch the common bracketed-name convention (`[kworker]`,
-/// `[kthreadd]`) so this works even if a future sysinfo change fills cmd.
+/// Best-effort kernel-thread filter. Mirrors the backend `is_kernel_thread`
+/// so the two sides agree on which PIDs are kthreads.
+///
+/// On Linux, kernel threads are named with brackets (`[kworker/0:0H]`,
+/// `[kthreadd]`, …) and have an empty argv. The bracketed name is the
+/// reliable kernel-set signal; we also require empty cmdline + root
+/// ownership so a userspace process named `[x]` can't sneak in. The earlier
+/// "uid==0 && cmd empty && mem==0" rule was too broad and misclassified real
+/// root processes on macOS / on Linux hosts with argv-dropping daemons.
 function isKernelThread(p: ProcessInfo): boolean {
-  if (p.uid === 0 && p.command === '' && p.name.startsWith('[') && p.name.endsWith(']')) {
-    return true;
-  }
-  if (p.uid === 0 && p.command === '' && p.mem_bytes === 0) {
-    return true;
-  }
-  return false;
+  return p.uid === 0
+    && p.command === ''
+    && p.name.startsWith('[')
+    && p.name.endsWith(']');
 }
 
 // ── styles ────────────────────────────────────────────────────────────────
@@ -923,8 +925,16 @@ const styles: Record<string, React.CSSProperties> = {
   // Holds the virtualized list. The grid is always the card width (no
   // horizontal scroll), so just clip and let the list own vertical scrolling.
   procListContainer: { flex: 1, overflow: 'hidden', minHeight: 200 },
+  // INVARIANT: procHeaderRow and procRow MUST share the same horizontal box
+  // model (both have zero outer horizontal padding here). Name is flex:1, so
+  // it absorbs whatever width is left after the fixed columns. If the header
+  // had different side padding than the body rows, the header's Name column
+  // would be a few px narrower/wider than the body's, and EVERY column from
+  // State rightward (St, Memory, CPU%, CPU·time, Run) would shift sideways
+  // relative to the body — the "St header sits over the Name column" bug.
+  // Do NOT add padding here without adding the same padding to procRow.
   procHeaderRow: {
-    display: 'flex', alignItems: 'center', gap: 0, padding: '0 4px',
+    display: 'flex', alignItems: 'center', gap: 0,
     borderBottom: `1px solid ${c.border}`, color: c.textMuted,
     fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 500,
     height: 30, whiteSpace: 'nowrap', flexShrink: 0,

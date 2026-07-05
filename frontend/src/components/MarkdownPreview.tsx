@@ -72,7 +72,18 @@ export function MarkdownPreview({ url, agentId, root, path }: Props) {
         <CopyButton text={raw} />
       </div>
       <div className="markdown" style={{ ...styles.markdown, marginTop: 0 }}>
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayText}</ReactMarkdown>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            table: (props) => (
+              <div style={styles.tableWrap}>
+                <table>{props.children}</table>
+              </div>
+            ),
+          }}
+        >
+          {displayText}
+        </ReactMarkdown>
       </div>
     </div>
   );

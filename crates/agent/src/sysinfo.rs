@@ -20,6 +20,16 @@ use filebox_protocol::resources::{ProcessInfo, SysStats, UserAgg, UserTotals};
 const TOP_PROCESSES: usize = 500;
 const TOP_USERS: usize = 15;
 
+/// Ceiling on the kernel-thread sidecar carried alongside the top-N user
+/// processes. Kthreads are selected independently (see select_top_processes)
+/// so that "hide kernel threads" still surfaces the top-N *user* processes —
+/// without this, on a busy HPC node the memory heaviest 500 PIDs are often
+/// kthreads and hiding them would leave the user with a handful of real
+/// processes. 50 is plenty: kthreads all look alike (empty cmdline, bracketed
+/// name) and the viewer toggles them on only to sanity-check what the kernel
+/// is doing.
+const TOP_KERNEL_THREADS: usize = 50;
+
 /// Hard cap on the serialized command line, purely a size guard. A hostile or
 /// pathological cmdline could otherwise balloon the payload; real launchers
 /// stay well under this. Truncation only — no content filtering, filebox is
@@ -266,10 +276,11 @@ fn refresh_inner(inner: &mut Inner) {
         all.push(info);
     }
 
-    // ── Top-N selection: O(N) quickselect, not O(N log N) sort ──
-    // On 10k+ PIDs the difference is meaningful inside a blocking task.
-    select_top_n_by(&mut all, TOP_PROCESSES, |a, b| b.mem_bytes.cmp(&a.mem_bytes));
-    all.truncate(TOP_PROCESSES);
+    // ── Top-N selection: two buckets (user processes + kernel threads) ──
+    // Factored into select_top_processes() so the bucketing rule is unit-
+    // testable without standing up a live System (which on macOS has no
+    // kthreads, leaving the partition logic untested on dev machines).
+    let all = select_top_processes(all);
 
     // user_count = distinct owners = size of the aggregation map, captured
     // before we drain it below.
@@ -369,6 +380,65 @@ fn char_boundary(s: &str, max: usize) -> usize {
         i -= 1;
     }
     i
+}
+
+/// Best-effort kernel-thread classification. Mirrors the frontend
+/// `isKernelThread` so the two sides agree on which PIDs are kthreads.
+///
+/// On Linux, kernel threads are named with brackets (`[kworker/0:0H]`,
+/// `[kthreadd]`, `[ksoftirqd/0]`, …) and have an empty argv. The bracketed
+/// name is the reliable signal: it's set by the kernel itself and is not
+/// platform-dependent in sysinfo. We additionally require an empty cmdline
+/// and root ownership so a userspace process that happens to be named
+/// `[something]` can't sneak in.
+///
+/// The earlier "uid==0 && cmd empty && mem==0" rule was too broad: on macOS
+/// (and on Linux hosts with root daemons that drop argv) it misclassified
+/// real root processes as kthreads and starved the user-process bucket.
+/// The bracketed-name rule is the strict, kernel-convention-based signal.
+fn is_kernel_thread(p: &ProcessInfo) -> bool {
+    p.uid == 0
+        && p.command.is_empty()
+        && p.name.starts_with('[')
+        && p.name.ends_with(']')
+}
+
+/// Select the top-N processes to surface to the UI, split across two buckets:
+/// up to `TOP_PROCESSES` user processes + up to `TOP_KERNEL_THREADS` kernel
+/// threads (emitted as a sidecar after the user processes).
+///
+/// The two buckets are selected *independently* because they answer different
+/// questions. The memory-heaviest 500 PIDs on a busy HPC node are very often
+/// kernel threads ([kworker], [kthreadd], ZFS arc helpers, …); if we selected
+/// top-500 from the combined set, "hide kernel threads" would filter most of
+/// them away and leave the viewer with a handful of real processes instead of
+/// the top-500 user processes they asked for. By splitting first, the
+/// user-process ranking is always computed over user processes only.
+///
+/// select_top_n_by is O(N) quickselect, not O(N log N) sort — meaningful
+/// inside a blocking task at 10k+ PIDs. We partition by draining `procs` into
+/// two Vecs (one allocation each), quickselect each bucket by descending
+/// memory, then append the kthread sidecar after the user processes.
+fn select_top_processes(mut procs: Vec<ProcessInfo>) -> Vec<ProcessInfo> {
+    let mut user_procs = Vec::with_capacity(procs.len());
+    let mut kthreads = Vec::with_capacity(procs.len());
+    for p in procs.drain(..) {
+        if is_kernel_thread(&p) {
+            kthreads.push(p);
+        } else {
+            user_procs.push(p);
+        }
+    }
+    select_top_n_by(&mut user_procs, TOP_PROCESSES, |a, b| b.mem_bytes.cmp(&a.mem_bytes));
+    user_procs.truncate(TOP_PROCESSES);
+    select_top_n_by(&mut kthreads, TOP_KERNEL_THREADS, |a, b| b.mem_bytes.cmp(&a.mem_bytes));
+    kthreads.truncate(TOP_KERNEL_THREADS);
+    // Emit user processes first, then the kthread sidecar. The payload is a
+    // single flat Vec; the frontend's natural "filter then slice" sees user
+    // processes first regardless of the kthread toggle.
+    let mut out = user_procs;
+    out.append(&mut kthreads);
+    out
 }
 
 /// Map a kernel `ProcessStatus` to the single-letter label the UI shows.
@@ -562,10 +632,44 @@ mod tests {
     async fn get_caps_top_processes_at_limit() {
         let cache = StatsCache::new(Duration::from_secs(60));
         let stats = cache.get().await;
+        // Two-bucket selection: up to TOP_PROCESSES user processes plus up to
+        // TOP_KERNEL_THREADS kthreads (carried as an optional sidecar so the
+        // viewer can toggle "show kernel threads" without a second round-trip).
         assert!(
-            stats.top_processes.len() <= TOP_PROCESSES,
-            "top_processes must be capped at {} entries",
-            TOP_PROCESSES
+            stats.top_processes.len() <= TOP_PROCESSES + TOP_KERNEL_THREADS,
+            "top_processes must be capped at {} (user) + {} (kthread) entries, got {}",
+            TOP_PROCESSES,
+            TOP_KERNEL_THREADS,
+            stats.top_processes.len(),
+        );
+    }
+
+    #[tokio::test]
+    async fn top_processes_user_bucket_is_independent_of_kthreads() {
+        // Regression guard for the two-bucket selection: hiding kernel threads
+        // must still surface up to TOP_PROCESSES *user* processes. Before the
+        // fix, the memory-heaviest 500 PIDs (often kthreads on a busy host)
+        // filled the bucket, and hiding them left the user with a handful of
+        // real processes. Now user procs are selected independently of kthreads.
+        let cache = StatsCache::new(Duration::from_secs(60));
+        let stats = cache.get().await;
+        let user_procs: Vec<_> = stats
+            .top_processes
+            .iter()
+            .filter(|p| !is_kernel_thread(p))
+            .collect();
+        let kthread_count = stats.top_processes.len() - user_procs.len();
+        assert!(
+            kthread_count <= TOP_KERNEL_THREADS,
+            "kthread sidecar must be capped at {}, got {}",
+            TOP_KERNEL_THREADS,
+            kthread_count,
+        );
+        assert!(
+            user_procs.len() <= TOP_PROCESSES,
+            "user-process bucket must be capped at {}, got {}",
+            TOP_PROCESSES,
+            user_procs.len(),
         );
     }
 
@@ -686,6 +790,132 @@ mod tests {
     fn build_command_empty_when_no_args() {
         let args: Vec<std::ffi::OsString> = vec![];
         assert_eq!(build_command(&args), "");
+    }
+
+    /// Test helper: build a ProcessInfo with only the fields is_kernel_thread
+    /// inspects filled in. Avoids touching the protocol crate (no Default) and
+    /// keeps each assertion readable.
+    fn kthread_case(name: &str, uid: u32, command: &str, mem_bytes: u64) -> ProcessInfo {
+        ProcessInfo {
+            pid: 0,
+            name: name.to_string(),
+            user: String::new(),
+            uid,
+            state: String::new(),
+            mem_bytes,
+            cpu_usage: 0.0,
+            accumulated_cpu_ms: 0,
+            start_time: 0,
+            run_time_secs: 0,
+            parent_pid: None,
+            command: command.to_string(),
+            nproc: None,
+        }
+    }
+
+    #[test]
+    fn is_kernel_thread_detects_bracketed_root_empty_cmd() {
+        // The canonical Linux kthread shape: root-owned, bracketed name, no argv.
+        let p = kthread_case("[kworker/0:0H]", 0, "", 0);
+        assert!(is_kernel_thread(&p));
+        let p = kthread_case("[kthreadd]", 0, "", 4096);
+        assert!(is_kernel_thread(&p));
+    }
+
+    #[test]
+    fn is_kernel_thread_requires_bracketed_name() {
+        // A non-bracketed name is NOT a kthread, even if root + empty cmd.
+        // (The earlier over-broad rule misclassified these and starved the
+        // user-process bucket on hosts with argv-dropping root daemons.)
+        let p = kthread_case("ksoftirqd/0", 0, "", 0);
+        assert!(!is_kernel_thread(&p));
+        let p = kthread_case("systemd-journal", 0, "", 0);
+        assert!(!is_kernel_thread(&p));
+    }
+
+    #[test]
+    fn is_kernel_thread_rejects_real_user_process() {
+        // A real process has a cmdline; even root-owned daemons are user procs.
+        let p = kthread_case("sshd", 0, "/usr/sbin/sshd -D", 1024);
+        assert!(!is_kernel_thread(&p));
+        // Non-root user is never a kthread regardless of name/cmd.
+        let p = kthread_case("[weird-name]", 1000, "", 0);
+        assert!(!is_kernel_thread(&p));
+        // Memory-resident root process with a cmdline is not a kthread.
+        let p = kthread_case("systemd", 0, "/lib/systemd/systemd", 5_000_000);
+        assert!(!is_kernel_thread(&p));
+    }
+
+    #[test]
+    fn select_top_processes_partitions_into_correct_buckets() {
+        // Regression: an earlier in-place partition implementation swapped the
+        // bucket semantics — kthreads landed in the user bucket and vice
+        // versa, so truncate(TOP_KERNEL_THREADS) silently chopped *user*
+        // processes to 50 while kthreads were capped at 500. The live
+        // StatsCache tests couldn't catch this on macOS (no real kthreads),
+        // so this synthetic test is the real guard.
+        let procs = vec![
+            // 3 user processes, memory 80 / 50 / 40
+            kthread_case("python", 1000, "python train.py", 80),
+            kthread_case("bash", 1000, "bash", 50),
+            kthread_case("vim", 1000, "vim file", 40),
+            // 3 kernel threads, memory 200 / 100 / 30
+            kthread_case("[kthreadd]", 0, "", 200),
+            kthread_case("[kworker]", 0, "", 100),
+            kthread_case("[ksoftirqd]", 0, "", 30),
+        ];
+
+        let out = select_top_processes(procs);
+
+        let user_out: Vec<&str> = out.iter()
+            .filter(|p| !is_kernel_thread(p))
+            .map(|p| p.name.as_str())
+            .collect();
+        let kthread_out: Vec<&str> = out.iter()
+            .filter(|p| is_kernel_thread(p))
+            .map(|p| p.name.as_str())
+            .collect();
+
+        // Buckets must contain the RIGHT processes (this is what the swapped
+        // bug broke): user bucket = python/bash/vim, kthread bucket = [k*].
+        assert_eq!(user_out, vec!["python", "bash", "vim"],
+            "user bucket must contain user processes, got {:?}", user_out);
+        assert_eq!(kthread_out, vec!["[kthreadd]", "[kworker]", "[ksoftirqd]"],
+            "kthread bucket must contain kthreads, got {:?}", kthread_out);
+
+        // And user processes must all come before the kthread sidecar.
+        let first_kt = out.iter().position(|p| is_kernel_thread(p));
+        let last_user = out.iter().rposition(|p| !is_kernel_thread(p));
+        match (first_kt, last_user) {
+            (Some(kt), Some(u)) => assert!(kt > u,
+                "user processes must precede kthread sidecar; last user at {}, first kt at {}",
+                u, kt),
+            _ => {} // one bucket empty — ordering trivially holds
+        }
+    }
+
+    #[test]
+    fn select_top_processes_caps_user_bucket_and_keeps_kthreads() {
+        // Verify the caps are applied to the CORRECT bucket. With 5 user
+        // procs and TOP_PROCESSES=500, all survive; this mainly guards that
+        // the kthread sidecar is bounded by TOP_KERNEL_THREADS, not
+        // TOP_PROCESSES (the earlier swapped bug let kthreads hit the 500
+        // cap and starved the user bucket's 50 cap).
+        let mut procs = Vec::new();
+        // 60 kernel threads — exceeds TOP_KERNEL_THREADS (50)
+        for i in 0..60 {
+            procs.push(kthread_case(&format!("[kt{}]", i), 0, "", 1000 - i));
+        }
+        // 5 user procs
+        for i in 0..5 {
+            procs.push(kthread_case(&format!("u{}", i), 1000, "cmd", 500 - i));
+        }
+        let out = select_top_processes(procs);
+        let kthread_count = out.iter().filter(|p| is_kernel_thread(p)).count();
+        let user_count = out.iter().filter(|p| !is_kernel_thread(p)).count();
+        assert_eq!(user_count, 5, "all 5 user procs survive (under TOP_PROCESSES)");
+        assert_eq!(kthread_count, TOP_KERNEL_THREADS,
+            "kthread sidecar capped at {}, got {}", TOP_KERNEL_THREADS, kthread_count);
     }
 
     #[test]
