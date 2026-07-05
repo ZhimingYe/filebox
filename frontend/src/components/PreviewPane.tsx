@@ -84,7 +84,7 @@ export const PreviewPane = memo(function PreviewPane({ agentId, root, path, entr
   if (ext === 'pdf') {
     return (
       <Suspense fallback={<SuspenseFallback label="Loading PDF viewer..." />}>
-        <PdfPreview url={url} />
+        <PdfPreview key={`${root}:${path}`} agentId={agentId} root={root} path={path} url={url} />
       </Suspense>
     );
   }

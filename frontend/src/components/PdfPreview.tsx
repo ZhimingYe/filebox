@@ -2,7 +2,12 @@ import { useState, useEffect, useRef } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 
 import { c, radius, shadow, font } from '../theme';
-import { LoadingOverlay } from './previewShared';
+import {
+  LoadingOverlay,
+  LargeFileWarning,
+  useFileGate,
+  PREVIEW_SIZE_THRESHOLDS,
+} from './previewShared';
 
 // Vite bundles the worker with the app via new URL(...). Avoids CDN dep
 // and keeps the install offline-capable.
@@ -12,6 +17,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 interface Props {
+  agentId: string;
+  root: string;
+  path: string;
   url: string;
 }
 
@@ -27,7 +35,18 @@ interface Props {
 
 const ESTIMATED_ASPECT = 1.414; // A4 portrait, common default before we know real height
 
-export function PdfPreview({ url }: Props) {
+export function PdfPreview({ agentId, root, path, url }: Props) {
+  // Same large-file gate every other preview uses: ask the agent for the file
+  // size up-front via fsStat, and if it exceeds the threshold render a
+  // "Load anyway?" warning instead of handing the URL straight to react-pdf.
+  // Without this a multi-hundred-MB PDF parses into memory and freezes the
+  // tab with no recourse (the viewer has its own slow-load overlay, but that
+  // can't undo the parse once started).
+  const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.pdf });
+  // Hoisted above all effects: several of them (slow-load timer, and the
+  // render guard below) depend on it. Declaring it lower would hit the
+  // temporal dead zone when the effect dependency arrays evaluate at render.
+  const mayLoad = !gate.sizeUnknown && !(gate.isLarge && !gate.bypassed);
   const [numPages, setNumPages] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [containerWidth, setContainerWidth] = useState<number>(0);
@@ -51,15 +70,20 @@ export function PdfPreview({ url }: Props) {
     return () => obs.disconnect();
   }, []);
 
-  // Slow-load detection: 8s timer reset when numPages arrives.
+  // Slow-load detection: 8s timer, started only once the gate clears us to
+  // actually load (mayLoad). Without the mayLoad guard the timer would run
+  // while the user is still staring at the LargeFileWarning, expire, and flip
+  // slowLoad=true — so when they finally click "Load anyway" the overlay
+  // would wrongly say "still loading..." even though the fetch just started.
   useEffect(() => {
+    if (!mayLoad) return;
     if (numPages > 0) {
       setSlowLoad(false);
       return;
     }
     const t = setTimeout(() => setSlowLoad(true), 8000);
     return () => clearTimeout(t);
-  }, [numPages]);
+  }, [numPages, mayLoad]);
 
   // pageWidth: leave a little padding; pdf.js v6 requires an explicit pixel width.
   // Computed before the virtualization effect so the effect can depend on it.
@@ -136,9 +160,27 @@ export function PdfPreview({ url }: Props) {
     });
   };
 
+  // Document is mounted only when mayLoad (declared above the effects) is
+  // true: either the file is under threshold, or the user clicked "Load
+  // anyway". Mounting it earlier would make react-pdf start fetching/parsing
+  // immediately, which is exactly what the gate exists to prevent.
+
   return (
     <div ref={containerRef} style={styles.container}>
-      {numPages === 0 && !error && (
+      {gate.sizeUnknown && (
+        <LoadingOverlay message="Checking PDF size..." />
+      )}
+
+      {gate.isLarge && !gate.bypassed && (
+        <LargeFileWarning
+          size={gate.size!}
+          flavor="PDF"
+          onForceLoad={gate.forceLoad}
+          url={url}
+        />
+      )}
+
+      {mayLoad && numPages === 0 && !error && (
         <LoadingOverlay
           message={slowLoad ? 'PDF is large, still loading...' : 'Loading PDF...'}
         />
@@ -153,13 +195,14 @@ export function PdfPreview({ url }: Props) {
         </div>
       )}
 
-      <Document
-        file={url}
-        onLoadSuccess={onLoadSuccess}
-        onLoadError={onLoadError}
-        loading=""
-        error=""
-      >
+      {mayLoad && (
+        <Document
+          file={url}
+          onLoadSuccess={onLoadSuccess}
+          onLoadError={onLoadError}
+          loading=""
+          error=""
+        >
         {numPages > 0 && pageWidth && Array.from({ length: numPages }, (_, i) => {
           const pageNum = i + 1;
           const isVisible = visiblePages.has(pageNum);
@@ -211,7 +254,8 @@ export function PdfPreview({ url }: Props) {
             </div>
           );
         })}
-      </Document>
+        </Document>
+      )}
     </div>
   );
 }

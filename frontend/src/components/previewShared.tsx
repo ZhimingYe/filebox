@@ -174,6 +174,7 @@ export function LoadingOverlay({ message, onCancel }: {
 
 export const PREVIEW_SIZE_THRESHOLDS = {
   image: 10 * 1024 * 1024,
+  pdf: 10 * 1024 * 1024,
   text: 2 * 1024 * 1024,
   markdown: 2 * 1024 * 1024,
   html: 2 * 1024 * 1024,

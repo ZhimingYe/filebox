@@ -322,6 +322,18 @@ export default function App() {
     }
   }, [selectedAgent, enabledRoots, selectedRoot]);
 
+  // Drop an open preview when it can no longer be served: either the agent has
+  // no enabled roots at all, or the preview's own root got disabled/removed.
+  // Both would otherwise leave a stale preview pane pointing at an
+  // inaccessible file (root_unavailable error on fetch). Contained here so the
+  // existing root/path reconciliation above stays untouched.
+  useEffect(() => {
+    if (!preview) return;
+    if (enabledRoots.length === 0 || !enabledRoots.some((r) => r.name === preview.root)) {
+      setPreview(null);
+    }
+  }, [enabledRoots, preview]);
+
   // Atomically apply a navigation for the current agent: update state + record
   // both the per-agent position and the per-root path memory.
   const applyNav = useCallback((root: string, path: string) => {
