@@ -28,6 +28,7 @@ Thumbs.db
 
 # Planning notes
 detailedplan.md
+preview-tabs-refactor-plan.md
 error_case/
 
 # Security review notes (local audit, not for commit)
