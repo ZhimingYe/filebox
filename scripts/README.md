@@ -90,6 +90,23 @@ filebox now:
 3. Generate config: `./gen_config.sh {hub,agent} > config-file`
 4. Run the binary
 
+After installation, future manual upgrades can be done in place:
+
+```bash
+./bin/hub --update
+./agent --update
+
+# Or use a mirror / accelerator that exposes the same release files
+./bin/hub --update --update-base-url https://your-mirror.example.com/filebox/releases/latest/download
+./agent --update --update-base-url https://your-mirror.example.com/filebox/releases/latest/download
+
+# Plain HTTP mirrors require an explicit override
+./bin/hub --update --update-base-url http://your-mirror.example.com/filebox/releases/latest/download --allow-insecure-update
+```
+
+Downgrades are blocked by default. If you intentionally need to roll back to
+an older release, add `--allow-downgrade`.
+
 The release tarballs bundle a per-package `README.md` and a config
 example (`hub.json.example` / `agent.toml.example`) that walk through
 the specifics.

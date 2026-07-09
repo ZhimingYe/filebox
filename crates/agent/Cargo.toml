@@ -24,6 +24,7 @@ toml = { workspace = true }
 sysinfo = { workspace = true }
 rand = { workspace = true }
 libc = { workspace = true }
+filebox-updater = { path = "../updater" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

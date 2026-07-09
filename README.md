@@ -80,6 +80,31 @@ filebox-hub-*/bin/hub          # Hub
 filebox-agent-*/agent          # Agent
 ```
 
+Manual in-place update on Linux x86_64 release installs:
+
+```bash
+# Default: GitHub latest release
+filebox-hub-*/bin/hub --update
+filebox-agent-*/agent --update
+
+# Custom release mirror / accelerator
+filebox-hub-*/bin/hub --update \
+  --update-base-url https://your-mirror.example.com/filebox/releases/latest/download
+filebox-agent-*/agent --update \
+  --update-base-url https://your-mirror.example.com/filebox/releases/latest/download
+
+# Plain HTTP mirrors are rejected by default. Only override this on a trusted network.
+filebox-hub-*/bin/hub --update \
+  --update-base-url http://your-mirror.example.com/filebox/releases/latest/download \
+  --allow-insecure-update
+```
+
+`--update` downloads `SHA256SUMS.txt` plus the matching release tarball,
+verifies the checksum, and replaces the local install in place. The custom
+base URL must expose the same files as the GitHub Release download directory.
+Downgrades are also refused by default; use `--allow-downgrade` only when you
+intentionally want to roll back to an older release.
+
 `gen_config.sh` only needs `openssl` (already on every Linux) and `mkpasswd`
 (from the `whois` package, for bcrypt hashing). The tarball also bundles a
 `hub.json.example` / `agent.toml.example` if you'd rather fill in values by
@@ -163,6 +188,11 @@ start the agent with `FILEBOX_ALLOW_INSECURE_HUB=1`.
 # Start Agent
 ./target/release/agent
 ```
+
+Source builds can also invoke `--update`, but the updater always installs the
+published Linux x86_64 release artifacts in place. On non-Linux development
+machines, `--update` exits with a clear unsupported-platform error instead of
+attempting a replacement.
 
 ### 5. Access the Frontend
 

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/protocol",
+    "crates/updater",
     "crates/hub",
     "crates/agent",
 ]
@@ -37,3 +38,5 @@ sysinfo = { version = "0.35", features = ["multithread"] }
 tempfile = "3"
 base64 = "0.22"
 libc = "0.2"
+flate2 = "1"
+tar = "0.4"

@@ -19,6 +19,39 @@ async fn main() {
         )
         .init();
 
+    match filebox_updater::parse_command("hub", std::env::args().skip(1)) {
+        Ok(filebox_updater::UpdateCommand::Run) => {}
+        Ok(filebox_updater::UpdateCommand::Help) => {
+            print!("{}", filebox_updater::usage("hub"));
+            return;
+        }
+        Ok(filebox_updater::UpdateCommand::Update(request)) => {
+            match filebox_updater::run_update(filebox_updater::Product::Hub, request).await {
+                Ok(outcome) if outcome.installed => {
+                    eprintln!(
+                        "[hub] updated from v{} to v{} using {}",
+                        outcome.current_version, outcome.target_version, outcome.source_url
+                    );
+                    eprintln!("[hub] restart the hub service to use the new binary and frontend bundle.");
+                }
+                Ok(outcome) => {
+                    eprintln!("[hub] already at release v{}", outcome.target_version);
+                }
+                Err(error) => {
+                    eprintln!("[hub] update failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        Err(error) => {
+            eprintln!("[hub] {error}");
+            eprintln!();
+            print!("{}", filebox_updater::usage("hub"));
+            std::process::exit(2);
+        }
+    }
+
     let config = config::HubConfig::load();
     let dev_mode = std::env::var("FILEBOX_DEV_MODE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))

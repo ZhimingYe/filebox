@@ -27,6 +27,7 @@ hex = { workspace = true }
 async-stream = { workspace = true }
 bcrypt = { workspace = true }
 base64 = { workspace = true }
+filebox-updater = { path = "../updater" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
