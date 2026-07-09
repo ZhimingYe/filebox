@@ -3,7 +3,7 @@ import { FixedSizeList as VList } from 'react-window';
 import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
 import { useIsMobile } from '../state/useIsMobile';
-import { c, radius, font, shadow } from '../theme';
+import { c, radius, font, shadow, fileType } from '../theme';
 import { AddressBar } from './AddressBar';
 import { DirectoryTree } from './DirectoryTree';
 import { IconPin, IconClose } from './icons';
@@ -52,12 +52,118 @@ function IconUpDir() {
   );
 }
 
-function getEntryIcon(entryType: string) {
-  switch (entryType) {
+// ── File-type badge icon ───────────────────────────────────────────────
+//
+// A single reusable document glyph FILLED with the category color, with a
+// folded corner and a short white extension LABEL. Category → color lives in
+// theme.fileType; the label is the extension itself. This scales to any
+// extension without a bespoke SVG per type: color = category, text = exact
+// ext. Files with no extension (README, Makefile, LICENSE) fall back to the
+// plain IconFile — a colored badge with no label reads as noise.
+//
+// The label uses a FIXED font size that steps down by length (never
+// textLength/lengthAdjust, which distorts the glyphs), so "R", "PDF" and
+// "JSON" stay in their natural proportions and just center within the page.
+
+type FileCat = keyof typeof fileType;
+
+// extension → category. Built via `add(cat, [...exts])` then inverted so the
+// source reads by category (easy to extend) but lookup is O(1) by extension.
+const EXT_CAT: Record<string, FileCat> = {};
+const add = (cat: FileCat, exts: string[]) => { for (const e of exts) EXT_CAT[e] = cat; };
+add('pdf', ['pdf']);
+add('doc', ['doc', 'docx', 'odt', 'rtf', 'pages']);
+add('sheet', ['xls', 'xlsx', 'ods', 'csv', 'tsv', 'numbers']);
+add('slide', ['ppt', 'pptx', 'odp', 'key']);
+add('image', ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tif', 'tiff', 'heic', 'avif', 'psd']);
+add('video', ['mp4', 'mov', 'mkv', 'avi', 'webm', 'flv', 'wmv', 'm4v', 'mpg', 'mpeg']);
+add('audio', ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'wma', 'opus', 'aiff']);
+add('archive', ['zip', 'tar', 'gz', 'tgz', 'rar', '7z', 'bz2', 'xz', 'zst', 'lz', 'lzma']);
+add('r', ['r', 'rmd', 'rds', 'rdata']);
+add('python', ['py', 'pyw', 'pyi', 'ipynb']);
+add('js', ['js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx']);
+add('data', ['json', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'xml', 'parquet', 'arrow', 'feather']);
+add('markdown', ['md', 'markdown', 'mdx', 'rst']);
+add('text', ['txt', 'text', 'log', 'out', 'err']);
+add('code', ['html', 'htm', 'css', 'scss', 'sass', 'less', 'rs', 'go', 'c', 'h', 'cpp', 'cc',
+  'cxx', 'hpp', 'java', 'kt', 'kts', 'swift', 'rb', 'php', 'sh', 'bash', 'zsh', 'fish', 'sql',
+  'lua', 'vue', 'svelte', 'pl', 'scala', 'clj', 'ex', 'exs', 'dart', 'jl', 'm', 'f90', 'vim']);
+
+// Display label overrides where the raw uppercased extension is wrong or ugly.
+const EXT_LABEL: Record<string, string> = {
+  jpeg: 'JPG', tiff: 'TIF', markdown: 'MD', text: 'TXT', tgz: 'GZ', lzma: 'LZ',
+  ipynb: 'NB', pyw: 'PY', pyi: 'PY', cpp: 'C++', cc: 'C++', cxx: 'C++', hpp: 'H',
+  htm: 'HTML', yaml: 'YML', yml: 'YML', mjs: 'JS', cjs: 'JS', rdata: 'RDA', rds: 'RDS',
+};
+
+function fileExt(name: string): string {
+  const dot = name.lastIndexOf('.');
+  // dot at 0 = dotfile (.bashrc) — treat as extensionless; -1 = no dot.
+  if (dot <= 0) return '';
+  return name.slice(dot + 1).toLowerCase();
+}
+
+function FileTypeIcon({ name }: { name: string }) {
+  const ext = fileExt(name);
+  if (!ext) return <IconFile />;
+  const cat = EXT_CAT[ext];
+  const color = cat ? fileType[cat] : fileType.neutral;
+  const label = EXT_LABEL[ext] ?? ext.toUpperCase().slice(0, 4);
+  // Step font size down by length so glyphs keep their natural shape (no
+  // horizontal stretching) AND stay inside the page's ~9px inner width — at
+  // the previous sizes a 3–4 char label (e.g. "RMD") overflowed the fill edge.
+  const fontSize = label.length <= 1 ? 6.4 : label.length === 2 ? 5.3 : label.length === 3 ? 4.3 : 3.5;
+  return (
+    <svg style={iconStyle} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      {/* Whole document filled with the category color. */}
+      <path d="M4 2h5.59a1 1 0 0 1 .7.29l2.71 2.71a1 1 0 0 1 .29.7V13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z" fill={color}/>
+      {/* Folded top-right corner as a lighter overlay. */}
+      <path d="M9.7 2.2 13 5.5H10.2a.5.5 0 0 1-.5-.5V2.2Z" fill="#ffffff" fillOpacity="0.4"/>
+      {/* Extension label, natural proportions, centered on the lower page. */}
+      <text
+        x="8" y="11.8"
+        fontFamily={font.sans} fontSize={fontSize} fontWeight={700}
+        fill="#ffffff" textAnchor="middle"
+      >{label}</text>
+    </svg>
+  );
+}
+
+function getEntryIcon(entry: api.FsEntry) {
+  switch (entry.entry_type) {
     case 'directory': return <IconFolder />;
     case 'symlink': return <IconSymlink />;
-    default: return <IconFile />;
+    default: return <FileTypeIcon name={entry.name} />;
   }
+}
+
+// ── Directory-tree resize splitter (desktop only) ──────────────────────────
+// A 6px grab strip sitting to the right of the tree's border. Transparent at
+// rest; a thin accent bar appears on hover or while dragging so the affordance
+// is discoverable without cluttering the layout. The actual drag math lives in
+// the parent (it owns the width + the window listeners); this is purely the
+// hit target and its visual state. Double-click bubbles up to reset the width.
+function TreeSplitter({ active, onStart, onReset }: {
+  active: boolean;
+  onStart: () => void;
+  onReset: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const lit = active || hovered;
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      title="Drag to resize the directory tree (double-click to reset)"
+      style={styles.splitter}
+      onMouseDown={(e) => { e.preventDefault(); onStart(); }}
+      onDoubleClick={onReset}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div style={{ ...styles.splitterBar, background: lit ? c.accent : 'transparent' }} />
+    </div>
+  );
 }
 
 interface Props {
@@ -150,6 +256,54 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   useEffect(() => {
     try { localStorage.setItem('filebox.treeOpen', treeOpen ? '1' : '0'); } catch { /* ignore */ }
   }, [treeOpen]);
+  // Desktop directory-tree width (px), resizable via the splitter and persisted.
+  // Mobile ignores this (the tree is an 85% overlay drawer there). Clamped on
+  // read so a corrupt/out-of-range stored value can never wedge the layout.
+  const TREE_MIN_W = 160;
+  const TREE_MAX_W = 560;
+  const TREE_DEFAULT_W = 240;
+  const clampTreeW = (n: number) => Math.min(TREE_MAX_W, Math.max(TREE_MIN_W, n));
+  const [treeWidth, setTreeWidth] = useState<number>(() => {
+    try {
+      const v = parseInt(localStorage.getItem('filebox.treeWidth') || '', 10);
+      return Number.isFinite(v) ? clampTreeW(v) : TREE_DEFAULT_W;
+    } catch { return TREE_DEFAULT_W; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('filebox.treeWidth', String(treeWidth)); } catch { /* ignore */ }
+  }, [treeWidth]);
+  // True while the splitter is being dragged. A separate effect attaches the
+  // window-level move/up listeners only during a drag, so there's no idle global
+  // handler and cleanup is guaranteed on mouseup or unmount.
+  const [treeDragging, setTreeDragging] = useState(false);
+  // contentWrap bounds the tree + main area; its left edge is the origin we
+  // measure the pointer against to derive the new width.
+  const contentWrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!treeDragging) return;
+    const onMove = (e: MouseEvent) => {
+      const wrap = contentWrapRef.current;
+      if (!wrap) return;
+      const left = wrap.getBoundingClientRect().left;
+      setTreeWidth(clampTreeW(e.clientX - left));
+    };
+    const onUp = () => setTreeDragging(false);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    // Force the resize cursor + suppress text selection for the whole drag,
+    // regardless of what the pointer is over.
+    const prevCursor = document.body.style.cursor;
+    const prevSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevSelect;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [treeDragging]);
   // Refresh nonce: the toolbar Refresh button bumps this to ask the directory
   // tree to reload its expanded nodes (retries stuck/errored nodes and picks up
   // new subdirectories). Mirrors the pinned-folders navRequest nonce pattern.
@@ -454,7 +608,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
         onMouseLeave={() => setHoveredIdx(null)}
       >
         <span style={styles.icon}>
-          {isBack ? <IconUpDir /> : getEntryIcon(displayEntry!.entry_type)}
+          {isBack ? <IconUpDir /> : getEntryIcon(displayEntry!)}
         </span>
         <span
           style={{
@@ -767,7 +921,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
         {filterError && <span style={styles.filterError}>Invalid regex</span>}
       </div>
 
-      <div style={{ ...styles.contentWrap, position: 'relative' }}>
+      <div ref={contentWrapRef} style={{ ...styles.contentWrap, position: 'relative' }}>
         {treeOpen && selectedRoot && activeRootObj && isMobile && (
           <div style={styles.treeBackdrop} onClick={() => setTreeOpen(false)} />
         )}
@@ -779,8 +933,19 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
             rootPath={activeRootObj.path_display}
             currentPath={currentPath}
             overlay={isMobile}
+            width={treeWidth}
             refreshNonce={treeRefreshNonce}
             onNavigate={handleTreeNavigate}
+          />
+        )}
+        {/* Desktop-only resize splitter between the tree and the file list.
+            Double-click resets to the default width so a mis-drag can't wedge
+            the tree too narrow/wide. Hidden on mobile (overlay drawer). */}
+        {treeOpen && selectedRoot && activeRootObj && !isMobile && (
+          <TreeSplitter
+            active={treeDragging}
+            onStart={() => setTreeDragging(true)}
+            onReset={() => setTreeWidth(TREE_DEFAULT_W)}
           />
         )}
         <div style={styles.mainArea}>
@@ -1113,6 +1278,22 @@ const styles: Record<string, React.CSSProperties> = {
   },
   mainArea: {
     flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0,
+  },
+  // Resize grab strip between the tree and the file list. flexShrink:0 so it
+  // keeps its full hit width; the inner bar (splitterBar) is the visible cue.
+  splitter: {
+    flexShrink: 0,
+    width: 6,
+    cursor: 'col-resize',
+    display: 'flex',
+    alignItems: 'stretch',
+    background: 'transparent',
+    zIndex: 1,
+  },
+  splitterBar: {
+    width: 2,
+    borderRadius: 1,
+    transition: 'background 0.1s',
   },
   // Mobile-only backdrop behind the tree drawer. Clicking it dismisses the
   // tree (same pattern as the app's mobile sidebar). Desktop docks the tree

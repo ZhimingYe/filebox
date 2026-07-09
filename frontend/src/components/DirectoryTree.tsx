@@ -11,6 +11,10 @@ interface Props {
   /** When true (mobile), the panel renders as an absolute overlay drawer
    *  instead of an inline flex child. The parent supplies a backdrop. */
   overlay?: boolean;
+  /** Desktop (inline) panel width in px. Ignored in overlay mode, which keeps
+   *  its own responsive drawer width. The parent owns this value (persisted +
+   *  driven by the resize splitter). */
+  width?: number;
   /** Bumped by the toolbar Refresh button to ask the tree to reload its
    *  expanded nodes. This is the retry path for a node whose load errored and
    *  got stuck (loaded:true + error) — without it there'd be no way back short
@@ -36,7 +40,7 @@ const DEFAULT_STATE: NodeState = {
 
 const PAGE_LIMIT = 200;
 
-export function DirectoryTree({ agentId, rootName, rootPath, currentPath, onNavigate, overlay = false, refreshNonce = 0 }: Props) {
+export function DirectoryTree({ agentId, rootName, rootPath, currentPath, onNavigate, overlay = false, width, refreshNonce = 0 }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['/']));
   const [nodes, setNodes] = useState<Map<string, NodeState>>(new Map());
 
@@ -234,7 +238,7 @@ export function DirectoryTree({ agentId, rootName, rootPath, currentPath, onNavi
   };
 
   return (
-    <div style={{ ...styles.panel, ...(overlay ? styles.panelOverlay : {}) }}>
+    <div style={{ ...styles.panel, ...(overlay ? styles.panelOverlay : (width != null ? { width } : {})) }}>
       <div style={styles.scroll}>
         {renderNode('/', rootName, 0, true)}
       </div>

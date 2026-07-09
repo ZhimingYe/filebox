@@ -32,6 +32,30 @@ export const c = {
   successBg: '#ecfdf5',
 } as const;
 
+// File-type badge colors — part of the file-row visual language (see
+// FileBrowser's FileTypeIcon), NOT nav/surface tokens. White label text sits
+// on each chip, so every color here must stay dark/saturated enough to keep
+// that text legible on top. Category-level (not per-extension): the chip
+// LABEL carries the exact extension, the color carries the category.
+export const fileType = {
+  pdf: '#e5484d',      // documents / PDF — red
+  doc: '#2563eb',      // word-processor docs — blue
+  sheet: '#16a34a',    // spreadsheets / csv — green
+  slide: '#ea580c',    // presentations — orange
+  image: '#7c3aed',    // raster/vector images — violet
+  video: '#db2777',    // video — pink
+  audio: '#0d9488',    // audio — teal
+  archive: '#b45309',  // zip/tar/… — amber-brown
+  r: '#276dc3',        // R / Rmd — official R blue
+  python: '#2b6cb0',   // python — blue
+  js: '#a16207',       // js/ts family — dark yellow (readable under white)
+  data: '#0e7490',     // json/yaml/toml/xml — cyan
+  markdown: '#475569', // md — slate
+  text: '#64748b',     // txt/log — gray
+  code: '#475569',     // other source code — slate
+  neutral: '#64748b',  // known extension, uncategorized — gray
+} as const;
+
 export const radius = {
   sm: 6,
   md: 8,
