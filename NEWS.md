@@ -2,6 +2,26 @@
 
 All notable changes to Filebox are listed here. Dates are UTC.
 
+## v0.7.0 — 2026-07-10
+
+### Added
+- **Multi-tab preview workspace** — open multiple file previews, switch and close tabs, navigate to the previous or next file with the arrow keys, and close the active preview with Escape. Only the active preview body is mounted, keeping heavy preview resources bounded.
+- **Manual in-place updates** — Hub and Agent now support `--update`, downloading the matching Linux release, verifying `SHA256SUMS.txt`, refusing downgrades by default, and accepting HTTPS release mirrors.
+- **File-type badges and resizable directory tree** — file rows show category-colored extension badges, and the desktop directory tree can be resized and reset with its width persisted locally.
+
+### Changed
+- **HTML preview diagnostics** — detects missing charset declarations and non-standard HTML structure, can inject `<meta charset="utf-8">` automatically, and exposes source/preview controls.
+- **File browser polish** — refreshed the shared visual tokens, date formatting, directory navigation controls, and file-list presentation for denser desktop browsing.
+- **Root configuration validation** — newly added or changed roots must resolve to directories, while previously configured roots that disappear remain editable so they can be disabled, deleted, or repaired without blocking atomic updates.
+
+### Security
+- **Path-resolution hardening** — canonicalizes the root before resolving targets, keeps containment checks explicit, and returns distinct errors for unknown roots, inaccessible roots, missing paths, and path escapes.
+
+### Fixed
+- **Preview keyboard navigation** — arrow-key navigation now moves through files in the current directory instead of cycling unrelated open tabs.
+
+---
+
 ## v0.5.0 — 2026-07-03
 
 ### Added
