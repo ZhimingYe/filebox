@@ -416,7 +416,7 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: font.sans,
     color: c.text,
     userSelect: 'none',

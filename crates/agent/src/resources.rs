@@ -42,9 +42,13 @@ impl ResourceManager {
             ));
         }
 
-        // Validate all roots
+        // Validate all roots. A root that was valid when configured may have
+        // disappeared since then (for example, an unmounted network volume).
+        // Keep recognizing that exact configured root so it cannot block a
+        // later disable/delete/pin update, while still rejecting a newly
+        // supplied invalid path.
         for root in &roots {
-            validate_root(root)?;
+            validate_root(root, &self.config.roots)?;
         }
 
         // All valid — apply atomically
@@ -70,8 +74,7 @@ impl ResourceManager {
     }
 }
 
-fn validate_root(root: &RootConfig) -> Result<(), String> {
-    // ── Hard checks: structural validity. These always reject the apply. ──
+fn validate_root(root: &RootConfig, existing_roots: &[RootConfig]) -> Result<(), String> {
     if root.name.is_empty() {
         return Err("Root name cannot be empty".to_string());
     }
@@ -80,50 +83,58 @@ fn validate_root(root: &RootConfig) -> Result<(), String> {
     }
 
     // Validate pinned-folder paths (shape only — no existence check, so a
-    // deleted/unmounted folder never blocks a config apply). A bad pin shape
-    // (path traversal) is a hard rejection.
+    // deleted/unmounted folder never blocks a config apply).
     for pin in &root.pinned_folders {
         validate_pinned_path(pin).map_err(|e| format!("Root '{}': {}", root.name, e))?;
     }
 
-    // ── Soft check: path existence. ──
-    // A root whose path doesn't exist (deleted, unmounted, typo, or not-yet-
-    // created) is ACCEPTED with a warning. This is critical: rejecting it
-    // would block ALL config modifications via the all-or-nothing apply_desired
-    // — making it impossible to disable, delete, or fix the broken root, and
-    // impossible to unpin a folder when any root's path went missing. Instead
-    // we accept the root; fs operations against it fail gracefully at request
-    // time (fs::resolve_path returns Err with a clear message), and the
-    // user can disable/delete the root to clean up.
-    //
-    // The sensitive-virtual-root check (/proc, /sys, …) stays a HARD reject
-    // — but only when canonicalize succeeds (a non-existent path can't be
-    // sensitive).
+    // Only an exact root already present in the last applied state gets the
+    // stale-path exception. This is what lets a vanished root be disabled or
+    // carried through while another root is edited, without turning typos in
+    // newly added/changed paths into successful configuration updates.
+    let was_already_configured = existing_roots
+        .iter()
+        .any(|existing| existing.name == root.name && existing.path == root.path);
     let path = Path::new(&root.path);
-    match path.canonicalize() {
-        Ok(canonical) => {
-            if is_sensitive_virtual_root(&canonical) {
-                return Err(format!(
-                    "Root '{}' path '{}' is a sensitive virtual filesystem",
-                    root.name, root.path
-                ));
-            }
-            if !canonical.is_dir() {
-                tracing::warn!(
-                    "Root '{}' path '{}' is not a directory — operations will fail until corrected",
-                    root.name,
-                    root.path,
-                );
-            }
-        }
-        Err(e) => {
+    let canonical = match path.canonicalize() {
+        Ok(canonical) => canonical,
+        Err(e) if was_already_configured => {
             tracing::warn!(
-                "Root '{}' path '{}' cannot be resolved: {} — operations will fail until corrected",
+                "Previously configured root '{}' path '{}' is unavailable: {} — preserving it so it can be disabled, deleted, or repaired",
                 root.name,
                 root.path,
                 e,
             );
+            return Ok(());
         }
+        Err(e) => {
+            return Err(format!(
+                "Root '{}' path '{}' cannot be resolved: {}",
+                root.name, root.path, e
+            ));
+        }
+    };
+
+    if !canonical.is_dir() {
+        if was_already_configured {
+            tracing::warn!(
+                "Previously configured root '{}' path '{}' is no longer a directory — preserving it so it can be disabled, deleted, or repaired",
+                root.name,
+                root.path,
+            );
+            return Ok(());
+        }
+        return Err(format!(
+            "Root '{}' path '{}' is not a directory",
+            root.name, root.path
+        ));
+    }
+
+    if is_sensitive_virtual_root(&canonical) {
+        return Err(format!(
+            "Root '{}' path '{}' is a sensitive virtual filesystem",
+            root.name, root.path
+        ));
     }
 
     Ok(())
@@ -233,11 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_desired_accepts_nonexistent_path_with_warning() {
-        // A root whose path doesn't exist is ACCEPTED (soft check), not rejected.
-        // Rejecting it would make it impossible to disable/delete/fix a broken
-        // root via the all-or-nothing apply_desired. Operations against it fail
-        // gracefully at request time.
+    fn apply_desired_rejects_new_nonexistent_path() {
         let mut mgr = manager_in_temp();
         let roots = vec![RootConfig {
             name: "ghost".to_string(),
@@ -245,16 +252,14 @@ mod tests {
             enabled: true,
             pinned_folders: vec![],
         }];
-        mgr.apply_desired(1, roots).unwrap();
-        assert_eq!(mgr.resource_revision(), 1);
-        assert_eq!(mgr.roots().len(), 1);
-        assert_eq!(mgr.roots()[0].name, "ghost");
+        let err = mgr.apply_desired(1, roots).unwrap_err();
+        assert!(err.contains("cannot be resolved"));
+        assert_eq!(mgr.resource_revision(), 0);
+        assert!(mgr.roots().is_empty());
     }
 
     #[test]
-    fn apply_desired_accepts_file_path_as_root_with_warning() {
-        // A file (not a directory) is accepted with a warning. The root is
-        // stored so the user can disable/delete it; operations fail at runtime.
+    fn apply_desired_rejects_new_file_path_as_root() {
         let mut mgr = manager_in_temp();
         let file = tempfile::NamedTempFile::new().unwrap();
         let roots = vec![RootConfig {
@@ -263,8 +268,42 @@ mod tests {
             enabled: true,
             pinned_folders: vec![],
         }];
-        mgr.apply_desired(1, roots).unwrap();
-        assert_eq!(mgr.roots()[0].name, "file");
+        let err = mgr.apply_desired(1, roots).unwrap_err();
+        assert!(err.contains("not a directory"));
+        assert_eq!(mgr.resource_revision(), 0);
+    }
+
+    #[test]
+    fn apply_desired_rejects_changing_existing_root_to_missing_path() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+        let real_root = tempdir().unwrap();
+        mgr.apply_desired(
+            1,
+            vec![RootConfig {
+                name: "data".to_string(),
+                path: real_root.path().to_str().unwrap().to_string(),
+                enabled: true,
+                pinned_folders: vec![],
+            }],
+        )
+        .unwrap();
+
+        let err = mgr
+            .apply_desired(
+                2,
+                vec![RootConfig {
+                    name: "data".to_string(),
+                    path: "/this/replacement/path/does/not/exist".to_string(),
+                    enabled: true,
+                    pinned_folders: vec![],
+                }],
+            )
+            .unwrap_err();
+
+        assert!(err.contains("cannot be resolved"));
+        assert_eq!(mgr.resource_revision(), 1);
+        assert_eq!(mgr.roots()[0].path, real_root.path().to_str().unwrap());
     }
 
     #[test]
@@ -459,18 +498,16 @@ mod tests {
 
     #[test]
     fn can_modify_roots_when_another_root_path_is_missing() {
-        // THE critical regression test: a root whose path went missing must NOT
-        // block modifications to other roots (unpin, disable, delete, add).
-        // Previously the all-or-nothing validate_root rejected the entire apply
-        // when ANY root's path couldn't be canonicalized, making it impossible
-        // to fix the problem.
+        // A root that was valid when applied but later disappeared must not
+        // block modifications to other roots.
         let dir = tempdir().unwrap();
         let mut mgr = ResourceManager::new(dir.path().to_path_buf());
 
         let good_root = tempdir().unwrap();
+        let disappearing_root = tempdir().unwrap();
+        let disappearing_path = disappearing_root.path().to_str().unwrap().to_string();
 
-        // Apply initial state: one good root + one root with a missing path.
-        // Both are accepted (path-existence is now a soft check).
+        // Establish a fully valid last-applied state first.
         mgr.apply_desired(
             1,
             vec![
@@ -482,16 +519,16 @@ mod tests {
                 },
                 RootConfig {
                     name: "ghost".to_string(),
-                    path: "/nonexistent/xyz".to_string(),
+                    path: disappearing_path.clone(),
                     enabled: true,
                     pinned_folders: vec![],
                 },
             ],
         )
         .unwrap();
+        disappearing_root.close().unwrap();
 
-        // Now unpin from the GOOD root while the ghost root is still missing.
-        // This must succeed — previously it was rejected by all-or-nothing.
+        // Unpin from the good root while the other root is missing.
         mgr.apply_desired(
             2,
             vec![
@@ -503,7 +540,7 @@ mod tests {
                 },
                 RootConfig {
                     name: "ghost".to_string(),
-                    path: "/nonexistent/xyz".to_string(),
+                    path: disappearing_path.clone(),
                     enabled: true,
                     pinned_folders: vec![],
                 },
@@ -517,7 +554,7 @@ mod tests {
             3,
             vec![RootConfig {
                 name: "ghost".to_string(),
-                path: "/nonexistent/xyz".to_string(),
+                path: disappearing_path,
                 enabled: false, // disabled
                 pinned_folders: vec![],
             }],
@@ -528,9 +565,9 @@ mod tests {
 
     #[test]
     fn validate_root_hard_rejects_sensitive_virtual_root() {
-        // The sensitive-virtual-root check (/proc, /sys, …) stays a HARD reject
-        // even though path-existence is now soft. Guarded by target_os because
-        // these virtual filesystems only exist on Linux.
+        // The sensitive-virtual-root check (/proc, /sys, …) stays a hard reject.
+        // Guarded by target_os because these virtual filesystems only exist on
+        // Linux.
         #[cfg(target_os = "linux")]
         {
             let root = RootConfig {
@@ -539,7 +576,7 @@ mod tests {
                 enabled: true,
                 pinned_folders: vec![],
             };
-            let err = validate_root(&root).unwrap_err();
+            let err = validate_root(&root, &[]).unwrap_err();
             assert!(err.contains("sensitive virtual filesystem"));
         }
         // On non-Linux, verify the is_sensitive_virtual_root function directly
@@ -547,14 +584,11 @@ mod tests {
     }
 
     #[test]
-    fn validate_root_accepts_symlink_to_file_with_warning() {
-        // A symlink pointing to a file (not a dir) used to be a hard reject.
-        // Now it's accepted — the root is stored, operations fail at runtime,
-        // and the user can disable/delete it.
+    #[cfg(unix)]
+    fn validate_root_rejects_new_symlink_to_file() {
         let real_file = tempfile::NamedTempFile::new().unwrap();
         let dir = tempdir().unwrap();
         let link_path = dir.path().join("link_to_file");
-        #[cfg(unix)]
         std::os::unix::fs::symlink(real_file.path(), &link_path).unwrap();
 
         let root = RootConfig {
@@ -563,7 +597,8 @@ mod tests {
             enabled: true,
             pinned_folders: vec![],
         };
-        validate_root(&root).unwrap();
+        let err = validate_root(&root, &[]).unwrap_err();
+        assert!(err.contains("not a directory"));
     }
 
     #[test]
@@ -576,7 +611,7 @@ mod tests {
             // Leading slash so the check reaches the `..` component rule
             pinned_folders: vec!["/ok".to_string(), "/../escape".to_string()],
         };
-        let err = validate_root(&root).unwrap_err();
+        let err = validate_root(&root, &[]).unwrap_err();
         assert!(err.contains("must not contain '..'"), "got: {err}");
     }
 

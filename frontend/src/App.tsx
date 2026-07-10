@@ -224,7 +224,8 @@ export default function App() {
     fileListRef.current = info;
   }, []);
 
-  // Esc closes the active tab; ← → switch between open preview tabs.
+  // Esc closes the active tab; ← → replace it with the previous/next
+  // file in the directory currently shown by FileBrowser.
   useEffect(() => {
     if (!activeTab) return;
     const onKey = (e: KeyboardEvent) => {
@@ -237,15 +238,27 @@ export default function App() {
         return;
       }
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-      const tabs = previewTabs.tabs;
-      if (tabs.length < 2) return;
-      const idx = tabs.findIndex((t) => t.id === activeTab.id);
+      const info = fileListRef.current;
+      if (!info || info.root !== activeTab.root) return;
+      const previewDir = activeTab.path.replace(/\/[^/]*$/, '') || '/';
+      if (info.path !== previewDir) return;
+      const files = info.entries.filter((entry) => entry.entry_type === 'file' && !entry.denied);
+      const currentName = activeTab.path.split('/').pop() || '';
+      const idx = files.findIndex((entry) => entry.name === currentName);
       if (idx === -1) return;
-      e.preventDefault();
       const nextIdx = e.key === 'ArrowRight'
-        ? (idx + 1) % tabs.length
-        : (idx - 1 + tabs.length) % tabs.length;
-      previewTabs.activate(tabs[nextIdx].id);
+        ? idx + 1
+        : idx - 1;
+      if (nextIdx < 0 || nextIdx >= files.length) return;
+      e.preventDefault();
+      const next = files[nextIdx];
+      const nextPath = (previewDir === '/' ? '' : previewDir) + '/' + next.name;
+      previewTabs.replaceActive({
+        agentId: activeTab.agentId,
+        root: activeTab.root,
+        path: nextPath,
+        entry: next,
+      });
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -746,10 +759,10 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: font.sans, position: 'relative', overflow: 'hidden',
   },
   // ── Sidebar ──
-  // Expanded (220px, down from 260) and collapsed (56px icon rail) variants.
+  // Expanded (200px) and collapsed (56px icon rail) variants.
   // Mobile drawer overrides width to 280 via sidebarDrawer.
   sidebarExpanded: {
-    width: 220, borderRight: `1px solid ${c.border}`, display: 'flex',
+    width: 200, borderRight: `1px solid ${c.border}`, display: 'flex',
     flexDirection: 'column', flexShrink: 0, background: c.bgSubtle,
     transition: 'width 0.18s ease',
   },
