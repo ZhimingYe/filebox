@@ -48,7 +48,7 @@ function previewCsp(baseUrl: string): string {
 // Inject a locked <base> and CSP meta so relative resources resolve through
 // the tokenized preview endpoint instead of the main Filebox API surface.
 // When injectCharset is true, prepends <meta charset="utf-8"> as the very
-// first element in <head> — must be within the first 1024 bytes per HTML spec.
+// first element in <head>.
 function injectPreviewGuards(html: string, baseUrl: string, injectCharset: boolean): string {
   const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
   const escapedBaseUrl = escapeAttr(normalizedBaseUrl);
@@ -244,7 +244,6 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
       URL.revokeObjectURL(nextBlobUrl);
     };
   }, [text, previewBaseUrl, charsetFix, docIssue?.missingCharset]);
-
   useEffect(() => {
     if (!iframeLoading || showSource || !blobUrl) return;
     slowTimerRef.current = setTimeout(() => {
