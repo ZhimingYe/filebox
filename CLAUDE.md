@@ -31,6 +31,13 @@ machines need no public IP, inbound port, VPN, or port mapping.
 
 ## Hard Rules
 
+- **NEVER run `git checkout -- <file>`, `git restore <file>`, `git reset --hard`,
+  or any destructive git command without first showing `git diff` of exactly
+  what will be lost and getting explicit confirmation.** This has caused
+  catastrophic data loss before — uncommitted working-tree changes are
+  irrecoverable. When you need to revert a specific edit you made, use the
+  Edit tool to undo that specific edit, not a git command that nukes the
+  entire file.
 - **Frontend is the control surface.** Roots are managed from the UI. CLI
   is bootstrap / automation / recovery only.
 - **Read-only.** Never add writes, shell, or arbitrary proxying.

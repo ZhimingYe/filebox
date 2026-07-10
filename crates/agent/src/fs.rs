@@ -6,10 +6,35 @@ use filebox_protocol::resources::{FileStat, FsEntry, FsEntryType, RootConfig};
 use filebox_protocol::denylist;
 
 /// Resolve a root name + relative path to an absolute, canonical path.
-/// Returns None if root not found or path escapes the root.
-fn resolve_path(roots: &[RootConfig], root_name: &str, relative_path: &str) -> Option<PathBuf> {
-    let root = roots.iter().find(|r| r.name == root_name && r.enabled)?;
+///
+/// Returns `(canonical_target, canonical_root)` on success. The canonical_root
+/// is returned so callers don't need to re-lookup and re-canonicalize the root
+/// (which would be dead code — resolve_path already verified both).
+///
+/// Returns Err with a specific message if the root is not found, the root
+/// path is missing (deleted/unmounted), the target path doesn't exist, or the
+/// path escapes the root. The specific message lets the frontend distinguish
+/// "your root directory is gone" from "this file doesn't exist" from "path
+/// escape attempt" — all of which used to return the same opaque None.
+fn resolve_path(
+    roots: &[RootConfig],
+    root_name: &str,
+    relative_path: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let root = roots.iter().find(|r| r.name == root_name && r.enabled)
+        .ok_or_else(|| format!("Root '{}' not found or disabled", root_name))?;
     let root_path = Path::new(&root.path);
+
+    // Canonicalize the root FIRST so we can give a root-specific error when
+    // the root directory itself is missing (deleted, unmounted, typo). Without
+    // this ordering, a missing root path would be indistinguishable from a
+    // missing target path.
+    let root_canonical = root_path.canonicalize().map_err(|_| {
+        format!(
+            "Root '{}' path '{}' is not accessible — the directory may be missing or unmounted",
+            root_name, root.path
+        )
+    })?;
 
     // Strip leading "/" so join doesn't replace the root
     let rel = relative_path.strip_prefix('/').unwrap_or(relative_path);
@@ -24,29 +49,24 @@ fn resolve_path(roots: &[RootConfig], root_name: &str, relative_path: &str) -> O
             // If canonicalize fails (file doesn't exist yet), try parent
             if let Some(parent) = joined.parent() {
                 if let Ok(parent_canon) = parent.canonicalize() {
-                    let file_name = joined.file_name()?;
+                    let file_name = joined.file_name()
+                        .ok_or_else(|| format!("Path not found: {}/{}", root_name, relative_path))?;
                     parent_canon.join(file_name)
                 } else {
-                    return None;
+                    return Err(format!("Path not found: {}/{}", root_name, relative_path));
                 }
             } else {
-                return None;
+                return Err(format!("Path not found: {}/{}", root_name, relative_path));
             }
         }
     };
 
-    // Also canonicalize the root to compare
-    let root_canonical = match root_path.canonicalize() {
-        Ok(p) => p,
-        Err(_) => return None,
-    };
-
     // Verify the canonical path is inside the root
     if !canonical.starts_with(&root_canonical) {
-        return None;
+        return Err(format!("Path is outside root: {}/{}", root_name, relative_path));
     }
 
-    Some(canonical)
+    Ok((canonical, root_canonical))
 }
 
 /// Check if a relative path is denied by the sensitive denylist.
@@ -181,8 +201,7 @@ pub(crate) fn dir_mtime(
     root_name: &str,
     path: &str,
 ) -> Result<Option<std::time::SystemTime>, String> {
-    let abs_path = resolve_path(roots, root_name, path)
-        .ok_or_else(|| format!("Path not found or outside root: {}/{}", root_name, path))?;
+    let (abs_path, _root_canonical) = resolve_path(roots, root_name, path)?;
     if !abs_path.is_dir() {
         return Err(format!("Not a directory: {}", path));
     }
@@ -198,15 +217,7 @@ pub(crate) fn read_dir_sorted(
     path: &str,
     dirs_only: bool,
 ) -> Result<(Vec<FsEntry>, Option<std::time::SystemTime>), String> {
-    let abs_path = resolve_path(roots, root_name, path)
-        .ok_or_else(|| format!("Path not found or outside root: {}/{}", root_name, path))?;
-    let root = roots
-        .iter()
-        .find(|r| r.name == root_name && r.enabled)
-        .unwrap();
-    let root_canonical = Path::new(&root.path)
-        .canonicalize()
-        .map_err(|e| format!("Cannot resolve root path: {}", e))?;
+    let (abs_path, root_canonical) = resolve_path(roots, root_name, path)?;
 
     if !abs_path.is_dir() {
         return Err(format!("Not a directory: {}", path));
@@ -351,16 +362,7 @@ pub fn stat_file(
     root_name: &str,
     path: &str,
 ) -> Result<FileStat, String> {
-    let abs_path = resolve_path(roots, root_name, path)
-        .ok_or_else(|| format!("Path not found or outside root: {}/{}", root_name, path))?;
-
-    let root = roots
-        .iter()
-        .find(|r| r.name == root_name && r.enabled)
-        .unwrap();
-    let root_canonical = Path::new(&root.path)
-        .canonicalize()
-        .map_err(|e| format!("Cannot resolve root path: {}", e))?;
+    let (abs_path, root_canonical) = resolve_path(roots, root_name, path)?;
 
     let rel_path = abs_path
         .strip_prefix(&root_canonical)
@@ -419,16 +421,7 @@ pub fn read_file_range(
     offset: u64,
     length: Option<u64>,
 ) -> Result<(Vec<u8>, bool), String> {
-    let abs_path = resolve_path(roots, root_name, path)
-        .ok_or_else(|| format!("Path not found or outside root: {}/{}", root_name, path))?;
-
-    let root = roots
-        .iter()
-        .find(|r| r.name == root_name && r.enabled)
-        .unwrap();
-    let root_canonical = Path::new(&root.path)
-        .canonicalize()
-        .map_err(|e| format!("Cannot resolve root path: {}", e))?;
+    let (abs_path, root_canonical) = resolve_path(roots, root_name, path)?;
 
     let rel_path = abs_path
         .strip_prefix(&root_canonical)
@@ -896,5 +889,66 @@ mod tests {
 
         let stat = stat_file(&roots, "test", "adir").unwrap();
         assert_eq!(stat.entry_type, FsEntryType::Directory);
+    }
+
+    // ── resolve_path error message tests ──
+    // These verify the specific error strings that resolve_path now returns.
+    // The messages are user-facing (they propagate to the frontend), so they
+    // must be stable and distinguishable.
+
+    #[test]
+    fn resolve_path_error_for_unknown_root() {
+        let sb = Sandbox::new();
+        let roots = vec![sb.root()];
+        let err = stat_file(&roots, "nonexistent", "").unwrap_err();
+        assert!(
+            err.contains("not found or disabled"),
+            "expected root-not-found message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_path_error_for_disabled_root() {
+        let sb = Sandbox::new();
+        let roots = vec![make_root("test", sb.root_path.clone(), false)];
+        let err = stat_file(&roots, "test", "").unwrap_err();
+        assert!(
+            err.contains("not found or disabled"),
+            "expected disabled-root message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_path_error_for_missing_root_directory() {
+        // Root path doesn't exist on disk — should say "not accessible"
+        let roots = vec![RootConfig {
+            name: "ghost".to_string(),
+            path: "/nonexistent/path/xyz".to_string(),
+            enabled: true,
+            pinned_folders: vec![],
+        }];
+        let err = stat_file(&roots, "ghost", "").unwrap_err();
+        assert!(
+            err.contains("not accessible"),
+            "expected root-not-accessible message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_path_error_for_path_escape() {
+        let sb = Sandbox::new();
+        // Create a real file in the parent of the sandbox root, reachable
+        // via "../" — canonicalize will succeed, triggering the starts_with
+        // containment check which produces the "outside root" error.
+        let sibling = tempfile::NamedTempFile::new_in(sb.root_path.parent().unwrap()).unwrap();
+        let sibling_name = sibling.path().file_name().unwrap();
+        let escape_path = format!("../{}", sibling_name.to_string_lossy());
+
+        let roots = vec![sb.root()];
+        let err = stat_file(&roots, "test", &escape_path).unwrap_err();
+        assert!(
+            err.contains("outside root"),
+            "expected path-escape message, got: {err}"
+        );
     }
 }

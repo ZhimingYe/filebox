@@ -7,6 +7,8 @@ import { Login } from './components/Login';
 import { BackendList } from './components/BackendList';
 import { FileBrowser } from './components/FileBrowser';
 import { PreviewPane } from './components/PreviewPane';
+import { PreviewWorkspace } from './components/PreviewWorkspace';
+import { usePreviewTabs } from './hooks/usePreviewTabs';
 import { AgentSettings } from './components/AgentSettings';
 import { AboutDialog } from './components/AboutDialog';
 import { SystemStats } from './components/SystemStats';
@@ -59,7 +61,13 @@ export default function App() {
 
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [view, setView] = useState<View>('files');
-  const [preview, setPreview] = useState<{ root: string; path: string; entry: FsEntry } | null>(null);
+  // Desktop multi-tab / mobile single-tab preview state. The hook owns tab
+  // lifecycle (open/activate/replace/close/prune); App only orchestrates when
+  // those operations happen (file click, agent switch, root invalidation,
+  // keyboard nav). Mobile is driven through `replaceAll` so it always has at
+  // most one tab, preserving the existing list-or-preview model.
+  const previewTabs = usePreviewTabs();
+  const activeTab = previewTabs.activeTab;
   const [progressMap, setProgressMap] = useState<Map<string, ProgressEvent>>(new Map());
   const progressTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -216,38 +224,32 @@ export default function App() {
     fileListRef.current = info;
   }, []);
 
-  // Esc closes preview; ← → jump to previous/next file in the same directory
+  // Esc closes the active tab; ← → switch between open preview tabs.
   useEffect(() => {
-    if (!preview) return;
+    if (!activeTab) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return;
       }
       if (e.key === 'Escape') {
-        setPreview(null);
+        previewTabs.close(activeTab.id);
         return;
       }
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-      const info = fileListRef.current;
-      if (!info || info.root !== preview.root) return;
-      // preview.path is absolute within root, e.g. /sub/file.txt or /file.txt
-      const previewDir = preview.path.replace(/\/[^/]*$/, '') || '/';
-      if (info.path !== previewDir) return;
-      const files = info.entries.filter((en) => en.entry_type === 'file' && !en.denied);
-      const currentName = preview.path.split('/').pop() || '';
-      const idx = files.findIndex((en) => en.name === currentName);
+      const tabs = previewTabs.tabs;
+      if (tabs.length < 2) return;
+      const idx = tabs.findIndex((t) => t.id === activeTab.id);
       if (idx === -1) return;
-      const nextIdx = e.key === 'ArrowRight' ? idx + 1 : idx - 1;
-      if (nextIdx < 0 || nextIdx >= files.length) return;
       e.preventDefault();
-      const next = files[nextIdx];
-      const nextPath = (previewDir === '/' ? '' : previewDir) + '/' + next.name;
-      setPreview({ root: preview.root, path: nextPath, entry: next });
+      const nextIdx = e.key === 'ArrowRight'
+        ? (idx + 1) % tabs.length
+        : (idx - 1 + tabs.length) % tabs.length;
+      previewTabs.activate(tabs[nextIdx].id);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [preview]);
+  }, [activeTab, previewTabs]);
 
   const selectedAgent = useMemo(() => agents.find((a) => a.id === selectedAgentId) || null, [agents, selectedAgentId]);
 
@@ -322,17 +324,18 @@ export default function App() {
     }
   }, [selectedAgent, enabledRoots, selectedRoot]);
 
-  // Drop an open preview when it can no longer be served: either the agent has
-  // no enabled roots at all, or the preview's own root got disabled/removed.
-  // Both would otherwise leave a stale preview pane pointing at an
-  // inaccessible file (root_unavailable error on fetch). Contained here so the
-  // existing root/path reconciliation above stays untouched.
+  // Drop preview tabs whose root can no longer be served: either the agent
+  // has no enabled roots at all, or a tab's own root got disabled/removed.
+  // Both would otherwise leave a stale preview pointing at an inaccessible
+  // file (root_unavailable error on fetch). pruneByRoots removes the affected
+  // tabs and re-picks the nearest surviving active tab automatically.
   useEffect(() => {
-    if (!preview) return;
-    if (enabledRoots.length === 0 || !enabledRoots.some((r) => r.name === preview.root)) {
-      setPreview(null);
+    if (previewTabs.tabs.length === 0) return;
+    const enabled = new Set(enabledRoots.map((r) => r.name));
+    if (previewTabs.tabs.some((t) => !enabled.has(t.root))) {
+      previewTabs.pruneByRoots(enabled);
     }
-  }, [enabledRoots, preview]);
+  }, [enabledRoots, previewTabs]);
 
   // Atomically apply a navigation for the current agent: update state + record
   // both the per-agent position and the per-root path memory.
@@ -357,15 +360,27 @@ export default function App() {
     applyNav(root, restored);
   }, [selectedAgent, selectedRoot, currentPath, applyNav]);
   const handleFileSelect = useCallback((root: string, path: string, entry: FsEntry) => {
-    setPreview({ root, path, entry });
-  }, []);
+    if (!selectedAgentId) return;
+    const input = { agentId: selectedAgentId, root, path, entry };
+    // Desktop opens/activates a tab per file; mobile keeps a single active
+    // tab (its list-or-preview model replaces the tab list on each open).
+    // Depends on selectedAgentId (not the whole selectedAgent object) so the
+    // callback stays referentially stable across health refreshes.
+    if (isMobile) {
+      previewTabs.replaceAll(input);
+    } else {
+      previewTabs.openOrActivate(input);
+    }
+  }, [isMobile, selectedAgentId, previewTabs]);
 
   const selectAgent = useCallback((id: string) => {
     setSelectedAgentId(id);
     setView('files');
-    setPreview(null);
+    // Agent switch clears all preview tabs, matching the prior single-preview
+    // behavior — previews never outlive the agent they belong to.
+    previewTabs.closeAll();
     if (isMobile) setSidebarOpen(false);
-  }, [isMobile]);
+  }, [isMobile, previewTabs]);
 
   const navigate = useCallback((v: View) => {
     setView(v);
@@ -500,10 +515,10 @@ export default function App() {
                 // A pin click should always land in the Files view, even if the
                 // user is currently on Settings/Health/Stats. On mobile, an open
                 // preview would otherwise keep showing on top of the just-navigated
-                // file list (showMobilePreview only checks for preview existence),
-                // so close it explicitly — the user clicked a folder, they want to
-                // SEE that folder, not the file they were previewing before.
-                setPreview(null);
+                // file list (showMobilePreview only checks for an active tab),
+                // so close it explicitly — the user clicked a folder, they want
+                // to SEE that folder, not the file they were previewing before.
+                previewTabs.closeAll();
                 navigate('files');
                 setNavRequest({ root, path, nonce: Date.now() });
               }}
@@ -535,7 +550,7 @@ export default function App() {
   );
 
   // ── Mobile file view: show list OR preview, not both ──
-  const showMobilePreview = isMobile && preview && view === 'files';
+  const showMobilePreview = isMobile && !!activeTab && view === 'files';
 
   return (
     <div style={styles.app}>
@@ -561,7 +576,7 @@ export default function App() {
             <button onClick={() => setSidebarOpen(true)} style={styles.hamburger}>&#9776;</button>
             <span style={styles.mobileTitle}>{selectedAgent?.name || 'filebox'}</span>
             {showMobilePreview && (
-              <button onClick={() => setPreview(null)} style={styles.backBtn}>&larr; Back</button>
+              <button onClick={() => previewTabs.closeAll()} style={styles.backBtn}>&larr; Back</button>
             )}
           </div>
         )}
@@ -598,13 +613,13 @@ export default function App() {
                     onSwitchRoot={switchRoot}
                   />
                 </div>
-                {showMobilePreview && (
+                {showMobilePreview && activeTab && (
                   <div style={styles.mobilePreviewWrap}>
                     <div style={styles.previewHeader}>
-                      <span style={styles.previewPath}>{preview!.path}</span>
+                      <span style={styles.previewPath}>{activeTab.path}</span>
                       <div style={styles.previewActions}>
                         <a
-                          href={fileRawUrl(selectedAgent.id, preview!.root, preview!.path)}
+                          href={fileRawUrl(selectedAgent.id, activeTab.root, activeTab.path)}
                           download
                           style={styles.headerLink}
                           title="Download"
@@ -615,10 +630,10 @@ export default function App() {
                     </div>
                     <PreviewPane
                       agentId={selectedAgent.id}
-                      root={preview!.root}
-                      path={preview!.path}
-                      entryType={preview!.entry.entry_type}
-                      denied={preview!.entry.denied}
+                      root={activeTab.root}
+                      path={activeTab.path}
+                      entryType={activeTab.entry.entry_type}
+                      denied={activeTab.entry.denied}
                     />
                   </div>
                 )}
@@ -626,7 +641,7 @@ export default function App() {
             ) : (
               // Desktop: side-by-side split, resizable
               <div ref={splitContainerRef} style={styles.splitView}>
-                <div style={{ ...styles.filePanel, flex: preview ? `0 0 ${splitRatio * 100}%` : '1' }}>
+                <div style={{ ...styles.filePanel, flex: activeTab ? `0 0 ${splitRatio * 100}%` : '1' }}>
                   <FileBrowser
                     agentId={selectedAgent.id}
                     roots={selectedAgent.roots}
@@ -641,7 +656,7 @@ export default function App() {
                     onSwitchRoot={switchRoot}
                   />
                 </div>
-                {preview && (
+                {activeTab && (
                   <>
                     <div
                       onMouseDown={startSplitDrag}
@@ -650,30 +665,14 @@ export default function App() {
                       style={{ ...styles.splitter, ...(splitterHover ? styles.splitterHover : {}) }}
                       title="Drag to resize"
                     />
-                    <div style={styles.previewPanel}>
-                      <div style={styles.previewHeader}>
-                        <span style={styles.previewPath}>{preview.path}</span>
-                        <div style={styles.previewActions}>
-                          <a
-                            href={fileRawUrl(selectedAgent.id, preview.root, preview.path)}
-                            download
-                            style={styles.headerLink}
-                            title="Download"
-                          >
-                            Download
-                          </a>
-                          <button onClick={() => setPreview(null)} style={styles.closeBtn} title="Close (Esc)">&times;</button>
-                        </div>
-                      </div>
-                      <PreviewPane
-                        key={`${preview.root}:${preview.path}`}
-                        agentId={selectedAgent.id}
-                        root={preview.root}
-                        path={preview.path}
-                        entryType={preview.entry.entry_type}
-                        denied={preview.entry.denied}
-                      />
-                    </div>
+                    <PreviewWorkspace
+                      agentId={selectedAgent.id}
+                      tabs={previewTabs.tabs}
+                      activeTab={activeTab}
+                      activeTabId={previewTabs.activeTabId}
+                      onActivate={previewTabs.activate}
+                      onClose={previewTabs.close}
+                    />
                   </>
                 )}
               </div>
@@ -905,7 +904,6 @@ const styles: Record<string, React.CSSProperties> = {
   splitterHover: {
     background: c.accent,
   } as React.CSSProperties,
-  previewPanel: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
   previewHeader: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
     padding: '8px 16px', borderBottom: `1px solid ${c.border}`, background: c.bgSubtle,
@@ -918,10 +916,6 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.15s',
   },
   previewPath: { color: c.textMuted, fontSize: 12, fontFamily: font.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 },
-  closeBtn: {
-    background: 'none', border: 'none', color: c.textMuted, fontSize: 18,
-    cursor: 'pointer', padding: '0 4px', borderRadius: radius.sm,
-  },
   // ── Mobile file/preview ──
   mobileFileWrap: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
   mobilePreviewWrap: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },

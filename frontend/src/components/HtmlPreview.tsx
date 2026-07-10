@@ -47,14 +47,17 @@ function previewCsp(baseUrl: string): string {
 
 // Inject a locked <base> and CSP meta so relative resources resolve through
 // the tokenized preview endpoint instead of the main Filebox API surface.
-function injectPreviewGuards(html: string, baseUrl: string): string {
+// When injectCharset is true, prepends <meta charset="utf-8"> as the very
+// first element in <head> — must be within the first 1024 bytes per HTML spec.
+function injectPreviewGuards(html: string, baseUrl: string, injectCharset: boolean): string {
   const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
   const escapedBaseUrl = escapeAttr(normalizedBaseUrl);
   const escapedCsp = escapeAttr(previewCsp(normalizedBaseUrl));
   const guardTags = [
+    injectCharset ? `<meta charset="utf-8">` : null,
     `<meta http-equiv="Content-Security-Policy" content="${escapedCsp}">`,
     `<base href="${escapedBaseUrl}" target="_self">`,
-  ].join('\n');
+  ].filter((t): t is string => t !== null).join('\n');
   const withoutExistingBase = html.replace(/<base\b[^>]*>/gi, '');
 
   const headMatch = withoutExistingBase.match(/<head[^>]*>/i);
@@ -105,8 +108,16 @@ const docWarningBanner: CSSProperties = {
   padding: '10px 14px', background: c.warningBg,
   borderBottom: `1px solid ${c.border}`, flexShrink: 0,
 };
+const docInfoBanner: CSSProperties = {
+  ...docWarningBanner,
+  background: c.successBg,
+};
 const docWarningTitle: CSSProperties = {
   color: c.warning, fontWeight: 600, fontSize: 12.5, marginBottom: 2,
+};
+const docInfoTitle: CSSProperties = {
+  ...docWarningTitle,
+  color: c.success,
 };
 const docWarningBody: CSSProperties = {
   color: c.textSecondary, fontSize: 12, lineHeight: 1.5,
@@ -115,6 +126,12 @@ const docWarningClose: CSSProperties = {
   flexShrink: 0, border: 'none', background: 'transparent',
   color: c.textMuted, cursor: 'pointer', fontSize: 16, lineHeight: 1,
   padding: '0 2px', alignSelf: 'flex-start',
+};
+const toggleBtn: CSSProperties = {
+  flexShrink: 0, border: `1px solid ${c.border}`, borderRadius: 4,
+  background: c.surface, color: c.textSecondary, cursor: 'pointer',
+  fontSize: 11.5, fontWeight: 500, padding: '4px 10px', whiteSpace: 'nowrap',
+  alignSelf: 'flex-start',
 };
 
 export function HtmlPreview({ agentId, root, path, url }: Props) {
@@ -132,6 +149,18 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   const [slowRendering, setSlowRendering] = useState(false);
   const [showSource, setShowSource] = useState(false);
   const [dismissedFileKey, setDismissedFileKey] = useState<string | null>(null);
+  const [charsetFix, setCharsetFix] = useState<boolean>(() => {
+    try { return localStorage.getItem('filebox:htmlCharsetFix') !== 'false'; }
+    catch { return true; }
+  });
+  const toggleCharsetFix = useCallback(() => {
+    setCharsetFix(prev => {
+      const next = !prev;
+      try { localStorage.setItem('filebox:htmlCharsetFix', String(next)); }
+      catch { /* ignore */ }
+      return next;
+    });
+  }, []);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const mounted = useMounted();
   const previewCancelRef = useRef<AbortController | null>(null);
@@ -144,10 +173,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
     if (!text) return null;
     const { missingHtml, missingCharset } = detectDocIssues(text);
     if (!missingHtml && !missingCharset) return null;
-    const parts: string[] = [];
-    if (missingHtml) parts.push('<html>');
-    if (missingCharset) parts.push('<meta charset="utf-8">');
-    return { missing: parts.join(' and/or ') };
+    return { missingHtml, missingCharset };
   }, [text]);
 
   const fileKey = `${root}:${path}`;
@@ -206,8 +232,9 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
       setBlobUrl(null);
       return;
     }
-    const processedHtml = injectPreviewGuards(text, previewBaseUrl);
-    const blob = new Blob([processedHtml], { type: 'text/html' });
+    const injectCharset = charsetFix && !!docIssue?.missingCharset;
+    const processedHtml = injectPreviewGuards(text, previewBaseUrl, injectCharset);
+    const blob = new Blob([processedHtml], { type: injectCharset ? 'text/html; charset=utf-8' : 'text/html' });
     const nextBlobUrl = URL.createObjectURL(blob);
     setBlobUrl(nextBlobUrl);
     setIframeLoading(true);
@@ -216,7 +243,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
     return () => {
       URL.revokeObjectURL(nextBlobUrl);
     };
-  }, [text, previewBaseUrl]);
+  }, [text, previewBaseUrl, charsetFix, docIssue?.missingCharset]);
 
   useEffect(() => {
     if (!iframeLoading || showSource || !blobUrl) return;
@@ -361,13 +388,36 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
         </button>
       </div>
 
-      {docIssue && !docWarningHidden && (
+      {docIssue?.missingCharset && (
+        <div style={charsetFix ? docInfoBanner : docWarningBanner}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={charsetFix ? docInfoTitle : docWarningTitle}>
+              {charsetFix ? 'Charset auto-fixed' : 'Missing charset declaration'}
+            </div>
+            <div style={docWarningBody}>
+              {charsetFix
+                ? <>This HTML lacks a charset declaration.{' '}
+                  <code>{'<meta charset="utf-8">'}</code> was injected automatically.
+                  {docIssue.missingHtml && <> Also missing{' '}
+                  <code>{'<html>'}</code> tags — browsers handle this gracefully but the markup is non-standard.</>}
+                  </>
+                : <>Non-ASCII characters may appear garbled.{' '}
+                  Enable auto-fix to inject the charset tag.</>}
+            </div>
+          </div>
+          <button type="button" onClick={toggleCharsetFix} style={toggleBtn}>
+            Auto-fix: {charsetFix ? 'ON' : 'OFF'}
+          </button>
+        </div>
+      )}
+
+      {docIssue?.missingHtml && !docIssue?.missingCharset && !docWarningHidden && (
         <div style={docWarningBanner}>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={docWarningTitle}>This HTML may render incorrectly</div>
+            <div style={docWarningTitle}>Non-standard HTML structure</div>
             <div style={docWarningBody}>
-              The file is missing {docIssue.missing}. Non-ASCII characters (e.g. Chinese) may appear garbled in this sandboxed preview.{' '}
-              <a href={url} download style={styles.downloadLink}>Download</a> and open it directly, or manually add the missing tags near the top of the file.
+              The file is missing an <code>{'<html>'}</code> element. Browsers handle this gracefully, but you can{' '}
+              <a href={url} download style={styles.downloadLink}>download</a> the original file if needed.
             </div>
           </div>
           <button

@@ -12,7 +12,7 @@ use filebox_protocol::resources::{ProcessInfo, SysStats, UserAgg, UserTotals};
 ///
 /// `TOP_PROCESSES` is the per-request ceiling carried in the payload. The
 /// browser picks how many to actually show (default 50, up to 500), so we
-/// always send the full cap to let a viewer who wants more ("看多多") do so
+/// always send the full cap to let a viewer who wants more ("power user") do so
 /// instantly without a second round-trip. select_top_n_by is O(N) in the
 /// process count regardless of k, so raising k costs nothing on the sweep;
 /// the cost is only payload size. 500 × ~1KB capped command ≈ 500KB worst

@@ -215,7 +215,7 @@ export function DirectoryTree({ agentId, rootName, rootPath, currentPath, onNavi
             {state.error && (
               <div style={{ ...styles.error, paddingLeft: 4 + (depth + 1) * 14 }}>
                 {state.error}
-                <span style={styles.errorHint}> — 点工具栏刷新重试</span>
+                <span style={styles.errorHint}> — click toolbar refresh to retry</span>
               </div>
             )}
             {state.items.map((item) => renderNode(childPath(path, item.name), item.name, depth + 1))}

@@ -1056,13 +1056,23 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+// Current year omits the year; post-2000 years use 2 digits (25 not 2025).
 function formatDate(iso: string): string {
   const d = new Date(iso);
+  const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (d.getFullYear() === now.getFullYear()) {
+    return `${md} ${hm}`;
+  }
+  const yr = d.getFullYear() >= 2000
+    ? String(d.getFullYear()).slice(-2)
+    : String(d.getFullYear());
+  return `${yr}-${md} ${hm}`;
 }
 
-// Compact form for narrow mobile rows: same year drops the year prefix.
+// Compact form for narrow mobile rows.
 function formatDateShort(iso: string): string {
   const d = new Date(iso);
   const now = new Date();
@@ -1071,7 +1081,10 @@ function formatDateShort(iso: string): string {
   if (d.getFullYear() === now.getFullYear()) {
     return `${md} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
-  return `${d.getFullYear()}-${md}`;
+  const yr = d.getFullYear() >= 2000
+    ? String(d.getFullYear()).slice(-2)
+    : String(d.getFullYear());
+  return `${yr}-${md}`;
 }
 
 const styles: Record<string, React.CSSProperties> = {
