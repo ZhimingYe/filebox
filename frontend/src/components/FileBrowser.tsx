@@ -610,55 +610,51 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
         <span style={styles.icon}>
           {isBack ? <IconUpDir /> : getEntryIcon(displayEntry!)}
         </span>
-        <span
-          style={{
-            ...styles.entryName,
-            fontFamily: fileNameSerif ? font.serif : font.sans,
-            ...(!isBack && nameAlignRight ? { direction: 'rtl', textAlign: 'right' } : {}),
-          }}
-          title={isBack ? undefined : displayEntry!.name}
-        >
-          {isBack ? (
-            '..'
-          ) : nameAlignRight ? (
-            // bidi-isolate the name so characters still render LTR while the
-            // cell is RTL: overflow + ellipsis then clip the PREFIX, keeping
-            // the filename suffix pinned to the right edge of the cell.
-            <bdi dir="ltr">{displayEntry!.name}</bdi>
-          ) : (
-            displayEntry!.name
-          )}
-        </span>
-        {!isBack && displayEntry!.denied && <span style={styles.deniedBadge}>denied</span>}
-        {!isBack && isHovered && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              // Copy the FULL path to this entry (directory + filename), not
-              // just the bare name. fullAddress already ends at the current
-              // directory (no trailing slash except at root), so we only add a
-              // separator when we're deeper than the root.
-              const sep = currentPath === '/' ? '' : '/';
-              copyToClipboard(fullAddress + sep + displayEntry!.name, `name-${index}`);
+        <div style={styles.entryNameCell}>
+          <span
+            style={{
+              ...styles.entryName,
+              fontFamily: fileNameSerif ? font.serif : font.sans,
+              ...(!isBack && nameAlignRight ? { direction: 'rtl', textAlign: 'right', flex: '1 1 auto' } : {}),
             }}
-            style={styles.copyNameBtn}
-            title="Copy full path"
+            title={isBack ? undefined : displayEntry!.name}
           >
-            {copiedPath === `name-${index}` ? (
-              // checkmark — shown for ~2s after a successful copy
-              <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M3.5 8.5l3 3 6-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+            {isBack ? (
+              '..'
+            ) : nameAlignRight ? (
+              // bidi-isolate the name so characters still render LTR while the
+              // cell is RTL: overflow + ellipsis then clip the PREFIX, keeping
+              // the filename suffix pinned to the right edge of the cell.
+              <bdi dir="ltr">{displayEntry!.name}</bdi>
             ) : (
-              // clipboard glyph — matches the toolbar copy-address button
-              <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="3" y="4" width="9" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
-                <path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                <path d="M6 8h4M6 10.5h2.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
-              </svg>
+              displayEntry!.name
             )}
-          </button>
-        )}
+          </span>
+          {!isBack && displayEntry!.denied && <span style={styles.deniedBadge}>denied</span>}
+          {!isBack && isHovered && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                const sep = currentPath === '/' ? '' : '/';
+                copyToClipboard(fullAddress + sep + displayEntry!.name, `name-${index}`);
+              }}
+              style={styles.copyNameBtn}
+              title="Copy full path"
+            >
+              {copiedPath === `name-${index}` ? (
+                <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M3.5 8.5l3 3 6-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              ) : (
+                <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <rect x="3" y="4" width="9" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
+                  <path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                  <path d="M6 8h4M6 10.5h2.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
+                </svg>
+              )}
+            </button>
+          )}
+        </div>
         {!isBack && displayEntry!.modified && (
           <span style={isMobile ? styles.entryDateMobile : styles.entryDate}>
             {isMobile ? formatDateShort(displayEntry!.modified) : formatDate(displayEntry!.modified)}
@@ -1370,23 +1366,28 @@ const styles: Record<string, React.CSSProperties> = {
     background: c.bgMuted,
   },
   icon: { fontSize: 14, width: 20, textAlign: 'center', flexShrink: 0 },
-  entryName: { color: c.text, fontSize: 14, fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  entryDate: { color: c.textMuted, fontSize: 12, width: 130, textAlign: 'right', flexShrink: 0 },
+  entryNameCell: {
+    flex: 1, minWidth: 0, display: 'flex',
+    alignItems: 'center', gap: 4, overflow: 'hidden', boxSizing: 'border-box',
+  },
+  entryName: { color: c.text, fontSize: 14, fontWeight: 500, flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  entryDate: {
+    color: c.textMuted, fontSize: 12, width: 130, textAlign: 'right',
+    flexShrink: 0, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+  },
   entryDateMobile: { color: c.textMuted, fontSize: 10, textAlign: 'right', flexShrink: 0, width: 72 },
   entryMeta: { color: c.textFaint, fontSize: 12, width: 80, textAlign: 'right', flexShrink: 0 },
   deniedBadge: {
     color: c.warning, fontSize: 10, fontStyle: 'normal', fontWeight: 500,
     padding: '1px 6px', background: c.warningBg, borderRadius: radius.pill, flexShrink: 0,
   },
-  // Per-row copy button. Square icon-only button (no text) so it visually
-  // matches the toolbar copy-address button — same clipboard glyph, same
-  // checkmark on success. Kept compact (24×24) to fit inside a 32px-tall row
-  // without crowding the date/size columns.
+  // Consume only the filename cell's spare space. The following date column
+  // remains a separate, non-shrinking 130px region, so the button can sit at
+  // the visual end of the name column without ever overlapping the date.
   copyNameBtn: {
     padding: 0, borderRadius: radius.sm, border: 'none',
     background: 'transparent', color: c.textMuted, cursor: 'pointer',
-    lineHeight: 1, flexShrink: 0, marginLeft: 4,
-    width: 24, height: 24,
+    lineHeight: 1, width: 24, height: 24, flexShrink: 0, marginLeft: 'auto',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     boxSizing: 'border-box', transition: 'color 0.15s',
   },

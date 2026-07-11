@@ -2,6 +2,20 @@
 
 All notable changes to Filebox are listed here. Dates are UTC.
 
+## v0.8.0 — 2026-07-11
+
+### Changed
+- **Denser desktop sidebar** — reduced the expanded sidebar from 200px to 176px and the collapsed rail from 56px to 48px, with tighter desktop-only spacing for agents, navigation, pinned folders, and footer controls. The mobile drawer keeps its existing 280px touch layout.
+- **File-row copy placement** — the per-row copy button now sits at the trailing edge of the filename column while the modified-date and size columns retain protected, non-shrinking widths.
+
+### Fixed
+- **Preview tab keyboard navigation** — Left/Right now cycle only through previews that are already open, preventing keyboard navigation from creating or switching to nonexistent tabs.
+- **Unavailable-root updates** — a previously configured root that disappears can still be disabled or deleted, but cannot be re-enabled until it resolves to a directory again; newly added invalid roots remain atomically rejected.
+- **Mobile process names and states** — the process table now gives PID, user, process name, and state stable mobile widths, with later metrics available by horizontal scrolling instead of collapsing names to a single character.
+- **Process table alignment** — headers and virtualized rows share the same box model and account for the platform scrollbar width, keeping every column aligned across desktop, mobile, and user-filtered views.
+
+---
+
 ## v0.7.0 — 2026-07-10
 
 ### Added

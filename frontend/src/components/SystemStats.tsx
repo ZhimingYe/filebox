@@ -16,6 +16,8 @@ const REFRESH_INTERVAL = 30_000;
 /// detail panel opens above the table — no per-row expand/variable-height hacks.
 const PROC_ROW_HEIGHT_DESKTOP = 36;
 const PROC_ROW_HEIGHT_MOBILE = 48;
+const PROC_GRID_WIDTH_MOBILE_WITH_USER = 606;
+const PROC_GRID_WIDTH_MOBILE_FILTERED = 530;
 
 type Tab = 'overview' | 'users' | 'processes' | 'host';
 
@@ -360,8 +362,10 @@ function ProcessesTab({ stats }: { stats: SysStats }) {
   const [hideKthreads, setHideKthreads] = useState(true);
   const [displayLimit, setDisplayLimit] = useState<number>(loadProcLimit);
   const containerRef = useRef<HTMLDivElement>(null);
+  const listOuterRef = useRef<HTMLDivElement>(null);
   const [listHeight, setListHeight] = useState(400);
   const [listWidth, setListWidth] = useState(800);
+  const [scrollbarWidth, setScrollbarWidth] = useState(0);
 
   // Measure the list container so the virtualized list fills available height
   // AND width. The grid is always the card width; the command column is flex:1,
@@ -393,6 +397,19 @@ function ProcessesTab({ stats }: { stats: SysStats }) {
     [sortedProcs, displayLimit],
   );
 
+  // react-window's vertical scrollbar reduces the actual row content width.
+  // Match the header to that measured width so Name and every metric column
+  // stay aligned on both overlay-scrollbar and classic-scrollbar platforms.
+  useEffect(() => {
+    const el = listOuterRef.current;
+    if (!el) return;
+    const measure = () => setScrollbarWidth(el.offsetWidth - el.clientWidth);
+    measure();
+    const obs = new ResizeObserver(measure);
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [procs.length, rowHeight, isMobile, uidFilter]);
+
   const changeLimit = (n: number) => {
     setDisplayLimit(n);
     try { localStorage.setItem(PROC_LIMIT_KEY, String(n)); } catch { /* ignore quota */ }
@@ -417,6 +434,15 @@ function ProcessesTab({ stats }: { stats: SysStats }) {
   // and opens the detail panel above the table with the full command + metrics.
   // react-window passes an absolutely-positioned style that MUST be spread first.
   const showUser = uidFilter == null;
+  const gridWidth = isMobile
+    ? (showUser ? PROC_GRID_WIDTH_MOBILE_WITH_USER : PROC_GRID_WIDTH_MOBILE_FILTERED)
+    : listWidth;
+  const headerWidth = Math.max(0, gridWidth - scrollbarWidth);
+  const colPid = isMobile ? { ...styles.procColPid, ...styles.procColPidMobile } : styles.procColPid;
+  const colUser = isMobile ? { ...styles.procColUser, ...styles.procColUserMobile } : styles.procColUser;
+  const colName = isMobile ? { ...styles.procColName, ...styles.procColNameMobile } : styles.procColName;
+  const colState = isMobile ? { ...styles.procColState, ...styles.procColStateMobile } : styles.procColState;
+  const stateWrap = isMobile ? { ...styles.procStateWrap, ...styles.procStateWrapMobile } : styles.procStateWrap;
   // Keyboard-accessible sort handler: Enter/Space trigger the same sort as click.
   const sortOnKey = (k: ProcSortKey) => ({
     role: 'button' as const,
@@ -440,15 +466,15 @@ function ProcessesTab({ stats }: { stats: SysStats }) {
         onClick={toggle}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } }}
       >
-        <span style={{ ...styles.procCell, ...styles.procColPid }}>{p.pid}</span>
+        <span style={{ ...styles.procCell, ...colPid }}>{p.pid}</span>
         {showUser && (
-          <span style={{ ...styles.procCell, ...styles.procColUser }}>{p.user}</span>
+          <span style={{ ...styles.procCell, ...colUser }}>{p.user}</span>
         )}
-        <span style={{ ...styles.procCell, ...styles.procColName, fontWeight: 500 }}>
+        <span style={{ ...styles.procCell, ...colName, fontWeight: 500 }}>
           {p.name}
           {p.nproc != null && <span style={styles.nprocBadge}>{p.nproc}p</span>}
         </span>
-        <span style={styles.procStateWrap}><StateBadge state={p.state} /></span>
+        <span style={stateWrap}><StateBadge state={p.state} /></span>
         <span style={{ ...styles.procCell, ...styles.procColMem }}>{formatBytes(p.mem_bytes)}</span>
         <span style={{ ...styles.procCell, ...styles.procColCpu }}>{p.cpu_usage.toFixed(1)}</span>
         <span style={{ ...styles.procCell, ...styles.procColCputime }}>{formatCpuMs(p.accumulated_cpu_ms)}</span>
@@ -504,22 +530,21 @@ function ProcessesTab({ stats }: { stats: SysStats }) {
 
       <div style={styles.card}>
         <div style={styles.tableScroll}>
-          {/* Column headers — a flex row the width of the card. The command
-              column is flex:1 so it absorbs whatever width is left after the
-              fixed columns; no horizontal scroll, no wasted space. */}
-          <div style={{ ...styles.procHeaderRow, width: listWidth }}>
-            <span style={styles.procColPid}>PID</span>
+          {/* Desktop fits the card. Mobile uses a deliberate fixed grid so the
+              identity columns stay readable and the metric columns scroll. */}
+          <div style={{ ...styles.procHeaderRow, width: headerWidth }}>
+            <span style={colPid}>PID</span>
             {showUser && (
               <span
-                style={{ ...styles.procColUser, cursor: 'pointer', userSelect: 'none' }}
+                style={{ ...colUser, cursor: 'pointer', userSelect: 'none' }}
                 {...sortOnKey('user')}
               >User{sortKey === 'user' ? ' ▾' : ''}</span>
             )}
             <span
-              style={{ ...styles.procColName, cursor: 'pointer', userSelect: 'none' }}
+              style={{ ...colName, cursor: 'pointer', userSelect: 'none' }}
               {...sortOnKey('name')}
             >Name{sortKey === 'name' ? ' ▾' : ''}</span>
-            <span style={styles.procColState}>St</span>
+            <span style={colState}>St</span>
             <span
               style={{ ...styles.procColMem, cursor: 'pointer', userSelect: 'none' }}
               {...sortOnKey('mem_bytes')}
@@ -539,7 +564,10 @@ function ProcessesTab({ stats }: { stats: SysStats }) {
           </div>
 
           {/* Virtualized body — only the visible ~10-15 rows are in the DOM. */}
-          <div ref={containerRef} style={styles.procListContainer}>
+          <div
+            ref={containerRef}
+            style={isMobile ? { ...styles.procListContainer, width: gridWidth } : styles.procListContainer}
+          >
             {procs.length === 0 ? (
               <div style={styles.emptyRow}>No processes</div>
             ) : (
@@ -547,7 +575,8 @@ function ProcessesTab({ stats }: { stats: SysStats }) {
                 height={listHeight}
                 itemCount={procs.length}
                 itemSize={rowHeight}
-                width={listWidth}
+                width={gridWidth}
+                outerRef={listOuterRef}
                 style={{ overflowX: 'hidden' }}
               >
                 {ProcRow}
@@ -922,8 +951,8 @@ const styles: Record<string, React.CSSProperties> = {
   // ── Virtualized process grid (header + body share these widths) ───────
   // Mirrors the FileBrowser colName/entryName pairing: the header row and each
   // body row reference width-matched styles so columns align without a <table>.
-  // Holds the virtualized list. The grid is always the card width (no
-  // horizontal scroll), so just clip and let the list own vertical scrolling.
+  // Holds the virtualized list. Desktop fills the card; mobile receives an
+  // explicit grid width from ProcessesTab so identity columns cannot collapse.
   procListContainer: { flex: 1, overflow: 'hidden', minHeight: 200 },
   // INVARIANT: procHeaderRow and procRow MUST share the same horizontal box
   // model (both have zero outer horizontal padding here). Name is flex:1, so
@@ -941,14 +970,20 @@ const styles: Record<string, React.CSSProperties> = {
   },
   // Header cells. Fixed-width metric columns + a flex Name column that absorbs
   // the leftover card width — no horizontal scroll, no wasted space.
-  procColPid:    { width: 60, textAlign: 'right', flexShrink: 0, padding: '0 8px' },
-  procColUser:   { width: 110, textAlign: 'left', flexShrink: 0, padding: '0 8px' },
-  procColName:   { flex: 1, minWidth: 0, textAlign: 'left', flexShrink: 1, padding: '0 8px' },
-  procColState:  { width: 34, textAlign: 'center', flexShrink: 0, padding: '0 4px' },
-  procColMem:    { width: 80, textAlign: 'right', flexShrink: 0, padding: '0 8px' },
-  procColCpu:    { width: 60, textAlign: 'right', flexShrink: 0, padding: '0 8px' },
-  procColCputime:{ width: 80, textAlign: 'right', flexShrink: 0, padding: '0 8px' },
-  procColRun:    { width: 70, textAlign: 'right', flexShrink: 0, padding: '0 8px' },
+  procColPid:    { width: 60, textAlign: 'right', flexShrink: 0, padding: '0 8px', boxSizing: 'border-box' },
+  procColUser:   { width: 110, textAlign: 'left', flexShrink: 0, padding: '0 8px', boxSizing: 'border-box' },
+  procColName:   { flex: 1, minWidth: 0, textAlign: 'left', flexShrink: 1, padding: '0 8px', boxSizing: 'border-box' },
+  procColState:  { width: 34, textAlign: 'center', flexShrink: 0, padding: '0 4px', boxSizing: 'border-box' },
+  procColMem:    { width: 80, textAlign: 'right', flexShrink: 0, padding: '0 8px', boxSizing: 'border-box' },
+  procColCpu:    { width: 60, textAlign: 'right', flexShrink: 0, padding: '0 8px', boxSizing: 'border-box' },
+  procColCputime:{ width: 80, textAlign: 'right', flexShrink: 0, padding: '0 8px', boxSizing: 'border-box' },
+  procColRun:    { width: 70, textAlign: 'right', flexShrink: 0, padding: '0 8px', boxSizing: 'border-box' },
+  // Mobile identity columns total 316px (48 + 76 + 160 + 32), fitting the
+  // process card's initial viewport while metrics remain available by swipe.
+  procColPidMobile: { width: 48, padding: '0 4px' },
+  procColUserMobile: { width: 76, padding: '0 6px' },
+  procColNameMobile: { width: 160, flex: '0 0 160px', padding: '0 6px' },
+  procColStateMobile: { width: 32, padding: '0 2px' },
   // Body row: a centered single-line flex row. The Name cell is flex:1
   // (truncated+ellipsis) so it absorbs leftover width with no gaps.
   procRow: {
@@ -992,6 +1027,7 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: 'pre-wrap', wordBreak: 'break-all', lineHeight: '15px', maxHeight: 220, overflow: 'auto',
   },
   procStateWrap: { width: 34, flexShrink: 0, textAlign: 'center', padding: '0 4px', boxSizing: 'border-box' },
+  procStateWrapMobile: { width: 32, padding: '0 2px' },
   kvRow: { display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: `1px solid ${c.borderSubtle}` },
   kvKey: { fontSize: 12, color: c.textMuted },
   kvVal: { fontSize: 13, color: c.text, fontFamily: font.mono },

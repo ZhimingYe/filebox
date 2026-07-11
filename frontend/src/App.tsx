@@ -224,8 +224,7 @@ export default function App() {
     fileListRef.current = info;
   }, []);
 
-  // Esc closes the active tab; ← → replace it with the previous/next
-  // file in the directory currently shown by FileBrowser.
+  // Esc closes the active tab; ← → switch between open preview tabs.
   useEffect(() => {
     if (!activeTab) return;
     const onKey = (e: KeyboardEvent) => {
@@ -238,27 +237,15 @@ export default function App() {
         return;
       }
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-      const info = fileListRef.current;
-      if (!info || info.root !== activeTab.root) return;
-      const previewDir = activeTab.path.replace(/\/[^/]*$/, '') || '/';
-      if (info.path !== previewDir) return;
-      const files = info.entries.filter((entry) => entry.entry_type === 'file' && !entry.denied);
-      const currentName = activeTab.path.split('/').pop() || '';
-      const idx = files.findIndex((entry) => entry.name === currentName);
+      const tabs = previewTabs.tabs;
+      if (tabs.length < 2) return;
+      const idx = tabs.findIndex((t) => t.id === activeTab.id);
       if (idx === -1) return;
-      const nextIdx = e.key === 'ArrowRight'
-        ? idx + 1
-        : idx - 1;
-      if (nextIdx < 0 || nextIdx >= files.length) return;
       e.preventDefault();
-      const next = files[nextIdx];
-      const nextPath = (previewDir === '/' ? '' : previewDir) + '/' + next.name;
-      previewTabs.replaceActive({
-        agentId: activeTab.agentId,
-        root: activeTab.root,
-        path: nextPath,
-        entry: next,
-      });
+      const nextIdx = e.key === 'ArrowRight'
+        ? (idx + 1) % tabs.length
+        : (idx - 1 + tabs.length) % tabs.length;
+      previewTabs.activate(tabs[nextIdx].id);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -445,6 +432,7 @@ export default function App() {
   // forces expanded (text labels + 280px width) regardless of the persisted
   // preference.
   const collapsed = !isMobile && sidebarCollapsed;
+  const compactSidebar = !isMobile;
 
   const navItems = [
     { v: 'files' as const, label: 'Files', Icon: IconFolder },
@@ -454,7 +442,11 @@ export default function App() {
 
   const sidebarContent = (
     <>
-      <div style={collapsed ? styles.sidebarHeaderCollapsed : styles.sidebarHeader}>
+      <div
+        style={collapsed
+          ? styles.sidebarHeaderCollapsed
+          : { ...styles.sidebarHeader, ...(compactSidebar ? styles.sidebarHeaderCompact : {}) }}
+      >
         {collapsed ? (
           <button
             onClick={() => setSidebarCollapsed(false)}
@@ -488,18 +480,35 @@ export default function App() {
           incantation for "take remaining space and allow shrink-to-scroll" in a
           flex column. */}
       <div style={styles.sidebarScroll}>
-        <div style={collapsed ? styles.sidebarSectionCollapsed : styles.sidebarSection}>
-          {!collapsed && <div style={styles.sectionHeader}>Agents</div>}
+        <div
+          style={collapsed
+            ? styles.sidebarSectionCollapsed
+            : { ...styles.sidebarSection, ...(compactSidebar ? styles.sidebarSectionCompact : {}) }}
+        >
+          {!collapsed && (
+            <div style={{ ...styles.sectionHeader, ...(compactSidebar ? styles.sectionHeaderCompact : {}) }}>
+              Agents
+            </div>
+          )}
           <BackendList
             agents={agents}
             selectedId={selectedAgentId}
             onSelect={selectAgent}
             collapsed={collapsed}
+            compact={compactSidebar}
           />
         </div>
         {selectedAgent && (
-          <div style={collapsed ? styles.sidebarSectionCollapsed : styles.sidebarSection}>
-            {!collapsed && <div style={styles.sectionHeader}>Navigation</div>}
+          <div
+            style={collapsed
+              ? styles.sidebarSectionCollapsed
+              : { ...styles.sidebarSection, ...(compactSidebar ? styles.sidebarSectionCompact : {}) }}
+          >
+            {!collapsed && (
+              <div style={{ ...styles.sectionHeader, ...(compactSidebar ? styles.sectionHeaderCompact : {}) }}>
+                Navigation
+              </div>
+            )}
             <div style={collapsed ? styles.navCollapsed : styles.nav}>
               {navItems.map(({ v, label, Icon }) => (
                 <button
@@ -507,7 +516,9 @@ export default function App() {
                   onClick={() => navigate(v)}
                   title={label}
                   style={{
-                    ...(collapsed ? styles.navBtnCollapsed : styles.navBtn),
+                    ...(collapsed
+                      ? styles.navBtnCollapsed
+                      : { ...styles.navBtn, ...(compactSidebar ? styles.navBtnCompact : {}) }),
                     ...(view === v ? (collapsed ? styles.navBtnCollapsedActive : styles.navBtnActive) : {}),
                   }}
                 >
@@ -519,8 +530,16 @@ export default function App() {
           </div>
         )}
         {selectedAgent && pinnedCount > 0 && (
-          <div style={collapsed ? styles.sidebarSectionCollapsed : styles.sidebarSection}>
-            {!collapsed && <div style={styles.sectionHeader}>Pinned</div>}
+          <div
+            style={collapsed
+              ? styles.sidebarSectionCollapsed
+              : { ...styles.sidebarSection, ...(compactSidebar ? styles.sidebarSectionCompact : {}) }}
+          >
+            {!collapsed && (
+              <div style={{ ...styles.sectionHeader, ...(compactSidebar ? styles.sectionHeaderCompact : {}) }}>
+                Pinned
+              </div>
+            )}
             <PinnedFolders
               agent={selectedAgent}
               collapsed={collapsed}
@@ -541,12 +560,16 @@ export default function App() {
         )}
         <div style={{ flex: 1 }} />
       </div>
-      <div style={collapsed ? styles.sidebarFooterCollapsed : styles.sidebarFooter}>
+      <div
+        style={collapsed
+          ? styles.sidebarFooterCollapsed
+          : { ...styles.sidebarFooter, ...(compactSidebar ? styles.sidebarFooterCompact : {}) }}
+      >
         {!collapsed && health?.hub.version && (
           <button
             onClick={handleOpenAbout}
             title="About filebox"
-            style={styles.aboutEntry}
+            style={{ ...styles.aboutEntry, ...(compactSidebar ? styles.aboutEntryCompact : {}) }}
           >
             Status (v{health.hub.version})
           </button>
@@ -554,7 +577,9 @@ export default function App() {
         <button
           onClick={logout}
           title="Logout"
-          style={collapsed ? styles.logoutBtnCollapsed : styles.logoutBtn}
+          style={collapsed
+            ? styles.logoutBtnCollapsed
+            : { ...styles.logoutBtn, ...(compactSidebar ? styles.logoutBtnCompact : {}) }}
         >
           {collapsed ? <IconLogout /> : 'Logout'}
         </button>
@@ -759,15 +784,15 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: font.sans, position: 'relative', overflow: 'hidden',
   },
   // ── Sidebar ──
-  // Expanded (200px) and collapsed (56px icon rail) variants.
+  // Desktop uses a compact 176px panel and 48px icon rail.
   // Mobile drawer overrides width to 280 via sidebarDrawer.
   sidebarExpanded: {
-    width: 200, borderRight: `1px solid ${c.border}`, display: 'flex',
+    width: 176, borderRight: `1px solid ${c.border}`, display: 'flex',
     flexDirection: 'column', flexShrink: 0, background: c.bgSubtle,
     transition: 'width 0.18s ease',
   },
   sidebarCollapsed: {
-    width: 56, borderRight: `1px solid ${c.border}`, display: 'flex',
+    width: 48, borderRight: `1px solid ${c.border}`, display: 'flex',
     flexDirection: 'column', flexShrink: 0, background: c.bgSubtle,
     transition: 'width 0.18s ease',
   },
@@ -780,9 +805,10 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
     padding: '14px 12px', borderBottom: `1px solid ${c.border}`,
   },
+  sidebarHeaderCompact: { padding: '10px 10px' },
   sidebarHeaderCollapsed: {
     display: 'flex', alignItems: 'center', justifyContent: 'center',
-    padding: '10px 0', borderBottom: `1px solid ${c.border}`,
+    padding: '6px 0', borderBottom: `1px solid ${c.border}`,
   },
   logo: { margin: 0, fontSize: 17, color: c.accent, fontWeight: 700, letterSpacing: -0.3 },
   closeSidebarBtn: {
@@ -797,11 +823,12 @@ const styles: Record<string, React.CSSProperties> = {
   },
   collapseToggleCollapsed: {
     background: 'none', border: 'none', color: c.textMuted, cursor: 'pointer',
-    width: '100%', padding: '8px 0', display: 'flex',
+    width: '100%', padding: '7px 0', display: 'flex',
     alignItems: 'center', justifyContent: 'center',
   },
   sidebarSection: { padding: '12px 12px', borderBottom: `1px solid ${c.border}` },
-  sidebarSectionCollapsed: { padding: '10px 6px', borderBottom: `1px solid ${c.border}` },
+  sidebarSectionCompact: { padding: '9px 8px' },
+  sidebarSectionCollapsed: { padding: '8px 4px', borderBottom: `1px solid ${c.border}` },
   // Scrollable middle of the sidebar (between header and footer). The two
   // non-obvious props: `flex: 1` so it absorbs the space the header/footer
   // don't, and `minHeight: 0` to override the flex default `min-height:auto`,
@@ -815,6 +842,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11, textTransform: 'uppercase', color: c.textMuted,
     letterSpacing: 0.8, marginBottom: 6, fontWeight: 500, paddingLeft: 4,
   },
+  sectionHeaderCompact: { fontSize: 10, marginBottom: 4, letterSpacing: 0.7 },
   nav: { display: 'flex', flexDirection: 'column', gap: 1 },
   navCollapsed: { display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' },
   navBtn: {
@@ -823,14 +851,15 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'transparent', fontWeight: 400, transition: 'all 0.15s',
     display: 'flex', alignItems: 'center', gap: 10,
   },
+  navBtnCompact: { padding: '6px 8px', gap: 8, fontSize: 12.5 },
   navBtnActive: {
     background: c.bgMuted, color: c.text, fontWeight: 500,
   },
   navBtnCollapsed: {
-    padding: '8px 0', borderRadius: radius.md, border: 'none',
+    padding: '6px 0', borderRadius: radius.md, border: 'none',
     color: c.textSecondary, cursor: 'pointer',
     background: 'transparent', transition: 'all 0.15s',
-    width: 40, height: 36, display: 'flex',
+    width: 36, height: 32, display: 'flex',
     alignItems: 'center', justifyContent: 'center',
   },
   navBtnCollapsedActive: {
@@ -839,8 +868,9 @@ const styles: Record<string, React.CSSProperties> = {
   sidebarFooter: {
     padding: '12px 12px', borderTop: `1px solid ${c.border}`,
   },
+  sidebarFooterCompact: { padding: '8px' },
   sidebarFooterCollapsed: {
-    padding: '10px 0', borderTop: `1px solid ${c.border}`,
+    padding: '8px 0', borderTop: `1px solid ${c.border}`,
     display: 'flex', flexDirection: 'column', alignItems: 'center',
   },
   logoutBtn: {
@@ -848,10 +878,11 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'transparent', color: c.textSecondary, cursor: 'pointer', fontSize: 12,
     width: '100%', transition: 'all 0.15s',
   },
+  logoutBtnCompact: { padding: '5px 10px', fontSize: 11.5 },
   logoutBtnCollapsed: {
-    padding: '8px 0', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    padding: '6px 0', borderRadius: radius.md, border: `1px solid ${c.border}`,
     background: 'transparent', color: c.textSecondary, cursor: 'pointer',
-    width: 40, height: 36, display: 'flex',
+    width: 36, height: 32, display: 'flex',
     alignItems: 'center', justifyContent: 'center',
     transition: 'all 0.15s',
   },
@@ -871,6 +902,7 @@ const styles: Record<string, React.CSSProperties> = {
     textDecoration: 'underline',
     textUnderlineOffset: 3,
   } as React.CSSProperties,
+  aboutEntryCompact: { padding: '2px', marginBottom: 4, fontSize: 11.5 },
   // ── Mobile overlay ──
   overlay: {
     position: 'fixed', inset: 0, zIndex: 150,

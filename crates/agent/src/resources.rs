@@ -92,22 +92,28 @@ fn validate_root(root: &RootConfig, existing_roots: &[RootConfig]) -> Result<(),
     // stale-path exception. This is what lets a vanished root be disabled or
     // carried through while another root is edited, without turning typos in
     // newly added/changed paths into successful configuration updates.
-    let was_already_configured = existing_roots
+    let existing_root = existing_roots
         .iter()
-        .any(|existing| existing.name == root.name && existing.path == root.path);
+        .find(|existing| existing.name == root.name && existing.path == root.path);
     let path = Path::new(&root.path);
     let canonical = match path.canonicalize() {
         Ok(canonical) => canonical,
-        Err(e) if was_already_configured => {
-            tracing::warn!(
-                "Previously configured root '{}' path '{}' is unavailable: {} — preserving it so it can be disabled, deleted, or repaired",
-                root.name,
-                root.path,
-                e,
-            );
-            return Ok(());
-        }
         Err(e) => {
+            if let Some(existing) = existing_root {
+                if !existing.enabled && root.enabled {
+                    return Err(format!(
+                        "Root '{}' path '{}' cannot be enabled while unavailable: {}",
+                        root.name, root.path, e
+                    ));
+                }
+                tracing::warn!(
+                    "Previously configured root '{}' path '{}' is unavailable: {} — preserving it so it can be disabled, deleted, or repaired",
+                    root.name,
+                    root.path,
+                    e,
+                );
+                return Ok(());
+            }
             return Err(format!(
                 "Root '{}' path '{}' cannot be resolved: {}",
                 root.name, root.path, e
@@ -116,7 +122,13 @@ fn validate_root(root: &RootConfig, existing_roots: &[RootConfig]) -> Result<(),
     };
 
     if !canonical.is_dir() {
-        if was_already_configured {
+        if let Some(existing) = existing_root {
+            if !existing.enabled && root.enabled {
+                return Err(format!(
+                    "Root '{}' path '{}' cannot be enabled because it is no longer a directory",
+                    root.name, root.path
+                ));
+            }
             tracing::warn!(
                 "Previously configured root '{}' path '{}' is no longer a directory — preserving it so it can be disabled, deleted, or repaired",
                 root.name,
@@ -497,6 +509,117 @@ mod tests {
     }
 
     #[test]
+    fn apply_desired_rejects_reenabling_unavailable_root_until_path_recovers() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+        let root_parent = tempdir().unwrap();
+        let root_path = root_parent.path().join("root");
+        std::fs::create_dir(&root_path).unwrap();
+        let path = root_path.to_str().unwrap().to_string();
+
+        mgr.apply_desired(
+            1,
+            vec![RootConfig {
+                name: "data".to_string(),
+                path: path.clone(),
+                enabled: true,
+                pinned_folders: vec![],
+            }],
+        )
+        .unwrap();
+        std::fs::remove_dir(&root_path).unwrap();
+
+        mgr.apply_desired(
+            2,
+            vec![RootConfig {
+                name: "data".to_string(),
+                path: path.clone(),
+                enabled: false,
+                pinned_folders: vec![],
+            }],
+        )
+        .unwrap();
+
+        let err = mgr
+            .apply_desired(
+                3,
+                vec![RootConfig {
+                    name: "data".to_string(),
+                    path: path.clone(),
+                    enabled: true,
+                    pinned_folders: vec![],
+                }],
+            )
+            .unwrap_err();
+        assert!(err.contains("cannot be enabled while unavailable"));
+        assert_eq!(mgr.resource_revision(), 2);
+        assert!(!mgr.roots()[0].enabled);
+
+        std::fs::create_dir(&root_path).unwrap();
+        mgr.apply_desired(
+            3,
+            vec![RootConfig {
+                name: "data".to_string(),
+                path,
+                enabled: true,
+                pinned_folders: vec![],
+            }],
+        )
+        .unwrap();
+        assert_eq!(mgr.resource_revision(), 3);
+        assert!(mgr.roots()[0].enabled);
+    }
+
+    #[test]
+    fn apply_desired_rejects_reenabling_root_that_became_a_file() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+        let root_parent = tempdir().unwrap();
+        let root_path = root_parent.path().join("root");
+        std::fs::create_dir(&root_path).unwrap();
+        let path = root_path.to_str().unwrap().to_string();
+
+        mgr.apply_desired(
+            1,
+            vec![RootConfig {
+                name: "data".to_string(),
+                path: path.clone(),
+                enabled: true,
+                pinned_folders: vec![],
+            }],
+        )
+        .unwrap();
+        std::fs::remove_dir(&root_path).unwrap();
+        std::fs::write(&root_path, b"not a directory").unwrap();
+
+        mgr.apply_desired(
+            2,
+            vec![RootConfig {
+                name: "data".to_string(),
+                path: path.clone(),
+                enabled: false,
+                pinned_folders: vec![],
+            }],
+        )
+        .unwrap();
+
+        let err = mgr
+            .apply_desired(
+                3,
+                vec![RootConfig {
+                    name: "data".to_string(),
+                    path,
+                    enabled: true,
+                    pinned_folders: vec![],
+                }],
+            )
+            .unwrap_err();
+        assert!(err.contains("cannot be enabled because it is no longer a directory"));
+        assert_eq!(mgr.resource_revision(), 2);
+        assert!(!mgr.roots()[0].enabled);
+    }
+
+    #[test]
     fn can_modify_roots_when_another_root_path_is_missing() {
         // A root that was valid when applied but later disappeared must not
         // block modifications to other roots.
@@ -561,6 +684,10 @@ mod tests {
         )
         .unwrap();
         assert!(!mgr.roots()[0].enabled);
+
+        // Deleting the unavailable root must remain possible.
+        mgr.apply_desired(4, vec![]).unwrap();
+        assert!(mgr.roots().is_empty());
     }
 
     #[test]
