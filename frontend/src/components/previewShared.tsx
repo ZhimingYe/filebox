@@ -76,7 +76,11 @@ export function useFetchText(url: string, enabled = true) {
     setRetryToken((n) => n + 1);
   }, []);
 
-  return { text, error, loading, cancel, retry };
+  // `enabled` can flip true one render before this effect has set `loading`
+  // back to true. Treat an enabled request with neither text nor an error as
+  // pending so consumers never render a null payload during that gap.
+  const requestLoading = enabled && (loading || (text === null && error === null));
+  return { text, error, loading: requestLoading, cancel, retry };
 }
 
 // ── wrap preference ───────────────────────────────────────────────────────
@@ -166,11 +170,10 @@ export function LoadingOverlay({ message, onCancel }: {
 // Shared across every text/markdown/html/csv/image preview. Asks the agent
 // for the file size up-front via fsStat; if it exceeds the threshold we
 // render a warning + "Load anyway" button instead of fetching the body.
-// Matches the policy ImagePreview already had: if fsStat itself fails
-// (network blip, momentary offline), sizeUnknown flips false so we don't
-// strand the user on "Checking file size..." forever — the preview
-// proceeds and the per-preview slow-load overlay catches genuinely huge
-// files.
+// A failed stat is terminal for this load attempt: the viewer renders a local
+// error and waits for an explicit retry instead of guessing that the path is
+// still usable. This handles files removed after the directory was listed
+// without polling or monitoring the directory for changes.
 
 export const PREVIEW_SIZE_THRESHOLDS = {
   image: 10 * 1024 * 1024,
@@ -189,35 +192,76 @@ export function useFileGate(opts: {
 }) {
   const { agentId, root, path, threshold } = opts;
   const [size, setSize] = useState<number | null>(null);
-  const [statError, setStatError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [bypassed, setBypassed] = useState(false);
+  const [retryToken, setRetryToken] = useState(0);
   const mounted = useMounted();
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     setSize(null);
-    setStatError(false);
+    setError(null);
     setBypassed(false);
-    fsStat(agentId, root, path).then((data) => {
-      if (!cancelled && mounted.current && data.stat) {
-        setSize(data.stat.size ?? 0);
+    fsStat(agentId, root, path, controller.signal).then((data) => {
+      if (cancelled || !mounted.current) return;
+      if (!data.stat) {
+        setError(fileStatErrorMessage(data.error));
+        return;
       }
-    }).catch(() => {
-      if (!cancelled && mounted.current) setStatError(true);
+      setSize(data.stat.size ?? 0);
+    }).catch((cause) => {
+      if (cancelled || cause?.name === 'AbortError' || !mounted.current) return;
+      setError(fileStatErrorMessage(cause));
     });
-    return () => { cancelled = true; };
-  }, [agentId, root, path, threshold, mounted]);
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [agentId, root, path, threshold, retryToken, mounted]);
 
-  const sizeUnknown = size === null && !statError;
+  const sizeUnknown = size === null && error === null;
   const isLarge = size !== null && size > threshold;
 
   return {
     size,
+    error,
     sizeUnknown,
     isLarge,
     bypassed,
     forceLoad: useCallback(() => setBypassed(true), []),
+    retry: useCallback(() => setRetryToken((token) => token + 1), []),
   };
+}
+
+function fileStatErrorMessage(error: unknown): string {
+  const value = error as { status?: number; error?: string; message?: string } | string | undefined;
+  const code = typeof value === 'string' ? value : value?.error;
+  const status = typeof value === 'object' ? value?.status : undefined;
+  if (status === 404 || code === 'not_found' || code?.includes('No such file or directory')) {
+    return 'The file is no longer available.';
+  }
+  if (code === 'root_unavailable') return 'This root is no longer available.';
+  if (status === 401 || code === 'unauthorized' || code === 'session_expired') {
+    return 'Session expired. Please log in again.';
+  }
+  if (status === 403 || code === 'permission_denied' || code === 'path_denied') {
+    return 'The file cannot be accessed.';
+  }
+  if (code === 'backend_offline') return 'The agent is offline.';
+  if (typeof value === 'object' && value?.message) return value.message;
+  return 'The file is no longer available or cannot be accessed.';
+}
+
+export function FileGateError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div style={styles.container} role="alert">
+      <div style={styles.largeImageWarning}>
+        <p style={styles.errorText}>{message}</p>
+        <button onClick={onRetry} style={styles.retryBtn}>Retry</button>
+      </div>
+    </div>
+  );
 }
 
 export function LargeFileWarning({ size, flavor, onForceLoad, url }: {

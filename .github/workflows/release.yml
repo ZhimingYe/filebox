@@ -122,7 +122,8 @@ jobs:
           Pre-built static Linux x86_64 (musl) build.
 
           Quick start with interactive config:
-              curl -fsSL https://raw.githubusercontent.com/ZhimingYe/filebox/main/scripts/install_hub.sh | bash
+              ./bin/hub --init-config
+              ./bin/hub
           EOF
           sed -i 's/^          //' "$STAGE/README.md"
 
@@ -143,6 +144,17 @@ jobs:
           data_dir = "/var/lib/filebox"
           EOF
           sed -i 's/^          //' "$STAGE/agent.toml.example"
+
+          cat > "$STAGE/README.md" <<'EOF'
+          # Filebox Agent
+
+          Pre-built static Linux x86_64 (musl) build.
+
+          Quick start with interactive config:
+              ./agent --init-config
+              ./agent
+          EOF
+          sed -i 's/^          //' "$STAGE/README.md"
 
           tar -czf "$STAGE.tar.gz" "$STAGE"
 

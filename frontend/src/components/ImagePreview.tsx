@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   useMounted,
   useFileGate,
+  FileGateError,
   LargeFileWarning,
   LoadingOverlay,
   PREVIEW_SIZE_THRESHOLDS,
@@ -181,10 +182,10 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
 
   // Auto-load once gate allows (size known + not large + not bypassed).
   useEffect(() => {
-    if (gate.sizeUnknown) return;
+    if (gate.sizeUnknown || gate.error) return;
     if (gate.isLarge && !gate.bypassed) return;
     startLoad();
-  }, [gate.sizeUnknown, gate.isLarge, gate.bypassed, startLoad]);
+  }, [gate.sizeUnknown, gate.error, gate.isLarge, gate.bypassed, startLoad]);
 
   // Cleanup on unmount: abort in-flight fetch + release object URL.
   useEffect(() => {
@@ -256,6 +257,7 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
       </div>
     );
   }
+  if (gate.error) return <FileGateError message={gate.error} onRetry={gate.retry} />;
 
   if (gate.isLarge && !gate.bypassed) {
     return (

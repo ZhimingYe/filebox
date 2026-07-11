@@ -25,6 +25,13 @@ async fn main() {
             print!("{}", filebox_updater::usage("hub"));
             return;
         }
+        Ok(filebox_updater::UpdateCommand::InitConfig(request)) => {
+            if let Err(error) = config::init_interactive(request) {
+                eprintln!("[hub] config creation failed: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
         Ok(filebox_updater::UpdateCommand::Update(request)) => {
             match filebox_updater::run_update(filebox_updater::Product::Hub, request).await {
                 Ok(outcome) if outcome.installed => {

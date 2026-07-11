@@ -61,7 +61,7 @@ const EMPTY: State = { tabs: [], activeTabId: null };
 function pickNearestSurvivor(
   tabs: PreviewTab[],
   activeTabId: string | null,
-  survive: (t: PreviewTab) => boolean,
+  survive: (t: PreviewTab, index: number) => boolean,
 ): { tabs: PreviewTab[]; activeTabId: string | null } {
   const nextTabs = tabs.filter(survive);
   let nextActiveId: string | null = activeTabId;
@@ -82,7 +82,7 @@ function pickNearestSurvivor(
         let bestDist = Infinity;
         let bestOnRight = false;
         tabs.forEach((t, i) => {
-          if (!survive(t)) return;
+          if (!survive(t, i)) return;
           const dist = Math.abs(i - activeIdx);
           const onRight = i > activeIdx;
           if (dist < bestDist || (dist === bestDist && onRight && !bestOnRight)) {
@@ -112,6 +112,10 @@ export interface UsePreviewTabs {
   close: (tabId: string) => void;
   /** Close every tab. */
   closeAll: () => void;
+  /** Close every tab before the referenced tab. */
+  closeLeft: (tabId: string) => void;
+  /** Close every tab after the referenced tab. */
+  closeRight: (tabId: string) => void;
   /** Replace the whole tab list with exactly one tab (mobile), or clear (null). */
   replaceAll: (input: TabInput | null) => void;
   /** Remove tabs whose root is no longer enabled; re-pick active if needed. */
@@ -173,6 +177,22 @@ export function usePreviewTabs(): UsePreviewTabs {
     setState((prev) => (prev.tabs.length === 0 ? prev : EMPTY));
   }, []);
 
+  const closeLeft = useCallback((tabId: string) => {
+    setState((prev) => {
+      const index = prev.tabs.findIndex((tab) => tab.id === tabId);
+      if (index <= 0) return prev;
+      return pickNearestSurvivor(prev.tabs, prev.activeTabId, (_, tabIndex) => tabIndex >= index);
+    });
+  }, []);
+
+  const closeRight = useCallback((tabId: string) => {
+    setState((prev) => {
+      const index = prev.tabs.findIndex((tab) => tab.id === tabId);
+      if (index === -1 || index === prev.tabs.length - 1) return prev;
+      return pickNearestSurvivor(prev.tabs, prev.activeTabId, (_, tabIndex) => tabIndex <= index);
+    });
+  }, []);
+
   const replaceAll = useCallback((input: TabInput | null) => {
     if (!input) {
       setState(EMPTY);
@@ -207,7 +227,9 @@ export function usePreviewTabs(): UsePreviewTabs {
     activate,
     close,
     closeAll,
+    closeLeft,
+    closeRight,
     replaceAll,
     pruneByRoots,
-  }), [state.tabs, state.activeTabId, activeTab, openOrActivate, replaceActive, activate, close, closeAll, replaceAll, pruneByRoots]);
+  }), [state.tabs, state.activeTabId, activeTab, openOrActivate, replaceActive, activate, close, closeAll, closeLeft, closeRight, replaceAll, pruneByRoots]);
 }

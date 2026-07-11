@@ -2,6 +2,21 @@
 
 All notable changes to Filebox are listed here. Dates are UTC.
 
+## Unreleased
+
+### Added
+- **Built-in configuration setup** — `hub --init-config` creates `config/hub.json` with an internally generated agent token and bcrypt hashes; `agent --init-config` creates `agent.toml`. Both support `--output` and explicit `--force`, create private `0600` files, and require no external bcrypt, OpenSSL, Python, or shell helper.
+- **Preview tab bulk close actions** — the tab context menu can close the selected tab, every tab to its left or right, or all preview tabs.
+
+### Changed
+- **Shorter installation flow** — README and release-package instructions now use the downloaded Rust binaries directly for configuration.
+
+### Fixed
+- **Preview failure isolation** — missing or inaccessible files now stop at a local, retryable preview error, and unexpected viewer render failures are contained by a preview error boundary instead of taking down the application.
+- **Preview keyboard navigation regression** — Left/Right once again moves through files in the current directory and replaces the active preview; it no longer cycles the open tab strip.
+
+---
+
 ## v0.8.0 — 2026-07-11
 
 ### Changed

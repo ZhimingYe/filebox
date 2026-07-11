@@ -7,6 +7,7 @@ import { Login } from './components/Login';
 import { BackendList } from './components/BackendList';
 import { FileBrowser } from './components/FileBrowser';
 import { PreviewPane } from './components/PreviewPane';
+import { PreviewErrorBoundary } from './components/PreviewErrorBoundary';
 import { PreviewWorkspace } from './components/PreviewWorkspace';
 import { usePreviewTabs } from './hooks/usePreviewTabs';
 import { AgentSettings } from './components/AgentSettings';
@@ -224,7 +225,8 @@ export default function App() {
     fileListRef.current = info;
   }, []);
 
-  // Esc closes the active tab; ← → switch between open preview tabs.
+  // Esc closes the active tab; ← → replace it with the previous/next
+  // file in the directory currently shown by FileBrowser.
   useEffect(() => {
     if (!activeTab) return;
     const onKey = (e: KeyboardEvent) => {
@@ -237,15 +239,27 @@ export default function App() {
         return;
       }
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-      const tabs = previewTabs.tabs;
-      if (tabs.length < 2) return;
-      const idx = tabs.findIndex((t) => t.id === activeTab.id);
+      const info = fileListRef.current;
+      if (!info || info.root !== activeTab.root) return;
+      const previewDir = activeTab.path.replace(/\/[^/]*$/, '') || '/';
+      if (info.path !== previewDir) return;
+      const files = info.entries.filter((entry) => entry.entry_type === 'file' && !entry.denied);
+      const currentName = activeTab.path.split('/').pop() || '';
+      const idx = files.findIndex((entry) => entry.name === currentName);
       if (idx === -1) return;
-      e.preventDefault();
       const nextIdx = e.key === 'ArrowRight'
-        ? (idx + 1) % tabs.length
-        : (idx - 1 + tabs.length) % tabs.length;
-      previewTabs.activate(tabs[nextIdx].id);
+        ? idx + 1
+        : idx - 1;
+      if (nextIdx < 0 || nextIdx >= files.length) return;
+      e.preventDefault();
+      const next = files[nextIdx];
+      const nextPath = (previewDir === '/' ? '' : previewDir) + '/' + next.name;
+      previewTabs.replaceActive({
+        agentId: activeTab.agentId,
+        root: activeTab.root,
+        path: nextPath,
+        entry: next,
+      });
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -666,13 +680,15 @@ export default function App() {
                         </a>
                       </div>
                     </div>
-                    <PreviewPane
-                      agentId={selectedAgent.id}
-                      root={activeTab.root}
-                      path={activeTab.path}
-                      entryType={activeTab.entry.entry_type}
-                      denied={activeTab.entry.denied}
-                    />
+                    <PreviewErrorBoundary key={activeTab.id}>
+                      <PreviewPane
+                        agentId={selectedAgent.id}
+                        root={activeTab.root}
+                        path={activeTab.path}
+                        entryType={activeTab.entry.entry_type}
+                        denied={activeTab.entry.denied}
+                      />
+                    </PreviewErrorBoundary>
                   </div>
                 )}
               </>
@@ -710,6 +726,9 @@ export default function App() {
                       activeTabId={previewTabs.activeTabId}
                       onActivate={previewTabs.activate}
                       onClose={previewTabs.close}
+                      onCloseAll={previewTabs.closeAll}
+                      onCloseLeft={previewTabs.closeLeft}
+                      onCloseRight={previewTabs.closeRight}
                     />
                   </>
                 )}

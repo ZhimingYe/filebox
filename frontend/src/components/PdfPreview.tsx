@@ -6,6 +6,7 @@ import {
   LoadingOverlay,
   LargeFileWarning,
   useFileGate,
+  FileGateError,
   PREVIEW_SIZE_THRESHOLDS,
 } from './previewShared';
 
@@ -46,7 +47,7 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
   // Hoisted above all effects: several of them (slow-load timer, and the
   // render guard below) depend on it. Declaring it lower would hit the
   // temporal dead zone when the effect dependency arrays evaluate at render.
-  const mayLoad = !gate.sizeUnknown && !(gate.isLarge && !gate.bypassed);
+  const mayLoad = !gate.sizeUnknown && !gate.error && !(gate.isLarge && !gate.bypassed);
   const [numPages, setNumPages] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [containerWidth, setContainerWidth] = useState<number>(0);
@@ -169,6 +170,10 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
     <div ref={containerRef} style={styles.container}>
       {gate.sizeUnknown && (
         <LoadingOverlay message="Checking PDF size..." />
+      )}
+
+      {gate.error && (
+        <FileGateError message={gate.error} onRetry={gate.retry} />
       )}
 
       {gate.isLarge && !gate.bypassed && (

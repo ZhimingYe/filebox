@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -43,7 +43,14 @@ impl Product {
 pub enum UpdateCommand {
     Run,
     Help,
+    InitConfig(ConfigInitRequest),
     Update(UpdateRequest),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigInitRequest {
+    pub output: Option<PathBuf>,
+    pub force: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,9 +83,127 @@ enum VersionAction {
 }
 
 pub fn usage(binary_name: &str) -> String {
+    let default_config = if binary_name == "hub" {
+        "config/hub.json"
+    } else {
+        "agent.toml"
+    };
     format!(
-        "Usage:\n  {binary_name}\n  {binary_name} --update [--update-base-url <url>] [--allow-insecure-update] [--allow-downgrade]\n  {binary_name} --help\n\nOptions:\n  --update                  Download the latest release and replace the local install in place.\n  --update-base-url <url>   Override the release asset base URL.\n                            The URL must expose SHA256SUMS.txt and the release tarballs.\n                            Default: {DEFAULT_RELEASE_BASE_URL}\n  --allow-insecure-update   Allow http:// update sources. Dangerous; use only on trusted networks.\n                            Env override: FILEBOX_ALLOW_INSECURE_UPDATE=1\n  --allow-downgrade         Allow replacing the current version with an older release.\n                            Env override: FILEBOX_ALLOW_DOWNGRADE=1\n  --help                    Show this help text.\n"
+        "Usage:\n  {binary_name}\n  {binary_name} --init-config [--output <path>] [--force]\n  {binary_name} --update [--update-base-url <url>] [--allow-insecure-update] [--allow-downgrade]\n  {binary_name} --help\n\nOptions:\n  --init-config             Interactively create a ready-to-use config file.\n  --output <path>           Config output path. Default: {default_config}\n  --force                   Replace an existing config file.\n  --update                  Download the latest release and replace the local install in place.\n  --update-base-url <url>   Override the release asset base URL.\n                            The URL must expose SHA256SUMS.txt and the release tarballs.\n                            Default: {DEFAULT_RELEASE_BASE_URL}\n  --allow-insecure-update   Allow http:// update sources. Dangerous; use only on trusted networks.\n                            Env override: FILEBOX_ALLOW_INSECURE_UPDATE=1\n  --allow-downgrade         Allow replacing the current version with an older release.\n                            Env override: FILEBOX_ALLOW_DOWNGRADE=1\n  --help                    Show this help text.\n"
     )
+}
+
+pub fn prompt_line(label: &str, default: Option<&str>) -> Result<String, String> {
+    match default {
+        Some(value) => eprint!("{label} [{value}]: "),
+        None => eprint!("{label}: "),
+    }
+    io::stderr()
+        .flush()
+        .map_err(|error| format!("failed to write prompt: {error}"))?;
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .map_err(|error| format!("failed to read input: {error}"))?;
+    let value = input.trim().to_string();
+    if value.is_empty() {
+        Ok(default.unwrap_or_default().to_string())
+    } else {
+        Ok(value)
+    }
+}
+
+pub fn prompt_nonempty_secret(label: &str) -> Result<String, String> {
+    loop {
+        let value = rpassword::prompt_password(format!("{label}: "))
+            .map_err(|error| format!("failed to read {label}: {error}"))?;
+        if value.is_empty() {
+            eprintln!("{label} cannot be empty.");
+        } else {
+            return Ok(value);
+        }
+    }
+}
+
+pub fn prompt_confirmed_secret(label: &str, confirm_label: &str) -> Result<String, String> {
+    loop {
+        let value = prompt_nonempty_secret(label)?;
+        let confirmation = rpassword::prompt_password(format!("{confirm_label}: "))
+            .map_err(|error| format!("failed to read confirmation: {error}"))?;
+        if value == confirmation {
+            return Ok(value);
+        }
+        eprintln!("Values do not match; try again.");
+    }
+}
+
+pub fn prompt_yes_no(label: &str, default_yes: bool) -> Result<bool, String> {
+    let suffix = if default_yes { "Y/n" } else { "y/N" };
+    loop {
+        let value = prompt_line(&format!("{label} [{suffix}]"), None)?;
+        if value.is_empty() {
+            return Ok(default_yes);
+        }
+        match value.to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => eprintln!("Answer yes or no."),
+        }
+    }
+}
+
+pub fn ensure_output_available(path: &Path, force: bool) -> Result<(), String> {
+    if path.exists() && !force {
+        return Err(format!(
+            "config already exists: {} (use --force to replace it)",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+pub fn write_private_file(path: &Path, contents: &[u8], force: bool) -> Result<(), String> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create '{}': {error}", parent.display()))?;
+    }
+
+    let mut options = OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let mut file = options.open(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            format!(
+                "config already exists: {} (use --force to replace it)",
+                path.display()
+            )
+        } else {
+            format!("failed to create '{}': {error}", path.display())
+        }
+    })?;
+    file.write_all(contents)
+        .map_err(|error| format!("failed to write '{}': {error}", path.display()))?;
+    file.sync_all()
+        .map_err(|error| format!("failed to sync '{}': {error}", path.display()))?;
+
+    #[cfg(unix)]
+    fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+        .map_err(|error| format!("failed to secure '{}': {error}", path.display()))?;
+
+    Ok(())
 }
 
 pub fn parse_command(
@@ -86,6 +211,9 @@ pub fn parse_command(
     args: impl IntoIterator<Item = String>,
 ) -> Result<UpdateCommand, String> {
     let mut update = false;
+    let mut init_config = false;
+    let mut output = None;
+    let mut force = false;
     let mut base_url = None;
     let mut allow_insecure_update = false;
     let mut allow_downgrade = false;
@@ -94,6 +222,23 @@ pub fn parse_command(
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--help" | "-h" => return Ok(UpdateCommand::Help),
+            "--init-config" => init_config = true,
+            "--force" => force = true,
+            "--output" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "--output requires a path argument".to_string())?;
+                if value.is_empty() {
+                    return Err("--output requires a non-empty path".to_string());
+                }
+                output = Some(PathBuf::from(value));
+            }
+            _ if let Some(value) = arg.strip_prefix("--output=") => {
+                if value.is_empty() {
+                    return Err("--output requires a non-empty path".to_string());
+                }
+                output = Some(PathBuf::from(value));
+            }
             "--update" => update = true,
             "--allow-insecure-update" => allow_insecure_update = true,
             "--allow-downgrade" => allow_downgrade = true,
@@ -111,6 +256,24 @@ pub fn parse_command(
             }
             _ => return Err(format!("unknown argument for {binary_name}: {arg}")),
         }
+    }
+
+    if init_config && update {
+        return Err("--init-config and --update are mutually exclusive".to_string());
+    }
+
+    if init_config {
+        if base_url.is_some() || allow_insecure_update || allow_downgrade {
+            return Err("update options cannot be used together with --init-config".to_string());
+        }
+        return Ok(UpdateCommand::InitConfig(ConfigInitRequest {
+            output,
+            force,
+        }));
+    }
+
+    if output.is_some() || force {
+        return Err("--output and --force can only be used with --init-config".to_string());
     }
 
     if !update {
@@ -560,15 +723,77 @@ fn other_error(message: String) -> Box<dyn std::error::Error + Send + Sync> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{
         compare_versions, find_release_asset, parse_command, resolve_base_url, usage,
-        validate_base_url, Product, UpdateCommand, UpdateRequest, VersionAction,
+        validate_base_url, write_private_file, ConfigInitRequest, Product, UpdateCommand,
+        UpdateRequest, VersionAction,
     };
 
     #[test]
     fn parse_command_defaults_to_run() {
         let command = parse_command("hub", Vec::<String>::new()).unwrap();
         assert_eq!(command, UpdateCommand::Run);
+    }
+
+    #[test]
+    fn parse_command_supports_config_init_options() {
+        let command = parse_command(
+            "hub",
+            vec![
+                "--init-config".to_string(),
+                "--output".to_string(),
+                "/tmp/hub.json".to_string(),
+                "--force".to_string(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            command,
+            UpdateCommand::InitConfig(ConfigInitRequest {
+                output: Some(PathBuf::from("/tmp/hub.json")),
+                force: true,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_command_rejects_config_init_mixed_with_update() {
+        let error = parse_command(
+            "agent",
+            vec!["--init-config".to_string(), "--update".to_string()],
+        )
+        .unwrap_err();
+        assert!(error.contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn parse_command_rejects_config_output_without_init() {
+        let error = parse_command("agent", vec!["--output=agent.toml".to_string()]).unwrap_err();
+        assert!(error.contains("only be used with --init-config"));
+    }
+
+    #[test]
+    fn config_writer_is_private_and_refuses_unforced_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/config");
+        write_private_file(&path, b"first", false).unwrap();
+        let error = write_private_file(&path, b"second", false).unwrap_err();
+        assert!(error.contains("--force"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+
+        write_private_file(&path, b"second", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]
@@ -673,6 +898,8 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  filebox-agent-
     #[test]
     fn usage_mentions_update_base_url() {
         let help = usage("hub");
+        assert!(help.contains("--init-config"));
+        assert!(help.contains("Default: config/hub.json"));
         assert!(help.contains("--update-base-url <url>"));
         assert!(help.contains("--allow-insecure-update"));
         assert!(help.contains("--allow-downgrade"));

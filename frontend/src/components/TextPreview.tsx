@@ -5,6 +5,7 @@ import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import {
   useFetchText,
   useFileGate,
+  FileGateError,
   LargeFileWarning,
   PREVIEW_SIZE_THRESHOLDS,
   CopyButton,
@@ -25,7 +26,8 @@ interface Props {
 
 export function TextPreview({ url, ext, agentId, root, path }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.text });
-  const { text, error, loading, cancel, retry } = useFetchText(url);
+  const canLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
+  const { text, error, loading, cancel, retry } = useFetchText(url, canLoad);
   const [wrap, setWrap] = useState(wrapPref);
 
   if (gate.sizeUnknown) {
@@ -35,6 +37,7 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
       </div>
     );
   }
+  if (gate.error) return <FileGateError message={gate.error} onRetry={gate.retry} />;
   if (gate.isLarge && !gate.bypassed) {
     return (
       <LargeFileWarning

@@ -1,13 +1,23 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, serde::Deserialize)]
+use base64::Engine;
+use filebox_updater::{
+    ensure_output_available, prompt_confirmed_secret, prompt_line, prompt_nonempty_secret,
+    prompt_yes_no, write_private_file,
+};
+use rand::RngCore;
+
+const DEFAULT_CONFIG_PATH: &str = "config/hub.json";
+const BCRYPT_COST: u32 = 12;
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct UserConfig {
     pub username: String,
     pub password_hash: String,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct HubConfig {
     #[serde(default = "default_listen_addr")]
     pub listen_addr: SocketAddr,
@@ -40,8 +50,18 @@ impl HubConfig {
         let config_path = std::env::var("FILEBOX_CONFIG_PATH")
             .ok()
             .filter(|p| !p.is_empty())
+            .or_else(|| {
+                PathBuf::from(DEFAULT_CONFIG_PATH)
+                    .is_file()
+                    .then(|| DEFAULT_CONFIG_PATH.to_string())
+            })
             .or_else(Self::find_default_config)
-            .unwrap_or_else(|| "./hub.json".to_string());
+            .or_else(|| {
+                PathBuf::from("./hub.json")
+                    .is_file()
+                    .then(|| "./hub.json".to_string())
+            })
+            .unwrap_or_else(|| DEFAULT_CONFIG_PATH.to_string());
 
         let path = PathBuf::from(&config_path);
         if !path.exists() {
@@ -51,7 +71,7 @@ impl HubConfig {
 
             if !dev_mode {
                 eprintln!("[hub] FATAL: config not found: {}", config_path);
-                eprintln!("[hub] Create config/hub.json (use scripts/serve_at_server.sh) or set FILEBOX_CONFIG_PATH.");
+                eprintln!("[hub] Run `hub --init-config` or set FILEBOX_CONFIG_PATH.");
                 eprintln!("[hub] For local development only, set FILEBOX_DEV_MODE=1 to use insecure defaults bound to 127.0.0.1.");
                 std::process::exit(1);
             }
@@ -93,6 +113,88 @@ impl HubConfig {
 
         config
     }
+}
+
+pub fn init_interactive(request: filebox_updater::ConfigInitRequest) -> Result<(), String> {
+    let output = request
+        .output
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
+    ensure_output_available(&output, request.force)?;
+
+    eprintln!("Filebox Hub configuration");
+    eprintln!();
+
+    let listen_addr = loop {
+        let value = prompt_line("Listen address", Some("0.0.0.0:3000"))?;
+        match value.parse::<SocketAddr>() {
+            Ok(addr) => break addr,
+            Err(_) => eprintln!("Enter an address such as 0.0.0.0:3000."),
+        }
+    };
+
+    let username = loop {
+        let value = prompt_line("Admin username", Some("admin"))?;
+        if value.trim().is_empty() {
+            eprintln!("Username cannot be empty.");
+        } else {
+            break value;
+        }
+    };
+
+    let password = prompt_confirmed_secret("Admin password", "Confirm admin password")?;
+    let auto_token = prompt_yes_no("Generate a random agent token", true)?;
+    let agent_token = if auto_token {
+        random_agent_token()
+    } else {
+        prompt_nonempty_secret("Agent token")?
+    };
+
+    eprintln!("Generating bcrypt hashes...");
+    let config = build_generated_config(
+        listen_addr,
+        username.clone(),
+        &password,
+        &agent_token,
+        BCRYPT_COST,
+    )?;
+    let mut json = serde_json::to_string_pretty(&config)
+        .map_err(|error| format!("failed to serialize hub config: {error}"))?;
+    json.push('\n');
+    write_private_file(&output, json.as_bytes(), request.force)?;
+
+    eprintln!();
+    eprintln!("Created {}", output.display());
+    eprintln!("Admin username: {username}");
+    eprintln!("Agent token (save this; it is shown only now): {agent_token}");
+    eprintln!("Use the same token when running `agent --init-config`.");
+    Ok(())
+}
+
+fn build_generated_config(
+    listen_addr: SocketAddr,
+    username: String,
+    password: &str,
+    agent_token: &str,
+    bcrypt_cost: u32,
+) -> Result<HubConfig, String> {
+    let password_hash = bcrypt::hash(password, bcrypt_cost)
+        .map_err(|error| format!("failed to hash admin password: {error}"))?;
+    let agent_token_hash = bcrypt::hash(agent_token, bcrypt_cost)
+        .map_err(|error| format!("failed to hash agent token: {error}"))?;
+    Ok(HubConfig {
+        listen_addr,
+        agent_token_hash,
+        users: vec![UserConfig {
+            username,
+            password_hash,
+        }],
+    })
+}
+
+fn random_agent_token() -> String {
+    let mut bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
 #[cfg(test)]
@@ -179,5 +281,35 @@ mod tests {
         let user: UserConfig = serde_json::from_str(json).unwrap();
         assert_eq!(user.username, "admin");
         assert_eq!(user.password_hash, "$2b$12$abc");
+    }
+
+    #[test]
+    fn generated_config_hashes_password_and_agent_token() {
+        let config = build_generated_config(
+            "127.0.0.1:3000".parse().unwrap(),
+            "admin".to_string(),
+            "secret-password",
+            "secret-token",
+            4,
+        )
+        .unwrap();
+        assert!(bcrypt::verify("secret-password", &config.users[0].password_hash).unwrap());
+        assert!(bcrypt::verify("secret-token", &config.agent_token_hash).unwrap());
+        assert!(!config.users[0].password_hash.contains("secret-password"));
+
+        let json = serde_json::to_string(&config).unwrap();
+        let reparsed: HubConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed.users[0].username, "admin");
+    }
+
+    #[test]
+    fn generated_agent_tokens_are_random_and_url_safe() {
+        let first = random_agent_token();
+        let second = random_agent_token();
+        assert_ne!(first, second);
+        assert!(first.len() >= 40);
+        assert!(first
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'));
     }
 }

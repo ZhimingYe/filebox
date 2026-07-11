@@ -238,7 +238,7 @@ filebox/
         AgentSettings RootManager HealthPanel SystemStats
   scripts/
     release.sh              # bump + commit + tag + push → triggers release.yml
-    gen_config.sh           # prints hub.json / agent.toml to stdout
+    gen_notice.sh           # refreshes Rust/frontend license manifests
   .github/workflows/
     release.yml             # v* tag → musl tarballs + GitHub Release
 ```
@@ -260,7 +260,7 @@ Install:
 
 ```bash
 tar xzf filebox-hub-*-x86_64-musl.tar.gz
-./scripts/gen_config.sh hub > hub.json     # openssl + mkpasswd, no Python
+./bin/hub --init-config                    # creates config/hub.json internally
 ./bin/hub
 ```
 

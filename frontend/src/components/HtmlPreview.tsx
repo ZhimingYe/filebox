@@ -6,6 +6,7 @@ import { c } from '../theme';
 import {
   useFetchText,
   useFileGate,
+  FileGateError,
   LargeFileWarning,
   PREVIEW_SIZE_THRESHOLDS,
   useMounted,
@@ -136,7 +137,7 @@ const toggleBtn: CSSProperties = {
 
 export function HtmlPreview({ agentId, root, path, url }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.html });
-  const shouldLoad = !gate.sizeUnknown && (!gate.isLarge || gate.bypassed);
+  const shouldLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
   const { text, error, loading, cancel, retry } = useFetchText(url, shouldLoad);
   const previewShouldLoad = shouldLoad && text !== null && !error;
   const [previewBaseUrl, setPreviewBaseUrl] = useState<string | null>(null);
@@ -318,6 +319,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
       </div>
     );
   }
+  if (gate.error) return <FileGateError message={gate.error} onRetry={gate.retry} />;
   if (gate.isLarge && !gate.bypassed) {
     return (
       <LargeFileWarning

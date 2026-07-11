@@ -60,7 +60,6 @@ Agents connect outward to the Hub. No public IPs, port mapping, or VPN required.
 
 Pre-built static Linux x86_64 (musl) binaries are published on the
 [Releases page](https://github.com/ZhimingYe/filebox/releases/latest).
-No Rust toolchain, no Node, no compilation needed on the target machine.
 
 ```bash
 # 1. Download the matching tarball from the latest release page:
@@ -71,13 +70,19 @@ No Rust toolchain, no Node, no compilation needed on the target machine.
 tar xzf filebox-hub-*-x86_64-musl.tar.gz     # Hub
 tar xzf filebox-agent-*-x86_64-musl.tar.gz   # Agent
 
-# 3. Generate config interactively (prints to stdout — redirect to file)
-./scripts/gen_config.sh hub   > config/hub.json     # on Hub machine
-./scripts/gen_config.sh agent > agent.toml          # on Agent machine
+# 3. On the Hub machine
+(
+  cd filebox-hub-*
+  ./bin/hub --init-config       # creates config/hub.json
+  ./bin/hub
+)
 
-# 4. Run
-filebox-hub-*/bin/hub          # Hub
-filebox-agent-*/agent          # Agent
+# 4. On each Agent machine (paste the token printed by the Hub)
+(
+  cd filebox-agent-*
+  ./agent --init-config         # creates agent.toml
+  ./agent
+)
 ```
 
 Manual in-place update on Linux x86_64 release installs:
@@ -105,10 +110,10 @@ base URL must expose the same files as the GitHub Release download directory.
 Downgrades are also refused by default; use `--allow-downgrade` only when you
 intentionally want to roll back to an older release.
 
-`gen_config.sh` only needs `openssl` (already on every Linux) and `mkpasswd`
-(from the `whois` package, for bcrypt hashing). The tarball also bundles a
-`hub.json.example` / `agent.toml.example` if you'd rather fill in values by
-hand.
+The Hub generator hashes the admin password and agent token internally and
+prints the generated agent token once. Paste that token into the Agent
+generator when prompted. Existing files are never overwritten unless you add
+`--force`; use `--output <path>` for a custom location.
 
 ### Option 2: Build From Source
 
@@ -127,44 +132,25 @@ cd ..
 cargo build --release
 ```
 
-### 2. Configure Hub
-
-Create a `hub.json` file:
-
-```json
-{
-  "listen_addr": "0.0.0.0:3000",
-  "agent_token_hash": "$2b$12$...",
-  "users": [
-    {
-      "username": "admin",
-      "password_hash": "$2b$12$..."
-    }
-  ]
-}
-```
-
-Generate password hashes:
+### Configure Hub
 
 ```bash
-# Using bcrypt CLI or any bcrypt tool
-# Agent token hash
-echo -n "your-agent-token" | bcrypt-cli
-
-# User password hash
-echo -n "your-password" | bcrypt-cli
+./target/release/hub --init-config
 ```
 
-### 3. Configure Agent
+This creates `config/hub.json`, prompts for the listen address and admin
+credentials, generates a random agent token by default, and performs bcrypt
+hashing inside the Rust binary. Save the displayed agent token for the next
+step.
 
-Create an `agent.toml` file:
+### Configure Agent
 
-```toml
-hub = "https://your-hub-domain.com"
-token = "your-agent-token"
-name = "My Server"
-data_dir = "/var/lib/filebox"
+```bash
+./target/release/agent --init-config
 ```
+
+This creates `agent.toml`; paste the token printed by the Hub generator when
+prompted.
 
 Or use environment variables:
 
@@ -179,7 +165,7 @@ Agents require `https://` or `wss://` hub URLs by default so the agent token
 is not sent in plaintext. For local development against a plaintext hub only,
 start the agent with `FILEBOX_ALLOW_INSECURE_HUB=1`.
 
-### 4. Start Services
+### Start Services
 
 ```bash
 # Start Hub
@@ -194,30 +180,13 @@ published Linux x86_64 release artifacts in place. On non-Linux development
 machines, `--update` exits with a clear unsupported-platform error instead of
 attempting a replacement.
 
-### 5. Access the Frontend
+### Access the Frontend
 
 Open `http://localhost:3000` in a browser and log in with the configured credentials.
 
 ## Configuration Reference
 
 ### Hub Configuration (hub.json)
-
-```json
-{
-  "listen_addr": "0.0.0.0:3000",
-  "agent_token_hash": "$2b$12$...",
-  "users": [
-    {
-      "username": "admin",
-      "password_hash": "$2b$12$..."
-    },
-    {
-      "username": "user1",
-      "password_hash": "$2b$12$..."
-    }
-  ]
-}
-```
 
 | Field | Description | Default |
 |-------|-------------|---------|
@@ -227,19 +196,12 @@ Open `http://localhost:3000` in a browser and log in with the configured credent
 
 ### Agent Configuration (agent.toml)
 
-```toml
-hub = "https://your-hub-domain.com"
-token = "your-agent-token"
-name = "My Server"
-data_dir = "/var/lib/filebox"
-```
-
 | Field | Env Var | Description | Default |
 |-------|---------|-------------|---------|
 | `hub` | `FILEBOX_AGENT_HUB` | Hub server URL (`https://` or `wss://` by default) | Required |
 | `token` | `FILEBOX_AGENT_TOKEN` | Agent auth token | Required |
-| `name` | `FILEBOX_AGENT_NAME` | Agent display name | `unknown` |
-| `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Data storage directory | `./data` |
+| `name` | `FILEBOX_AGENT_NAME` | Agent display name | `default-agent` |
+| `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Data storage directory | OS local data directory + `filebox` |
 
 ## Usage
 

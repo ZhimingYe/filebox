@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import {
   useFetchText,
   useFileGate,
+  FileGateError,
   LargeFileWarning,
   PREVIEW_SIZE_THRESHOLDS,
   CopyButton,
@@ -20,7 +21,8 @@ interface Props {
 
 export function MarkdownPreview({ url, agentId, root, path }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.markdown });
-  const { text, error, loading, cancel, retry } = useFetchText(url);
+  const canLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
+  const { text, error, loading, cancel, retry } = useFetchText(url, canLoad);
 
   if (gate.sizeUnknown) {
     return (
@@ -29,6 +31,7 @@ export function MarkdownPreview({ url, agentId, root, path }: Props) {
       </div>
     );
   }
+  if (gate.error) return <FileGateError message={gate.error} onRetry={gate.retry} />;
   if (gate.isLarge && !gate.bypassed) {
     return (
       <LargeFileWarning

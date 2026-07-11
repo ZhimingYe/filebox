@@ -1,7 +1,8 @@
-import { memo } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { PreviewPane } from './PreviewPane';
+import { PreviewErrorBoundary } from './PreviewErrorBoundary';
 import { fileRawUrl } from '../api/client';
-import { c, radius, font } from '../theme';
+import { c, radius, font, shadow } from '../theme';
 import type { PreviewTab } from '../hooks/usePreviewTabs';
 
 // ── Desktop preview panel ─────────────────────────────────────────────────
@@ -28,6 +29,9 @@ interface Props {
   activeTabId: string | null;
   onActivate: (tabId: string) => void;
   onClose: (tabId: string) => void;
+  onCloseAll: () => void;
+  onCloseLeft: (tabId: string) => void;
+  onCloseRight: (tabId: string) => void;
 }
 
 // Memoized: every prop is either a primitive (agentId, activeTabId) or a
@@ -36,7 +40,45 @@ interface Props {
 // split layout every animation frame — this component skips re-rendering
 // entirely, and the memoized PreviewPane inside does too. It only re-renders
 // when the tab set or active tab genuinely changes.
-export const PreviewWorkspace = memo(function PreviewWorkspace({ agentId, tabs, activeTab, activeTabId, onActivate, onClose }: Props) {
+export const PreviewWorkspace = memo(function PreviewWorkspace({
+  agentId, tabs, activeTab, activeTabId,
+  onActivate, onClose, onCloseAll, onCloseLeft, onCloseRight,
+}: Props) {
+  const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
+  const [hoveredMenuItem, setHoveredMenuItem] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const dismiss = () => setMenu(null);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        dismiss();
+      }
+    };
+    window.addEventListener('pointerdown', dismiss);
+    window.addEventListener('blur', dismiss);
+    window.addEventListener('resize', dismiss);
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      window.removeEventListener('pointerdown', dismiss);
+      window.removeEventListener('blur', dismiss);
+      window.removeEventListener('resize', dismiss);
+      window.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [menu]);
+
+  const menuIndex = menu ? tabs.findIndex((tab) => tab.id === menu.tabId) : -1;
+  const runMenuAction = (action: () => void) => {
+    setMenu(null);
+    setHoveredMenuItem(null);
+    action();
+  };
+  const menuItemStyle = (id: string, disabled = false) => ({
+    ...styles.menuItem,
+    ...(disabled ? styles.menuItemDisabled : hoveredMenuItem === id ? styles.menuItemHover : {}),
+  });
+
   return (
     <div style={styles.panel}>
       {tabs.length > 1 && (
@@ -49,6 +91,17 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({ agentId, tabs, 
                 role="tab"
                 aria-selected={active}
                 onClick={() => onActivate(tab.id)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setHoveredMenuItem(null);
+                  const menuWidth = 190;
+                  const menuHeight = 150;
+                  setMenu({
+                    tabId: tab.id,
+                    x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+                    y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+                  });
+                }}
                 // Full root + path as the tooltip; the visible label is just
                 // the basename so the strip stays compact.
                 title={`${tab.root}${tab.path}`}
@@ -93,16 +146,65 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({ agentId, tabs, 
           {/* Body wrapper gives PreviewPane a definite flex height so its own
               height:100% container resolves and internal scrolling works. */}
           <div style={styles.body}>
-            <PreviewPane
-              key={activeTab.id}
-              agentId={agentId}
-              root={activeTab.root}
-              path={activeTab.path}
-              entryType={activeTab.entry.entry_type}
-              denied={activeTab.entry.denied}
-            />
+            <PreviewErrorBoundary key={activeTab.id}>
+              <PreviewPane
+                agentId={agentId}
+                root={activeTab.root}
+                path={activeTab.path}
+                entryType={activeTab.entry.entry_type}
+                denied={activeTab.entry.denied}
+              />
+            </PreviewErrorBoundary>
           </div>
         </>
+      )}
+      {menu && menuIndex !== -1 && (
+        <div
+          role="menu"
+          aria-label="Tab actions"
+          onPointerDown={(event) => event.stopPropagation()}
+          style={{ ...styles.contextMenu, left: menu.x, top: menu.y }}
+        >
+          <button
+            role="menuitem"
+            style={menuItemStyle('close')}
+            onMouseEnter={() => setHoveredMenuItem('close')}
+            onMouseLeave={() => setHoveredMenuItem(null)}
+            onClick={() => runMenuAction(() => onClose(menu.tabId))}
+          >
+            Close tab
+          </button>
+          <div style={styles.menuDivider} />
+          <button
+            role="menuitem"
+            disabled={menuIndex === 0}
+            style={menuItemStyle('left', menuIndex === 0)}
+            onMouseEnter={() => { if (menuIndex !== 0) setHoveredMenuItem('left'); }}
+            onMouseLeave={() => setHoveredMenuItem(null)}
+            onClick={() => runMenuAction(() => onCloseLeft(menu.tabId))}
+          >
+            Close tabs to the left
+          </button>
+          <button
+            role="menuitem"
+            disabled={menuIndex === tabs.length - 1}
+            style={menuItemStyle('right', menuIndex === tabs.length - 1)}
+            onMouseEnter={() => { if (menuIndex !== tabs.length - 1) setHoveredMenuItem('right'); }}
+            onMouseLeave={() => setHoveredMenuItem(null)}
+            onClick={() => runMenuAction(() => onCloseRight(menu.tabId))}
+          >
+            Close tabs to the right
+          </button>
+          <button
+            role="menuitem"
+            style={menuItemStyle('all')}
+            onMouseEnter={() => setHoveredMenuItem('all')}
+            onMouseLeave={() => setHoveredMenuItem(null)}
+            onClick={() => runMenuAction(onCloseAll)}
+          >
+            Close all tabs
+          </button>
+        </div>
       )}
     </div>
   );
@@ -171,4 +273,18 @@ const styles: Record<string, React.CSSProperties> = {
   body: {
     flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
   },
+  contextMenu: {
+    position: 'fixed', zIndex: 1000, width: 190,
+    padding: 4, border: `1px solid ${c.border}`, borderRadius: radius.md,
+    background: c.surface, boxShadow: shadow.lg,
+  },
+  menuItem: {
+    display: 'block', width: '100%', padding: '7px 10px',
+    border: 'none', borderRadius: radius.sm, background: 'transparent',
+    color: c.text, fontSize: 12, fontFamily: font.sans,
+    textAlign: 'left', cursor: 'pointer', whiteSpace: 'nowrap',
+  },
+  menuItemDisabled: { color: c.textMuted, cursor: 'default' },
+  menuItemHover: { background: c.accentBg, color: c.accentHover },
+  menuDivider: { height: 1, margin: '3px 6px', background: c.border },
 };

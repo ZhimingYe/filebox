@@ -22,6 +22,13 @@ async fn main() {
             print!("{}", filebox_updater::usage("agent"));
             return;
         }
+        Ok(filebox_updater::UpdateCommand::InitConfig(request)) => {
+            if let Err(error) = config::init_interactive(request) {
+                eprintln!("[agent] config creation failed: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
         Ok(filebox_updater::UpdateCommand::Update(request)) => {
             match filebox_updater::run_update(filebox_updater::Product::Agent, request).await {
                 Ok(outcome) if outcome.installed => {

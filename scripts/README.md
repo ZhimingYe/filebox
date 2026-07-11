@@ -10,7 +10,6 @@ developer-facing tools.
 | Script | Who runs it | What it does |
 |---|---|---|
 | `release.sh` | Maintainer, on dev machine | Bumps workspace version, commits, tags `v{version}`, pushes. The pushed tag triggers `.github/workflows/release.yml` which builds the musl binaries and publishes a GitHub Release. |
-| `gen_config.sh` | Anyone with the binary already downloaded | Generates `hub.json` or `agent.toml` from interactive prompts and prints to stdout. Uses `openssl` + `mkpasswd` for bcrypt hashing — no Python, no pip pollution. |
 | `gen_notice.sh` | Maintainer, before a release | Generates the third-party license attribution manifests (`NOTICE` summary + `NOTICE.csv` per-package) for Rust (`Cargo.lock`) and the frontend (`package-lock.json`). Required because release binaries strip the upstream `LICENSE` files. |
 
 ## Releasing a new version
@@ -28,23 +27,6 @@ GitHub Actions then builds `x86_64-unknown-linux-musl` binaries for hub and
 agent, bundles the frontend into the hub tarball, generates `SHA256SUMS.txt`,
 and publishes a Release with auto-generated notes. The whole flow takes
 ~5-8 minutes on a warm cache.
-
-## Generating a config (after downloading a release tarball)
-
-```bash
-# Hub config — prints hub.json to stdout, prompts on stderr
-./gen_config.sh hub > ~/.local/share/filebox/config/hub.json
-
-# Agent config
-./gen_config.sh agent > ~/filebox-agent/agent.toml
-```
-
-Requirements:
-- `openssl` (for random token)
-- `mkpasswd` (from the `whois` package, for bcrypt hashing)
-
-If `mkpasswd` isn't installed, the script prints install hints for the
-common package managers and exits.
 
 ## Regenerating the license attribution manifests
 
@@ -87,7 +69,7 @@ filebox now:
 1. Download the appropriate tarball from the
    [latest release](https://github.com/ZhimingYe/filebox/releases/latest)
 2. Extract: `tar xzf filebox-{hub,agent}-VERSION-x86_64-musl.tar.gz`
-3. Generate config: `./gen_config.sh {hub,agent} > config-file`
+3. Generate config: `./bin/hub --init-config` or `./agent --init-config`
 4. Run the binary
 
 After installation, future manual upgrades can be done in place:
