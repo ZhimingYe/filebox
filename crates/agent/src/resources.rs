@@ -42,6 +42,12 @@ impl ResourceManager {
             ));
         }
 
+        // Expand shell-style home prefixes (`~`, `~/…`) against *this* agent's
+        // home directory before validate/persist. Hub must not expand: the
+        // home that matters is the machine the agent runs on, not the hub's.
+        // Stored paths are always absolute so fs ops never see a bare `~`.
+        let roots = expand_root_homes(roots);
+
         // Validate all roots. A root that was valid when configured may have
         // disappeared since then (for example, an unmounted network volume).
         // Keep recognizing that exact configured root so it cannot block a
@@ -72,6 +78,48 @@ impl ResourceManager {
             self.config.roots.clone(),
         )
     }
+}
+
+/// Expand `~` / `~/…` (and `~\…` on Windows-style inputs) to an absolute path
+/// using the given home directory. Non-tilde paths are returned unchanged.
+/// If home is unknown, the original string is kept so validation can still
+/// report a clear "cannot be resolved" error rather than inventing a path.
+///
+/// Important: this is **prefix** expansion (shell-style), not `Path::join`.
+/// `Path::join("/home/u", "/docs")` replaces the base with `/docs`, so a
+/// typed `~//docs` would incorrectly become `/docs` and escape `$HOME`.
+/// We strip leading separators from the remainder and then join component-wise.
+fn expand_home_path_with(value: &str, home: Option<PathBuf>) -> String {
+    if value == "~" {
+        return home
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|| value.to_string());
+    }
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
+        if let Some(home) = home {
+            // `~//docs` / `~\\docs` must stay under home (shell keeps $HOME prefix).
+            let rest = rest.trim_start_matches(['/', '\\']);
+            if rest.is_empty() {
+                return home.to_string_lossy().into_owned();
+            }
+            return home.join(rest).to_string_lossy().into_owned();
+        }
+    }
+    value.to_string()
+}
+
+fn expand_home_path(value: &str) -> String {
+    expand_home_path_with(value, dirs::home_dir())
+}
+
+fn expand_root_homes(mut roots: Vec<RootConfig>) -> Vec<RootConfig> {
+    for root in &mut roots {
+        root.path = expand_home_path(&root.path);
+    }
+    roots
 }
 
 fn validate_root(root: &RootConfig, existing_roots: &[RootConfig]) -> Result<(), String> {
@@ -814,5 +862,89 @@ mod tests {
         assert!(text.contains("\"agent_id\": \"agent-shape\""));
         assert!(text.contains("\"resource_revision\": 0"));
         assert!(text.contains("\"roots\": []"));
+    }
+
+    #[test]
+    fn expand_home_path_expands_tilde_forms() {
+        let home = PathBuf::from("/home/alice");
+        assert_eq!(
+            expand_home_path_with("~", Some(home.clone())),
+            "/home/alice"
+        );
+        assert_eq!(
+            expand_home_path_with("~/docs", Some(home.clone())),
+            "/home/alice/docs"
+        );
+        assert_eq!(
+            expand_home_path_with("~\\docs", Some(home.clone())),
+            "/home/alice/docs"
+        );
+        // Double-slash after ~ must NOT Path::join-replace away from home.
+        assert_eq!(
+            expand_home_path_with("~//docs", Some(home.clone())),
+            "/home/alice/docs"
+        );
+        assert_eq!(
+            expand_home_path_with("~\\\\docs", Some(home.clone())),
+            "/home/alice/docs"
+        );
+        // Bare ~/ with only separators → home itself.
+        assert_eq!(
+            expand_home_path_with("~/", Some(home.clone())),
+            "/home/alice"
+        );
+        // Non-tilde (and ~user, which we do not expand) stays literal.
+        assert_eq!(
+            expand_home_path_with("/abs/path", Some(home.clone())),
+            "/abs/path"
+        );
+        assert_eq!(
+            expand_home_path_with("~alice/docs", Some(home.clone())),
+            "~alice/docs"
+        );
+        // Missing home: leave tilde as-is so canonicalize can fail clearly.
+        assert_eq!(expand_home_path_with("~/docs", None), "~/docs");
+        assert_eq!(expand_home_path_with("~", None), "~");
+    }
+
+    #[test]
+    fn apply_desired_expands_tilde_root_path_and_persists_absolute() {
+        let home = tempdir().unwrap();
+        let docs = home.path().join("docs");
+        fs::create_dir(&docs).unwrap();
+
+        // Point the process home at our temp dir so dirs::home_dir() resolves
+        // there. Restore afterwards so other tests aren't affected.
+        let prev_home = std::env::var_os("HOME");
+        // SAFETY: single-threaded cargo test default; we restore below.
+        std::env::set_var("HOME", home.path());
+
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+        let result = mgr.apply_desired(
+            1,
+            vec![RootConfig {
+                name: "docs".to_string(),
+                path: "~/docs".to_string(),
+                enabled: true,
+                pinned_folders: vec![],
+            }],
+        );
+
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+
+        result.expect("tilde path should expand and apply");
+        let stored = &mgr.roots()[0].path;
+        assert!(
+            !stored.starts_with('~'),
+            "persisted path must be absolute, got {stored}"
+        );
+        assert_eq!(
+            Path::new(stored).canonicalize().unwrap(),
+            docs.canonicalize().unwrap()
+        );
     }
 }

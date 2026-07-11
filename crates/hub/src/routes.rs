@@ -1429,14 +1429,16 @@ async fn apply_desired_state(
     };
     let req_id = format!("res_{}", uuid::Uuid::new_v4());
 
-    // Clone desired state for the message and save for later registry update
+    // Hub mirror of the desired set (including pins). Wired to the agent
+    // after stripping pins for legacy agents; the WS Applied handler merges
+    // this with agent-expanded paths so `~/…` does not stick in the registry.
     let desired_roots = desired.roots.clone();
 
     // Rolling-upgrade safety: if this agent doesn't advertise the
     // pinned_folders capability, strip pins from what we send over the wire so
     // a legacy agent can't reply "applied" while silently dropping pin data.
-    // The hub's own mirror (desired_roots, set into the registry on success)
-    // keeps the real pins; they re-apply once the agent is upgraded.
+    // The hub's own mirror (desired_roots, reconciled on Applied) keeps the
+    // real pins; they re-apply once the agent is upgraded.
     let agent_supports_pins = agent.capabilities.pinned_folders;
     let wire_roots = if agent_supports_pins {
         desired.roots
@@ -1470,7 +1472,7 @@ async fn apply_desired_state(
                 tx: resp_tx,
                 agent_id: agent_id.clone(),
                 session_id: Some(session_id),
-                desired_roots: Some(desired_roots.clone()),
+                desired_roots: Some(desired_roots),
             },
         );
     }
@@ -1509,18 +1511,11 @@ async fn apply_desired_state(
 
     match resp {
         Ok(Some(value)) => {
-            // If the agent applied the resources, update the hub registry directly
-            if value.get("state").and_then(|s| s.as_str()) == Some("applied") {
-                if let Some(rev) = value.get("resource_revision").and_then(|r| r.as_u64()) {
-                    let mut inner = state.inner.write().await;
-                    inner.agents.update_resources(
-                        &agent_id,
-                        rev,
-                        desired_roots,
-                    );
-                }
-            }
-            // If rejected, store the config error
+            // On "applied", the WS handler already updated the registry from
+            // ResourcesUpdated + ResourcesApplied (agent-expanded paths,
+            // reconciled pins). Re-applying `desired_roots` here would clobber
+            // absolute paths back to pre-expansion forms such as `~/docs`.
+            // On "rejected", store the config error (WS may also have set it).
             if value.get("state").and_then(|s| s.as_str()) == Some("rejected") {
                 let err_msg = value.get("message")
                     .and_then(|m| m.as_str())

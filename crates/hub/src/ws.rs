@@ -331,9 +331,33 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                 let pending_resp =
                                     take_pending_for_agent(&state, &req_id, &agent_id_for_msgs).await;
                                 if let Some(pending_resp) = pending_resp {
-                                    let roots = pending_resp.desired_roots.unwrap_or_default();
                                     {
                                         let mut inner = state.inner.write().await;
+                                        // ResourcesUpdated (sent just before Applied) already
+                                        // installed agent-authoritative roots, including
+                                        // shell-expanded paths (`~/docs` → absolute). Blindly
+                                        // replaying hub `desired_roots` would clobber those
+                                        // paths with the pre-expansion strings.
+                                        //
+                                        // Still merge from desired when present: hub may keep
+                                        // pin data that a legacy agent stripped on the wire.
+                                        // Paths come from the current registry (post-Updated)
+                                        // whenever the root name matches.
+                                        let roots = match pending_resp.desired_roots {
+                                            Some(desired) => {
+                                                let agent_paths = inner
+                                                    .agents
+                                                    .get(&agent_id_for_msgs)
+                                                    .map(|a| a.roots.clone())
+                                                    .unwrap_or_default();
+                                                reconcile_roots_after_apply(desired, &agent_paths)
+                                            }
+                                            None => inner
+                                                .agents
+                                                .get(&agent_id_for_msgs)
+                                                .map(|a| a.roots.clone())
+                                                .unwrap_or_default(),
+                                        };
                                         inner.agents.update_resources(
                                             &agent_id_for_msgs,
                                             resource_revision,
@@ -473,6 +497,26 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
     }
 }
 
+/// After a successful apply, prefer hub `desired` for the root set (names,
+/// enabled, pins — the hub may retain pins a legacy agent stripped on the
+/// wire) but keep **paths** from the agent-reported snapshot when the name
+/// matches. That snapshot is installed by `ResourcesUpdated` just before
+/// `ResourcesApplied` and includes agent-side expansions such as `~/…`.
+fn reconcile_roots_after_apply(
+    desired: Vec<filebox_protocol::resources::RootConfig>,
+    agent_reported: &[filebox_protocol::resources::RootConfig],
+) -> Vec<filebox_protocol::resources::RootConfig> {
+    desired
+        .into_iter()
+        .map(|mut root| {
+            if let Some(reported) = agent_reported.iter().find(|r| r.name == root.name) {
+                root.path = reported.path.clone();
+            }
+            root
+        })
+        .collect()
+}
+
 /// Return a copy of `roots` with every root's `pinned_folders` emptied. Used
 /// when pushing `ResourcesSetDesired` to an agent that doesn't advertise the
 /// `pinned_folders` capability (rolling upgrade): the old agent would silently
@@ -536,6 +580,16 @@ async fn send_auth_fail(ws_sink: &mut futures_util::stream::SplitSink<WebSocket,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use filebox_protocol::resources::RootConfig;
+
+    fn root(name: &str, path: &str, pins: &[&str]) -> RootConfig {
+        RootConfig {
+            name: name.to_string(),
+            path: path.to_string(),
+            enabled: true,
+            pinned_folders: pins.iter().map(|p| (*p).to_string()).collect(),
+        }
+    }
 
     #[test]
     fn max_ws_message_size_allows_worst_case_agent_file_chunk() {
@@ -555,5 +609,25 @@ mod tests {
             serialized.len(),
             MAX_AGENT_WS_MESSAGE_SIZE
         );
+    }
+
+    #[test]
+    fn reconcile_roots_prefers_agent_paths_keeps_hub_pins() {
+        // Hub still has the typed `~/docs`; agent expanded it. Hub also has
+        // pins that a legacy agent may have dropped on the wire.
+        let desired = vec![root("docs", "~/docs", &["/reports"])];
+        let reported = vec![root("docs", "/home/alice/docs", &[])];
+        let merged = reconcile_roots_after_apply(desired, &reported);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].path, "/home/alice/docs");
+        assert_eq!(merged[0].pinned_folders, vec!["/reports".to_string()]);
+    }
+
+    #[test]
+    fn reconcile_roots_keeps_desired_path_when_name_unknown_to_agent() {
+        let desired = vec![root("new", "/data/new", &[])];
+        let reported = vec![root("old", "/data/old", &[])];
+        let merged = reconcile_roots_after_apply(desired, &reported);
+        assert_eq!(merged[0].path, "/data/new");
     }
 }

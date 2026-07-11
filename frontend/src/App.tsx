@@ -227,8 +227,11 @@ export default function App() {
 
   // Esc closes the active tab; ← → replace it with the previous/next
   // file in the directory currently shown by FileBrowser.
+  // Only while Files is the active view: FileBrowser stays mounted (hidden)
+  // under Settings/Stats, so without this gate arrows would still flip
+  // previews while the user is configuring roots or reading stats.
   useEffect(() => {
-    if (!activeTab) return;
+    if (!activeTab || view !== 'files') return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
@@ -263,7 +266,7 @@ export default function App() {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [activeTab, previewTabs]);
+  }, [activeTab, previewTabs, view]);
 
   const selectedAgent = useMemo(() => agents.find((a) => a.id === selectedAgentId) || null, [agents, selectedAgentId]);
 
@@ -558,13 +561,13 @@ export default function App() {
               agent={selectedAgent}
               collapsed={collapsed}
               onNavigate={(root, path) => {
-                // A pin click should always land in the Files view, even if the
-                // user is currently on Settings/Health/Stats. On mobile, an open
-                // preview would otherwise keep showing on top of the just-navigated
-                // file list (showMobilePreview only checks for an active tab),
-                // so close it explicitly — the user clicked a folder, they want
-                // to SEE that folder, not the file they were previewing before.
-                previewTabs.closeAll();
+                // Always land in the Files view (even from Settings/Stats).
+                // Desktop keeps preview tabs: side-by-side layout matches tree
+                // and address-bar navigation, so re-clicking the same pin (or
+                // jumping to another folder) must not wipe open previews.
+                // Mobile is list-OR-preview: leave tabs open and the folder
+                // list stays buried under the current file, so close them.
+                if (isMobile) previewTabs.closeAll();
                 navigate('files');
                 setNavRequest({ root, path, nonce: Date.now() });
               }}
@@ -639,105 +642,107 @@ export default function App() {
             <div style={styles.emptyState}>
               <p style={styles.emptyText}>Select an agent from the sidebar</p>
             </div>
-          ) : view === 'files' ? (
-            isMobile ? (
-              // Mobile: FileBrowser stays mounted (just CSS-hidden) while
-              // preview is open, so its selectedRoot/currentPath/scroll state
-              // survives the round-trip. Unmounting it on every preview toggle
-              // was the reason "Back" returned to root instead of the dir the
-              // user was browsing.
-              <>
-                <div style={{
-                  ...styles.mobileFileWrap,
-                  display: showMobilePreview ? 'none' : 'flex',
-                }}>
-                  <FileBrowser
-                    agentId={selectedAgent.id}
-                    roots={selectedAgent.roots}
-                    onFileSelect={handleFileSelect}
-                    onEntriesChange={handleEntriesChange}
-                    onRootsChange={refresh}
-                    navRequest={navRequest}
-                    onNavHandled={() => setNavRequest(null)}
-                    selectedRoot={selectedRoot}
-                    currentPath={currentPath}
-                    onApplyNav={applyNav}
-                    onSwitchRoot={switchRoot}
-                  />
-                </div>
-                {showMobilePreview && activeTab && (
-                  <div style={styles.mobilePreviewWrap}>
-                    <div style={styles.previewHeader}>
-                      <span style={styles.previewPath}>{activeTab.path}</span>
-                      <div style={styles.previewActions}>
-                        <a
-                          href={fileRawUrl(selectedAgent.id, activeTab.root, activeTab.path)}
-                          download
-                          style={styles.headerLink}
-                          title="Download"
-                        >
-                          Download
-                        </a>
-                      </div>
-                    </div>
-                    <PreviewErrorBoundary key={activeTab.id}>
-                      <PreviewPane
-                        agentId={selectedAgent.id}
-                        root={activeTab.root}
-                        path={activeTab.path}
-                        entryType={activeTab.entry.entry_type}
-                        denied={activeTab.entry.denied}
-                      />
-                    </PreviewErrorBoundary>
-                  </div>
-                )}
-              </>
-            ) : (
-              // Desktop: side-by-side split, resizable
-              <div ref={splitContainerRef} style={styles.splitView}>
-                <div style={{ ...styles.filePanel, flex: activeTab ? `0 0 ${splitRatio * 100}%` : '1' }}>
-                  <FileBrowser
-                    agentId={selectedAgent.id}
-                    roots={selectedAgent.roots}
-                    onFileSelect={handleFileSelect}
-                    onEntriesChange={handleEntriesChange}
-                    onRootsChange={refresh}
-                    navRequest={navRequest}
-                    onNavHandled={() => setNavRequest(null)}
-                    selectedRoot={selectedRoot}
-                    currentPath={currentPath}
-                    onApplyNav={applyNav}
-                    onSwitchRoot={switchRoot}
-                  />
-                </div>
-                {activeTab && (
-                  <>
-                    <div
-                      onMouseDown={startSplitDrag}
-                      onMouseEnter={() => setSplitterHover(true)}
-                      onMouseLeave={() => setSplitterHover(false)}
-                      style={{ ...styles.splitter, ...(splitterHover ? styles.splitterHover : {}) }}
-                      title="Drag to resize"
-                    />
-                    <PreviewWorkspace
-                      agentId={selectedAgent.id}
-                      tabs={previewTabs.tabs}
-                      activeTab={activeTab}
-                      activeTabId={previewTabs.activeTabId}
-                      onActivate={previewTabs.activate}
-                      onClose={previewTabs.close}
-                      onCloseAll={previewTabs.closeAll}
-                      onCloseLeft={previewTabs.closeLeft}
-                      onCloseRight={previewTabs.closeRight}
-                    />
-                  </>
-                )}
-              </div>
-            )
-          ) : view === 'settings' ? (
-            <AgentSettings agent={selectedAgent} onRefresh={refresh} />
           ) : (
-            <SystemStats agentId={selectedAgent.id} />
+            <>
+              {/* Keep FileBrowser mounted across Files/Settings/Stats and across
+                  the mobile breakpoint so filter/sort/tree/scroll state survive.
+                  Hidden with display:none (not unmounted) when another view is
+                  active — same idea as mobile preview toggle. */}
+              <div
+                ref={isMobile ? undefined : splitContainerRef}
+                style={{
+                  ...(isMobile ? styles.mobileFilesLayout : styles.splitView),
+                  ...(view !== 'files' ? styles.filesViewHidden : {}),
+                }}
+              >
+                <div
+                  style={
+                    isMobile
+                      ? {
+                          ...styles.mobileFileWrap,
+                          display: showMobilePreview ? 'none' : 'flex',
+                        }
+                      : {
+                          ...styles.filePanel,
+                          flex: activeTab ? `0 0 ${splitRatio * 100}%` : '1',
+                        }
+                  }
+                >
+                  <FileBrowser
+                    agentId={selectedAgent.id}
+                    roots={selectedAgent.roots}
+                    onFileSelect={handleFileSelect}
+                    onEntriesChange={handleEntriesChange}
+                    onRootsChange={refresh}
+                    navRequest={navRequest}
+                    onNavHandled={() => setNavRequest(null)}
+                    selectedRoot={selectedRoot}
+                    currentPath={currentPath}
+                    onApplyNav={applyNav}
+                    onSwitchRoot={switchRoot}
+                  />
+                </div>
+                {isMobile
+                  ? showMobilePreview && activeTab && view === 'files' && (
+                      <div style={styles.mobilePreviewWrap}>
+                        <div style={styles.previewHeader}>
+                          <span style={styles.previewPath}>{activeTab.path}</span>
+                          <div style={styles.previewActions}>
+                            <a
+                              href={fileRawUrl(selectedAgent.id, activeTab.root, activeTab.path)}
+                              download
+                              style={styles.headerLink}
+                              title="Download"
+                            >
+                              Download
+                            </a>
+                          </div>
+                        </div>
+                        <PreviewErrorBoundary key={activeTab.id}>
+                          <PreviewPane
+                            agentId={selectedAgent.id}
+                            root={activeTab.root}
+                            path={activeTab.path}
+                            entryType={activeTab.entry.entry_type}
+                            denied={activeTab.entry.denied}
+                          />
+                        </PreviewErrorBoundary>
+                      </div>
+                    )
+                  : activeTab && view === 'files' && (
+                      <>
+                        <div
+                          onMouseDown={startSplitDrag}
+                          onMouseEnter={() => setSplitterHover(true)}
+                          onMouseLeave={() => setSplitterHover(false)}
+                          style={{ ...styles.splitter, ...(splitterHover ? styles.splitterHover : {}) }}
+                          title="Drag to resize"
+                        />
+                        <PreviewWorkspace
+                          agentId={selectedAgent.id}
+                          tabs={previewTabs.tabs}
+                          activeTab={activeTab}
+                          activeTabId={previewTabs.activeTabId}
+                          onActivate={previewTabs.activate}
+                          onClose={previewTabs.close}
+                          onCloseAll={previewTabs.closeAll}
+                          onCloseLeft={previewTabs.closeLeft}
+                          onCloseRight={previewTabs.closeRight}
+                        />
+                      </>
+                    )}
+              </div>
+              {view === 'settings' && (
+                <div style={styles.secondaryView}>
+                  <AgentSettings agent={selectedAgent} onRefresh={refresh} />
+                </div>
+              )}
+              {view === 'stats' && (
+                <div style={styles.secondaryView}>
+                  <SystemStats agentId={selectedAgent.id} />
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -950,14 +955,30 @@ const styles: Record<string, React.CSSProperties> = {
   // ── Main content ──
   main: { flex: 1, display: 'flex', overflow: 'hidden' },
   mainMobile: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
-  contentArea: { flex: 1, display: 'flex', overflow: 'hidden' },
+  // Row flex: Files shell and Settings/Stats are siblings; only one is visible.
+  contentArea: { flex: 1, display: 'flex', overflow: 'hidden', minWidth: 0, minHeight: 0 },
   emptyState: {
     flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
     padding: 16,
   },
   emptyText: { color: c.textMuted, fontSize: 14, textAlign: 'center' },
   // ── Desktop split ──
-  splitView: { display: 'flex', flex: 1, overflow: 'hidden', position: 'relative' },
+  splitView: { display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', minWidth: 0 },
+  // Mobile files shell: column so list (or full-screen preview) fills contentArea.
+  mobileFilesLayout: {
+    display: 'flex', flex: 1, flexDirection: 'column', overflow: 'hidden', minHeight: 0, minWidth: 0,
+  },
+  // Keep FileBrowser in the tree while Settings/Stats are shown without it
+  // occupying layout space or intercepting pointer/focus.
+  filesViewHidden: {
+    display: 'none',
+  },
+  // Fills contentArea when Files is display:none (flex item needs flex:1;
+  // height:100% alone is not enough next to a display:none sibling).
+  secondaryView: {
+    flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden',
+    display: 'flex', flexDirection: 'column',
+  },
   filePanel: {
     minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
   },
