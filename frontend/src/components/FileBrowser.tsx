@@ -3,10 +3,18 @@ import { FixedSizeList as VList } from 'react-window';
 import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
 import { useIsMobile } from '../state/useIsMobile';
-import { c, radius, font, shadow, fileType } from '../theme';
+import { c, radius, font, fileType, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import { AddressBar } from './AddressBar';
 import { DirectoryTree } from './DirectoryTree';
 import { IconPin, IconClose } from './icons';
+import {
+  DateFilterControl,
+  EMPTY_DATE_FILTER,
+  isCustomDateRangeInvalid,
+  isDateFilterActive,
+  matchesDateFilter,
+  type DateFilterValue,
+} from './DateFilterControl';
 
 // ── Inline SVG Icons (16x16) ───────────────────────────────────────────
 
@@ -201,98 +209,7 @@ interface Props {
 
 type SortKey = 'name' | 'modified' | 'size';
 
-/** Modification-date filter presets. `custom` uses dateAfter/dateBefore. */
-type DateFilterPreset = 'any' | 'today' | '7d' | '30d' | '365d' | 'custom';
-
 const PAGE_LIMIT = 200;
-
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-function startOfLocalDay(d: Date): number {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-}
-
-function endOfLocalDay(d: Date): number {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).getTime();
-}
-
-/** Parse an HTML date input value (`YYYY-MM-DD`) as local midnight. */
-function parseLocalDateInput(value: string): number | null {
-  if (!value) return null;
-  // Force local calendar day (avoid UTC midnight shift from `new Date('YYYY-MM-DD')`).
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!m) return null;
-  const t = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
-  return Number.isFinite(t) ? t : null;
-}
-
-function entryModifiedMs(entry: api.FsEntry): number | null {
-  if (!entry.modified) return null;
-  const t = new Date(entry.modified).getTime();
-  return Number.isFinite(t) ? t : null;
-}
-
-/**
- * Whether an entry's mtime falls in the active date filter window.
- * Entries with no usable `modified` (denied / missing) never match an active
- * date filter — same as "unknown date ≠ in range".
- */
-function matchesDateFilter(
-  entry: api.FsEntry,
-  preset: DateFilterPreset,
-  dateAfter: string,
-  dateBefore: string,
-): boolean {
-  if (preset === 'any') return true;
-  if (preset === 'custom' && !dateAfter && !dateBefore) return true;
-
-  const ms = entryModifiedMs(entry);
-  if (ms === null) return false;
-
-  const now = new Date();
-  let min = -Infinity;
-  let max = Infinity;
-
-  if (preset === 'today') {
-    min = startOfLocalDay(now);
-    max = endOfLocalDay(now);
-  } else if (preset === '7d') {
-    min = now.getTime() - 7 * MS_PER_DAY;
-  } else if (preset === '30d') {
-    min = now.getTime() - 30 * MS_PER_DAY;
-  } else if (preset === '365d') {
-    min = now.getTime() - 365 * MS_PER_DAY;
-  } else if (preset === 'custom') {
-    const after = parseLocalDateInput(dateAfter);
-    const before = parseLocalDateInput(dateBefore);
-    if (after !== null) min = after;
-    if (before !== null) max = endOfLocalDay(new Date(before));
-  }
-
-  return ms >= min && ms <= max;
-}
-
-/** True when both bounds are set and From is strictly after To (same-day OK). */
-function isCustomDateRangeInvalid(dateAfter: string, dateBefore: string): boolean {
-  if (!dateAfter || !dateBefore) return false;
-  const after = parseLocalDateInput(dateAfter);
-  const before = parseLocalDateInput(dateBefore);
-  if (after === null || before === null) return false;
-  return after > before;
-}
-
-/** Short label for the collapsed mobile range chip (MM/DD style, local). */
-function formatDateRangeChip(after: string, before: string): string {
-  const short = (iso: string) => {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-    if (!m) return iso;
-    return `${Number(m[2])}/${Number(m[3])}`;
-  };
-  if (after && before) return `${short(after)}–${short(before)}`;
-  if (after) return `≥${short(after)}`;
-  if (before) return `≤${short(before)}`;
-  return 'Set dates';
-}
 
 export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onRootsChange, navRequest, onNavHandled, selectedRoot, currentPath, onApplyNav, onSwitchRoot }: Props) {
   const isMobile = useIsMobile();
@@ -311,7 +228,9 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   // (path, status) and the trigger matches the toolbar's inline-style system.
   // `rootOpen` is whether the panel is shown; `rootRef` wraps trigger+panel so
   // the click-outside handler can tell "inside the selector" from "elsewhere".
+  // Hover uses the shared `menuList` tokens (same as the preview tab picker).
   const [rootOpen, setRootOpen] = useState(false);
+  const [hoveredRoot, setHoveredRoot] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [listHeight, setListHeight] = useState(400);
   const [sortBy, setSortBy] = useState<SortKey>('name');
@@ -319,13 +238,8 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   const [filterText, setFilterText] = useState('');
   // Client-side mtime filter (AND with the name filter). Operates on the
   // already-loaded page of entries — same scope as the name filter.
-  const [datePreset, setDatePreset] = useState<DateFilterPreset>('any');
-  const [dateAfter, setDateAfter] = useState('');
-  const [dateBefore, setDateBefore] = useState('');
-  // Mobile custom-range editor: only the thin second row while open. After
-  // "Done", the editor collapses and a chip on the main row shows the range
-  // so the address bar / list stay fully visible (no floating overlay).
-  const [dateRangeEditorOpen, setDateRangeEditorOpen] = useState(false);
+  // UI + range math live in DateFilterControl.
+  const [dateFilter, setDateFilter] = useState<DateFilterValue>(EMPTY_DATE_FILTER);
   // When true, names stick to the right edge and OVERFLOW IS CLIPPED AT THE
   // FRONT (ellipsis on the left) so the suffix of long filenames stays
   // visible. Achieved with direction:rtl on the cell + <bdi dir="ltr"> on the
@@ -515,14 +429,21 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   // Close the root dropdown when clicking outside it or pressing Escape.
   // The panel is anchored to the trigger via the shared `rootRef` wrapper.
   useEffect(() => {
-    if (!rootOpen) return;
+    if (!rootOpen) {
+      setHoveredRoot(null);
+      return;
+    }
+    const close = () => {
+      setRootOpen(false);
+      setHoveredRoot(null);
+    };
     const onDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setRootOpen(false);
+        close();
       }
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setRootOpen(false);
+      if (e.key === 'Escape') close();
     };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
@@ -650,12 +571,9 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   }, [entries, sortBy, sortAsc]);
 
   const dateRangeInvalid =
-    datePreset === 'custom' && isCustomDateRangeInvalid(dateAfter, dateBefore);
-
-  const dateFilterActive =
-    datePreset !== 'any' &&
-    !dateRangeInvalid &&
-    (datePreset !== 'custom' || !!(dateAfter || dateBefore));
+    dateFilter.preset === 'custom' &&
+    isCustomDateRangeInvalid(dateFilter.after, dateFilter.before);
+  const dateFilterActive = isDateFilterActive(dateFilter);
 
   // Name filter first (glob / regex). Derive the error flag in the memo — never
   // setState during useMemo (that re-renders mid-render and is a React footgun).
@@ -682,11 +600,11 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   // go blank while the user fixes the bounds; surface an error in the bar.
   const filteredEntries = useMemo(() => {
     let list = nameFilter.entries;
-    if (datePreset !== 'any' && !dateRangeInvalid) {
-      list = list.filter((e) => matchesDateFilter(e, datePreset, dateAfter, dateBefore));
+    if (dateFilterActive) {
+      list = list.filter((e) => matchesDateFilter(e.modified, dateFilter));
     }
     return list;
-  }, [nameFilter.entries, datePreset, dateAfter, dateBefore, dateRangeInvalid]);
+  }, [nameFilter.entries, dateFilter, dateFilterActive]);
 
   const filterError = nameFilter.error;
 
@@ -836,30 +754,33 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
                 ...(isMobile ? { left: 0, right: 0, minWidth: 0 } : {}),
               }}
               role="listbox"
+              // Clear hover when the pointer leaves the whole panel (not per
+              // row — same rule as the preview tab-jump listbox).
+              onMouseLeave={() => setHoveredRoot(null)}
             >
               {enabledRoots.map((r) => {
                 const isSel = r.name === selectedRoot;
+                const isHovered = hoveredRoot === r.name;
                 return (
                   <button
                     key={r.name}
                     type="button"
                     role="option"
                     aria-selected={isSel}
-                    style={{
-                      ...styles.rootItem,
-                      ...(isSel ? styles.rootItemSelected : {}),
-                    }}
+                    style={menuListItemStyle({ selected: isSel, hovered: isHovered })}
+                    onMouseEnter={() => setHoveredRoot(r.name)}
                     onClick={() => {
                       // Switching roots: the parent restores the target root's
                       // remembered path (it owns the path-memory map). We just
                       // close the dropdown here.
                       onSwitchRoot(r.name);
                       setRootOpen(false);
+                      setHoveredRoot(null);
                     }}
                     title={r.path_display}
                   >
-                    <span style={styles.rootItemName}>{r.name}</span>
-                    <span style={styles.rootItemPath}>{r.path_display}</span>
+                    <span style={menuList.itemTitle}>{r.name}</span>
+                    <span style={menuListSubStyle(isSel)}>{r.path_display}</span>
                   </button>
                 );
               })}
@@ -1035,71 +956,15 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
           {filterText && (
             <button onClick={() => setFilterText('')} style={styles.filterClear} title="Clear name filter">&times;</button>
           )}
-          <select
-            value={datePreset}
-            onChange={(e) => {
-              const next = e.target.value as DateFilterPreset;
-              setDatePreset(next);
-              // Open the mobile range editor only when entering custom; leave
-              // it closed when switching to a preset so the list stays clear.
-              if (isMobile) setDateRangeEditorOpen(next === 'custom');
-            }}
-            title="Filter by modification date"
-            aria-label="Filter by modification date"
-            style={{
-              ...(isMobile ? styles.dateSelectCompact : styles.dateSelect),
-              ...(dateFilterActive ? styles.dateSelectActive : {}),
-            }}
-          >
-            <option value="any">{isMobile ? 'Date' : 'Any date'}</option>
-            <option value="today">Today</option>
-            <option value="7d">{isMobile ? '7d' : 'Last 7 days'}</option>
-            <option value="30d">{isMobile ? '30d' : 'Last 30 days'}</option>
-            <option value="365d">{isMobile ? '1y' : 'Last year'}</option>
-            <option value="custom">{isMobile ? 'Range…' : 'Custom range…'}</option>
-          </select>
-          {/* Desktop: inline date pair. */}
-          {!isMobile && datePreset === 'custom' && (
-            <>
-              <input
-                type="date"
-                value={dateAfter}
-                onChange={(e) => setDateAfter(e.target.value)}
-                title="Modified on or after"
-                aria-label="Modified on or after"
-                style={styles.dateInput}
-              />
-              <span style={styles.dateRangeSep}>–</span>
-              <input
-                type="date"
-                value={dateBefore}
-                onChange={(e) => setDateBefore(e.target.value)}
-                title="Modified on or before"
-                aria-label="Modified on or before"
-                style={styles.dateInput}
-              />
-            </>
-          )}
-          {/* Mobile: collapsed custom range shows a tappable chip (reopens editor). */}
-          {isMobile && datePreset === 'custom' && !dateRangeEditorOpen && (
-            <button
-              type="button"
-              onClick={() => setDateRangeEditorOpen(true)}
-              style={styles.dateRangeChip}
-              title="Edit date range"
-              aria-label="Edit custom date range"
-            >
-              {formatDateRangeChip(dateAfter, dateBefore)}
-            </button>
-          )}
+          <DateFilterControl
+            value={dateFilter}
+            onChange={setDateFilter}
+            isMobile={isMobile}
+            matchCount={dateFilterActive ? filteredEntries.length : null}
+          />
           {dateFilterActive && (
             <button
-              onClick={() => {
-                setDatePreset('any');
-                setDateAfter('');
-                setDateBefore('');
-                setDateRangeEditorOpen(false);
-              }}
+              onClick={() => setDateFilter(EMPTY_DATE_FILTER)}
               style={styles.filterClear}
               title="Clear date filter"
               aria-label="Clear date filter"
@@ -1114,39 +979,9 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
           )}
           {filterError && <span style={styles.filterError}>Invalid regex</span>}
           {dateRangeInvalid && (
-            <span style={styles.filterError} role="alert">From after To</span>
+            <span style={styles.filterError} role="alert">Invalid range</span>
           )}
         </div>
-        {/* Mobile only: document-flow second row (not absolute). Done collapses
-            it so the address bar and list reclaim the space. */}
-        {isMobile && datePreset === 'custom' && dateRangeEditorOpen && (
-          <div style={styles.dateRangeEditor} role="group" aria-label="Custom date range">
-            <input
-              type="date"
-              value={dateAfter}
-              onChange={(e) => setDateAfter(e.target.value)}
-              title="Modified on or after"
-              aria-label="From date"
-              style={styles.dateInputEditor}
-            />
-            <span style={styles.dateRangeSep}>–</span>
-            <input
-              type="date"
-              value={dateBefore}
-              onChange={(e) => setDateBefore(e.target.value)}
-              title="Modified on or before"
-              aria-label="To date"
-              style={styles.dateInputEditor}
-            />
-            <button
-              type="button"
-              onClick={() => setDateRangeEditorOpen(false)}
-              style={styles.dateRangeDone}
-            >
-              Done
-            </button>
-          </div>
-        )}
       </div>
 
       <div ref={contentWrapRef} style={{ ...styles.contentWrap, position: 'relative' }}>
@@ -1366,37 +1201,14 @@ const styles: Record<string, React.CSSProperties> = {
     // allow the label to shrink so the chevron stays visible on narrow widths
     flex: '1 1 auto', minWidth: 0,
   },
-  // Panel: absolutely positioned under the trigger. z-index sits above the
-  // list/column headers but below modal overlays. minWidth keeps short root
-  // names from making the panel too narrow; maxWidth truncates long paths.
-  // `right: 0` is NOT set here because the panel should align to the trigger's
-  // left edge on desktop; the mobile case overrides alignment inline.
+  // Panel: absolutely positioned under the trigger. Row chrome comes from the
+  // shared `menuList` tokens (same as the preview tab-jump picker). Positioning
+  // stays local — desktop left-aligned, mobile full-width via inline override.
   rootPanel: {
+    ...menuList.panel,
     position: 'absolute', top: 'calc(100% + 4px)', left: 0,
     minWidth: '100%', maxWidth: 360, zIndex: 50,
-    background: c.surface, border: `1px solid ${c.border}`,
-    borderRadius: radius.md, boxShadow: shadow.md,
-    padding: 4, maxHeight: 320, overflowY: 'auto',
-    display: 'flex', flexDirection: 'column', gap: 2,
-  },
-  // Each item shows the root name on top + the server path below (muted,
-  // smaller). Full-width buttons so the whole row is clickable; left-aligned
-  // text to match the rest of the UI.
-  rootItem: {
-    display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
-    padding: '6px 8px', borderRadius: radius.sm, border: 'none',
-    background: 'transparent', color: c.text, cursor: 'pointer',
-    fontFamily: font.sans, textAlign: 'left', width: '100%',
-    transition: 'background 0.1s',
-  },
-  rootItemSelected: {
-    background: c.accentBg, color: c.accent,
-  },
-  rootItemName: { fontSize: 13, fontWeight: 500 },
-  rootItemPath: {
-    fontSize: 11, color: c.textMuted, fontWeight: 400,
-    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-    maxWidth: '100%',
+    maxHeight: 320, overflowY: 'auto',
   },
   refreshBtn: {
     padding: 0, borderRadius: radius.md, border: `1px solid ${c.border}`,
@@ -1512,57 +1324,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderWidth: 1, borderStyle: 'solid', borderColor: c.border,
     background: c.surface, color: c.text, fontSize: 13, outline: 'none',
     fontFamily: font.sans, transition: 'border-color 0.15s',
-  },
-  dateSelect: {
-    flexShrink: 0, padding: '6px 8px', borderRadius: radius.md,
-    borderWidth: 1, borderStyle: 'solid', borderColor: c.border,
-    background: c.surface, color: c.text, fontSize: 12.5, outline: 'none',
-    fontFamily: font.sans, cursor: 'pointer', maxWidth: 148,
-  },
-  // Narrow chip on mobile so search keeps most of the row.
-  dateSelectCompact: {
-    flexShrink: 0, width: 78, padding: '6px 4px', borderRadius: radius.md,
-    borderWidth: 1, borderStyle: 'solid', borderColor: c.border,
-    background: c.surface, color: c.text, fontSize: 12, outline: 'none',
-    fontFamily: font.sans, cursor: 'pointer',
-  },
-  dateSelectActive: {
-    borderColor: c.accent,
-    background: c.accentBg,
-    color: c.accent,
-  },
-  dateInput: {
-    flexShrink: 0, padding: '5px 8px', borderRadius: radius.md,
-    borderWidth: 1, borderStyle: 'solid', borderColor: c.border,
-    background: c.surface, color: c.text, fontSize: 12, outline: 'none',
-    fontFamily: font.sans, colorScheme: 'light' as const,
-  },
-  // In-flow (not absolute) so it never covers the address bar. Collapses via Done.
-  dateRangeEditor: {
-    display: 'flex', alignItems: 'center', gap: 6, minWidth: 0,
-  },
-  dateInputEditor: {
-    flex: 1, minWidth: 0, padding: '7px 6px', borderRadius: radius.md,
-    borderWidth: 1, borderStyle: 'solid', borderColor: c.border,
-    background: c.surface, color: c.text, fontSize: 13, outline: 'none',
-    fontFamily: font.sans, colorScheme: 'light' as const,
-    boxSizing: 'border-box' as const,
-  },
-  dateRangeDone: {
-    flexShrink: 0, padding: '7px 12px', borderRadius: radius.md,
-    border: 'none', background: c.accent, color: '#fff',
-    fontSize: 12.5, fontWeight: 500, fontFamily: font.sans, cursor: 'pointer',
-  },
-  dateRangeChip: {
-    flexShrink: 1, minWidth: 0, maxWidth: 120,
-    padding: '4px 8px', borderRadius: radius.pill,
-    border: `1px solid ${c.accent}40`,
-    background: c.accentBg, color: c.accent,
-    fontSize: 11.5, fontFamily: font.sans, fontWeight: 500,
-    cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-  },
-  dateRangeSep: {
-    color: c.textMuted, fontSize: 12, flexShrink: 0, userSelect: 'none',
   },
   filterClear: {
     padding: '0 6px', borderRadius: radius.sm, border: 'none',

@@ -1,5 +1,7 @@
 /** shadcn/Linear-inspired design tokens */
 
+import type { CSSProperties } from 'react';
+
 export const c = {
   // Backgrounds
   bg: '#ffffff',
@@ -78,3 +80,104 @@ export const font = {
   // fallbacks. Used only as an optional toggle for filenames.
   serif: 'Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif',
 } as const;
+
+// ── Shared custom-listbox chrome ──────────────────────────────────────────
+// Used by the workspace (root) selector and the preview tab-jump picker so
+// hover / selected / subtitle colors stay one visual language. Callers own
+// panel positioning (absolute vs fixed) and trigger chrome (toolbar vs tab
+// strip), but row interaction should look identical.
+
+export const menuList = {
+  /** Floating panel surface (padding + gap for option rows). */
+  panel: {
+    background: c.surface,
+    border: `1px solid ${c.border}`,
+    borderRadius: radius.md,
+    boxShadow: shadow.md,
+    padding: 4,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+    boxSizing: 'border-box',
+  } satisfies CSSProperties,
+
+  /** Base option row (title + optional subtitle). */
+  item: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 2,
+    padding: '6px 8px',
+    borderRadius: radius.sm,
+    border: 'none',
+    background: 'transparent',
+    color: c.text,
+    cursor: 'pointer',
+    fontFamily: font.sans,
+    textAlign: 'left',
+    width: '100%',
+    transition: 'background 0.1s, color 0.1s',
+    boxSizing: 'border-box',
+  } satisfies CSSProperties,
+
+  /** Pointer / keyboard highlight on a non-selected row. */
+  itemHover: {
+    background: c.bgMuted,
+  } satisfies CSSProperties,
+
+  /** Currently chosen value (selected root / active tab). */
+  itemSelected: {
+    background: c.accentBg,
+    color: c.accent,
+  } satisfies CSSProperties,
+
+  itemTitle: {
+    fontSize: 13,
+    fontWeight: 500,
+    lineHeight: 1.25,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    maxWidth: '100%',
+  } satisfies CSSProperties,
+
+  itemSub: {
+    fontSize: 11,
+    fontWeight: 400,
+    lineHeight: 1.25,
+    color: c.textMuted,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    maxWidth: '100%',
+  } satisfies CSSProperties,
+
+  /** Subtitle on a selected row — tinted accent, not flat muted gray. */
+  itemSubSelected: {
+    color: c.accent,
+    opacity: 0.78,
+  } satisfies CSSProperties,
+} as const;
+
+/** Compose option-row styles: selected wins over hover. */
+export function menuListItemStyle(opts: {
+  selected?: boolean;
+  hovered?: boolean;
+}): CSSProperties {
+  return {
+    ...menuList.item,
+    ...(opts.selected
+      ? menuList.itemSelected
+      : opts.hovered
+        ? menuList.itemHover
+        : null),
+  };
+}
+
+export function menuListSubStyle(selected: boolean, extra?: CSSProperties): CSSProperties {
+  return {
+    ...menuList.itemSub,
+    ...(selected ? menuList.itemSubSelected : null),
+    ...extra,
+  };
+}
