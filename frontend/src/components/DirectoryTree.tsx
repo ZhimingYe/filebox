@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, memo } from 'react';
+import { useState, useEffect, useCallback, useRef, useLayoutEffect, memo } from 'react';
 import * as api from '../api/client';
 import { c, radius, font, shadow } from '../theme';
 
@@ -11,6 +11,8 @@ interface Props {
   /** When true (mobile), the panel renders as an absolute overlay drawer
    *  instead of an inline flex child. The parent supplies a backdrop. */
   overlay?: boolean;
+  /** Close the mobile drawer (header Done / ×). Desktop ignores this. */
+  onClose?: () => void;
   /** Desktop (inline) panel width in px. Ignored in overlay mode, which keeps
    *  its own responsive drawer width. The parent owns this value (persisted +
    *  driven by the resize splitter). */
@@ -39,8 +41,21 @@ const DEFAULT_STATE: NodeState = {
 };
 
 const PAGE_LIMIT = 200;
+/** Indent per depth level (px). Kept modest so deep trees still fit. */
+const DEPTH_STEP = 12;
+const ROW_PAD_X = 8;
 
-export function DirectoryTree({ agentId, rootName, rootPath, currentPath, onNavigate, overlay = false, width, refreshNonce = 0 }: Props) {
+export function DirectoryTree({
+  agentId,
+  rootName,
+  rootPath,
+  currentPath,
+  onNavigate,
+  overlay = false,
+  onClose,
+  width,
+  refreshNonce = 0,
+}: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['/']));
   const [nodes, setNodes] = useState<Map<string, NodeState>>(new Map());
 
@@ -55,11 +70,10 @@ export function DirectoryTree({ agentId, rootName, rootPath, currentPath, onNavi
   // mountedRef lets in-flight requests no-op after unmount.
   const mountedRef = useRef(true);
   // inflightRef tracks which paths currently have a load in progress, so two
-  // concurrent loads for the SAME path (e.g. mount effect + expanded effect
-  // both firing in the same commit) don't duplicate the request. This is a
-  // synchronous ref, unlike the `nodes.loading` flag which only propagates
-  // after a re-render — that gap is exactly where duplicate calls slipped in.
+  // concurrent loads for the SAME path don't duplicate the request.
   const inflightRef = useRef<Set<string>>(new Set());
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const activeRowRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -159,10 +173,7 @@ export function DirectoryTree({ agentId, rootName, rootPath, currentPath, onNavi
   }, [expanded, loadChildren]);
 
   // Refresh: reload every expanded node. Triggered by the toolbar Refresh
-  // button (refreshNonce). Retries nodes stuck in the error state (loaded:true
-  // + error — the lazy effect above won't touch them) and lets live nodes pick
-  // up new subdirectories. Only depends on refreshNonce + loadChildren so it
-  // fires solely on an explicit refresh, not on every expand toggle.
+  // button (refreshNonce). Retries nodes stuck in the error state.
   const prevRefreshRef = useRef(refreshNonce);
   useEffect(() => {
     if (refreshNonce === prevRefreshRef.current) return;
@@ -171,6 +182,29 @@ export function DirectoryTree({ agentId, rootName, rootPath, currentPath, onNavi
       loadChildren(path);
     });
   }, [refreshNonce, loadChildren]);
+
+  // Keep the active row visible inside the tree scroller (both axes) without
+  // scrolling the outer app layout.
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    const el = activeRowRef.current;
+    if (!scroll || !el) return;
+    const sRect = scroll.getBoundingClientRect();
+    const eRect = el.getBoundingClientRect();
+    const pad = 6;
+    // Vertical
+    if (eRect.top < sRect.top + pad) {
+      scroll.scrollTop -= sRect.top + pad - eRect.top;
+    } else if (eRect.bottom > sRect.bottom - pad) {
+      scroll.scrollTop += eRect.bottom - (sRect.bottom - pad);
+    }
+    // Horizontal — long folder names / deep nesting
+    if (eRect.left < sRect.left + pad) {
+      scroll.scrollLeft -= sRect.left + pad - eRect.left;
+    } else if (eRect.right > sRect.right - pad) {
+      scroll.scrollLeft += eRect.right - (sRect.right - pad);
+    }
+  }, [currentPath, expanded, nodes]);
 
   const toggleExpand = useCallback((path: string) => {
     setExpanded((prev) => {
@@ -186,46 +220,55 @@ export function DirectoryTree({ agentId, rootName, rootPath, currentPath, onNavi
 
   const isExpanded = (path: string) => expanded.has(path);
 
-  const childPath = (parent: string, name: string) => parent === '/' ? `/${name}` : `${parent}/${name}`;
+  const childPath = (parent: string, name: string) =>
+    parent === '/' ? `/${name}` : `${parent}/${name}`;
 
   const renderNode = (path: string, name: string, depth: number, isRoot = false) => {
     const expandedHere = isExpanded(path);
     const state = nodes.get(path) ?? DEFAULT_STATE;
+    const active = path === currentPath;
 
     return (
       <div key={path}>
         {/* Row is a memoized component with its OWN hover state, so moving the
-            pointer over a row only re-renders that row — not the entire tree.
-            Its callbacks (onNavigate/onToggleExpand) are referentially stable
-            from the parent, which is what lets memo actually skip work. */}
+            pointer over a row only re-renders that row — not the entire tree. */}
         <Row
           path={path}
           name={name}
           depth={depth}
           isRoot={isRoot}
-          title={isRoot ? `${rootName} — ${rootPath}` : name}
-          active={path === currentPath}
+          title={isRoot ? `${rootName} — ${rootPath}` : path}
+          active={active}
           loading={state.loading}
           expandedHere={expandedHere}
+          touch={overlay}
           onNavigate={onNavigate}
           onToggleExpand={toggleExpand}
+          rowRef={active ? activeRowRef : undefined}
         />
         {expandedHere && (
           <div>
             {state.error && (
-              <div style={{ ...styles.error, paddingLeft: 4 + (depth + 1) * 14 }}>
+              <div
+                style={{
+                  ...styles.error,
+                  paddingLeft: ROW_PAD_X + 22 + (depth + 1) * DEPTH_STEP,
+                }}
+              >
                 {state.error}
-                <span style={styles.errorHint}> — click toolbar refresh to retry</span>
+                <span style={styles.errorHint}> — refresh to retry</span>
               </div>
             )}
-            {state.items.map((item) => renderNode(childPath(path, item.name), item.name, depth + 1))}
+            {state.items.map((item) =>
+              renderNode(childPath(path, item.name), item.name, depth + 1),
+            )}
             {state.nextCursor && !state.loading && (
               <button
                 type="button"
                 onClick={() => loadChildren(path, true)}
                 style={{
                   ...styles.loadMore,
-                  paddingLeft: 4 + (depth + 1) * 14,
+                  paddingLeft: ROW_PAD_X + 22 + (depth + 1) * DEPTH_STEP,
                 }}
               >
                 Load more…
@@ -237,10 +280,52 @@ export function DirectoryTree({ agentId, rootName, rootPath, currentPath, onNavi
     );
   };
 
+  // Mobile drawer needs concrete chrome (title + close). Desktop stays
+  // title-free so the tree doesn't stack redundant "Folders / root / path".
+  const locationLabel =
+    currentPath === '/' || !currentPath
+      ? 'Root of this workspace'
+      : currentPath;
+
   return (
-    <div style={{ ...styles.panel, ...(overlay ? styles.panelOverlay : (width != null ? { width } : {})) }}>
-      <div style={styles.scroll}>
-        {renderNode('/', rootName, 0, true)}
+    <div
+      style={{
+        ...styles.panel,
+        ...(overlay ? styles.panelOverlay : width != null ? { width } : {}),
+      }}
+      role="navigation"
+      aria-label="Directory tree"
+    >
+      {overlay && (
+        <div style={styles.drawerHeader}>
+          <div style={styles.drawerHeaderMain}>
+            <span style={styles.drawerTitle} title={rootPath}>
+              {rootName}
+            </span>
+            <span style={styles.drawerLocation} title={locationLabel}>
+              {locationLabel}
+            </span>
+          </div>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              style={styles.drawerClose}
+              aria-label="Close folder tree"
+            >
+              Done
+            </button>
+          )}
+        </div>
+      )}
+      {/*
+        Both-axis scroll: inner content uses width:max-content so deep nesting
+        and long folder names widen the scroll surface instead of truncating.
+      */}
+      <div ref={scrollRef} style={styles.scroll}>
+        <div style={{ ...styles.treeInner, ...(overlay ? styles.treeInnerTouch : null) }}>
+          {renderNode('/', rootName, 0, true)}
+        </div>
       </div>
     </div>
   );
@@ -261,46 +346,75 @@ interface RowProps {
   active: boolean;
   loading: boolean;
   expandedHere: boolean;
+  /** Larger hit targets + type for mobile drawer. */
+  touch?: boolean;
   onNavigate: (path: string) => void;
   onToggleExpand: (path: string) => void;
+  /** Attached only on the active row so the parent can scroll it into view. */
+  rowRef?: React.Ref<HTMLDivElement>;
 }
 
-const Row = memo(function Row({ path, name, depth, isRoot, title, active, loading, expandedHere, onNavigate, onToggleExpand }: RowProps) {
+const Row = memo(function Row({
+  path,
+  name,
+  depth,
+  isRoot,
+  title,
+  active,
+  loading,
+  expandedHere,
+  touch = false,
+  onNavigate,
+  onToggleExpand,
+  rowRef,
+}: RowProps) {
   const [hovered, setHovered] = useState(false);
   return (
     <div
+      ref={rowRef}
+      role="treeitem"
+      aria-expanded={expandedHere}
+      aria-selected={active}
       style={{
         ...styles.row,
-        paddingLeft: 4 + depth * 14,
+        ...(touch ? styles.rowTouch : null),
+        paddingLeft: ROW_PAD_X + depth * (touch ? 14 : DEPTH_STEP),
         ...(active ? styles.rowActive : hovered ? styles.rowHover : {}),
       }}
       onClick={() => onNavigate(path)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
+      {active && <span style={styles.activeBar} aria-hidden />}
       <button
         type="button"
         onClick={(e) => {
           e.stopPropagation();
           onToggleExpand(path);
         }}
-        style={styles.chevronBtn}
+        style={{
+          ...styles.chevronBtn,
+          ...(touch ? styles.chevronBtnTouch : null),
+          ...(hovered || active ? styles.chevronBtnLit : null),
+        }}
         aria-label={expandedHere ? 'Collapse' : 'Expand'}
         title={expandedHere ? 'Collapse' : 'Expand'}
       >
         {loading ? (
           <span style={styles.spinner} />
         ) : (
-          <ChevronIcon direction={expandedHere ? 'down' : 'right'} />
+          <ChevronIcon open={expandedHere} />
         )}
       </button>
-      <span style={styles.icon}>
-        <FolderIcon />
+      <span style={{ ...styles.icon, ...(touch ? styles.iconTouch : null) }} aria-hidden>
+        <FolderIcon open={expandedHere} active={active} />
       </span>
       <span
         style={{
           ...styles.label,
-          ...(isRoot ? styles.rootLabel : {}),
+          ...(touch ? styles.labelTouch : null),
+          ...(isRoot ? styles.rootLabel : null),
+          ...(active && !isRoot ? styles.labelActive : null),
         }}
         title={title}
       >
@@ -310,29 +424,47 @@ const Row = memo(function Row({ path, name, depth, isRoot, title, active, loadin
   );
 });
 
-function ChevronIcon({ direction }: { direction: 'right' | 'down' }) {
+function ChevronIcon({ open }: { open: boolean }) {
   return (
     <svg
       style={{
         display: 'block',
         width: 12,
         height: 12,
-        transition: 'transform 0.12s',
-        transform: direction === 'down' ? 'rotate(90deg)' : 'none',
+        transition: 'transform 0.12s ease',
+        transform: open ? 'rotate(90deg)' : 'none',
       }}
       viewBox="0 0 16 16"
       fill="none"
+      aria-hidden
     >
-      <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="M6 4l4 4-4 4"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
 
-function FolderIcon() {
+function FolderIcon({ open, active }: { open: boolean; active: boolean }) {
+  const stroke = active ? c.accent : c.textMuted;
+  const fill = active ? c.accentBg : open ? c.bgMuted : c.bgSubtle;
   return (
-    <svg style={{ display: 'block', width: 15, height: 15 }} viewBox="0 0 16 16" fill="none">
-      <path d="M2 4.5C2 3.67 2.67 3 3.5 3H6.29a1 1 0 0 1 .7.29L8 4.5h4.5c.83 0 1.5.67 1.5 1.5v5.5c0 .83-.67 1.5-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z" fill="#94a3b8" />
-      <path d="M2 6h12v5.5c0 .83-.67 1.5-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5V6Z" fill="#cbd5e1" />
+    <svg
+      style={{ display: 'block', width: 15, height: 15 }}
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden
+    >
+      <path
+        d="M2 4.5C2 3.67 2.67 3 3.5 3H6.2c.3 0 .58.12.79.33L8 4.3h4.5c.83 0 1.5.67 1.5 1.5v5.7c0 .83-.67 1.5-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z"
+        fill={fill}
+        stroke={stroke}
+        strokeWidth="1.1"
+      />
     </svg>
   );
 }
@@ -343,46 +475,125 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     width: 240,
     flexShrink: 0,
-    background: c.surface,
+    background: c.bg,
     borderRight: `1px solid ${c.border}`,
     overflow: 'hidden',
+    minWidth: 0,
+    minHeight: 0,
   },
-  // Mobile drawer mode: absolute-positioned over the file list, full height,
-  // ~85% width (capped 320px) so a sliver of the list stays visible as a
-  // close affordance hint. Shadow replaces the border (no neighbor to divide).
+  // Mobile drawer: fixed side sheet, deliberately modest so it does not
+  // swallow the viewport. ~70% width (capped 260) leaves a clear strip of the
+  // file list as a close affordance; full height keeps deep trees scrollable.
+  // position:fixed (not absolute inside contentWrap) so it escapes the file
+  // panel stacking context and sits below the date-filter modal (320/330).
+  // Parent mutual-excludes tree vs date filter so they never stack.
   panelOverlay: {
-    position: 'absolute',
+    position: 'fixed',
     top: 0,
     left: 0,
     bottom: 0,
-    width: '85%',
-    maxWidth: 320,
-    zIndex: 60,
+    width: 'min(70vw, 260px)',
+    maxWidth: 260,
+    zIndex: 310,
     flexShrink: 1,
     borderRight: 'none',
     boxShadow: shadow.lg,
+    background: c.bg,
   },
-  scroll: {
-    flex: 1,
-    overflowY: 'auto',
-    overflowX: 'hidden',
-    padding: '4px 0',
-  },
-  // The whole row is clickable (navigates into the folder). The chevron button
-  // inside stops propagation so it toggles expand/collapse instead. Generous
-  // min-height + padding makes the hit target comfortable; the hover background
-  // confirms what's clickable (the original version had no hover affordance,
-  // which made it feel unresponsive).
-  row: {
+
+  // Compact chrome — root name + path only, no "Folder tree" billboard.
+  drawerHeader: {
+    flexShrink: 0,
     display: 'flex',
     alignItems: 'center',
-    gap: 2,
-    padding: '0 6px',
-    minHeight: 30,
+    justifyContent: 'space-between',
+    gap: 8,
+    padding: '8px 8px 8px 12px',
+    borderBottom: `1px solid ${c.border}`,
+    background: c.bg,
+  },
+  drawerHeaderMain: {
+    minWidth: 0,
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 1,
+  },
+  drawerTitle: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: c.text,
+    letterSpacing: '-0.01em',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  drawerLocation: {
+    fontSize: 11,
+    fontFamily: font.mono,
+    color: c.textMuted,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  drawerClose: {
+    flexShrink: 0,
+    padding: '5px 10px',
+    borderRadius: radius.md,
+    border: 'none',
+    background: c.accent,
+    color: c.onAccent,
+    fontSize: 12,
+    fontWeight: 500,
+    fontFamily: font.sans,
+    cursor: 'pointer',
+  },
+
+  // Both axes scroll. Inner tree uses max-content width so the scroll surface
+  // grows with deep nesting / long names instead of clipping labels.
+  scroll: {
+    flex: 1,
+    minHeight: 0,
+    minWidth: 0,
+    overflowX: 'auto',
+    overflowY: 'auto',
+    background: c.bg,
+  },
+  treeInner: {
+    display: 'inline-block',
+    minWidth: '100%',
+    width: 'max-content',
+    padding: '6px 0 8px',
+    boxSizing: 'border-box',
+    verticalAlign: 'top',
+  },
+  treeInnerTouch: {
+    padding: '2px 0 12px',
+  },
+
+  // Whole row navigates; chevron stops propagation to expand/collapse.
+  // Labels stay nowrap (no ellipsis) so horizontal scroll can reveal them.
+  row: {
+    position: 'relative',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 3,
+    paddingTop: 0,
+    paddingBottom: 0,
+    paddingRight: 10,
+    minHeight: 26,
     cursor: 'pointer',
     transition: 'background 0.08s',
-    borderRadius: radius.sm,
-    margin: '1px 4px',
+    boxSizing: 'border-box',
+    width: 'max-content',
+    minWidth: '100%',
+  },
+  // Mobile: still tappable, but not a full 44px "app list" density — the
+  // drawer is narrow; oversized rows make the tree feel huge and sparse.
+  rowTouch: {
+    minHeight: 34,
+    gap: 4,
+    paddingRight: 10,
   },
   rowHover: {
     background: c.bgMuted,
@@ -390,70 +601,99 @@ const styles: Record<string, React.CSSProperties> = {
   rowActive: {
     background: c.accentBg,
   },
+  activeBar: {
+    position: 'absolute',
+    left: 0,
+    top: 3,
+    bottom: 3,
+    width: 2,
+    borderRadius: 1,
+    background: c.accent,
+  },
   chevronBtn: {
-    width: 22,
-    height: 22,
+    width: 18,
+    height: 18,
     padding: 0,
     border: 'none',
     background: 'transparent',
-    color: c.textMuted,
+    color: c.textFaint,
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
     borderRadius: radius.sm,
+  },
+  chevronBtnTouch: {
+    width: 24,
+    height: 24,
+  },
+  chevronBtnLit: {
+    color: c.textSecondary,
   },
   icon: {
     flexShrink: 0,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+    width: 15,
+  },
+  iconTouch: {
+    width: 16,
   },
   label: {
-    flex: 1,
-    minWidth: 0,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
+    flexShrink: 0,
     whiteSpace: 'nowrap',
-    fontSize: 13,
+    fontSize: 12.5,
     fontFamily: font.sans,
     color: c.text,
     userSelect: 'none',
+    lineHeight: 1.25,
+    paddingRight: 4,
+  },
+  labelTouch: {
+    fontSize: 13,
+    lineHeight: 1.25,
   },
   rootLabel: {
     fontWeight: 600,
-    color: c.accent,
+    color: c.text,
+  },
+  labelActive: {
+    fontWeight: 500,
+    color: c.accentHover,
   },
   error: {
     fontSize: 11,
     color: c.danger,
-    padding: '2px 8px 2px 0',
-    margin: '0 4px',
+    padding: '2px 10px 3px 0',
+    whiteSpace: 'nowrap',
   },
   errorHint: {
     color: c.textMuted,
   },
   loadMore: {
     display: 'block',
-    width: 'calc(100% - 8px)',
-    margin: '2px 4px',
-    padding: '4px 8px',
+    margin: '0',
+    padding: '3px 10px',
     border: 'none',
     background: 'transparent',
     color: c.accent,
-    fontSize: 11,
+    fontSize: 11.5,
+    fontWeight: 500,
     cursor: 'pointer',
     textAlign: 'left',
     borderRadius: radius.sm,
     fontFamily: font.sans,
+    whiteSpace: 'nowrap',
   },
   spinner: {
-    width: 10,
-    height: 10,
-    border: `2px solid ${c.border}`,
+    width: 9,
+    height: 9,
+    border: `1.5px solid ${c.border}`,
     borderTopColor: c.accent,
     borderRadius: '50%',
     animation: 'spin 0.6s linear infinite',
+    boxSizing: 'border-box',
   },
 };

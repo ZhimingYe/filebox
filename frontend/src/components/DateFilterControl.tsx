@@ -325,6 +325,9 @@ interface Props {
   isMobile: boolean;
   /** Optional live match count shown in the panel footer. */
   matchCount?: number | null;
+  /** Fired when the popover opens/closes so the parent can dismiss sibling
+   *  overlays (e.g. the mobile folder tree) and avoid stacked z-index wars. */
+  onOpenChange?: (open: boolean) => void;
 }
 
 /**
@@ -335,8 +338,21 @@ interface Props {
  * previews the provisional range). Filtering semantics live in the exported
  * helpers so the list can stay pure/memoized.
  */
-export function DateFilterControl({ value, onChange, isMobile, matchCount = null }: Props) {
+export function DateFilterControl({
+  value,
+  onChange,
+  isMobile,
+  matchCount = null,
+  onOpenChange,
+}: Props) {
   const [open, setOpen] = useState(false);
+  const onOpenChangeRef = useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+
+  // Notify parent after open flips (not during the setState updater).
+  useEffect(() => {
+    onOpenChangeRef.current?.(open);
+  }, [open]);
   const [hoveredPreset, setHoveredPreset] = useState<string | null>(null);
   const [hoveredDay, setHoveredDay] = useState<string | null>(null);
   const [hoverTrigger, setHoverTrigger] = useState(false);
@@ -1088,10 +1104,13 @@ const styles: Record<string, CSSProperties> = {
     flexShrink: 1,
     minWidth: 0,
   },
+  // Above the mobile folder-tree drawer (300/310). Only one of these layers
+  // should be open at a time (parent mutual-excludes); z-order still matters
+  // if both briefly coexist during a transition.
   backdrop: {
     position: 'fixed',
     inset: 0,
-    zIndex: 55,
+    zIndex: 320,
     background: c.bgOverlay,
   },
   trigger: {
@@ -1173,6 +1192,7 @@ const styles: Record<string, CSSProperties> = {
     top: 'calc(100% + 6px)',
     right: 0,
     width: 456,
+    zIndex: 60,
   },
   panelMobile: {
     position: 'fixed',
@@ -1184,6 +1204,8 @@ const styles: Record<string, CSSProperties> = {
     margin: '0 auto',
     maxHeight: 'min(80vh, 640px)',
     overflowY: 'auto',
+    // Above tree drawer + its backdrop so the sheet is never half-covered.
+    zIndex: 330,
   },
 
   header: {

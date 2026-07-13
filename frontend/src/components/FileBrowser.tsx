@@ -264,13 +264,35 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   // Tree view toggle: persisted so the user keeps their preferred layout.
   const [treeOpen, setTreeOpen] = useState<boolean>(() => {
-    try { return localStorage.getItem('filebox.treeOpen') === '1'; } catch { return false; }
+    // Desktop may restore open; mobile drawers always start closed so they
+    // don't fight the first paint or leftover overlay state.
+    try {
+      if (typeof window !== 'undefined' && window.innerWidth < 768) return false;
+      return localStorage.getItem('filebox.treeOpen') === '1';
+    } catch {
+      return false;
+    }
   });
   useEffect(() => {
+    // Only persist desktop dock preference; mobile is ephemeral.
+    if (isMobile) return;
     try { localStorage.setItem('filebox.treeOpen', treeOpen ? '1' : '0'); } catch { /* ignore */ }
-  }, [treeOpen]);
+  }, [treeOpen, isMobile]);
+  // Bumped to remount DateFilterControl closed when the tree opens — keeps
+  // two full-screen-ish mobile layers from stacking on top of each other.
+  const [dateFilterEpoch, setDateFilterEpoch] = useState(0);
+
+  const closeTree = useCallback(() => setTreeOpen(false), []);
+  const toggleTree = useCallback(() => {
+    setTreeOpen((v) => {
+      if (v) return false;
+      setDateFilterEpoch((n) => n + 1);
+      setRootOpen(false);
+      return true;
+    });
+  }, []);
   // Desktop directory-tree width (px), resizable via the splitter and persisted.
-  // Mobile ignores this (the tree is an 85% overlay drawer there). Clamped on
+  // Mobile ignores this (the tree is a ~70% / 260px overlay drawer there). Clamped on
   // read so a corrupt/out-of-range stored value can never wedge the layout.
   const TREE_MIN_W = 160;
   const TREE_MAX_W = 560;
@@ -536,8 +558,8 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   // would be a fresh function each render and bust React.memo on every row.
   const handleTreeNavigate = useCallback((path: string) => {
     if (selectedRoot) handleNavigate(selectedRoot, path);
-    if (isMobile) setTreeOpen(false);
-  }, [selectedRoot, handleNavigate, isMobile]);
+    if (isMobile) closeTree();
+  }, [selectedRoot, handleNavigate, isMobile, closeTree]);
 
   const toggleSort = (key: SortKey) => {
     if (sortBy === key) {
@@ -807,7 +829,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
             list (side-by-side would be too cramped on a narrow screen). Sits
             beside Refresh so the two navigation controls stay together. */}
         <button
-          onClick={() => setTreeOpen((v) => !v)}
+          onClick={toggleTree}
           style={treeOpen ? styles.treeBtnActive : styles.treeBtn}
           title={treeOpen ? 'Hide directory tree' : 'Show directory tree'}
           aria-pressed={treeOpen}
@@ -957,10 +979,16 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
             <button onClick={() => setFilterText('')} style={styles.filterClear} title="Clear name filter">&times;</button>
           )}
           <DateFilterControl
+            key={dateFilterEpoch}
             value={dateFilter}
             onChange={setDateFilter}
             isMobile={isMobile}
             matchCount={dateFilterActive ? filteredEntries.length : null}
+            onOpenChange={(open) => {
+              // Date filter is a full-viewport sheet on mobile — never leave
+              // the folder drawer open underneath it.
+              if (open && isMobile) closeTree();
+            }}
           />
           {dateFilterActive && (
             <button
@@ -986,7 +1014,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
 
       <div ref={contentWrapRef} style={{ ...styles.contentWrap, position: 'relative' }}>
         {treeOpen && selectedRoot && activeRootObj && isMobile && (
-          <div style={styles.treeBackdrop} onClick={() => setTreeOpen(false)} />
+          <div style={styles.treeBackdrop} onClick={closeTree} />
         )}
         {treeOpen && selectedRoot && activeRootObj && (
           <DirectoryTree
@@ -996,6 +1024,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
             rootPath={activeRootObj.path_display}
             currentPath={currentPath}
             overlay={isMobile}
+            onClose={isMobile ? closeTree : undefined}
             width={treeWidth}
             refreshNonce={treeRefreshNonce}
             onNavigate={handleTreeNavigate}
@@ -1359,14 +1388,15 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 1,
     transition: 'background 0.1s',
   },
-  // Mobile-only backdrop behind the tree drawer. Clicking it dismisses the
-  // tree (same pattern as the app's mobile sidebar). Desktop docks the tree
-  // inline so no backdrop is needed there.
+  // Mobile-only full-viewport dimmer behind the fixed tree drawer.
+  // z-index ladder (mobile overlays):
+  //   300 backdrop · 310 tree · 320 date backdrop · 330 date sheet
+  // Tree/date are mutual-exclusive in handlers so they never stack.
   treeBackdrop: {
-    position: 'absolute',
+    position: 'fixed',
     inset: 0,
     background: c.bgOverlay,
-    zIndex: 55,
+    zIndex: 300,
   },
   treeBtn: {
     padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.border}`,

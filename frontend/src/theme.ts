@@ -24,6 +24,8 @@ export const c = {
   accent: '#6366f1',
   accentHover: '#4f46e5',
   accentBg: '#eef2ff',
+  /** Text/icons on solid accent / danger / warning fills. */
+  onAccent: '#ffffff',
 
   // Semantic
   danger: '#ef4444',
@@ -70,6 +72,8 @@ export const shadow = {
   sm: '0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06)',
   md: '0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1)',
   lg: '0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1)',
+  /** Soft lift for switch thumbs / small floating controls. */
+  control: '0 1px 2px rgba(15,23,42,0.15)',
 } as const;
 
 export const font = {

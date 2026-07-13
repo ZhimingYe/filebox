@@ -14,6 +14,7 @@ import { AgentSettings } from './components/AgentSettings';
 import { AboutDialog } from './components/AboutDialog';
 import { SystemStats } from './components/SystemStats';
 import { PinnedFolders } from './components/PinnedFolders';
+import { NoAgentSelected } from './components/NoAgentSelected';
 import {
   IconChevronLeft,
   IconChevronRight,
@@ -639,9 +640,12 @@ export default function App() {
         {/* Content area */}
         <div style={styles.contentArea}>
           {!selectedAgent ? (
-            <div style={styles.emptyState}>
-              <p style={styles.emptyText}>Select an agent from the sidebar</p>
-            </div>
+            <NoAgentSelected
+              agents={agents}
+              isMobile={isMobile}
+              onOpenSidebar={isMobile ? () => setSidebarOpen(true) : undefined}
+              onSelectAgent={selectAgent}
+            />
           ) : (
             <>
               {/* Keep FileBrowser mounted across Files/Settings/Stats and across
@@ -957,11 +961,6 @@ const styles: Record<string, React.CSSProperties> = {
   mainMobile: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
   // Row flex: Files shell and Settings/Stats are siblings; only one is visible.
   contentArea: { flex: 1, display: 'flex', overflow: 'hidden', minWidth: 0, minHeight: 0 },
-  emptyState: {
-    flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-    padding: 16,
-  },
-  emptyText: { color: c.textMuted, fontSize: 14, textAlign: 'center' },
   // ── Desktop split ──
   splitView: { display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', minWidth: 0 },
   // Mobile files shell: column so list (or full-screen preview) fills contentArea.
