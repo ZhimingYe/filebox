@@ -240,6 +240,10 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   // already-loaded page of entries — same scope as the name filter.
   // UI + range math live in DateFilterControl.
   const [dateFilter, setDateFilter] = useState<DateFilterValue>(EMPTY_DATE_FILTER);
+  // Wall-clock used only for the "new" badge (mtime within 15 min). Ticks while
+  // any loaded entry is still inside the window so badges clear without a
+  // manual refresh; idle when nothing is recent.
+  const [nowMs, setNowMs] = useState(() => Date.now());
   // When true, names stick to the right edge and OVERFLOW IS CLIPPED AT THE
   // FRONT (ellipsis on the left) so the suffix of long filenames stays
   // visible. Achieved with direction:rtl on the cell + <bdi dir="ltr"> on the
@@ -630,6 +634,22 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
 
   const filterError = nameFilter.error;
 
+  // Keep "new" badges honest: refresh the clock whenever the listing changes
+  // (so a late re-list after idle isn't judged against a stale mount time),
+  // then tick only while at least one loaded entry is still in the window.
+  useEffect(() => {
+    setNowMs(Date.now());
+  }, [entries]);
+  const hasRecentEntry = useMemo(
+    () => entries.some((e) => isRecentlyModified(e.modified, nowMs)),
+    [entries, nowMs],
+  );
+  useEffect(() => {
+    if (!hasRecentEntry) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, [hasRecentEntry]);
+
   // Report current visible entries to parent (for keyboard navigation).
   // Uses a signature ref so we only fire when something actually changed.
   const lastSigRef = useRef('');
@@ -656,6 +676,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     const isBack = entry === null;
     const displayEntry = isBack ? null : entry as api.FsEntry;
     const isHovered = hoveredIdx === index;
+    const isRecent = !isBack && !displayEntry!.denied && isRecentlyModified(displayEntry!.modified, nowMs);
 
     return (
       <div
@@ -719,7 +740,13 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
           )}
         </div>
         {!isBack && displayEntry!.modified && (
-          <span style={isMobile ? styles.entryDateMobile : styles.entryDate}>
+          <span
+            style={{
+              ...(isMobile ? styles.entryDateMobile : styles.entryDate),
+              ...(isRecent ? styles.entryDateRecent : {}),
+            }}
+            title={isRecent ? 'Modified within the last 15 minutes' : undefined}
+          >
             {isMobile ? formatDateShort(displayEntry!.modified) : formatDate(displayEntry!.modified)}
           </span>
         )}
@@ -1154,6 +1181,19 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+// Entries modified within this window get a "new" badge in the file list.
+const NEW_ENTRY_MS = 15 * 60 * 1000;
+
+/** True when `modified` is a parseable ISO time within the last 15 minutes. */
+function isRecentlyModified(modified: string | null | undefined, nowMs: number): boolean {
+  if (!modified) return false;
+  const t = Date.parse(modified);
+  if (Number.isNaN(t)) return false;
+  const age = nowMs - t;
+  // Allow a small future skew (agent/host clock slightly ahead of browser).
+  return age <= NEW_ENTRY_MS && age >= -60_000;
+}
+
 // Current year omits the year; post-2000 years use 2 digits (25 not 2025).
 function formatDate(iso: string): string {
   const d = new Date(iso);
@@ -1459,12 +1499,24 @@ const styles: Record<string, React.CSSProperties> = {
   entryDate: {
     color: c.textMuted, fontSize: 12, width: 130, textAlign: 'right',
     flexShrink: 0, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+    // Tabular digits + default tracking reads loose on short timestamps; tighten.
+    letterSpacing: '-0.02em',
+    fontFeatureSettings: '"tnum" 1, "kern" 1',
   },
-  entryDateMobile: { color: c.textMuted, fontSize: 10, textAlign: 'right', flexShrink: 0, width: 72 },
+  entryDateMobile: {
+    color: c.textMuted, fontSize: 10, textAlign: 'right', flexShrink: 0, width: 72,
+    letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums',
+  },
   entryMeta: { color: c.textFaint, fontSize: 12, width: 80, textAlign: 'right', flexShrink: 0 },
   deniedBadge: {
     color: c.warning, fontSize: 10, fontStyle: 'normal', fontWeight: 500,
     padding: '1px 6px', background: c.warningBg, borderRadius: radius.pill, flexShrink: 0,
+  },
+  // 15-minute "recent" highlight: reuse the date column, no extra badge width.
+  // Semibold + tighter tracking keeps the purple signal without the chunky
+  // glyph expansion of full bold.
+  entryDateRecent: {
+    color: c.accent, fontWeight: 600, letterSpacing: '-0.03em',
   },
   // Consume only the filename cell's spare space. The following date column
   // remains a separate, non-shrinking 130px region, so the button can sit at
