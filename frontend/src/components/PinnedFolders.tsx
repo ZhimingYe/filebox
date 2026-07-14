@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../api/client';
-import { c, radius, font } from '../theme';
+import { c, radius, font, shadow } from '../theme';
 import { IconPin, IconClose, IconChevronRight } from './icons';
 
 interface Props {
@@ -468,67 +468,68 @@ const PROBE_CONCURRENCY = 4;
 // minute rather than forever read as present.
 const POSITIVE_TTL_MS = 60_000;
 // Indent pin rows under their group header so the hierarchy reads clearly.
-const GROUP_INDENT = 16;
+const GROUP_INDENT = 12;
 
 const styles: Record<string, React.CSSProperties> = {
-  list: { display: 'flex', flexDirection: 'column', gap: 4 },
-  group: { display: 'flex', flexDirection: 'column' },
+  list: { display: 'flex', flexDirection: 'column', gap: 2 },
+  group: { display: 'flex', flexDirection: 'column', gap: 0 },
   groupHeader: {
-    display: 'flex', alignItems: 'center', gap: 4,
-    padding: '4px 8px', border: 'none', background: 'transparent',
+    display: 'flex', alignItems: 'center', gap: 3,
+    padding: '3px 6px', border: 'none', background: 'transparent',
     cursor: 'pointer', width: '100%', textAlign: 'left',
-    borderRadius: radius.sm, transition: 'background 0.15s',
-    fontFamily: font.sans,
+    borderRadius: radius.sm, transition: 'background 0.12s',
+    fontFamily: font.sans, minHeight: 24, boxSizing: 'border-box',
   },
   groupLabel: {
-    flex: 1, fontSize: 12, fontWeight: 600, color: c.textSecondary,
+    flex: 1, fontSize: 11, fontWeight: 500, color: c.textSecondary,
     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-    textTransform: 'uppercase', letterSpacing: 0.4,
+    letterSpacing: '-0.01em',
   },
   groupCount: {
-    fontSize: 10.5, fontWeight: 500, color: c.textMuted,
-    background: c.bgMuted, borderRadius: radius.pill,
-    padding: '1px 6px', minWidth: 16, textAlign: 'center',
+    fontSize: 10, fontWeight: 500, color: c.textMuted,
+    fontFamily: font.mono, fontVariantNumeric: 'tabular-nums',
+    minWidth: 12, textAlign: 'right',
   },
   row: {
-    display: 'flex', alignItems: 'center', borderRadius: radius.md,
-    transition: 'background 0.15s',
+    display: 'flex', alignItems: 'center', borderRadius: radius.sm,
+    transition: 'background 0.1s', minHeight: 26,
   },
   rowMain: {
-    flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8,
-    padding: '5px 8px', border: 'none', background: 'transparent',
-    cursor: 'pointer', fontSize: 12.5, textAlign: 'left', fontFamily: font.sans,
-    transition: 'color 0.15s',
+    flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 5,
+    padding: '3px 4px', border: 'none', background: 'transparent',
+    cursor: 'pointer', fontSize: 11.5, textAlign: 'left', fontFamily: font.sans,
+    transition: 'color 0.1s', letterSpacing: '-0.01em',
   },
   rowLabel: {
     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
   },
   unpinBtn: {
-    flexShrink: 0, width: 22, height: 22, lineHeight: 1,
+    flexShrink: 0, width: 20, height: 20, lineHeight: 1,
     border: 'none', background: 'transparent', cursor: 'pointer',
     borderRadius: radius.sm, padding: 0,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
-    marginRight: 4, transition: 'color 0.15s',
+    marginRight: 1, transition: 'color 0.1s, background 0.1s',
   },
   errorBanner: {
-    fontSize: 11.5, color: c.danger, padding: '4px 8px',
+    fontSize: 10.5, color: c.danger, padding: '3px 6px',
     fontFamily: font.sans,
   },
   // Collapsed rail: single entry + popover
   collapsedEntry: {
-    width: 40, height: 36, display: 'flex',
+    width: 36, height: 30, display: 'flex',
     alignItems: 'center', justifyContent: 'center',
-    padding: 0, borderRadius: radius.md, border: 'none', cursor: 'pointer',
-    background: 'transparent', color: c.textSecondary, transition: 'all 0.15s',
+    padding: 0, borderRadius: radius.sm, border: 'none', cursor: 'pointer',
+    background: 'transparent', color: c.textSecondary, transition: 'background 0.1s, color 0.1s',
   },
   collapsedBadge: {
     position: 'absolute',
-    top: 2, right: 2,
-    minWidth: 15, height: 15, padding: '0 4px',
-    fontSize: 9.5, fontWeight: 600, lineHeight: '15px',
-    textAlign: 'center', color: '#fff', background: c.accent,
+    top: 0, right: 0,
+    minWidth: 13, height: 13, padding: '0 3px',
+    fontSize: 9, fontWeight: 600, lineHeight: '13px',
+    textAlign: 'center', color: c.onAccent, background: c.accent,
     borderRadius: radius.pill, pointerEvents: 'none',
-    fontFamily: font.sans,
+    fontFamily: font.sans, fontVariantNumeric: 'tabular-nums',
+    boxSizing: 'border-box',
   },
   popover: {
     // position:fixed (not absolute) so the popover escapes the sidebar's
@@ -538,20 +539,20 @@ const styles: Record<string, React.CSSProperties> = {
     // button's getBoundingClientRect() each time it opens and on every
     // scroll/resize while open.
     position: 'fixed',
-    width: 240, maxHeight: 360,
+    width: 232, maxHeight: 340,
     background: c.surface, border: `1px solid ${c.border}`,
-    borderRadius: radius.md, boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+    borderRadius: radius.md, boxShadow: shadow.md,
     zIndex: 1000, overflow: 'hidden',
     display: 'flex', flexDirection: 'column',
   },
   popoverHeader: {
-    fontSize: 11, textTransform: 'uppercase', color: c.textMuted,
-    letterSpacing: 0.8, fontWeight: 600, padding: '8px 12px',
+    fontSize: 10, textTransform: 'uppercase', color: c.textMuted,
+    letterSpacing: '0.05em', fontWeight: 600, padding: '7px 10px',
     borderBottom: `1px solid ${c.border}`, background: c.bgSubtle,
     fontFamily: font.sans,
   },
   popoverBody: {
-    flex: 1, overflowY: 'auto', padding: '6px 4px',
-    display: 'flex', flexDirection: 'column', gap: 2,
+    flex: 1, overflowY: 'auto', padding: '4px 3px',
+    display: 'flex', flexDirection: 'column', gap: 1,
   },
 };

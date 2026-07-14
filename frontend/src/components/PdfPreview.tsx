@@ -61,14 +61,24 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
   const placeholderRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   // Responsive page width: pages fit container width minus padding.
+  // Coalesce to one update per frame and ignore sub-pixel noise so a parent
+  // width change (sidebar toggle, splitter) can't storm page reflows.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    let raf = 0;
     const obs = new ResizeObserver(([entry]) => {
-      setContainerWidth(entry.contentRect.width);
+      const w = entry.contentRect.width;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        setContainerWidth((prev) => (Math.abs(prev - w) < 1 ? prev : w));
+      });
     });
     obs.observe(el);
-    return () => obs.disconnect();
+    return () => {
+      cancelAnimationFrame(raf);
+      obs.disconnect();
+    };
   }, []);
 
   // Slow-load detection: 8s timer, started only once the gate clears us to

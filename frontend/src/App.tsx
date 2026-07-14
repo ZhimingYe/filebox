@@ -22,6 +22,9 @@ import {
   IconSettings,
   IconStats,
   IconLogout,
+  IconMenu,
+  IconClose,
+  IconBrandMark,
 } from './components/icons';
 import type { FsEntry } from './api/client';
 import { fileRawUrl } from './api/client';
@@ -29,6 +32,12 @@ import * as api from './api/client';
 import { c, radius, shadow, font } from './theme';
 
 const VERSION_TOAST_DISMISS_KEY = 'filebox.newVersionDismissed';
+
+/** Desktop rail widths (px). Keep in sync with `styles.sidebarPanel` targets. */
+const SIDEBAR_W_EXPANDED = 180;
+const SIDEBAR_W_COLLAPSED = 48;
+/** Must match `transition` duration on the desktop sidebar panel. */
+const SIDEBAR_WIDTH_MS = 180;
 
 function getDismissedVersion(): string | null {
   try {
@@ -114,14 +123,95 @@ export default function App() {
   // ── Desktop sidebar collapse (icon-only rail) ──
   // Mobile drawer ignores this — `collapsed` below is gated on !isMobile.
   // Persisted to localStorage the same way splitRatio is.
+  //
+  // Performance model (do not "simplify" back to transitioning flex width):
+  // - A layout *spacer* owns the main-column flex width. It does NOT animate.
+  // - An absolute *panel* animates width (the visible motion).
+  // - Expand: spacer stays narrow while the panel grows over the main area;
+  //   spacer jumps to full width on transitionend → main reflows once.
+  // - Collapse: spacer jumps to the rail width immediately (main reflows once
+  //   up front) while the still-wide panel shrinks as an overlay.
+  // Animating the spacer/flex width itself reflows PDF/virtual lists every
+  // frame and is what stuttered under load.
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try { return localStorage.getItem('filebox.sidebarCollapsed') === '1'; }
     catch { return false; }
   });
+  const [sidebarSpacerW, setSidebarSpacerW] = useState<number>(() => {
+    try {
+      return localStorage.getItem('filebox.sidebarCollapsed') === '1'
+        ? SIDEBAR_W_COLLAPSED
+        : SIDEBAR_W_EXPANDED;
+    } catch {
+      return SIDEBAR_W_EXPANDED;
+    }
+  });
+  const [sidebarWidthAnimating, setSidebarWidthAnimating] = useState(false);
+  const sidebarCollapsedRef = useRef(sidebarCollapsed);
+  sidebarCollapsedRef.current = sidebarCollapsed;
+
   useEffect(() => {
     try { localStorage.setItem('filebox.sidebarCollapsed', sidebarCollapsed ? '1' : '0'); }
     catch { /* ignore */ }
   }, [sidebarCollapsed]);
+
+  // Safety net: if transitionend is skipped (tab backgrounded, reduced-motion
+  // race, mid-flight reverse), still commit the spacer so layout can't stick.
+  useEffect(() => {
+    if (!sidebarWidthAnimating) return;
+    const t = window.setTimeout(() => {
+      setSidebarSpacerW(
+        sidebarCollapsedRef.current ? SIDEBAR_W_COLLAPSED : SIDEBAR_W_EXPANDED,
+      );
+      setSidebarWidthAnimating(false);
+      document.body.classList.remove('sidebar-resizing');
+    }, SIDEBAR_WIDTH_MS + 80);
+    return () => window.clearTimeout(t);
+  }, [sidebarWidthAnimating, sidebarCollapsed]);
+
+  useEffect(() => () => {
+    document.body.classList.remove('sidebar-resizing');
+  }, []);
+
+  const commitSidebarSpacer = useCallback(() => {
+    setSidebarSpacerW(
+      sidebarCollapsedRef.current ? SIDEBAR_W_COLLAPSED : SIDEBAR_W_EXPANDED,
+    );
+    setSidebarWidthAnimating(false);
+    document.body.classList.remove('sidebar-resizing');
+  }, []);
+
+  const toggleSidebarCollapsed = useCallback(() => {
+    const reduceMotion =
+      typeof window !== 'undefined'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      if (reduceMotion) {
+        setSidebarSpacerW(next ? SIDEBAR_W_COLLAPSED : SIDEBAR_W_EXPANDED);
+        setSidebarWidthAnimating(false);
+        document.body.classList.remove('sidebar-resizing');
+      } else {
+        setSidebarWidthAnimating(true);
+        document.body.classList.add('sidebar-resizing');
+        if (next) {
+          // Collapsing: free main width immediately; panel shrinks on top.
+          setSidebarSpacerW(SIDEBAR_W_COLLAPSED);
+        }
+        // Expanding: keep spacer narrow until transitionend (panel overlays).
+      }
+      return next;
+    });
+  }, []);
+
+  const onDesktopSidebarTransitionEnd = useCallback(
+    (e: React.TransitionEvent<HTMLDivElement>) => {
+      if (e.propertyName !== 'width') return;
+      if (e.target !== e.currentTarget) return;
+      commitSidebarSpacer();
+    },
+    [commitSidebarSpacer],
+  );
 
   // ── Version tracking: detect when the running Hub has been upgraded ──
   // First non-empty version seen is the version this bundle shipped with.
@@ -455,34 +545,54 @@ export default function App() {
   const navItems = [
     { v: 'files' as const, label: 'Files', Icon: IconFolder },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
-    { v: 'stats' as const, label: 'Stats', Icon: IconStats },
+    { v: 'stats' as const, label: 'System', Icon: IconStats },
   ];
+
+  // Section chrome: spacing + optional hairline — not a border on every block.
+  const sectionStyle = collapsed
+    ? styles.sidebarSectionCollapsed
+    : { ...styles.sidebarSection, ...(isMobile ? styles.sidebarSectionMobile : styles.sidebarSectionCompact) };
 
   const sidebarContent = (
     <>
       <div
         style={collapsed
           ? styles.sidebarHeaderCollapsed
-          : { ...styles.sidebarHeader, ...(compactSidebar ? styles.sidebarHeaderCompact : {}) }}
+          : { ...styles.sidebarHeader, ...(isMobile ? styles.sidebarHeaderMobile : styles.sidebarHeaderCompact) }}
       >
         {collapsed ? (
           <button
-            onClick={() => setSidebarCollapsed(false)}
+            type="button"
+            onClick={toggleSidebarCollapsed}
             style={styles.collapseToggleCollapsed}
             title="Expand sidebar"
+            aria-label="Expand sidebar"
           >
-            <IconChevronRight />
+            <span style={styles.brandMark}><IconBrandMark style={{ width: 18, height: 18 }} /></span>
           </button>
         ) : (
           <>
-            <h1 style={styles.logo}>filebox</h1>
+            <div style={styles.brandRow}>
+              <span style={styles.brandMark}><IconBrandMark style={{ width: 18, height: 18 }} /></span>
+              <span style={styles.logo}>Filebox</span>
+            </div>
             {isMobile ? (
-              <button onClick={() => setSidebarOpen(false)} style={styles.closeSidebarBtn} title="Close">&times;</button>
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(false)}
+                style={styles.headerIconBtn}
+                title="Close menu"
+                aria-label="Close menu"
+              >
+                <IconClose />
+              </button>
             ) : (
               <button
-                onClick={() => setSidebarCollapsed(true)}
-                style={styles.collapseToggle}
+                type="button"
+                onClick={toggleSidebarCollapsed}
+                style={styles.headerIconBtn}
                 title="Collapse sidebar"
+                aria-label="Collapse sidebar"
               >
                 <IconChevronLeft />
               </button>
@@ -498,16 +608,8 @@ export default function App() {
           incantation for "take remaining space and allow shrink-to-scroll" in a
           flex column. */}
       <div style={styles.sidebarScroll}>
-        <div
-          style={collapsed
-            ? styles.sidebarSectionCollapsed
-            : { ...styles.sidebarSection, ...(compactSidebar ? styles.sidebarSectionCompact : {}) }}
-        >
-          {!collapsed && (
-            <div style={{ ...styles.sectionHeader, ...(compactSidebar ? styles.sectionHeaderCompact : {}) }}>
-              Agents
-            </div>
-          )}
+        <div style={sectionStyle}>
+          {!collapsed && <div style={styles.sectionHeader}>Agents</div>}
           <BackendList
             agents={agents}
             selectedId={selectedAgentId}
@@ -516,91 +618,90 @@ export default function App() {
             compact={compactSidebar}
           />
         </div>
+
         {selectedAgent && (
-          <div
-            style={collapsed
-              ? styles.sidebarSectionCollapsed
-              : { ...styles.sidebarSection, ...(compactSidebar ? styles.sidebarSectionCompact : {}) }}
-          >
-            {!collapsed && (
-              <div style={{ ...styles.sectionHeader, ...(compactSidebar ? styles.sectionHeaderCompact : {}) }}>
-                Navigation
+          <>
+            {!collapsed && <div style={styles.sectionRule} aria-hidden />}
+            <div style={sectionStyle}>
+              {!collapsed && <div style={styles.sectionHeader}>Workspace</div>}
+              <div style={collapsed ? styles.navCollapsed : styles.nav}>
+                {navItems.map(({ v, label, Icon }) => (
+                  <SidebarNavButton
+                    key={v}
+                    label={label}
+                    Icon={Icon}
+                    active={view === v}
+                    collapsed={collapsed}
+                    onClick={() => navigate(v)}
+                  />
+                ))}
               </div>
-            )}
-            <div style={collapsed ? styles.navCollapsed : styles.nav}>
-              {navItems.map(({ v, label, Icon }) => (
-                <button
-                  key={v}
-                  onClick={() => navigate(v)}
-                  title={label}
-                  style={{
-                    ...(collapsed
-                      ? styles.navBtnCollapsed
-                      : { ...styles.navBtn, ...(compactSidebar ? styles.navBtnCompact : {}) }),
-                    ...(view === v ? (collapsed ? styles.navBtnCollapsedActive : styles.navBtnActive) : {}),
-                  }}
-                >
-                  <Icon />
-                  {!collapsed && <span>{label}</span>}
-                </button>
-              ))}
             </div>
-          </div>
+          </>
         )}
+
         {selectedAgent && pinnedCount > 0 && (
-          <div
-            style={collapsed
-              ? styles.sidebarSectionCollapsed
-              : { ...styles.sidebarSection, ...(compactSidebar ? styles.sidebarSectionCompact : {}) }}
-          >
-            {!collapsed && (
-              <div style={{ ...styles.sectionHeader, ...(compactSidebar ? styles.sectionHeaderCompact : {}) }}>
-                Pinned
-              </div>
-            )}
-            <PinnedFolders
-              agent={selectedAgent}
-              collapsed={collapsed}
-              onNavigate={(root, path) => {
-                // Always land in the Files view (even from Settings/Stats).
-                // Desktop keeps preview tabs: side-by-side layout matches tree
-                // and address-bar navigation, so re-clicking the same pin (or
-                // jumping to another folder) must not wipe open previews.
-                // Mobile is list-OR-preview: leave tabs open and the folder
-                // list stays buried under the current file, so close them.
-                if (isMobile) previewTabs.closeAll();
-                navigate('files');
-                setNavRequest({ root, path, nonce: Date.now() });
-              }}
-              onUnpin={(root, path) => handleUnpin(selectedAgent.id, root, path)}
-            />
-          </div>
+          <>
+            {!collapsed && <div style={styles.sectionRule} aria-hidden />}
+            <div style={sectionStyle}>
+              {!collapsed && <div style={styles.sectionHeader}>Pinned</div>}
+              <PinnedFolders
+                agent={selectedAgent}
+                collapsed={collapsed}
+                onNavigate={(root, path) => {
+                  // Always land in the Files view (even from Settings/Stats).
+                  // Desktop keeps preview tabs: side-by-side layout matches tree
+                  // and address-bar navigation, so re-clicking the same pin (or
+                  // jumping to another folder) must not wipe open previews.
+                  // Mobile is list-OR-preview: leave tabs open and the folder
+                  // list stays buried under the current file, so close them.
+                  if (isMobile) previewTabs.closeAll();
+                  navigate('files');
+                  setNavRequest({ root, path, nonce: Date.now() });
+                }}
+                onUnpin={(root, path) => handleUnpin(selectedAgent.id, root, path)}
+              />
+            </div>
+          </>
         )}
         <div style={{ flex: 1 }} />
       </div>
-      <div
-        style={collapsed
-          ? styles.sidebarFooterCollapsed
-          : { ...styles.sidebarFooter, ...(compactSidebar ? styles.sidebarFooterCompact : {}) }}
-      >
-        {!collapsed && health?.hub.version && (
-          <button
-            onClick={handleOpenAbout}
-            title="About filebox"
-            style={{ ...styles.aboutEntry, ...(compactSidebar ? styles.aboutEntryCompact : {}) }}
-          >
-            Status (v{health.hub.version})
-          </button>
+
+      {/* System strip: version is telemetry; sign-out is utility — not CTAs. */}
+      <div style={collapsed ? styles.sidebarFooterCollapsed : styles.sidebarFooter}>
+        {!collapsed ? (
+          <div style={styles.footerStrip}>
+            {health?.hub.version ? (
+              <button
+                type="button"
+                onClick={handleOpenAbout}
+                title="About Filebox"
+                style={styles.aboutEntry}
+              >
+                <span style={styles.aboutVersion}>v{health.hub.version}</span>
+              </button>
+            ) : (
+              <span />
+            )}
+            <SidebarLogoutButton collapsed={false} onClick={logout} />
+          </div>
+        ) : (
+          <>
+            {health?.hub.version && (
+              <button
+                type="button"
+                onClick={handleOpenAbout}
+                title={`About Filebox v${health.hub.version}`}
+                style={styles.aboutEntryCollapsed}
+              >
+                <span style={styles.aboutVersionCollapsed}>
+                  {health.hub.version.split('.').slice(0, 2).join('.')}
+                </span>
+              </button>
+            )}
+            <SidebarLogoutButton collapsed onClick={logout} />
+          </>
         )}
-        <button
-          onClick={logout}
-          title="Logout"
-          style={collapsed
-            ? styles.logoutBtnCollapsed
-            : { ...styles.logoutBtn, ...(compactSidebar ? styles.logoutBtnCompact : {}) }}
-        >
-          {collapsed ? <IconLogout /> : 'Logout'}
-        </button>
       </div>
     </>
   );
@@ -612,16 +713,54 @@ export default function App() {
     <div style={styles.app}>
       {/* Mobile overlay */}
       {isMobile && sidebarOpen && (
-        <div style={styles.overlay} onClick={() => setSidebarOpen(false)} />
+        <div
+          style={styles.overlay}
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden
+        />
       )}
 
       {/* Sidebar */}
       {isMobile ? (
-        <div style={{ ...styles.sidebarExpanded, ...styles.sidebarDrawer, transform: sidebarOpen ? 'translateX(0)' : 'translateX(-100%)' }}>
+        <div
+          style={{
+            ...styles.sidebarExpanded,
+            ...styles.sidebarDrawer,
+            // translate3d keeps the drawer on the compositor; no main reflow.
+            transform: sidebarOpen ? 'translate3d(0,0,0)' : 'translate3d(-100%,0,0)',
+            // Hint only while the drawer is on-screen or mid-gesture.
+            willChange: sidebarOpen ? 'transform' : 'auto',
+          }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Navigation"
+          aria-hidden={!sidebarOpen}
+        >
           {sidebarContent}
         </div>
       ) : (
-        <div style={collapsed ? styles.sidebarCollapsed : styles.sidebarExpanded}>{sidebarContent}</div>
+        // Spacer owns flex layout width (no transition). Panel is absolute and
+        // animates width — expand overlays main then spacer commits; collapse
+        // frees main immediately while the panel shrinks as an overlay.
+        <div
+          style={{
+            ...styles.sidebarSlot,
+            width: sidebarSpacerW,
+          }}
+        >
+          <div
+            className="filebox-sidebar-panel"
+            style={{
+              ...styles.sidebarPanel,
+              width: collapsed ? SIDEBAR_W_COLLAPSED : SIDEBAR_W_EXPANDED,
+              willChange: sidebarWidthAnimating ? 'width' : 'auto',
+              ...(sidebarWidthAnimating && !collapsed ? styles.sidebarPanelOverlaying : null),
+            }}
+            onTransitionEnd={onDesktopSidebarTransitionEnd}
+          >
+            {sidebarContent}
+          </div>
+        </div>
       )}
 
       {/* Main content */}
@@ -629,10 +768,45 @@ export default function App() {
         {/* Mobile top bar */}
         {isMobile && (
           <div style={styles.mobileTopBar}>
-            <button onClick={() => setSidebarOpen(true)} style={styles.hamburger}>&#9776;</button>
-            <span style={styles.mobileTitle}>{selectedAgent?.name || 'filebox'}</span>
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              style={styles.hamburger}
+              title="Open menu"
+              aria-label="Open menu"
+            >
+              <IconMenu />
+            </button>
+            <div style={styles.mobileTitleBlock}>
+              <span style={styles.mobileTitle}>{selectedAgent?.name || 'Filebox'}</span>
+              {selectedAgent && (
+                <span style={styles.mobileSubtitle}>
+                  <span
+                    style={{
+                      ...styles.mobileStatusDot,
+                      background:
+                        selectedAgent.status === 'online' ? c.success
+                          : selectedAgent.status === 'slow' ? c.warning
+                            : c.textMuted,
+                    }}
+                  />
+                  <span style={styles.mobileTelemetry}>
+                    {selectedAgent.status}
+                    {selectedAgent.rtt_ms !== null ? ` · ${selectedAgent.rtt_ms} ms` : ''}
+                  </span>
+                </span>
+              )}
+            </div>
             {showMobilePreview && (
-              <button onClick={() => previewTabs.closeAll()} style={styles.backBtn}>&larr; Back</button>
+              <button
+                type="button"
+                onClick={() => previewTabs.closeAll()}
+                style={styles.backBtn}
+                title="Back to files"
+              >
+                <IconChevronLeft />
+                <span>Back</span>
+              </button>
             )}
           </div>
         )}
@@ -801,6 +975,80 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** Workspace nav — accent selected language (matches rest of Filebox UI). */
+function SidebarNavButton({
+  label,
+  Icon,
+  active,
+  collapsed,
+  onClick,
+}: {
+  label: string;
+  Icon: (p: { style?: React.CSSProperties }) => React.ReactElement;
+  active: boolean;
+  collapsed: boolean;
+  onClick: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const base = collapsed ? styles.navBtnCollapsed : styles.navBtn;
+  const state = active
+    ? (collapsed ? styles.navBtnCollapsedActive : styles.navBtnActive)
+    : hovered
+      ? (collapsed ? styles.navBtnCollapsedHover : styles.navBtnHover)
+      : null;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-current={active ? 'page' : undefined}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ ...base, ...state }}
+    >
+      {!collapsed && (
+        <span
+          style={{
+            ...styles.navRail,
+            background: active ? c.accent : 'transparent',
+          }}
+        />
+      )}
+      <span style={{ ...styles.navIcon, ...(active ? styles.navIconActive : null) }}>
+        <Icon />
+      </span>
+      {!collapsed && <span style={styles.navLabel}>{label}</span>}
+    </button>
+  );
+}
+
+function SidebarLogoutButton({
+  collapsed,
+  onClick,
+}: {
+  collapsed: boolean;
+  onClick: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const base = collapsed ? styles.logoutBtnCollapsed : styles.logoutBtn;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Sign out"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        ...base,
+        ...(hovered ? (collapsed ? styles.logoutBtnCollapsedHover : styles.logoutBtnHover) : null),
+      }}
+    >
+      <IconLogout />
+      {!collapsed && <span>Sign out</span>}
+    </button>
+  );
+}
+
 const styles: Record<string, React.CSSProperties> = {
   loading: {
     display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -812,51 +1060,100 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: font.sans, position: 'relative', overflow: 'hidden',
   },
   // ── Sidebar ──
-  // Desktop uses a compact 176px panel and 48px icon rail.
-  // Mobile drawer overrides width to 280 via sidebarDrawer.
-  sidebarExpanded: {
-    width: 176, borderRight: `1px solid ${c.border}`, display: 'flex',
-    flexDirection: 'column', flexShrink: 0, background: c.bgSubtle,
-    transition: 'width 0.18s ease',
+  // Compact desktop rail: 180 / collapsed 48. Keeps indigo + bgSubtle language.
+  // Mobile drawer stays wider for touch targets via sidebarDrawer.
+  //
+  // Desktop layout is split: `sidebarSlot` (flex width, no transition) +
+  // `sidebarPanel` (absolute, width transitions). See state comments above.
+  // Mobile drawer uses transform only (compositor path).
+  sidebarSlot: {
+    flexShrink: 0,
+    position: 'relative',
+    alignSelf: 'stretch',
+    // During collapse the panel shrinks inside a still-wide slot; paint the
+    // reserved strip so it doesn't flash the main background.
+    background: c.bgSubtle,
   },
-  sidebarCollapsed: {
-    width: 48, borderRight: `1px solid ${c.border}`, display: 'flex',
+  sidebarPanel: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    background: c.bgSubtle,
+    borderRight: `1px solid ${c.border}`,
+    boxSizing: 'border-box',
+    // z-index: expand grows over the main column until the spacer commits.
+    zIndex: 30,
+    transition: `width ${SIDEBAR_WIDTH_MS}ms ease`,
+  },
+  sidebarPanelOverlaying: {
+    boxShadow: shadow.lg,
+  },
+  // Mobile drawer base (width overridden by sidebarDrawer).
+  sidebarExpanded: {
+    width: SIDEBAR_W_EXPANDED, borderRight: `1px solid ${c.border}`, display: 'flex',
     flexDirection: 'column', flexShrink: 0, background: c.bgSubtle,
-    transition: 'width 0.18s ease',
+    overflow: 'hidden',
   },
   sidebarDrawer: {
     position: 'absolute', top: 0, left: 0, bottom: 0, zIndex: 200,
-    width: 280, transition: 'transform 0.25s ease',
-    boxShadow: shadow.lg,
+    width: 'min(280px, 84vw)', maxWidth: 300,
+    transition: 'transform 0.22s ease',
+    boxShadow: shadow.lg, background: c.bgSubtle,
   } as React.CSSProperties,
   sidebarHeader: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    padding: '14px 12px', borderBottom: `1px solid ${c.border}`,
+    gap: 6, borderBottom: `1px solid ${c.border}`,
+    background: c.bgSubtle, flexShrink: 0,
   },
-  sidebarHeaderCompact: { padding: '10px 10px' },
+  sidebarHeaderCompact: {
+    padding: '0 6px 0 10px', height: 44, boxSizing: 'border-box',
+  },
+  sidebarHeaderMobile: {
+    padding: '0 8px 0 12px', height: 48, boxSizing: 'border-box' as const,
+  },
   sidebarHeaderCollapsed: {
     display: 'flex', alignItems: 'center', justifyContent: 'center',
-    padding: '6px 0', borderBottom: `1px solid ${c.border}`,
+    height: 44, borderBottom: `1px solid ${c.border}`,
+    boxSizing: 'border-box',
   },
-  logo: { margin: 0, fontSize: 17, color: c.accent, fontWeight: 700, letterSpacing: -0.3 },
-  closeSidebarBtn: {
-    background: 'none', border: 'none', color: c.textMuted,
-    fontSize: 20, cursor: 'pointer', padding: '0 4px', lineHeight: 1,
-    borderRadius: radius.sm,
+  brandRow: {
+    display: 'flex', alignItems: 'center', gap: 7, minWidth: 0, flex: 1,
   },
-  collapseToggle: {
-    background: 'none', border: 'none', color: c.textMuted, cursor: 'pointer',
-    padding: 6, display: 'flex', alignItems: 'center', justifyContent: 'center',
-    borderRadius: radius.sm,
+  brandMark: {
+    color: c.accent, flexShrink: 0, display: 'flex',
+  },
+  logo: {
+    margin: 0, fontSize: 13.5, color: c.text, fontWeight: 600,
+    letterSpacing: '-0.02em', lineHeight: 1,
+    fontFamily: font.sans,
+  },
+  headerIconBtn: {
+    background: 'transparent', border: 'none', color: c.textMuted,
+    cursor: 'pointer', padding: 0, display: 'flex',
+    alignItems: 'center', justifyContent: 'center',
+    borderRadius: radius.sm, flexShrink: 0,
+    transition: 'background 0.12s, color 0.12s',
+    width: 28, height: 28, boxSizing: 'border-box',
   },
   collapseToggleCollapsed: {
-    background: 'none', border: 'none', color: c.textMuted, cursor: 'pointer',
-    width: '100%', padding: '7px 0', display: 'flex',
+    background: 'transparent', border: 'none', color: c.accent, cursor: 'pointer',
+    width: 36, height: 32, display: 'flex',
     alignItems: 'center', justifyContent: 'center',
+    borderRadius: radius.md, padding: 0,
   },
-  sidebarSection: { padding: '12px 12px', borderBottom: `1px solid ${c.border}` },
-  sidebarSectionCompact: { padding: '9px 8px' },
-  sidebarSectionCollapsed: { padding: '8px 4px', borderBottom: `1px solid ${c.border}` },
+  // Sections use spacing + a single hairline rule — not a box per block.
+  sidebarSection: { padding: '8px 6px 4px' },
+  sidebarSectionCompact: { padding: '8px 6px 4px' },
+  sidebarSectionMobile: { padding: '10px 8px 6px' },
+  sidebarSectionCollapsed: { padding: '8px 4px 4px' },
+  sectionRule: {
+    height: 1, background: c.border,
+    margin: '2px 10px', flexShrink: 0, opacity: 0.65,
+  },
   // Scrollable middle of the sidebar (between header and footer). The two
   // non-obvious props: `flex: 1` so it absorbs the space the header/footer
   // don't, and `minHeight: 0` to override the flex default `min-height:auto`,
@@ -865,72 +1162,107 @@ const styles: Record<string, React.CSSProperties> = {
   sidebarScroll: {
     flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden',
     display: 'flex', flexDirection: 'column',
+    padding: '2px 0 6px',
   } as React.CSSProperties,
   sectionHeader: {
-    fontSize: 11, textTransform: 'uppercase', color: c.textMuted,
-    letterSpacing: 0.8, marginBottom: 6, fontWeight: 500, paddingLeft: 4,
+    fontSize: 10, textTransform: 'uppercase' as const, color: c.textMuted,
+    letterSpacing: '0.05em', marginBottom: 4, fontWeight: 600,
+    padding: '0 6px 0 8px',
   },
-  sectionHeaderCompact: { fontSize: 10, marginBottom: 4, letterSpacing: 0.7 },
   nav: { display: 'flex', flexDirection: 'column', gap: 1 },
   navCollapsed: { display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' },
   navBtn: {
-    padding: '7px 10px', borderRadius: radius.md, border: 'none',
-    color: c.textSecondary, cursor: 'pointer', fontSize: 13, textAlign: 'left',
-    background: 'transparent', fontWeight: 400, transition: 'all 0.15s',
-    display: 'flex', alignItems: 'center', gap: 10,
+    position: 'relative' as const,
+    padding: '0 6px 0 0', borderRadius: radius.sm, border: 'none',
+    color: c.textSecondary, cursor: 'pointer', fontSize: 12.5, textAlign: 'left',
+    background: 'transparent', fontWeight: 500, transition: 'background 0.12s, color 0.12s',
+    display: 'flex', alignItems: 'center', gap: 0,
+    width: '100%', fontFamily: font.sans, boxSizing: 'border-box',
+    height: 30,
   },
-  navBtnCompact: { padding: '6px 8px', gap: 8, fontSize: 12.5 },
+  navBtnHover: {
+    background: c.bgMuted, color: c.text,
+  },
   navBtnActive: {
-    background: c.bgMuted, color: c.text, fontWeight: 500,
+    background: c.accentBg, color: c.accent, fontWeight: 600,
   },
   navBtnCollapsed: {
-    padding: '6px 0', borderRadius: radius.md, border: 'none',
+    padding: 0, borderRadius: radius.sm, border: 'none',
     color: c.textSecondary, cursor: 'pointer',
-    background: 'transparent', transition: 'all 0.15s',
-    width: 36, height: 32, display: 'flex',
+    background: 'transparent', transition: 'background 0.12s, color 0.12s',
+    width: 36, height: 30, display: 'flex',
     alignItems: 'center', justifyContent: 'center',
+  },
+  navBtnCollapsedHover: {
+    background: c.bgMuted, color: c.text,
   },
   navBtnCollapsedActive: {
     background: c.accentBg, color: c.accent,
   },
-  sidebarFooter: {
-    padding: '12px 12px', borderTop: `1px solid ${c.border}`,
+  navRail: {
+    position: 'absolute' as const, left: 0, top: 6, bottom: 6, width: 2,
+    borderRadius: radius.pill, transition: 'background 0.12s',
   },
-  sidebarFooterCompact: { padding: '8px' },
+  navIcon: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    width: 28, flexShrink: 0,
+  },
+  navIconActive: { color: c.accent },
+  navLabel: {
+    flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const, letterSpacing: '-0.01em',
+  },
+  sidebarFooter: {
+    padding: '6px 6px 8px', borderTop: `1px solid ${c.border}`,
+    flexShrink: 0, background: c.bgSubtle,
+  },
   sidebarFooterCollapsed: {
-    padding: '8px 0', borderTop: `1px solid ${c.border}`,
-    display: 'flex', flexDirection: 'column', alignItems: 'center',
+    padding: '6px 0 8px', borderTop: `1px solid ${c.border}`,
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+  },
+  footerStrip: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    gap: 4, minHeight: 26,
   },
   logoutBtn: {
-    padding: '6px 12px', borderRadius: radius.md, border: `1px solid ${c.border}`,
-    background: 'transparent', color: c.textSecondary, cursor: 'pointer', fontSize: 12,
-    width: '100%', transition: 'all 0.15s',
-  },
-  logoutBtnCompact: { padding: '5px 10px', fontSize: 11.5 },
-  logoutBtnCollapsed: {
-    padding: '6px 0', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    padding: '3px 5px', borderRadius: radius.sm, border: 'none',
     background: 'transparent', color: c.textSecondary, cursor: 'pointer',
-    width: 36, height: 32, display: 'flex',
-    alignItems: 'center', justifyContent: 'center',
-    transition: 'all 0.15s',
+    fontSize: 11.5, transition: 'background 0.12s, color 0.12s',
+    display: 'inline-flex', alignItems: 'center', gap: 4,
+    fontFamily: font.sans, fontWeight: 500, boxSizing: 'border-box',
+    height: 26, flexShrink: 0,
   },
-  versionLine: {
-    fontSize: 11, color: c.textFaint, textAlign: 'center', marginBottom: 6,
-    fontFamily: font.mono,
-    background: 'none', border: 'none', cursor: 'pointer',
-    width: '100%', display: 'block',
-    padding: '2px 6px', borderRadius: radius.sm,
-    transition: 'color 0.15s',
-  } as React.CSSProperties,
+  logoutBtnHover: {
+    background: c.bgMuted, color: c.text,
+  },
+  logoutBtnCollapsed: {
+    padding: 0, borderRadius: radius.sm, border: 'none',
+    background: 'transparent', color: c.textSecondary, cursor: 'pointer',
+    width: 36, height: 30, display: 'flex',
+    alignItems: 'center', justifyContent: 'center',
+    transition: 'background 0.12s, color 0.12s',
+  },
+  logoutBtnCollapsedHover: {
+    background: c.bgMuted, color: c.text,
+  },
   aboutEntry: {
-    display: 'block', textAlign: 'center',
-    width: '100%', padding: '4px 2px', background: 'none', border: 'none',
-    cursor: 'pointer', color: c.accent, transition: 'color 0.15s',
-    marginBottom: 6, fontSize: 12, fontFamily: font.sans,
-    textDecoration: 'underline',
-    textUnderlineOffset: 3,
+    display: 'inline-flex', alignItems: 'center',
+    padding: '3px 5px', background: 'transparent', border: 'none',
+    cursor: 'pointer', borderRadius: radius.sm,
+    transition: 'background 0.12s', minWidth: 0,
   } as React.CSSProperties,
-  aboutEntryCompact: { padding: '2px', marginBottom: 4, fontSize: 11.5 },
+  aboutVersion: {
+    fontFamily: font.mono, fontSize: 10.5, color: c.textMuted,
+    fontVariantNumeric: 'tabular-nums' as const, letterSpacing: '-0.02em',
+  },
+  aboutEntryCollapsed: {
+    background: 'none', border: 'none', cursor: 'pointer',
+    padding: '2px 0', borderRadius: radius.sm, color: c.textMuted,
+  },
+  aboutVersionCollapsed: {
+    fontFamily: font.mono, fontSize: 9, color: c.textMuted,
+    letterSpacing: '-0.03em',
+  },
   // ── Mobile overlay ──
   overlay: {
     position: 'fixed', inset: 0, zIndex: 150,
@@ -939,22 +1271,42 @@ const styles: Record<string, React.CSSProperties> = {
   // ── Mobile top bar ──
   mobileTopBar: {
     display: 'flex', alignItems: 'center', gap: 10,
-    padding: '8px 12px', borderBottom: `1px solid ${c.border}`,
+    padding: '0 12px', borderBottom: `1px solid ${c.border}`,
     flexShrink: 0, background: c.bgSubtle,
+    height: 48, boxSizing: 'border-box',
   },
   hamburger: {
-    background: 'none', border: 'none', fontSize: 18,
-    cursor: 'pointer', color: c.text, padding: '4px 6px', lineHeight: 1,
-    borderRadius: radius.sm,
+    background: c.bgMuted, border: 'none',
+    cursor: 'pointer', color: c.text, padding: 0,
+    width: 36, height: 36, lineHeight: 1,
+    borderRadius: radius.md,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    flexShrink: 0,
+  },
+  mobileTitleBlock: {
+    flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1,
   },
   mobileTitle: {
-    flex: 1, fontSize: 14, fontWeight: 600, color: c.text,
+    fontSize: 14, fontWeight: 600, color: c.text,
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    letterSpacing: '-0.01em', lineHeight: 1.2,
+  },
+  mobileSubtitle: {
+    display: 'flex', alignItems: 'center', gap: 5,
+    fontSize: 11, color: c.textMuted, fontWeight: 400,
     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
   },
+  mobileTelemetry: {
+    fontSize: 11, letterSpacing: '-0.01em',
+  },
+  mobileStatusDot: {
+    width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+  },
   backBtn: {
-    background: 'none', border: `1px solid ${c.border}`, borderRadius: radius.sm,
-    color: c.textSecondary, fontSize: 13, padding: '4px 12px', cursor: 'pointer',
-    flexShrink: 0,
+    background: 'transparent', border: `1px solid ${c.border}`, borderRadius: radius.md,
+    color: c.textSecondary, fontSize: 12.5, padding: '0 10px 0 6px', cursor: 'pointer',
+    flexShrink: 0, height: 34,
+    display: 'flex', alignItems: 'center', gap: 2, fontFamily: font.sans, fontWeight: 500,
   },
   // ── Main content ──
   main: { flex: 1, display: 'flex', overflow: 'hidden' },

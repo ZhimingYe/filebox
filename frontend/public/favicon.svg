@@ -1,13 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none">
-  <!-- Box body -->
-  <rect x="8" y="16" width="32" height="28" rx="3" fill="#c04b2d" stroke="#a03d24" stroke-width="1.5"/>
-  <!-- Box lid -->
-  <path d="M6 16L24 6L42 16" stroke="#a03d24" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="6" y="14" width="36" height="4" rx="2" fill="#d4654a"/>
-  <!-- File icon on box -->
-  <rect x="18" y="24" width="12" height="16" rx="1.5" fill="#fff" opacity="0.9"/>
-  <path d="M18 26L24 22L30 26" fill="#e8e5e2" stroke="#c8c3bc" stroke-width="0.75"/>
-  <line x1="21" y1="30" x2="27" y2="30" stroke="#c8c3bc" stroke-width="1" stroke-linecap="round"/>
-  <line x1="21" y1="33" x2="27" y2="33" stroke="#c8c3bc" stroke-width="1" stroke-linecap="round"/>
-  <line x1="21" y1="36" x2="25" y2="36" stroke="#c8c3bc" stroke-width="1" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none">
+  <!-- Matches IconBrandMark in frontend/src/components/icons.tsx (accent #6366f1). -->
+  <rect x="1" y="1" width="18" height="18" rx="5" fill="#6366f1"/>
+  <path
+    d="M5.5 7.2h3.1c.35 0 .68.14.92.38l.7.72H14a.8.8 0 0 1 .8.8v4.1a.8.8 0 0 1-.8.8H5.5a.8.8 0 0 1-.8-.8V8a.8.8 0 0 1 .8-.8z"
+    fill="#ffffff"
+    fill-opacity="0.95"
+  />
+  <path
+    d="M5.5 9.4h9.3"
+    stroke="#ffffff"
+    stroke-opacity="0.55"
+    stroke-width="1.1"
+    stroke-linecap="round"
+  />
 </svg>

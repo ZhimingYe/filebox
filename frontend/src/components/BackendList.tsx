@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { AgentInfo } from '../api/client';
 import { c, radius, font } from '../theme';
 
@@ -9,119 +10,212 @@ interface Props {
   compact?: boolean;
 }
 
+function statusMeta(status: AgentInfo['status']) {
+  if (status === 'online') return { color: c.success, label: 'Online' };
+  if (status === 'slow') return { color: c.warning, label: 'Slow' };
+  return { color: c.textMuted, label: 'Offline' };
+}
+
+/** Compact meta: latency · root inventory · pending (status via the green/amber dot). */
+function agentMeta(a: AgentInfo): string {
+  const roots = a.roots.filter((r) => r.enabled).length;
+  const parts: string[] = [];
+  if (a.status !== 'online') parts.push(statusMeta(a.status).label);
+  if (a.rtt_ms !== null) parts.push(`${a.rtt_ms} ms`);
+  parts.push(`${roots} root${roots === 1 ? '' : 's'}`);
+  if (a.pending_resource_update) parts.push('pending');
+  return parts.join(' · ');
+}
+
 export function BackendList({ agents, selectedId, onSelect, collapsed = false, compact = false }: Props) {
   if (agents.length === 0) {
-    return <div style={styles.empty}>{collapsed ? '' : 'No agents connected'}</div>;
+    return (
+      <div style={{ ...styles.empty, ...(collapsed ? styles.emptyCollapsed : {}) }}>
+        {collapsed ? '—' : 'No agents connected'}
+      </div>
+    );
   }
 
   if (collapsed) {
     return (
       <div style={styles.collapsedList}>
-        {agents.map((a) => {
-          const statusColor = a.status === 'online' ? c.success : a.status === 'slow' ? c.warning : c.textFaint;
-          const statusLabel = a.status === 'online' ? 'Online' : a.status === 'slow' ? 'Slow' : 'Offline';
-          const selected = selectedId === a.id;
-          const initial = (a.name.trim()[0] || '?').toUpperCase();
-          return (
-            <div
-              key={a.id}
-              onClick={() => onSelect(a.id)}
-              title={`${a.name} · ${statusLabel}${a.rtt_ms !== null ? ` · ${a.rtt_ms}ms` : ''}${a.pending_resource_update ? ' · pending' : ''}`}
-              style={{
-                ...styles.collapsedItem,
-                ...(selected ? styles.collapsedItemSelected : {}),
-                borderLeftColor: selected ? c.accent : 'transparent',
-              }}
-            >
-              <div style={{ ...styles.avatar, background: `${statusColor}20`, color: statusColor }}>
-                {initial}
-              </div>
-              <span style={{ ...styles.avatarDot, background: statusColor }} />
-            </div>
-          );
-        })}
+        {agents.map((a) => (
+          <CollapsedAgentItem
+            key={a.id}
+            agent={a}
+            selected={selectedId === a.id}
+            onSelect={onSelect}
+          />
+        ))}
       </div>
     );
   }
 
   return (
-    <div style={styles.list}>
-      {agents.map((a) => {
-        const statusColor = a.status === 'online' ? c.success : a.status === 'slow' ? c.warning : c.textFaint;
-        const statusLabel = a.status === 'online' ? 'Online' : a.status === 'slow' ? 'Slow' : 'Offline';
-        const selected = selectedId === a.id;
-        return (
-          <div
-            key={a.id}
-            onClick={() => onSelect(a.id)}
-            style={{
-              ...styles.item,
-              ...(compact ? styles.itemCompact : {}),
-              ...(selected ? styles.itemSelected : {}),
-              borderLeftColor: selected ? c.accent : 'transparent',
-            }}
-          >
-            <div style={{ ...styles.row, ...(compact ? styles.rowCompact : {}) }}>
-              <span style={{ ...styles.dot, background: statusColor }} />
-              <span style={{ ...styles.name, ...(compact ? styles.nameCompact : {}) }}>{a.name}</span>
-              <span style={{ ...styles.statusLabel, ...(compact ? styles.statusLabelCompact : {}), color: statusColor }}>
-                {statusLabel}
-              </span>
-            </div>
-            <div style={{ ...styles.meta, ...(compact ? styles.metaCompact : {}) }}>
-              {a.rtt_ms !== null && <span>{a.rtt_ms}ms</span>}
-              {a.pending_resource_update && <span style={styles.pending}>pending</span>}
-            </div>
-          </div>
-        );
-      })}
+    <div style={styles.list} role="listbox" aria-label="Agents">
+      {agents.map((a) => (
+        <AgentRow
+          key={a.id}
+          agent={a}
+          selected={selectedId === a.id}
+          compact={compact}
+          onSelect={onSelect}
+        />
+      ))}
     </div>
   );
 }
 
+function AgentRow({
+  agent: a,
+  selected,
+  compact,
+  onSelect,
+}: {
+  agent: AgentInfo;
+  selected: boolean;
+  compact: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const { color: statusColor, label: statusLabel } = statusMeta(a.status);
+  const meta = agentMeta(a);
+
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={selected}
+      onClick={() => onSelect(a.id)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      title={`${a.name} · ${statusLabel}${a.rtt_ms !== null ? ` · ${a.rtt_ms}ms` : ''}`}
+      style={{
+        ...styles.item,
+        ...(compact ? styles.itemCompact : null),
+        ...(selected ? styles.itemSelected : hovered ? styles.itemHover : null),
+      }}
+    >
+      <span style={{ ...styles.rail, background: selected ? c.accent : 'transparent' }} />
+      <span style={{ ...styles.dot, background: statusColor }} aria-hidden />
+      <div style={styles.itemBody}>
+        <span style={{ ...styles.name, ...(selected ? styles.nameSelected : null) }}>
+          {a.name}
+        </span>
+        {meta && <span style={styles.meta}>{meta}</span>}
+      </div>
+    </button>
+  );
+}
+
+function CollapsedAgentItem({
+  agent: a,
+  selected,
+  onSelect,
+}: {
+  agent: AgentInfo;
+  selected: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const { color: statusColor, label: statusLabel } = statusMeta(a.status);
+  const initial = (a.name.trim()[0] || '?').toUpperCase();
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(a.id)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      title={`${a.name} · ${statusLabel}${a.rtt_ms !== null ? ` · ${a.rtt_ms}ms` : ''}`}
+      style={{
+        ...styles.collapsedItem,
+        ...(selected ? styles.collapsedItemSelected : hovered ? styles.collapsedItemHover : null),
+      }}
+    >
+      <span style={{ ...styles.collapsedRail, background: selected ? c.accent : 'transparent' }} />
+      <div
+        style={{
+          ...styles.avatar,
+          ...(selected ? styles.avatarSelected : null),
+        }}
+      >
+        {initial}
+      </div>
+      <span style={{ ...styles.avatarDot, background: statusColor }} />
+    </button>
+  );
+}
+
 const styles: Record<string, React.CSSProperties> = {
-  list: { display: 'flex', flexDirection: 'column', gap: 2 },
-  empty: { color: c.textMuted, fontSize: 13, padding: '8px 4px' },
+  list: { display: 'flex', flexDirection: 'column', gap: 1 },
+  empty: {
+    color: c.textMuted, fontSize: 11.5, padding: '6px 8px',
+    fontFamily: font.sans, lineHeight: 1.35,
+  },
+  emptyCollapsed: {
+    padding: '4px 0', textAlign: 'center', color: c.textFaint, fontSize: 10.5,
+  },
   item: {
-    padding: '8px 10px', borderRadius: radius.md, cursor: 'pointer',
-    border: '1px solid transparent', borderLeft: '3px solid transparent',
-    transition: 'all 0.15s', fontFamily: font.sans,
+    position: 'relative',
+    display: 'flex', alignItems: 'center', gap: 6,
+    width: '100%', margin: 0,
+    padding: '5px 6px 5px 8px',
+    borderRadius: radius.sm, cursor: 'pointer',
+    border: 'none', background: 'transparent',
+    transition: 'background 0.12s', fontFamily: font.sans,
+    textAlign: 'left', boxSizing: 'border-box',
+    minHeight: 36,
   },
-  itemCompact: { padding: '6px 7px', borderLeftWidth: 2 },
-  itemSelected: {
-    background: c.bgMuted,
+  itemCompact: { minHeight: 34, padding: '4px 6px 4px 8px' },
+  itemHover: { background: c.bgMuted },
+  itemSelected: { background: c.accentBg },
+  rail: {
+    position: 'absolute', left: 0, top: 6, bottom: 6, width: 2,
+    borderRadius: radius.pill, transition: 'background 0.12s',
   },
-  row: { display: 'flex', alignItems: 'center', gap: 8 },
-  rowCompact: { gap: 6 },
-  dot: { width: 7, height: 7, borderRadius: '50%', flexShrink: 0 },
+  dot: {
+    width: 5.5, height: 5.5, borderRadius: '50%', flexShrink: 0,
+  },
+  itemBody: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 },
   name: {
-    color: c.text, fontSize: 13, fontWeight: 500, minWidth: 0,
+    color: c.text, fontSize: 12.5, fontWeight: 500,
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    letterSpacing: '-0.01em', lineHeight: 1.25,
+  },
+  nameSelected: { color: c.accent, fontWeight: 600 },
+  meta: {
+    fontSize: 10.5, color: c.textMuted, lineHeight: 1.2,
     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
   },
-  nameCompact: { fontSize: 12.5 },
-  statusLabel: { fontSize: 11, fontWeight: 500 },
-  statusLabelCompact: { fontSize: 10.5, flexShrink: 0 },
-  meta: { display: 'flex', gap: 8, marginTop: 3, fontSize: 12, color: c.textMuted, paddingLeft: 15 },
-  metaCompact: { gap: 6, marginTop: 2, fontSize: 11, paddingLeft: 13 },
-  pending: { color: c.warning },
   // ── Collapsed rail ──
-  collapsedList: { display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' },
-  collapsedItem: {
-    position: 'relative', width: 34, height: 32, borderRadius: radius.md, cursor: 'pointer',
-    border: '1px solid transparent', borderLeft: '3px solid transparent',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    transition: 'all 0.15s',
+  collapsedList: {
+    display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center',
   },
-  collapsedItemSelected: {
-    background: c.accentBg,
+  collapsedItem: {
+    position: 'relative', width: 36, height: 30, borderRadius: radius.sm,
+    cursor: 'pointer', border: 'none', background: 'transparent',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    transition: 'background 0.12s', padding: 0,
+  },
+  collapsedItemHover: { background: c.bgMuted },
+  collapsedItemSelected: { background: c.accentBg },
+  collapsedRail: {
+    position: 'absolute', left: 0, top: 6, bottom: 6, width: 2,
+    borderRadius: radius.pill, transition: 'background 0.12s',
   },
   avatar: {
-    width: 24, height: 24, borderRadius: '50%',
+    width: 24, height: 24, borderRadius: radius.sm,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
-    fontSize: 12, fontWeight: 600, fontFamily: font.sans,
+    fontSize: 11, fontWeight: 600, fontFamily: font.sans,
+    letterSpacing: '-0.02em',
+    background: c.bgMuted, color: c.textSecondary,
+  },
+  avatarSelected: {
+    background: c.accentBg, color: c.accent,
   },
   avatarDot: {
-    position: 'absolute', top: 4, right: 4, width: 7, height: 7,
+    position: 'absolute', bottom: 2, right: 2, width: 5.5, height: 5.5,
     borderRadius: '50%', border: `1.5px solid ${c.bgSubtle}`, boxSizing: 'border-box',
   },
 };

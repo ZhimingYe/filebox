@@ -57,6 +57,19 @@ body.split-resizing {
   cursor: col-resize !important;
 }
 
+/* Desktop sidebar width anim: main column is pinned via spacer until
+   transitionend. Freeze iframe hit-testing so a PDF/html preview under the
+   expanding panel doesn't steal the transition frame budget. */
+body.sidebar-resizing iframe {
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .filebox-sidebar-panel {
+    transition: none !important;
+  }
+}
+
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;

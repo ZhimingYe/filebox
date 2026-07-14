@@ -141,3 +141,44 @@ export function IconClose({ style }: SvgProps) {
     </svg>
   );
 }
+
+/// Hamburger for the mobile top bar / drawer open control. Three equal bars
+/// (not a unicode glyph) so it matches the rest of the stroke icon set at
+/// the same optical weight.
+export function IconMenu({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <line x1="2.5" y1="4" x2="13.5" y2="4" />
+      <line x1="2.5" y1="8" x2="13.5" y2="8" />
+      <line x1="2.5" y1="12" x2="13.5" y2="12" />
+    </Svg>
+  );
+}
+
+/// Product mark: accent-filled tile + white tray glyph. Matches the existing
+/// indigo brand language (not monochrome industrial chrome).
+export function IconBrandMark({ style }: SvgProps) {
+  return (
+    <svg
+      style={{ display: 'block', width: 20, height: 20, ...style }}
+      viewBox="0 0 20 20"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+    >
+      <rect x="1" y="1" width="18" height="18" rx="5" fill="currentColor" />
+      <path
+        d="M5.5 7.2h3.1c.35 0 .68.14.92.38l.7.72H14a.8.8 0 0 1 .8.8v4.1a.8.8 0 0 1-.8.8H5.5a.8.8 0 0 1-.8-.8V8a.8.8 0 0 1 .8-.8z"
+        fill="#ffffff"
+        fillOpacity="0.95"
+      />
+      <path
+        d="M5.5 9.4h9.3"
+        stroke="#ffffff"
+        strokeOpacity="0.55"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}

@@ -441,15 +441,25 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     }
   }, []);
 
-  // Measure container height for virtualized list
+  // Measure container height for virtualized list.
+  // rAF-coalesce: parent width/height changes (sidebar snap, splitter) can
+  // deliver multiple RO callbacks; one setState per frame is enough.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    let raf = 0;
     const obs = new ResizeObserver(([entry]) => {
-      setListHeight(entry.contentRect.height);
+      const h = entry.contentRect.height;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        setListHeight((prev) => (Math.abs(prev - h) < 1 ? prev : h));
+      });
     });
     obs.observe(el);
-    return () => obs.disconnect();
+    return () => {
+      cancelAnimationFrame(raf);
+      obs.disconnect();
+    };
   }, []);
 
   // Close the root dropdown when clicking outside it or pressing Escape.

@@ -370,15 +370,26 @@ function ProcessesTab({ stats }: { stats: SysStats }) {
   // Measure the list container so the virtualized list fills available height
   // AND width. The grid is always the card width; the command column is flex:1,
   // so the table fits without horizontal scroll and has no wasted space.
+  // rAF-coalesce + 1px threshold: avoids re-render storms when the sidebar
+  // or window resizes under load.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    let raf = 0;
     const obs = new ResizeObserver(([entry]) => {
-      setListHeight(entry.contentRect.height);
-      setListWidth(entry.contentRect.width);
+      const h = entry.contentRect.height;
+      const w = entry.contentRect.width;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        setListHeight((prev) => (Math.abs(prev - h) < 1 ? prev : h));
+        setListWidth((prev) => (Math.abs(prev - w) < 1 ? prev : w));
+      });
     });
     obs.observe(el);
-    return () => obs.disconnect();
+    return () => {
+      cancelAnimationFrame(raf);
+      obs.disconnect();
+    };
   }, []);
 
   // Single source of truth: the global top-N snapshot. "Filter by user" just

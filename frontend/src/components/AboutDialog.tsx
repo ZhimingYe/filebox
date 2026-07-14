@@ -1,6 +1,7 @@
 import { c, radius, shadow, font } from '../theme';
 import type { AgentInfo, HealthResponse } from '../api/client';
 import { friendlyMessage } from '../api/client';
+import { IconBrandMark } from './icons';
 
 interface Props {
   open: boolean;
@@ -18,7 +19,10 @@ export function AboutDialog({ open, health, agents, healthError, isLikelyDev, on
     <div style={styles.overlay} onClick={onClose}>
       <div style={styles.card} onClick={(e) => e.stopPropagation()}>
         <div style={styles.header}>
-          <div style={styles.logo}>filebox</div>
+          <div style={styles.brandRow}>
+            <span style={styles.brandMark}><IconBrandMark style={{ width: 18, height: 18 }} /></span>
+            <div style={styles.logo}>Filebox</div>
+          </div>
           <button onClick={onClose} style={styles.closeBtn} aria-label="Close">×</button>
         </div>
         <div style={styles.body}>
@@ -143,9 +147,15 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '16px 18px', borderBottom: `1px solid ${c.border}`,
     background: c.bgSubtle,
   },
+  brandRow: {
+    display: 'flex', alignItems: 'center', gap: 8, minWidth: 0,
+  },
+  brandMark: {
+    color: c.accent, display: 'flex', flexShrink: 0,
+  },
   logo: {
-    fontSize: 16, fontWeight: 700, color: c.text, fontFamily: font.sans,
-    letterSpacing: '-0.01em',
+    fontSize: 15, fontWeight: 600, color: c.text, fontFamily: font.sans,
+    letterSpacing: '-0.02em',
   },
   closeBtn: {
     background: 'none', border: 'none', fontSize: 22, lineHeight: 1,
