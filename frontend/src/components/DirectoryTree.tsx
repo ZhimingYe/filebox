@@ -184,7 +184,9 @@ export function DirectoryTree({
   }, [refreshNonce, loadChildren]);
 
   // Keep the active row visible inside the tree scroller (both axes) without
-  // scrolling the outer app layout.
+  // scrolling the outer app layout. Only react to path changes; async child
+  // loads update `nodes` and must not snap-scroll away from where the user is
+  // currently looking.
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     const el = activeRowRef.current;
@@ -192,6 +194,15 @@ export function DirectoryTree({
     const sRect = scroll.getBoundingClientRect();
     const eRect = el.getBoundingClientRect();
     const pad = 6;
+    // If already fully visible, leave scroll alone so async loads don't yank the view.
+    if (
+      eRect.top >= sRect.top + pad
+      && eRect.bottom <= sRect.bottom - pad
+      && eRect.left >= sRect.left + pad
+      && eRect.right <= sRect.right - pad
+    ) {
+      return;
+    }
     // Vertical
     if (eRect.top < sRect.top + pad) {
       scroll.scrollTop -= sRect.top + pad - eRect.top;
@@ -204,7 +215,7 @@ export function DirectoryTree({
     } else if (eRect.right > sRect.right - pad) {
       scroll.scrollLeft += eRect.right - (sRect.right - pad);
     }
-  }, [currentPath, expanded, nodes]);
+  }, [currentPath, overlay]);
 
   const toggleExpand = useCallback((path: string) => {
     setExpanded((prev) => {

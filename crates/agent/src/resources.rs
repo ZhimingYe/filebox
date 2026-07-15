@@ -89,6 +89,7 @@ impl ResourceManager {
 /// `Path::join("/home/u", "/docs")` replaces the base with `/docs`, so a
 /// typed `~//docs` would incorrectly become `/docs` and escape `$HOME`.
 /// We strip leading separators from the remainder and then join component-wise.
+/// `~/../..` and similar escape attempts are left as-is so validation rejects them.
 fn expand_home_path_with(value: &str, home: Option<PathBuf>) -> String {
     if value == "~" {
         return home
@@ -105,10 +106,36 @@ fn expand_home_path_with(value: &str, home: Option<PathBuf>) -> String {
             if rest.is_empty() {
                 return home.to_string_lossy().into_owned();
             }
-            return home.join(rest).to_string_lossy().into_owned();
+            let joined = home.join(rest);
+            // Reject `~/../..` escape attempts: the cleaned path must remain inside home.
+            if !lexically_within(&home, &joined) {
+                return value.to_string();
+            }
+            return joined.to_string_lossy().into_owned();
         }
     }
     value.to_string()
+}
+
+/// Lexically check whether `path` is the same as or under `base`, without
+/// requiring the paths to exist. This catches `~/a/../../etc` while still
+/// allowing `~/a/../b`.
+fn lexically_within(base: &Path, path: &Path) -> bool {
+    let mut stack: Vec<std::path::Component> = Vec::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                stack.pop();
+            }
+            std::path::Component::CurDir => {}
+            _ => stack.push(comp),
+        }
+    }
+    let base_comps: Vec<_> = base.components().collect();
+    if base_comps.len() > stack.len() {
+        return false;
+    }
+    base_comps.iter().zip(stack.iter()).all(|(a, b)| a == b)
 }
 
 fn expand_home_path(value: &str) -> String {
@@ -905,6 +932,30 @@ mod tests {
         // Missing home: leave tilde as-is so canonicalize can fail clearly.
         assert_eq!(expand_home_path_with("~/docs", None), "~/docs");
         assert_eq!(expand_home_path_with("~", None), "~");
+        // Escape attempts must be left as-is so validate_root rejects them.
+        assert_eq!(
+            expand_home_path_with("~/../../etc", Some(home.clone())),
+            "~/../../etc"
+        );
+        assert_eq!(
+            expand_home_path_with("~/a/../../etc", Some(home.clone())),
+            "~/a/../../etc"
+        );
+        // A non-escaping `..` inside the home is fine.
+        assert_eq!(
+            expand_home_path_with("~/a/../b", Some(home.clone())),
+            "/home/alice/a/../b"
+        );
+    }
+
+    #[test]
+    fn lexically_within_detects_home_escape_attempts() {
+        let home = PathBuf::from("/home/alice");
+        assert!(lexically_within(&home, Path::new("/home/alice")));
+        assert!(lexically_within(&home, Path::new("/home/alice/docs")));
+        assert!(lexically_within(&home, Path::new("/home/alice/a/../b")));
+        assert!(!lexically_within(&home, Path::new("/home/alice/a/../../etc")));
+        assert!(!lexically_within(&home, Path::new("/etc")));
     }
 
     #[test]

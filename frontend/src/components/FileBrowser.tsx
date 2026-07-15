@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { FixedSizeList as VList } from 'react-window';
+import { FixedSizeList as VList, type ListChildComponentProps } from 'react-window';
 import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
 import { useIsMobile } from '../state/useIsMobile';
@@ -543,7 +543,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     loadDir(false);
   }, [agentId, selectedRoot, currentPath]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const navigateTo = (entry: api.FsEntry) => {
+  const navigateTo = useCallback((entry: api.FsEntry) => {
     if (entry.denied) return;
     if (entry.entry_type === 'directory') {
       const sep = currentPath.endsWith('/') ? '' : '/';
@@ -551,13 +551,13 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     } else {
       onFileSelect(selectedRoot!, currentPath === '/' ? `/${entry.name}` : `${currentPath}/${entry.name}`, entry);
     }
-  };
+  }, [currentPath, selectedRoot, onApplyNav, onFileSelect]);
 
-  const navigateUp = () => {
+  const navigateUp = useCallback(() => {
     const parts = currentPath.split('/').filter(Boolean);
     parts.pop();
     onApplyNav(selectedRoot!, '/' + parts.join('/'));
-  };
+  }, [currentPath, selectedRoot, onApplyNav]);
 
   // Delegate to the parent's atomic root+path setter (which also maintains the
   // per-(agent,root) path memory). Same-root calls just update the path;
@@ -681,92 +681,54 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     return sortAsc ? ' ↑' : ' ↓';
   };
 
-  const Row = ({ index, style }: { index: number; style: React.CSSProperties }) => {
-    const entry = rows[index];
-    const isBack = entry === null;
-    const displayEntry = isBack ? null : entry as api.FsEntry;
-    const isHovered = hoveredIdx === index;
-    const isRecent = !isBack && !displayEntry!.denied && isRecentlyModified(displayEntry!.modified, nowMs);
+  // Date formats vary in length (e.g. "MM-DD HH:MM" vs "YY-MM-DD HH:MM"). Size
+  // the date column to the longest rendered date string actually present, with
+  // a minimum that still fits the "Modified" header.
+  const dateColWidth = useMemo(() => {
+    let maxChars = 0;
+    filteredEntries.forEach((e) => {
+      if (!e.modified) return;
+      const d = new Date(e.modified);
+      if (Number.isNaN(d.getTime())) return;
+      const s = isMobile ? formatDateShort(e.modified) : formatDate(e.modified);
+      maxChars = Math.max(maxChars, s.length);
+    });
+    return `${Math.max(11, maxChars)}ch`;
+  }, [filteredEntries, isMobile]);
 
-    return (
-      <div
-        style={{
-          ...style,
-          ...styles.entry,
-          ...(isHovered ? styles.entryHover : {}),
-          opacity: displayEntry?.denied ? 0.4 : 1,
-          cursor: displayEntry?.denied ? 'not-allowed' : 'pointer',
-        }}
-        onClick={() => isBack ? navigateUp() : navigateTo(displayEntry!)}
-        onMouseEnter={() => setHoveredIdx(index)}
-        onMouseLeave={() => setHoveredIdx(null)}
-      >
-        <span style={styles.icon}>
-          {isBack ? <IconUpDir /> : getEntryIcon(displayEntry!)}
-        </span>
-        <div style={styles.entryNameCell}>
-          <span
-            style={{
-              ...styles.entryName,
-              fontFamily: fileNameSerif ? font.serif : font.sans,
-              ...(!isBack && nameAlignRight ? { direction: 'rtl', textAlign: 'right', flex: '1 1 auto' } : {}),
-            }}
-            title={isBack ? undefined : displayEntry!.name}
-          >
-            {isBack ? (
-              '..'
-            ) : nameAlignRight ? (
-              // bidi-isolate the name so characters still render LTR while the
-              // cell is RTL: overflow + ellipsis then clip the PREFIX, keeping
-              // the filename suffix pinned to the right edge of the cell.
-              <bdi dir="ltr">{displayEntry!.name}</bdi>
-            ) : (
-              displayEntry!.name
-            )}
-          </span>
-          {!isBack && displayEntry!.denied && <span style={styles.deniedBadge}>denied</span>}
-          {!isBack && isHovered && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                const sep = currentPath === '/' ? '' : '/';
-                copyToClipboard(fullAddress + sep + displayEntry!.name, `name-${index}`);
-              }}
-              style={styles.copyNameBtn}
-              title="Copy full path"
-            >
-              {copiedPath === `name-${index}` ? (
-                <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M3.5 8.5l3 3 6-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              ) : (
-                <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <rect x="3" y="4" width="9" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
-                  <path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                  <path d="M6 8h4M6 10.5h2.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
-                </svg>
-              )}
-            </button>
-          )}
-        </div>
-        {!isBack && displayEntry!.modified && (
-          <span
-            style={{
-              ...(isMobile ? styles.entryDateMobile : styles.entryDate),
-              ...(isRecent ? styles.entryDateRecent : {}),
-            }}
-            title={isRecent ? 'Modified within the last 15 minutes' : undefined}
-          >
-            {isMobile ? formatDateShort(displayEntry!.modified) : formatDate(displayEntry!.modified)}
-          </span>
-        )}
-        {!isBack && displayEntry!.size !== null && !isMobile && (
-          <span style={styles.entryMeta}>{formatSize(displayEntry!.size)}</span>
-        )}
-      </div>
-    );
-  };
-
+  const rowItemData = useMemo(
+    () => ({
+      rows,
+      hoveredIdx,
+      setHoveredIdx,
+      currentPath,
+      fullAddress,
+      copiedPath,
+      copyToClipboard,
+      isMobile,
+      nameAlignRight,
+      fileNameSerif,
+      onNavigateUp: navigateUp,
+      onNavigateEntry: navigateTo,
+      nowMs,
+      dateColWidth,
+    }),
+    [
+      rows,
+      hoveredIdx,
+      currentPath,
+      fullAddress,
+      copiedPath,
+      copyToClipboard,
+      isMobile,
+      nameAlignRight,
+      fileNameSerif,
+      navigateUp,
+      navigateTo,
+      nowMs,
+      dateColWidth,
+    ],
+  );
   return (
     <div style={styles.container}>
       <div style={styles.toolbar}>
@@ -1095,14 +1057,14 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
             </span>
             {isMobile ? (
               <span
-                style={{ ...styles.colDate, width: 72, cursor: 'pointer' }}
+                style={{ ...styles.colDate, width: dateColWidth, cursor: 'pointer' }}
                 onClick={() => toggleSort('modified')}
               >
                 Modified{sortIndicator('modified')}
               </span>
             ) : (
               <>
-                <span style={{ ...styles.colDate, cursor: 'pointer' }} onClick={() => toggleSort('modified')}>
+                <span style={{ ...styles.colDate, width: dateColWidth, cursor: 'pointer' }} onClick={() => toggleSort('modified')}>
                   Modified{sortIndicator('modified')}
                 </span>
                 <span style={{ ...styles.colSize, cursor: 'pointer' }} onClick={() => toggleSort('size')}>
@@ -1138,6 +1100,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
                   height={listHeight - (nextCursor ? 40 : 0)}
                   itemCount={rows.length}
                   itemSize={ROW_HEIGHT}
+                  itemData={rowItemData}
                   width="100%"
                 >
                   {Row}
@@ -1471,7 +1434,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   colIcon: { width: 20, flexShrink: 0 },
   colName: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  colDate: { width: 130, flexShrink: 0, textAlign: 'right' },
+  colDate: { flexShrink: 0, textAlign: 'right' },
   colSize: { width: 80, flexShrink: 0, textAlign: 'right' },
   // ── List ──
   listContainer: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' },
@@ -1505,17 +1468,17 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1, minWidth: 0, display: 'flex',
     alignItems: 'center', gap: 4, overflow: 'hidden', boxSizing: 'border-box',
   },
-  entryName: { color: c.text, fontSize: 14, fontWeight: 500, flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  entryName: { color: c.text, fontSize: 14, fontWeight: 500, flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   entryDate: {
-    color: c.textMuted, fontSize: 12, width: 130, textAlign: 'right',
+    color: c.textMuted, fontSize: 12, textAlign: 'right',
     flexShrink: 0, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
     // Tabular digits + default tracking reads loose on short timestamps; tighten.
     letterSpacing: '-0.02em',
     fontFeatureSettings: '"tnum" 1, "kern" 1',
   },
   entryDateMobile: {
-    color: c.textMuted, fontSize: 10, textAlign: 'right', flexShrink: 0, width: 72,
-    letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums',
+    color: c.textMuted, fontSize: 10, textAlign: 'right', flexShrink: 0,
+    whiteSpace: 'nowrap', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums',
   },
   entryMeta: { color: c.textFaint, fontSize: 12, width: 80, textAlign: 'right', flexShrink: 0 },
   deniedBadge: {
@@ -1528,9 +1491,8 @@ const styles: Record<string, React.CSSProperties> = {
   entryDateRecent: {
     color: c.accent, fontWeight: 600, letterSpacing: '-0.03em',
   },
-  // Consume only the filename cell's spare space. The following date column
-  // remains a separate, non-shrinking 130px region, so the button can sit at
-  // the visual end of the name column without ever overlapping the date.
+  // The filename cell expands to use available space; this button sits at its
+  // right edge, immediately before the fixed-width date/size columns.
   copyNameBtn: {
     padding: 0, borderRadius: radius.sm, border: 'none',
     background: 'transparent', color: c.textMuted, cursor: 'pointer',
@@ -1548,4 +1510,126 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'transparent', color: c.textSecondary, cursor: 'pointer', fontSize: 13,
     transition: 'all 0.15s',
   },
+};
+
+interface RowItemData {
+  rows: (api.FsEntry | null)[];
+  hoveredIdx: number | null;
+  setHoveredIdx: (idx: number | null) => void;
+  currentPath: string;
+  fullAddress: string;
+  copiedPath: string | null;
+  copyToClipboard: (text: string, label: string) => void;
+  isMobile: boolean;
+  nameAlignRight: boolean;
+  fileNameSerif: boolean;
+  onNavigateUp: () => void;
+  onNavigateEntry: (entry: api.FsEntry) => void;
+  nowMs: number;
+  dateColWidth: string;
+}
+
+// Module-level row component so react-window does not treat it as a fresh
+// component type every render (and remount visible rows). Mutable props such as
+// the current clock are passed through itemData instead of closing over them.
+const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
+  const {
+    rows,
+    hoveredIdx,
+    setHoveredIdx,
+    currentPath,
+    fullAddress,
+    copiedPath,
+    copyToClipboard,
+    isMobile,
+    nameAlignRight,
+    fileNameSerif,
+    onNavigateUp,
+    onNavigateEntry,
+    nowMs,
+    dateColWidth,
+  } = data;
+  const entry = rows[index];
+  const isBack = entry === null;
+  const displayEntry = isBack ? null : entry as api.FsEntry;
+  const isHovered = hoveredIdx === index;
+  const isRecent = !isBack && !displayEntry!.denied && isRecentlyModified(displayEntry!.modified, nowMs);
+
+  return (
+    <div
+      style={{
+        ...style,
+        ...styles.entry,
+        ...(isHovered ? styles.entryHover : {}),
+        opacity: displayEntry?.denied ? 0.4 : 1,
+        cursor: displayEntry?.denied ? 'not-allowed' : 'pointer',
+      }}
+      onClick={() => isBack ? onNavigateUp() : onNavigateEntry(displayEntry!)}
+      onMouseEnter={() => setHoveredIdx(index)}
+      onMouseLeave={() => setHoveredIdx(null)}
+    >
+      <span style={styles.icon}>
+        {isBack ? <IconUpDir /> : getEntryIcon(displayEntry!)}
+      </span>
+      <div style={styles.entryNameCell}>
+        <span
+          style={{
+            ...styles.entryName,
+            fontFamily: fileNameSerif ? font.serif : font.sans,
+            ...(!isBack && nameAlignRight ? { direction: 'rtl', textAlign: 'right', flex: '1 1 auto' } : {}),
+          }}
+          title={isBack ? undefined : displayEntry!.name}
+        >
+          {isBack ? (
+            '..'
+          ) : nameAlignRight ? (
+            // bidi-isolate the name so characters still render LTR while the
+            // cell is RTL: overflow + ellipsis then clip the PREFIX, keeping
+            // the filename suffix pinned to the right edge of the cell.
+            <bdi dir="ltr">{displayEntry!.name}</bdi>
+          ) : (
+            displayEntry!.name
+          )}
+        </span>
+        {!isBack && displayEntry!.denied && <span style={styles.deniedBadge}>denied</span>}
+        {!isBack && isHovered && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              const sep = currentPath === '/' ? '' : '/';
+              copyToClipboard(fullAddress + sep + displayEntry!.name, `name-${index}`);
+            }}
+            style={styles.copyNameBtn}
+            title="Copy full path"
+          >
+            {copiedPath === `name-${index}` ? (
+              <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3.5 8.5l3 3 6-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            ) : (
+              <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="4" width="9" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
+                <path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                <path d="M6 8h4M6 10.5h2.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
+              </svg>
+            )}
+          </button>
+        )}
+      </div>
+      {!isBack && displayEntry!.modified && (
+        <span
+          style={{
+            ...(isMobile ? { ...styles.entryDateMobile, width: dateColWidth } : { ...styles.entryDate, width: dateColWidth }),
+            ...(isRecent ? styles.entryDateRecent : {}),
+          }}
+          title={isRecent ? 'Modified within the last 15 minutes' : undefined}
+        >
+          {isMobile ? formatDateShort(displayEntry!.modified) : formatDate(displayEntry!.modified)}
+        </span>
+      )}
+      {!isBack && displayEntry!.size !== null && !isMobile && (
+        <span style={styles.entryMeta}>{formatSize(displayEntry!.size)}</span>
+      )}
+    </div>
+  );
 };

@@ -377,6 +377,31 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                         "resource_revision": resource_revision,
                                         "state": "applied",
                                     })).await;
+                                } else {
+                                    // The matching HTTP request may have already timed out and
+                                    // dropped the pending response entry, but the agent still
+                                    // finished applying. Keep the registry revision in sync with
+                                    // the agent so the UI does not get stuck on a stale state.
+                                    let roots = {
+                                        let inner = state.inner.read().await;
+                                        inner.agents
+                                            .get(&agent_id_for_msgs)
+                                            .map(|a| a.roots.clone())
+                                            .unwrap_or_default()
+                                    };
+                                    {
+                                        let mut inner = state.inner.write().await;
+                                        inner.agents.update_resources(
+                                            &agent_id_for_msgs,
+                                            resource_revision,
+                                            roots,
+                                        );
+                                    }
+                                    state.emit_sse("resources_updated", serde_json::json!({
+                                        "agent_id": agent_id_for_msgs,
+                                        "resource_revision": resource_revision,
+                                        "state": "applied",
+                                    })).await;
                                 }
                             }
                             Ok(AgentMessage::ResourcesRejected {

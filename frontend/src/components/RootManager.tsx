@@ -229,12 +229,12 @@ export function RootManager({ agentId, roots, onUpdate }: Props) {
     setError(null);
     try {
       await api.deleteRoot(agentId, name);
-      setPendingDelete(null);
       onUpdate();
     } catch (e: unknown) {
       setError(friendlyMessage(e));
     } finally {
       clearBusy(name);
+      setPendingDelete(null);
     }
   };
 

@@ -17,7 +17,6 @@ import { PinnedFolders } from './components/PinnedFolders';
 import { NoAgentSelected } from './components/NoAgentSelected';
 import {
   IconChevronLeft,
-  IconChevronRight,
   IconFolder,
   IconSettings,
   IconStats,
