@@ -239,19 +239,19 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           />
         </label>
 
-        <label style={styles.label}>
-          Extensions
+        <label style={{ ...styles.label, flex: '1.4 1 160px' }}>
+          File types
           <input
             value={extensions}
             onChange={(e) => setExtensions(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-            placeholder="rs, TS, py"
+            placeholder="e.g. rs, ts, py"
             style={styles.input}
             disabled={loading}
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            title="Case-insensitive; commas or spaces"
+            aria-describedby="search-ext-hint"
           />
         </label>
 
@@ -292,11 +292,29 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
         )}
       </div>
 
+      <p id="search-ext-hint" style={styles.fieldHint}>
+        File types: leave empty for all files. Use extensions only —{' '}
+        <code style={styles.code}>rs, ts, py</code> or{' '}
+        <code style={styles.code}>.rs .ts</code>
+        . Comma or space separated; case does not matter (
+        <code style={styles.code}>RS</code> = <code style={styles.code}>rs</code>
+        ). Not full filenames or globs.
+      </p>
+
       <div style={styles.scopeHint}>
         Scope: <code style={styles.code}>{root || '?'}:{normalizeFolderPath(folder)}</code>
         {mode === 'content'
           ? ` · content · ±${clampContext(contextLines)} lines`
           : ' · by filename'}
+        {(() => {
+          const exts = extensions
+            .split(/[,\s]+/)
+            .map((e) => e.trim().replace(/^\./, '').toLowerCase())
+            .filter(Boolean);
+          return exts.length
+            ? <> · types <code style={styles.code}>{exts.map((e) => `.${e}`).join(' ')}</code></>
+            : ' · all types';
+        })()}
       </div>
 
       {slow && loading && (
@@ -506,6 +524,13 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: font.sans,
     flex: '0 0 auto',
     cursor: 'pointer',
+  },
+  fieldHint: {
+    margin: '0 0 10px',
+    fontSize: 12,
+    color: c.textMuted,
+    lineHeight: 1.45,
+    maxWidth: 720,
   },
   scopeHint: {
     fontSize: 12,
