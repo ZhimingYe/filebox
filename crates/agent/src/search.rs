@@ -178,17 +178,8 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
         };
         let rel_str = format_rel(rel);
 
-        if !exts.is_empty() {
-            let ext = abs
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if !exts.iter().any(|e| e == &ext) {
-                continue;
-            }
-        }
-
+        // Count / deadline / progress before extension filtering so a narrow
+        // type filter on a huge tree still terminates and stays visible.
         if Instant::now() >= deadline {
             truncated = true;
             break;
@@ -207,6 +198,17 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
             {
                 cb(scanned, hits.len() as u64);
                 last_progress = Instant::now();
+            }
+        }
+
+        if !exts.is_empty() {
+            let ext = abs
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !exts.iter().any(|e| e == &ext) {
+                continue;
             }
         }
 
@@ -237,7 +239,21 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
             SearchMode::Content => {
                 let re = content_re.as_ref().unwrap();
                 let before = hits.len();
-                match_file_content(abs, &params.root, &rel_str, re, context, max_results, &mut hits);
+                match match_file_content(
+                    abs,
+                    &params.root,
+                    &rel_str,
+                    re,
+                    context,
+                    max_results,
+                    &mut hits,
+                    cancel.as_deref(),
+                ) {
+                    Ok(()) => {}
+                    Err(MatchFileError::Cancelled) => {
+                        return Err("cancelled".to_string());
+                    }
+                }
                 for hit in &hits[before..] {
                     approx_bytes += hit.path.len() + 48;
                     for line in &hit.context {
@@ -268,6 +284,14 @@ fn format_rel(rel: &Path) -> String {
     }
 }
 
+enum MatchFileError {
+    Cancelled,
+}
+
+/// Check cancel every N lines inside a single file so a huge file cannot
+/// ignore Cancel until EOF (still cooperative — blocked reads may stall).
+const CANCEL_CHECK_EVERY_LINES: u64 = 256;
+
 fn match_file_content(
     abs: &Path,
     root: &str,
@@ -276,19 +300,20 @@ fn match_file_content(
     context: usize,
     max_results: usize,
     hits: &mut Vec<SearchHit>,
-) {
+    cancel: Option<&AtomicBool>,
+) -> Result<(), MatchFileError> {
     // symlink_metadata does not follow — reject links / non-regular files.
     let meta = match fs::symlink_metadata(abs) {
         Ok(m) => m,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     if !meta.file_type().is_file() || meta.len() > MAX_CONTENT_FILE_BYTES {
-        return;
+        return Ok(());
     }
 
     let file = match open_nofollow(abs) {
         Ok(f) => f,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     let mut reader = BufReader::new(file);
 
@@ -296,13 +321,13 @@ fn match_file_content(
     let mut probe = [0u8; 8192];
     let n = match reader.read(&mut probe) {
         Ok(n) => n,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     if probe[..n].contains(&0) {
-        return;
+        return Ok(());
     }
     if reader.seek(SeekFrom::Start(0)).is_err() {
-        return;
+        return Ok(());
     }
 
     let mut before: VecDeque<(u64, String)> = VecDeque::with_capacity(context + 1);
@@ -311,6 +336,12 @@ fn match_file_content(
     let mut line_no: u64 = 0;
 
     for line_res in reader.lines() {
+        if line_no > 0
+            && line_no % CANCEL_CHECK_EVERY_LINES == 0
+            && cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+        {
+            return Err(MatchFileError::Cancelled);
+        }
         let raw = match line_res {
             Ok(l) => l,
             Err(_) => break,
@@ -324,7 +355,7 @@ fn match_file_content(
             if let Some(hit) = current.take() {
                 hits.push(hit);
                 if hits.len() >= max_results {
-                    return;
+                    return Ok(());
                 }
             }
             let mut ctx = Vec::with_capacity(context * 2 + 1);
@@ -350,7 +381,7 @@ fn match_file_content(
             if pending_after == 0 {
                 hits.push(current.take().unwrap());
                 if hits.len() >= max_results {
-                    return;
+                    return Ok(());
                 }
             }
         } else if let Some(hit) = current.as_mut() {
@@ -364,7 +395,7 @@ fn match_file_content(
                 if pending_after == 0 {
                     hits.push(current.take().unwrap());
                     if hits.len() >= max_results {
-                        return;
+                        return Ok(());
                     }
                 }
             }
@@ -379,6 +410,7 @@ fn match_file_content(
     if let Some(hit) = current {
         hits.push(hit);
     }
+    Ok(())
 }
 
 fn truncate_line(s: &str) -> String {
@@ -751,5 +783,69 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, "cancelled");
+    }
+
+    #[test]
+    fn scanned_counts_files_skipped_by_extension_filter() {
+        let dir = tempdir().unwrap();
+        for i in 0..20 {
+            fs::write(dir.path().join(format!("n{i}.txt")), "needle").unwrap();
+        }
+        fs::write(dir.path().join("hit.rs"), "needle").unwrap();
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        let result = run_search(
+            &roots,
+            SearchParams {
+                mode: SearchMode::Content,
+                root: "ws".into(),
+                path: "/".into(),
+                query: "needle".into(),
+                extensions: vec!["rs".into()],
+                max_results: Some(20),
+                context: Some(0),
+                cancel: None,
+                on_progress: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].path, "/hit.rs");
+        assert!(
+            result.scanned >= 21,
+            "extension skips must still count toward scanned (got {})",
+            result.scanned
+        );
+    }
+
+    #[test]
+    fn cancel_flag_stops_inside_large_file() {
+        let dir = tempdir().unwrap();
+        let mut body = String::new();
+        for i in 0..800 {
+            // No matches until late — cancel must fire mid-read, not via max_results.
+            body.push_str(&format!("line {i}\n"));
+        }
+        body.push_str("needle at end\n");
+        fs::write(dir.path().join("big.txt"), body).unwrap();
+        let cancel = Arc::new(AtomicBool::new(true));
+        let abs = dir.path().join("big.txt");
+        let re = regex::RegexBuilder::new("needle")
+            .case_insensitive(true)
+            .build()
+            .unwrap();
+        let mut hits = Vec::new();
+        let err = match_file_content(
+            &abs,
+            "ws",
+            "/big.txt",
+            &re,
+            0,
+            50,
+            &mut hits,
+            Some(cancel.as_ref()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, MatchFileError::Cancelled));
+        assert!(hits.is_empty());
     }
 }

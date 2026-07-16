@@ -38,6 +38,15 @@ function clampContext(n: number): number {
   return Math.max(0, Math.min(MAX_CONTEXT, Math.floor(n)));
 }
 
+function rememberIgnoredReqId(set: Set<string>, reqId: string) {
+  set.add(reqId);
+  // Bound memory if the user runs many searches in one session.
+  if (set.size > 64) {
+    const first = set.values().next().value;
+    if (first !== undefined) set.delete(first);
+  }
+}
+
 export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
   const enabledRoots = (agent.roots ?? []).filter((r) => r.enabled);
   const [mode, setMode] = useState<SearchMode>('content');
@@ -54,6 +63,10 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
   const [scannedLive, setScannedLive] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const reqIdRef = useRef<string | null>(null);
+  /** Client-generated nonce for the active search; binds SSE before req_id exists. */
+  const clientNonceRef = useRef<string | null>(null);
+  /** req_ids from superseded searches — ignore their late progress. */
+  const ignoredReqIdsRef = useRef<Set<string>>(new Set());
   const reqGen = useRef(0);
   /** Synced immediately in runSearch (not waiting for React render). */
   const searchingRef = useRef(false);
@@ -81,7 +94,9 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     const prevReq = reqIdRef.current;
     abortRef.current?.abort();
     abortRef.current = null;
+    if (prevReq) rememberIgnoredReqId(ignoredReqIdsRef.current, prevReq);
     reqIdRef.current = null;
+    clientNonceRef.current = null;
     searchingRef.current = false;
     reqGen.current += 1;
     setResult(null);
@@ -103,6 +118,8 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     const req = reqIdRef.current;
     const aid = agentIdRef.current;
     searchingRef.current = false;
+    clientNonceRef.current = null;
+    if (req) rememberIgnoredReqId(ignoredReqIdsRef.current, req);
     abortRef.current?.abort();
     if (req) void cancelRequest(aid, req).catch(() => {});
   }, []);
@@ -116,11 +133,31 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
       phase?: string;
       processed?: number;
       message?: string | null;
+      client_nonce?: string | null;
     };
     if (d.phase !== 'search' || !d.req_id) return;
     if (!searchingRef.current) return;
-    // Capture req_id from hub's "Search started" even before fetch returns.
-    reqIdRef.current = d.req_id;
+    if (ignoredReqIdsRef.current.has(d.req_id)) return;
+
+    const owned = reqIdRef.current;
+    if (owned) {
+      // Already bound — ignore late progress from a superseded search.
+      if (d.req_id !== owned) {
+        rememberIgnoredReqId(ignoredReqIdsRef.current, d.req_id);
+        return;
+      }
+    } else if (d.client_nonce) {
+      // Hub "Search started" carries our nonce — bind only that req_id.
+      if (d.client_nonce !== clientNonceRef.current) {
+        rememberIgnoredReqId(ignoredReqIdsRef.current, d.req_id);
+        return;
+      }
+      reqIdRef.current = d.req_id;
+    } else {
+      // Agent progress without nonce before bind — wait for hub start event.
+      return;
+    }
+
     if (typeof d.processed === 'number') setScannedLive(d.processed);
     if (d.message) setProgressText(d.message);
   }, []));
@@ -139,13 +176,19 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     const prevReq = reqIdRef.current;
     abortRef.current?.abort();
     if (prevReq) {
+      rememberIgnoredReqId(ignoredReqIdsRef.current, prevReq);
       void cancelRequest(agent.id, prevReq).catch(() => {});
     }
 
     const ac = new AbortController();
     abortRef.current = ac;
     const gen = ++reqGen.current;
+    const clientNonce =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `search_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     reqIdRef.current = null;
+    clientNonceRef.current = clientNonce;
     searchingRef.current = true;
 
     setLoading(true);
@@ -176,11 +219,16 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           extensions: exts,
           max_results: mode === 'find' ? 200 : 60,
           context: mode === 'content' ? ctx : 0,
+          client_nonce: clientNonce,
         },
         ac.signal,
       );
       if (gen !== reqGen.current) return;
-      if (data.req_id) reqIdRef.current = data.req_id;
+      if (data.req_id) {
+        if (!ignoredReqIdsRef.current.has(data.req_id)) {
+          reqIdRef.current = data.req_id;
+        }
+      }
       if (data.error) {
         setResult(null);
         setError(searchErrorMessage({ error: data.error, message: data.error }));
@@ -200,6 +248,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
       window.clearTimeout(slowTimer);
       if (gen === reqGen.current) {
         searchingRef.current = false;
+        clientNonceRef.current = null;
         setLoading(false);
         setSlow(false);
         setProgressText(null);
@@ -211,6 +260,8 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     const reqId = reqIdRef.current;
     reqGen.current += 1;
     searchingRef.current = false;
+    clientNonceRef.current = null;
+    if (reqId) rememberIgnoredReqId(ignoredReqIdsRef.current, reqId);
     setLoading(false);
     setSlow(false);
     setProgressText(null);

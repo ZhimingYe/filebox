@@ -634,6 +634,9 @@ async fn run_one_connection(
                                         map.remove(&rid);
                                     }
                                     inflight.fetch_sub(1, Ordering::AcqRel);
+                                    // After WS teardown drops search_rx this
+                                    // returns immediately; while the loop is
+                                    // alive it must deliver the terminal msg.
                                     let _ = tx.blocking_send(response);
                                 });
                             }
@@ -674,6 +677,10 @@ async fn run_one_connection(
             flag.store(true, Ordering::Relaxed);
         }
     }
+    // Drop the search result receiver so a worker blocked on
+    // `blocking_send` (channel full of Progress after the read loop
+    // stopped polling) unblocks immediately instead of hanging forever.
+    drop(search_rx);
 
     // Best-effort Close frame so the hub can run cleanup immediately instead
     // of waiting for TCP timeout. Ignore errors — we're tearing down anyway.

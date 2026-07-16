@@ -211,6 +211,8 @@ export async function workspaceSearch(
     extensions?: string[];
     max_results?: number;
     context?: number;
+    /** Echoed on the hub's initial SSE progress so Cancel binds to this search. */
+    client_nonce?: string;
   },
   signal?: AbortSignal,
 ): Promise<{ result: WorkspaceSearchResult | null; error?: string; req_id?: string }> {

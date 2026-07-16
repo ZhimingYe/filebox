@@ -26,6 +26,10 @@ pub struct WorkspaceSearchBody {
     pub max_results: Option<u32>,
     #[serde(default)]
     pub context: Option<u32>,
+    /// Optional client correlation token echoed on the initial SSE progress
+    /// event so the UI can bind Cancel to this request (not a stale one).
+    #[serde(default)]
+    pub client_nonce: Option<String>,
 }
 
 /// Sends Cancel to the agent + clears pending when the HTTP waiter goes away
@@ -73,7 +77,7 @@ pub async fn workspace_search_handler(
     State(state): State<AppState>,
     Extension(session): Extension<AuthenticatedSession>,
     Path(agent_id): Path<String>,
-    Json(body): Json<WorkspaceSearchBody>,
+    Json(mut body): Json<WorkspaceSearchBody>,
 ) -> Response {
     if body.root.trim().is_empty() {
         return error_response(
@@ -127,6 +131,11 @@ pub async fn workspace_search_handler(
     }
 
     let path = normalize_search_path(&body.path);
+    let client_nonce = body
+        .client_nonce
+        .take()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s.len() <= 128);
 
     let inner = state.inner.read().await;
     let agent = match inner.agents.get(&agent_id) {
@@ -200,7 +209,8 @@ pub async fn workspace_search_handler(
     drop(inner);
 
     // Publish req_id immediately so the UI can Cancel via /api/cancel without
-    // waiting for the final JSON body (long searches).
+    // waiting for the final JSON body (long searches). Echo client_nonce when
+    // present so the UI can ignore late progress from a superseded search.
     state
         .emit_sse(
             "progress",
@@ -210,6 +220,7 @@ pub async fn workspace_search_handler(
                 "processed": 0,
                 "total": null,
                 "message": "Search started",
+                "client_nonce": client_nonce,
             }),
         )
         .await;

@@ -916,29 +916,29 @@ async fn cancel_handler(
     let msg = filebox_protocol::message::HubMessage::Cancel {
         req_id: req.req_id.clone(),
     };
-    if inner.agents.send_to_agent(&req.agent_id, msg) {
-        // Also clean up pending response
-        let mut pending = pending_arc.write().await;
-        if let Some(p) = pending.remove(&req.req_id) {
-            let _ = p.tx.send(serde_json::json!({
+    // Best-effort notify the agent. Always tear down the HTTP waiter so a
+    // dead/offline agent cannot leave the client blocked for the full timeout.
+    let agent_notified = inner.agents.send_to_agent(&req.agent_id, msg);
+    drop(inner);
+
+    let mut pending = pending_arc.write().await;
+    if let Some(p) = pending.remove(&req.req_id) {
+        let _ = p
+            .tx
+            .send(serde_json::json!({
                 "ok": false,
                 "state": "cancelled",
                 "error": "cancelled",
                 "message": "Request cancelled by user",
-            })).await;
-        }
-        Json(serde_json::json!({ "ok": true })).into_response()
-    } else {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "error": "backend_offline",
-                "message": "Agent is offline",
-                "retryable": true,
-            })),
-        )
-            .into_response()
+            }))
+            .await;
     }
+
+    Json(serde_json::json!({
+        "ok": true,
+        "agent_notified": agent_notified,
+    }))
+    .into_response()
 }
 
 // ── Agents ───────────────────────────────────────────────────────────────────
