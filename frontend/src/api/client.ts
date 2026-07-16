@@ -1,7 +1,11 @@
 const BASE = '';
 
 export function friendlyMessage(error: any): string {
-  const code = error?.error || error?.message || '';
+  const raw = error?.error || error?.message || '';
+  // Agent may return "agent_busy: ..." — match on prefix.
+  const code = typeof raw === 'string' && raw.includes(':')
+    ? raw.split(':')[0]
+    : raw;
   const map: Record<string, string> = {
     backend_offline: 'Agent is offline. Changes will be applied when it reconnects.',
     request_timeout: 'Request timed out. The agent may be slow or unreachable.',
@@ -28,6 +32,8 @@ export function friendlyMessage(error: any): string {
     invalid_collection_name: 'Invalid collection name.',
     unsupported: 'This agent does not support that feature. Upgrade the agent.',
     invalid_request: 'Invalid search request.',
+    cancelled: 'Search cancelled.',
+    agent_busy: 'Agent is busy with another search. Wait or cancel it.',
     invalid_collection_path: 'Invalid collection file path.',
     collection_name_conflict: 'A collection with this name already exists.',
     resource_rejected: 'Agent rejected this change. The folder may be missing or the root changed.',
@@ -207,8 +213,9 @@ export async function workspaceSearch(
     context?: number;
   },
   signal?: AbortSignal,
-): Promise<{ result: WorkspaceSearchResult | null; error?: string }> {
+): Promise<{ result: WorkspaceSearchResult | null; error?: string; req_id?: string }> {
   const raw = await request<{
+    req_id?: string;
     result: WorkspaceSearchResult | null;
     error: string | null;
   }>(`/api/agents/${agentId}/workspace-search`, {
@@ -220,9 +227,10 @@ export async function workspaceSearch(
     }),
     signal,
   });
-  if (raw.error) return { result: null, error: raw.error };
-  if (!raw.result) return { result: null };
+  if (raw.error) return { result: null, error: raw.error, req_id: raw.req_id };
+  if (!raw.result) return { result: null, req_id: raw.req_id };
   return {
+    req_id: raw.req_id,
     result: {
       hits: (raw.result.hits ?? []).map((h) => ({
         ...h,

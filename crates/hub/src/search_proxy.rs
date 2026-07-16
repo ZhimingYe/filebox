@@ -16,6 +16,7 @@ use crate::state::{AppState, AuthenticatedSession, PendingResponse};
 pub struct WorkspaceSearchBody {
     pub mode: SearchMode,
     pub root: String,
+    /// Directory within the root to search (rg/fd folder scope).
     #[serde(default)]
     pub path: String,
     pub query: String,
@@ -25,6 +26,47 @@ pub struct WorkspaceSearchBody {
     pub max_results: Option<u32>,
     #[serde(default)]
     pub context: Option<u32>,
+}
+
+/// Sends Cancel to the agent + clears pending when the HTTP waiter goes away
+/// (client abort / timeout) so the agent does not keep burning CPU.
+struct CancelOnDrop {
+    state: AppState,
+    agent_id: String,
+    req_id: String,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let state = self.state.clone();
+        let agent_id = self.agent_id.clone();
+        let req_id = self.req_id.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let inner = state.inner.read().await;
+                let _ = inner.agents.send_to_agent(
+                    &agent_id,
+                    HubMessage::Cancel {
+                        req_id: req_id.clone(),
+                    },
+                );
+                drop(inner);
+                let pending = state.inner.read().await.pending_responses.clone();
+                let mut map = pending.write().await;
+                map.remove(&req_id);
+            });
+        }
+    }
 }
 
 pub async fn workspace_search_handler(
@@ -84,6 +126,8 @@ pub async fn workspace_search_handler(
         }
     }
 
+    let path = normalize_search_path(&body.path);
+
     let inner = state.inner.read().await;
     let agent = match inner.agents.get(&agent_id) {
         Some(a) => a,
@@ -120,11 +164,7 @@ pub async fn workspace_search_handler(
         req_id: req_id.clone(),
         mode: body.mode,
         root: body.root.trim().to_string(),
-        path: if body.path.is_empty() {
-            "/".to_string()
-        } else {
-            body.path
-        },
+        path,
         query: body.query,
         extensions: body.extensions,
         max_results: body.max_results,
@@ -159,27 +199,56 @@ pub async fn workspace_search_handler(
 
     drop(inner);
 
-    // Content walks can take longer than sys-stats; keep a firm upper bound.
+    let mut guard = CancelOnDrop {
+        state: state.clone(),
+        agent_id: agent_id.clone(),
+        req_id: req_id.clone(),
+        armed: true,
+    };
+
     let resp = tokio::time::timeout(Duration::from_secs(60), resp_rx.recv()).await;
     cleanup_pending(&state, &req_id).await;
 
     match resp {
         Ok(Some(value)) => {
-            // Return a compact payload (drop WS envelope fields the UI doesn't need).
+            guard.disarm();
+            // Compact payload + req_id so the UI can cancel via /api/cancel.
             let result = value.get("result").cloned().unwrap_or(serde_json::Value::Null);
             let error = value.get("error").cloned().unwrap_or(serde_json::Value::Null);
+            // Hub cancel injects {state:"cancelled", error:"cancelled"} without result.
+            let cancelled = value
+                .get("state")
+                .and_then(|v| v.as_str())
+                == Some("cancelled")
+                || error.as_str() == Some("cancelled");
             Json(serde_json::json!({
+                "req_id": req_id,
                 "result": result,
-                "error": error,
+                "error": if cancelled { serde_json::json!("cancelled") } else { error },
             }))
             .into_response()
         }
-        _ => error_response(
-            StatusCode::GATEWAY_TIMEOUT,
-            "request_timeout",
-            "Agent did not respond in time",
-            true,
-        ),
+        _ => {
+            // Timeout: leave guard armed so Drop cancels the agent worker.
+            error_response(
+                StatusCode::GATEWAY_TIMEOUT,
+                "request_timeout",
+                "Agent did not respond in time",
+                true,
+            )
+        }
+    }
+}
+
+fn normalize_search_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return "/".to_string();
+    }
+    if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
     }
 }
 
@@ -190,8 +259,7 @@ async fn cleanup_pending(state: &AppState, req_id: &str) {
 }
 
 fn path_has_dotdot(path: &str) -> bool {
-    path.split(['/', '\\'])
-        .any(|part| part == "..")
+    path.split(['/', '\\']).any(|part| part == "..")
 }
 
 fn error_response(status: StatusCode, error: &str, message: &str, retryable: bool) -> Response {
@@ -208,7 +276,7 @@ fn error_response(status: StatusCode, error: &str, message: &str, retryable: boo
 
 #[cfg(test)]
 mod tests {
-    use super::path_has_dotdot;
+    use super::{normalize_search_path, path_has_dotdot};
 
     #[test]
     fn rejects_dotdot_components_only() {
@@ -218,5 +286,12 @@ mod tests {
         assert!(!path_has_dotdot("a/b"));
         assert!(!path_has_dotdot("foo..bar"));
         assert!(!path_has_dotdot(""));
+    }
+
+    #[test]
+    fn normalizes_folder_path() {
+        assert_eq!(normalize_search_path(""), "/");
+        assert_eq!(normalize_search_path("src"), "/src");
+        assert_eq!(normalize_search_path("/src/lib"), "/src/lib");
     }
 }

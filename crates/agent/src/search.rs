@@ -8,6 +8,8 @@ use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use filebox_protocol::denylist;
@@ -18,15 +20,17 @@ use filebox_protocol::search::{
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 
-const DEFAULT_MAX_RESULTS: usize = 100;
+const DEFAULT_MAX_RESULTS: usize = 80;
 const HARD_MAX_RESULTS_FIND: usize = 500;
-const HARD_MAX_RESULTS_CONTENT: usize = 100;
+const HARD_MAX_RESULTS_CONTENT: usize = 80;
 const DEFAULT_CONTEXT: usize = 10;
 const HARD_MAX_CONTEXT: usize = 20;
-const MAX_CONTENT_FILE_BYTES: u64 = 2 * 1024 * 1024;
-const MAX_LINE_CHARS: usize = 400;
-/// Hard stop so a huge tree cannot pin the agent WS loop indefinitely.
-const MAX_SCANNED_FILES: u64 = 25_000;
+const MAX_CONTENT_FILE_BYTES: u64 = 1024 * 1024; // 1 MiB — skip huge files
+const MAX_LINE_CHARS: usize = 300;
+const MAX_SCANNED_FIND: u64 = 50_000;
+const MAX_SCANNED_CONTENT: u64 = 10_000;
+/// Soft cap on serialized payload size (hub body limit is 1 MiB).
+const MAX_RESULT_BYTES: usize = 512 * 1024;
 /// Stay under the hub's 60s proxy timeout so the client gets a truncated
 /// result instead of a gateway timeout.
 const SEARCH_DEADLINE: Duration = Duration::from_secs(55);
@@ -34,11 +38,14 @@ const SEARCH_DEADLINE: Duration = Duration::from_secs(55);
 pub struct SearchParams {
     pub mode: SearchMode,
     pub root: String,
+    /// Directory within the root to search (rg/fd scope). Must be a directory.
     pub path: String,
     pub query: String,
     pub extensions: Vec<String>,
     pub max_results: Option<u32>,
     pub context: Option<u32>,
+    /// Cooperative cancel — checked between files.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchResult, String> {
@@ -101,7 +108,13 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
     let mut hits = Vec::new();
     let mut scanned: u64 = 0;
     let mut truncated = false;
+    let mut approx_bytes: usize = 64; // envelope overhead
     let deadline = Instant::now() + SEARCH_DEADLINE;
+    let max_scanned = match params.mode {
+        SearchMode::Find => MAX_SCANNED_FIND,
+        SearchMode::Content => MAX_SCANNED_CONTENT,
+    };
+    let cancel = params.cancel.clone();
 
     let root_canonical_for_filter = root_canonical.clone();
     let walker = WalkBuilder::new(&start)
@@ -111,6 +124,9 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
         .git_exclude(false)
         .follow_links(false)
         .standard_filters(false)
+        // Threads help on large trees without starving the async runtime
+        // (this runs inside spawn_blocking).
+        .threads(2)
         .filter_entry(move |entry| {
             let abs = entry.path();
             if !abs.starts_with(&root_canonical_for_filter) {
@@ -128,6 +144,10 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
         .build();
 
     for entry in walker {
+        if cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err("cancelled".to_string());
+        }
+
         let entry = match entry {
             Ok(e) => e,
             Err(_) => continue,
@@ -166,7 +186,7 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
         }
 
         scanned += 1;
-        if scanned > MAX_SCANNED_FILES {
+        if scanned > max_scanned {
             truncated = true;
             break;
         }
@@ -183,21 +203,29 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
                         continue;
                     }
                 }
+                approx_bytes += rel_str.len() + 32;
                 hits.push(SearchHit {
                     root: params.root.clone(),
                     path: rel_str,
                     line: None,
                     context: vec![],
                 });
-                if hits.len() >= max_results {
+                if hits.len() >= max_results || approx_bytes >= MAX_RESULT_BYTES {
                     truncated = true;
                     break;
                 }
             }
             SearchMode::Content => {
                 let re = content_re.as_ref().unwrap();
+                let before = hits.len();
                 match_file_content(abs, &params.root, &rel_str, re, context, max_results, &mut hits);
-                if hits.len() >= max_results {
+                for hit in &hits[before..] {
+                    approx_bytes += hit.path.len() + 48;
+                    for line in &hit.context {
+                        approx_bytes += line.text.len() + 24;
+                    }
+                }
+                if hits.len() >= max_results || approx_bytes >= MAX_RESULT_BYTES {
                     truncated = true;
                     break;
                 }
@@ -424,6 +452,7 @@ mod tests {
                 extensions: vec!["rs".into()],
                 max_results: Some(50),
                 context: None,
+                cancel: None,
             },
         )
         .unwrap();
@@ -455,6 +484,7 @@ mod tests {
                 extensions: vec!["txt".into()],
                 max_results: Some(10),
                 context: Some(2),
+                cancel: None,
             },
         )
         .unwrap();
@@ -486,6 +516,7 @@ mod tests {
                 extensions: vec!["txt".into()],
                 max_results: Some(20),
                 context: Some(1),
+                cancel: None,
             },
         )
         .unwrap();
@@ -513,6 +544,7 @@ mod tests {
                 extensions: vec![],
                 max_results: Some(20),
                 context: Some(1),
+                cancel: None,
             },
         )
         .unwrap();
@@ -544,6 +576,7 @@ mod tests {
                 extensions: vec!["rs".into()],
                 max_results: Some(50),
                 context: None,
+                cancel: None,
             },
         )
         .unwrap();
@@ -579,6 +612,7 @@ mod tests {
                 extensions: vec![],
                 max_results: Some(20),
                 context: Some(1),
+                cancel: None,
             },
         )
         .unwrap();
@@ -605,10 +639,63 @@ mod tests {
                 extensions: vec!["txt".into()],
                 max_results: Some(3),
                 context: Some(0),
+                cancel: None,
             },
         )
         .unwrap();
         assert_eq!(result.hits.len(), 3);
         assert!(result.truncated);
+    }
+
+    #[test]
+    fn content_is_scoped_to_folder_path() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("src/a.rs"), "MARKER_IN_SRC").unwrap();
+        fs::write(dir.path().join("docs/a.md"), "MARKER_IN_DOCS").unwrap();
+
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        let result = run_search(
+            &roots,
+            SearchParams {
+                mode: SearchMode::Content,
+                root: "ws".into(),
+                path: "/src".into(),
+                query: "MARKER_IN".into(),
+                extensions: vec![],
+                max_results: Some(20),
+                context: Some(0),
+                cancel: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].path, "/src/a.rs");
+    }
+
+    #[test]
+    fn cancel_flag_stops_search() {
+        let dir = tempdir().unwrap();
+        for i in 0..200 {
+            fs::write(dir.path().join(format!("f{i}.txt")), "needle here").unwrap();
+        }
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        let cancel = Arc::new(AtomicBool::new(true));
+        let err = run_search(
+            &roots,
+            SearchParams {
+                mode: SearchMode::Content,
+                root: "ws".into(),
+                path: "/".into(),
+                query: "needle".into(),
+                extensions: vec!["txt".into()],
+                max_results: Some(50),
+                context: Some(0),
+                cancel: Some(cancel),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, "cancelled");
     }
 }

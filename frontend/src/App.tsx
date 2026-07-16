@@ -532,7 +532,7 @@ export default function App() {
   const navItems = [
     { v: 'files' as const, label: 'Files', Icon: IconFolder },
     { v: 'collections' as const, label: 'Collections', Icon: IconCollection },
-    { v: 'search' as const, label: 'Search', Icon: IconSearch },
+    { v: 'search' as const, label: 'rg / fd', Icon: IconSearch },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
     { v: 'stats' as const, label: 'System', Icon: IconStats },
   ];
@@ -927,7 +927,12 @@ export default function App() {
               )}
               {view === 'search' && (
                 <div style={styles.secondaryView}>
-                  <WorkspaceSearch agent={selectedAgent} onOpenFile={openInFiles} />
+                  <WorkspaceSearch
+                    agent={selectedAgent}
+                    initialRoot={selectedRoot}
+                    initialPath={currentPath}
+                    onOpenFile={openInFiles}
+                  />
                 </div>
               )}
               {view === 'settings' && (
