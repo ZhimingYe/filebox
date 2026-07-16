@@ -95,15 +95,17 @@ export function setWrapPref(v: boolean) {
 
 // ── File-type maps ────────────────────────────────────────────────────────
 
+// Values are Monaco language ids (not Prism). Unsupported langs fall back to
+// the closest built-in highlighter or plaintext so the viewer still opens.
 export const extToLang: Record<string, string> = {
   rs: 'rust', py: 'python',
-  js: 'javascript', jsx: 'jsx', ts: 'typescript', tsx: 'tsx',
+  js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
   go: 'go', java: 'java',
   c: 'c', h: 'c', cpp: 'cpp', hpp: 'cpp', cc: 'cpp', cxx: 'cpp',
   cs: 'csharp',
-  css: 'css', scss: 'scss', sass: 'sass', less: 'less',
-  sh: 'bash', bash: 'bash', zsh: 'bash', fish: 'fish',
-  json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml', xml: 'xml', csv: 'csv',
+  css: 'css', scss: 'scss', sass: 'scss', less: 'less',
+  sh: 'shell', bash: 'shell', zsh: 'shell', fish: 'shell',
+  json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'ini', xml: 'xml', csv: 'plaintext',
   sql: 'sql', rb: 'ruby', php: 'php',
   swift: 'swift', kt: 'kotlin', kts: 'kotlin', scala: 'scala',
   r: 'r', R: 'r',
@@ -113,13 +115,13 @@ export const extToLang: Record<string, string> = {
   // Makefile are. Both preview as R.
   rprofile: 'r', renviron: 'r',
   lua: 'lua', pl: 'perl', pm: 'perl',
-  erl: 'erlang', ex: 'elixir', exs: 'elixir',
-  hs: 'haskell', ml: 'ocaml', mli: 'ocaml',
-  clj: 'clojure', lisp: 'lisp', el: 'lisp',
-  dockerfile: 'dockerfile', makefile: 'makefile', cmake: 'cmake',
+  erl: 'plaintext', ex: 'elixir', exs: 'elixir',
+  hs: 'plaintext', ml: 'plaintext', mli: 'plaintext',
+  clj: 'clojure', lisp: 'plaintext', el: 'plaintext',
+  dockerfile: 'dockerfile', makefile: 'plaintext', cmake: 'plaintext',
   ini: 'ini', cfg: 'ini', conf: 'ini',
-  diff: 'diff', patch: 'diff',
-  md: 'markdown', txt: 'text', log: 'text', env: 'text',
+  diff: 'plaintext', patch: 'plaintext',
+  md: 'markdown', txt: 'plaintext', log: 'plaintext', env: 'plaintext',
 };
 
 export const binaryExts = new Set([
@@ -343,6 +345,13 @@ export const styles: Record<string, React.CSSProperties> = {
   codeContainer: {
     height: '100%', overflow: 'auto',
     background: c.bg, minWidth: 0,
+  },
+  monacoContainer: {
+    display: 'flex', flexDirection: 'column', height: '100%',
+    background: c.bg, minWidth: 0, overflow: 'hidden',
+  },
+  monacoEditorHost: {
+    flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden',
   },
   // Image viewer owns a flex column that fills the preview pane. Without
   // display:flex on the root, imageStage's flex:1 is ignored and tall images

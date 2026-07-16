@@ -34,18 +34,11 @@ export default defineConfig({
             ) {
               return 'react-vendor';
             }
-            // react-syntax-highlighter pulls refractor + a full language
-            // bundle (~600KB). Its own chunk so the rest of vendor doesn't
-            // invalidate when it updates.
-            if (
-              id.includes('/react-syntax-highlighter/') ||
-              id.includes('/refractor/') ||
-              id.includes('/prismjs/') ||
-              id.includes('/prism-') ||
-              id.includes('/refractor-')
-            ) {
-              return 'highlighter-vendor';
-            }
+            // NOTE: do NOT force monaco-editor into a manual chunk. Putting it in
+            // `monaco-vendor` caused Vite's shared module-preload helper to land
+            // in that same chunk, so the main index eagerly imported the whole
+            // ~4MB Monaco bundle on every page load. TextPreview is already
+            // React.lazy()'d — Monaco stays behind that dynamic import.
             // react-markdown + remark + micromark pipeline.
             if (
               id.includes('/react-markdown/') ||
