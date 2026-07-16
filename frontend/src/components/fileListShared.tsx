@@ -211,9 +211,42 @@ const DATE_HEADER_MIN = 8 + SORT_SUFFIX_LEN;
 const SIZE_HEADER_MIN = 4 + SORT_SUFFIX_LEN;
 /** Rough px-per-ch for budget math (mono labels). */
 const CH_PX = 7.2;
+/** Reference font for meta column width — must match measureMetaChPx. */
+const META_GRID_FONT_SIZE = 12;
 const LIST_ICON_PX = 20;
 const LIST_H_PAD_PX = 24;
 const LIST_COL_GAP_PX = 8;
+
+const metaChPxCache = new Map<number, number>();
+
+/** Convert ch → px with a fixed reference font so header and rows resolve identically. */
+export function measureMetaChPx(ch: number): number {
+  const key = Math.round(ch * 1000) / 1000;
+  const hit = metaChPxCache.get(key);
+  if (hit != null) return hit;
+
+  let px: number;
+  if (typeof document !== 'undefined') {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.font = `${META_GRID_FONT_SIZE}px ${font.mono}`;
+      const sample = '0'.repeat(Math.max(1, Math.ceil(ch)));
+      px = (ctx.measureText(sample).width / sample.length) * ch;
+    } else {
+      px = ch * CH_PX;
+    }
+  } else {
+    px = ch * CH_PX;
+  }
+
+  metaChPxCache.set(key, px);
+  return px;
+}
+
+function metaColTrack(ch: number): string {
+  return `minmax(0, ${Math.round(measureMetaChPx(ch))}px)`;
+}
 
 function parseChWidth(width: string): number {
   const m = /^(\d+(?:\.\d+)?)ch$/.exec(width);
@@ -348,11 +381,11 @@ export function fileListGridColumns(opts: {
 
   const parts: string[] = ['20px', `minmax(${nameMin}px, 1fr)`];
   if (showRootColumn) {
-    parts.push(`minmax(0, ${allocated.root}ch)`);
+    parts.push(metaColTrack(allocated.root));
   }
-  parts.push(`minmax(0, ${allocated.date}ch)`);
+  parts.push(metaColTrack(allocated.date));
   if (!isMobile) {
-    parts.push(`minmax(0, ${allocated.size}ch)`);
+    parts.push(metaColTrack(allocated.size));
   }
 
   return parts.join(' ');
@@ -385,12 +418,13 @@ export function useFileListLayout(
 ) {
   const [listWidth, setListWidth] = useState(0);
   const [listHeight, setListHeight] = useState(400);
+  const [scrollClientWidth, setScrollClientWidth] = useState(0);
   const outerRef = useRef<HTMLDivElement>(null);
   const [scrollPad, setScrollPad] = useState(0);
   const headerInsidePanel = bodyRef == null;
 
   useEffect(() => {
-    const widthEl = widthRef.current;
+    const widthEl = (bodyRef ?? widthRef).current;
     const heightEl = (bodyRef ?? widthRef).current;
     if (!widthEl || !heightEl) return;
     let raf = 0;
@@ -420,6 +454,7 @@ export function useFileListLayout(
   useEffect(() => {
     if (!opts.hasRows) {
       setScrollPad(0);
+      setScrollClientWidth(0);
       return;
     }
     let ro: ResizeObserver | null = null;
@@ -432,6 +467,7 @@ export function useFileListLayout(
       const update = () => {
         if (!cancelled) {
           setScrollPad(Math.max(0, el.offsetWidth - el.clientWidth));
+          setScrollClientWidth(el.clientWidth);
         }
       };
       update();
@@ -451,11 +487,12 @@ export function useFileListLayout(
     };
   }, [opts.hasRows, opts.rows.length, listHeight]);
 
-  // Row grid sits inside the scroll body (scrollbar gutter); budget columns on that width.
+  // Row grid lives inside the scroll body; budget columns on that width.
   const layoutWidth = useMemo(() => {
+    if (scrollClientWidth > 0) return scrollClientWidth;
     if (listWidth <= 0) return 0;
     return scrollPad > 0 ? Math.max(0, listWidth - scrollPad) : listWidth;
-  }, [listWidth, scrollPad]);
+  }, [scrollClientWidth, listWidth, scrollPad]);
 
   const rootColWidth = useMemo(
     () => (opts.showRootColumn ? rootColWidthForRows(opts.rows, layoutWidth) : '0px'),
