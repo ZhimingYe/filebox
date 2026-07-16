@@ -28,7 +28,6 @@ export interface CollectionItemRow {
 
 interface CollectionItemListProps {
   rows: CollectionItemRow[];
-  selectedKey: string | null;
   onSelect: (row: CollectionItemRow) => void;
   onOpenInFiles: (row: CollectionItemRow) => void;
   onRemove: (row: CollectionItemRow) => void;
@@ -36,7 +35,6 @@ interface CollectionItemListProps {
 
 interface RowItemData {
   rows: CollectionItemRow[];
-  selectedKey: string | null;
   hoveredKey: string | null;
   setHoveredKey: (key: string | null) => void;
   dateColWidth: string;
@@ -52,7 +50,6 @@ function itemKey(item: CollectionItem): string {
 const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
   const {
     rows,
-    selectedKey,
     hoveredKey,
     setHoveredKey,
     dateColWidth,
@@ -64,7 +61,6 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
   const { item, name, status } = row;
   const key = itemKey(item);
   const entry = entryFromBasename(name);
-  const selected = selectedKey === key;
   const hovered = hoveredKey === key;
   const muted = status === 'missing' || status === 'denied';
 
@@ -73,8 +69,7 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
       style={{
         ...style,
         ...fileListStyles.entry,
-        ...(selected ? fileListStyles.entryActive : {}),
-        ...(hovered && !selected ? fileListStyles.entryHover : {}),
+        ...(hovered ? fileListStyles.entryHover : {}),
         opacity: muted ? 0.55 : 1,
         cursor: status === 'missing' ? 'default' : 'pointer',
       }}
@@ -141,7 +136,6 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
 
 export function CollectionItemList({
   rows,
-  selectedKey,
   onSelect,
   onOpenInFiles,
   onRemove,
@@ -173,7 +167,6 @@ export function CollectionItemList({
   const rowItemData = useMemo<RowItemData>(
     () => ({
       rows,
-      selectedKey,
       hoveredKey,
       setHoveredKey,
       dateColWidth,
@@ -181,7 +174,7 @@ export function CollectionItemList({
       onOpenInFiles,
       onRemove,
     }),
-    [rows, selectedKey, hoveredKey, dateColWidth, onSelect, onOpenInFiles, onRemove],
+    [rows, hoveredKey, dateColWidth, onSelect, onOpenInFiles, onRemove],
   );
 
   if (rows.length === 0) {

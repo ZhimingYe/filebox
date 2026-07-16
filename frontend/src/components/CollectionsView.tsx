@@ -98,11 +98,6 @@ export function CollectionsView({
     });
   }, [selected, metaVersion]);
 
-  const selectedKey = useMemo(() => {
-    if (!activeTab || activeTab.agentId !== agent.id) return null;
-    return `${activeTab.root}::${activeTab.path}`;
-  }, [activeTab, agent.id]);
-
   // Probe file metadata for status badges, size, and modified columns.
   useEffect(() => {
     if (!selected || agent.status !== 'online') return;
@@ -364,7 +359,6 @@ export function CollectionsView({
           list={(
             <CollectionItemList
               rows={listRows}
-              selectedKey={selectedKey}
               onSelect={handleSelectRow}
               onOpenInFiles={handleOpenInFiles}
               onRemove={handleRemoveRow}

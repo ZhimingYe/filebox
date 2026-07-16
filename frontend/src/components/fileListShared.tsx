@@ -174,9 +174,6 @@ export const fileListStyles: Record<string, CSSProperties> = {
     minHeight: 32, borderRadius: radius.sm, margin: '0 4px',
     transition: 'background 0.1s',
   },
-  entryActive: {
-    background: c.accentBg,
-  },
   entryHover: {
     background: c.bgMuted,
   },
