@@ -15,6 +15,7 @@ import { AboutDialog } from './components/AboutDialog';
 import { SystemStats } from './components/SystemStats';
 import { PinnedFolders } from './components/PinnedFolders';
 import { CollectionsView } from './components/CollectionsView';
+import { WorkspaceSplit } from './components/WorkspaceSplit';
 import { CollectionPicker } from './components/CollectionPicker';
 import { NoAgentSelected } from './components/NoAgentSelected';
 import {
@@ -268,8 +269,6 @@ export default function App() {
   }, []);
 
   // ── Desktop split: persisted file/preview width ratio ──
-  const splitContainerRef = useRef<HTMLDivElement>(null);
-  const [splitterHover, setSplitterHover] = useState(false);
   const [splitRatio, setSplitRatio] = useState<number>(() => {
     try {
       const stored = localStorage.getItem('filebox.splitRatio');
@@ -283,39 +282,6 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem('filebox.splitRatio', String(splitRatio)); } catch { /* ignore */ }
   }, [splitRatio]);
-
-  const startSplitDrag = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const container = splitContainerRef.current;
-    if (!container) return;
-    let rafId: number | null = null;
-    let lastClientX = e.clientX;
-    const onMove = (ev: MouseEvent) => {
-      lastClientX = ev.clientX;
-      if (rafId !== null) return;
-      rafId = requestAnimationFrame(() => {
-        rafId = null;
-        const rect = container.getBoundingClientRect();
-        const ratio = (lastClientX - rect.left) / rect.width;
-        setSplitRatio(Math.max(0.2, Math.min(0.8, ratio)));
-      });
-    };
-    const onUp = () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      document.body.classList.remove('split-resizing');
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-    // iframe (HTML preview, PDF) eats mousemove once cursor enters it.
-    // Disable pointer events globally during drag so events reach document.
-    document.body.classList.add('split-resizing');
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  }, []);
 
   // ── Keyboard navigation: cache last reported file list ──
   const fileListRef = useRef<{ root: string; path: string; entries: FsEntry[] } | null>(null);
@@ -845,62 +811,71 @@ export default function App() {
                   Hidden with display:none (not unmounted) when another view is
                   active — same idea as mobile preview toggle. */}
               <div
-                ref={isMobile ? undefined : splitContainerRef}
                 style={{
-                  ...(isMobile ? styles.mobileFilesLayout : styles.splitView),
+                  ...(isMobile ? styles.mobileFilesLayout : styles.splitViewShell),
                   ...(view !== 'files' ? styles.filesViewHidden : {}),
                 }}
               >
-                <div
-                  style={
-                    isMobile
-                      ? {
-                          ...styles.mobileFileWrap,
-                          display: showMobilePreview ? 'none' : 'flex',
-                        }
-                      : {
-                          ...styles.filePanel,
-                          flex: activeTab ? `0 0 ${splitRatio * 100}%` : '1',
-                        }
-                  }
-                >
-                  <FileBrowser
-                    agentId={selectedAgent.id}
-                    roots={selectedAgent.roots}
-                    onFileSelect={handleFileSelect}
-                    onEntriesChange={handleEntriesChange}
-                    onRootsChange={refresh}
-                    onAddToCollection={openCollectionPicker}
-                    navRequest={navRequest}
-                    onNavHandled={() => setNavRequest(null)}
-                    selectedRoot={selectedRoot}
-                    currentPath={currentPath}
-                    onApplyNav={applyNav}
-                    onSwitchRoot={switchRoot}
-                  />
-                </div>
-                {!isMobile && activeTab && view === 'files' && (
-                      <>
-                        <div
-                          onMouseDown={startSplitDrag}
-                          onMouseEnter={() => setSplitterHover(true)}
-                          onMouseLeave={() => setSplitterHover(false)}
-                          style={{ ...styles.splitter, ...(splitterHover ? styles.splitterHover : {}) }}
-                          title="Drag to resize"
-                        />
-                        <PreviewWorkspace
-                          agentId={selectedAgent.id}
-                          tabs={previewTabs.tabs}
-                          activeTab={activeTab}
-                          activeTabId={previewTabs.activeTabId}
-                          onActivate={previewTabs.activate}
-                          onClose={previewTabs.close}
-                          onCloseAll={previewTabs.closeAll}
-                          onCloseLeft={previewTabs.closeLeft}
-                          onCloseRight={previewTabs.closeRight}
-                        />
-                      </>
+                {isMobile ? (
+                  <>
+                    <div
+                      style={{
+                        ...styles.mobileFileWrap,
+                        display: showMobilePreview ? 'none' : 'flex',
+                      }}
+                    >
+                      <FileBrowser
+                        agentId={selectedAgent.id}
+                        roots={selectedAgent.roots}
+                        onFileSelect={handleFileSelect}
+                        onEntriesChange={handleEntriesChange}
+                        onRootsChange={refresh}
+                        onAddToCollection={openCollectionPicker}
+                        navRequest={navRequest}
+                        onNavHandled={() => setNavRequest(null)}
+                        selectedRoot={selectedRoot}
+                        currentPath={currentPath}
+                        onApplyNav={applyNav}
+                        onSwitchRoot={switchRoot}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <WorkspaceSplit
+                    splitRatio={splitRatio}
+                    onSplitRatioChange={setSplitRatio}
+                    showPreview={!!activeTab}
+                    list={(
+                      <FileBrowser
+                        agentId={selectedAgent.id}
+                        roots={selectedAgent.roots}
+                        onFileSelect={handleFileSelect}
+                        onEntriesChange={handleEntriesChange}
+                        onRootsChange={refresh}
+                        onAddToCollection={openCollectionPicker}
+                        navRequest={navRequest}
+                        onNavHandled={() => setNavRequest(null)}
+                        selectedRoot={selectedRoot}
+                        currentPath={currentPath}
+                        onApplyNav={applyNav}
+                        onSwitchRoot={switchRoot}
+                      />
                     )}
+                    preview={activeTab ? (
+                      <PreviewWorkspace
+                        agentId={selectedAgent.id}
+                        tabs={previewTabs.tabs}
+                        activeTab={activeTab}
+                        activeTabId={previewTabs.activeTabId}
+                        onActivate={previewTabs.activate}
+                        onClose={previewTabs.close}
+                        onCloseAll={previewTabs.closeAll}
+                        onCloseLeft={previewTabs.closeLeft}
+                        onCloseRight={previewTabs.closeRight}
+                      />
+                    ) : null}
+                  />
+                )}
               </div>
               {isMobile && showMobilePreview && activeTab && (view === 'files' || view === 'collections') && (
                 <div style={styles.mobilePreviewWrap}>
@@ -937,6 +912,7 @@ export default function App() {
                     agent={selectedAgent}
                     previewTabs={previewTabs}
                     splitRatio={splitRatio}
+                    onSplitRatioChange={setSplitRatio}
                     onOpenInFiles={openInFiles}
                     onRefresh={refresh}
                     hideList={isMobile && showMobilePreview}
@@ -1358,7 +1334,7 @@ const styles: Record<string, React.CSSProperties> = {
   // Row flex: Files shell and Settings/Stats are siblings; only one is visible.
   contentArea: { flex: 1, display: 'flex', overflow: 'hidden', minWidth: 0, minHeight: 0 },
   // ── Desktop split ──
-  splitView: { display: 'flex', flex: 1, overflow: 'hidden', position: 'relative', minWidth: 0 },
+  splitViewShell: { display: 'flex', flex: 1, overflow: 'hidden', minWidth: 0, minHeight: 0 },
   // Mobile files shell: column so list (or full-screen preview) fills contentArea.
   mobileFilesLayout: {
     display: 'flex', flex: 1, flexDirection: 'column', overflow: 'hidden', minHeight: 0, minWidth: 0,
@@ -1374,16 +1350,6 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden',
     display: 'flex', flexDirection: 'column',
   },
-  filePanel: {
-    minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
-  },
-  splitter: {
-    width: 4, cursor: 'col-resize', background: c.border,
-    flexShrink: 0, transition: 'background 0.15s',
-  } as React.CSSProperties,
-  splitterHover: {
-    background: c.accent,
-  } as React.CSSProperties,
   previewHeader: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
     padding: '8px 16px', borderBottom: `1px solid ${c.border}`, background: c.bgSubtle,

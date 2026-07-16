@@ -4,6 +4,7 @@ import * as api from '../api/client';
 import { statToFsEntry } from '../api/client';
 import { c, radius, font } from '../theme';
 import { PreviewWorkspace } from './PreviewWorkspace';
+import { WorkspaceSplit } from './WorkspaceSplit';
 import type { usePreviewTabs } from '../hooks/usePreviewTabs';
 import { useIsMobile } from '../state/useIsMobile';
 import {
@@ -16,6 +17,7 @@ interface Props {
   agent: AgentInfo;
   previewTabs: ReturnType<typeof usePreviewTabs>;
   splitRatio: number;
+  onSplitRatioChange: (ratio: number) => void;
   onOpenInFiles: (root: string, path: string) => void;
   onRefresh: () => void;
   /** Mobile: hide file list while preview is fullscreen in App. */
@@ -42,6 +44,7 @@ export function CollectionsView({
   agent,
   previewTabs,
   splitRatio,
+  onSplitRatioChange,
   onOpenInFiles,
   onRefresh,
   hideList = false,
@@ -78,7 +81,7 @@ export function CollectionsView({
   );
 
   const activeTab = previewTabs.activeTab;
-  const hasTabs = previewTabs.tabs.length > 0;
+  const showInlinePreview = !hidePreview && !!activeTab && activeTab.agentId === agent.id;
 
   const listRows: CollectionItemRow[] = useMemo(() => {
     if (!selected) return [];
@@ -258,8 +261,27 @@ export function CollectionsView({
     [removeItem],
   );
 
-  const listWidthPct = splitRatio * 100;
-  const showInlinePreview = !hidePreview && hasTabs;
+  // ← → flip through collection files (same affordance as Files directory nav).
+  useEffect(() => {
+    if (isMobile || hidePreview || !activeTab || activeTab.agentId !== agent.id) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      const navigable = listRows.filter((r) => r.status !== 'missing' && r.status !== 'denied');
+      const currentKey = `${activeTab.root}::${activeTab.path}`;
+      const idx = navigable.findIndex((r) => `${r.item.root}::${r.item.path}` === currentKey);
+      if (idx === -1) return;
+      const nextIdx = e.key === 'ArrowRight' ? idx + 1 : idx - 1;
+      if (nextIdx < 0 || nextIdx >= navigable.length) return;
+      e.preventDefault();
+      openItem(navigable[nextIdx].item);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isMobile, hidePreview, activeTab, agent.id, listRows, openItem]);
 
   if (collections.length === 0) {
     return (
@@ -333,14 +355,13 @@ export function CollectionsView({
       )}
       {error && <div style={styles.errorBar}>{error}</div>}
 
-      <div style={styles.split}>
-        {!hideList && (
-          <div
-            style={{
-              ...styles.listPane,
-              width: showInlinePreview ? `${listWidthPct}%` : '100%',
-            }}
-          >
+      {!hideList && (
+        <WorkspaceSplit
+          splitRatio={splitRatio}
+          onSplitRatioChange={onSplitRatioChange}
+          showPreview={showInlinePreview}
+          style={{ flex: 1 }}
+          list={(
             <CollectionItemList
               rows={listRows}
               selectedKey={selectedKey}
@@ -348,10 +369,8 @@ export function CollectionsView({
               onOpenInFiles={handleOpenInFiles}
               onRemove={handleRemoveRow}
             />
-          </div>
-        )}
-        {showInlinePreview && (
-          <div style={styles.previewPane}>
+          )}
+          preview={(
             <PreviewWorkspace
               agentId={agent.id}
               tabs={previewTabs.tabs}
@@ -363,14 +382,9 @@ export function CollectionsView({
               onCloseLeft={previewTabs.closeLeft}
               onCloseRight={previewTabs.closeRight}
             />
-          </div>
-        )}
-        {!showInlinePreview && !hideList && !hidePreview && (
-          <div style={styles.previewPane}>
-            <div style={styles.previewPlaceholder}>Select a file to preview</div>
-          </div>
-        )}
-      </div>
+          )}
+        />
+      )}
     </div>
   );
 }
@@ -416,16 +430,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   errorBar: { fontSize: 12, color: c.danger, padding: '6px 12px' },
   errorText: { fontSize: 12, color: c.danger, marginTop: 8 },
-  split: { display: 'flex', flex: 1, minHeight: 0 },
-  listPane: {
-    borderRight: `1px solid ${c.border}`, minWidth: 200,
-    display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden',
-  },
-  previewPane: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' },
-  previewPlaceholder: {
-    flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-    color: c.textMuted, fontSize: 13,
-  },
   emptyWrap: {
     flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
     justifyContent: 'center', padding: 24, textAlign: 'center',
