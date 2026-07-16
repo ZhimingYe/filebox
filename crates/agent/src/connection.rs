@@ -288,7 +288,8 @@ async fn run_one_connection(
 
     // Workspace search runs off the WS loop so heartbeats/liveness keep
     // working under heavy trees. Completed responses arrive on search_rx.
-    let (search_tx, mut search_rx) = mpsc::channel::<AgentMessage>(4);
+    // Capacity >1 so Progress try_send rarely drops under burst.
+    let (search_tx, mut search_rx) = mpsc::channel::<AgentMessage>(32);
     let search_inflight = Arc::new(AtomicUsize::new(0));
     let search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -573,6 +574,28 @@ async fn run_one_connection(
                                 }
 
                                 let roots_vec = resource_mgr.roots().to_vec();
+                                let tx = search_tx.clone();
+                                let progress_tx = search_tx.clone();
+                                let inflight = search_inflight.clone();
+                                let cancels = search_cancels.clone();
+                                let rid = req_id.clone();
+                                let rid_for_progress = req_id.clone();
+                                let on_progress: Arc<dyn Fn(u64, u64) + Send + Sync> =
+                                    Arc::new(move |scanned, hits| {
+                                        let msg = AgentMessage::Progress {
+                                            req_id: rid_for_progress.clone(),
+                                            phase: "search".to_string(),
+                                            processed: scanned,
+                                            total: None,
+                                            message: Some(format!(
+                                                "Scanned {scanned} files · {hits} hits"
+                                            )),
+                                        };
+                                        // Non-blocking: drop progress if the
+                                        // outbound queue is full so search
+                                        // never stalls waiting on the WS loop.
+                                        let _ = progress_tx.try_send(msg);
+                                    });
                                 let params = crate::search::SearchParams {
                                     mode,
                                     root,
@@ -582,12 +605,18 @@ async fn run_one_connection(
                                     max_results,
                                     context,
                                     cancel: Some(cancel),
+                                    on_progress: Some(on_progress),
                                 };
-                                let tx = search_tx.clone();
-                                let inflight = search_inflight.clone();
-                                let cancels = search_cancels.clone();
-                                let rid = req_id.clone();
+                                // Fire-and-forget worker — WS loop stays free
+                                // for heartbeats, FS ops, and Cancel.
                                 tokio::task::spawn_blocking(move || {
+                                    let _ = tx.try_send(AgentMessage::Progress {
+                                        req_id: rid.clone(),
+                                        phase: "search".to_string(),
+                                        processed: 0,
+                                        total: None,
+                                        message: Some("Starting search…".to_string()),
+                                    });
                                     let outcome = crate::search::run_search(&roots_vec, params);
                                     let response = match outcome {
                                         Ok(result) => AgentMessage::WorkspaceSearchResponse {
@@ -604,7 +633,7 @@ async fn run_one_connection(
                                     if let Ok(mut map) = cancels.lock() {
                                         map.remove(&rid);
                                     }
-                                    inflight.fetch_sub(1, Ordering::Relaxed);
+                                    inflight.fetch_sub(1, Ordering::AcqRel);
                                     let _ = tx.blocking_send(response);
                                 });
                             }

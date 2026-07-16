@@ -199,6 +199,21 @@ pub async fn workspace_search_handler(
 
     drop(inner);
 
+    // Publish req_id immediately so the UI can Cancel via /api/cancel without
+    // waiting for the final JSON body (long searches).
+    state
+        .emit_sse(
+            "progress",
+            serde_json::json!({
+                "req_id": req_id,
+                "phase": "search",
+                "processed": 0,
+                "total": null,
+                "message": "Search started",
+            }),
+        )
+        .await;
+
     let mut guard = CancelOnDrop {
         state: state.clone(),
         agent_id: agent_id.clone(),
@@ -206,7 +221,9 @@ pub async fn workspace_search_handler(
         armed: true,
     };
 
-    let resp = tokio::time::timeout(Duration::from_secs(60), resp_rx.recv()).await;
+    // Long trees are expected; client Cancel / disconnect still aborts via
+    // CancelOnDrop. Soft ceiling keeps a stuck agent from holding the slot forever.
+    let resp = tokio::time::timeout(Duration::from_secs(10 * 60), resp_rx.recv()).await;
     cleanup_pending(&state, &req_id).await;
 
     match resp {

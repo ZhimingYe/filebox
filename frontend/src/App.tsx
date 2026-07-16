@@ -485,6 +485,9 @@ export default function App() {
     }
     if (evt.event === 'progress') {
       const d = evt.data as unknown as ProgressEvent;
+      // Workspace Search owns its own progress panel; skip the global toast
+      // so long scans don't flash / steal attention from Files etc.
+      if (d.phase === 'search') return;
       setProgressMap((prev) => {
         const next = new Map(prev);
         next.set(d.req_id, d);
@@ -925,15 +928,18 @@ export default function App() {
                   />
                 </div>
               )}
-              {view === 'search' && (
-                <div style={styles.secondaryView}>
-                  <WorkspaceSearch
-                    agent={selectedAgent}
-                    initialRoot={selectedRoot}
-                    onOpenFile={openInFiles}
-                  />
-                </div>
-              )}
+              {/* Keep Search mounted (hidden) so long scans survive nav to
+                  Files/System and Cancel/progress keep working. */}
+              <div style={{
+                ...styles.secondaryView,
+                ...(view !== 'search' ? styles.filesViewHidden : {}),
+              }}>
+                <WorkspaceSearch
+                  agent={selectedAgent}
+                  initialRoot={selectedRoot}
+                  onOpenFile={openInFiles}
+                />
+              </div>
               {view === 'settings' && (
                 <div style={styles.secondaryView}>
                   <AgentSettings agent={selectedAgent} onRefresh={refresh} />

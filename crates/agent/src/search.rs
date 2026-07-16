@@ -27,13 +27,15 @@ const DEFAULT_CONTEXT: usize = 10;
 const HARD_MAX_CONTEXT: usize = 20;
 const MAX_CONTENT_FILE_BYTES: u64 = 1024 * 1024; // 1 MiB — skip huge files
 const MAX_LINE_CHARS: usize = 300;
-const MAX_SCANNED_FIND: u64 = 50_000;
-const MAX_SCANNED_CONTENT: u64 = 10_000;
+const MAX_SCANNED_FIND: u64 = 200_000;
+const MAX_SCANNED_CONTENT: u64 = 100_000;
 /// Soft cap on serialized payload size (hub body limit is 1 MiB).
 const MAX_RESULT_BYTES: usize = 512 * 1024;
-/// Stay under the hub's 60s proxy timeout so the client gets a truncated
-/// result instead of a gateway timeout.
-const SEARCH_DEADLINE: Duration = Duration::from_secs(55);
+/// Soft wall-clock cap; hub allows longer waits + cancel. Prefer truncated
+/// results over hanging forever.
+const SEARCH_DEADLINE: Duration = Duration::from_secs(9 * 60);
+const PROGRESS_EVERY_FILES: u64 = 64;
+const PROGRESS_EVERY: Duration = Duration::from_millis(400);
 
 pub struct SearchParams {
     pub mode: SearchMode,
@@ -46,6 +48,8 @@ pub struct SearchParams {
     pub context: Option<u32>,
     /// Cooperative cancel — checked between files.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Optional progress hook: (scanned_files, hit_count).
+    pub on_progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
 }
 
 pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchResult, String> {
@@ -115,6 +119,10 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
         SearchMode::Content => MAX_SCANNED_CONTENT,
     };
     let cancel = params.cancel.clone();
+    let on_progress = params.on_progress.clone();
+    let mut last_progress = Instant::now()
+        .checked_sub(PROGRESS_EVERY)
+        .unwrap_or_else(Instant::now);
 
     let root_canonical_for_filter = root_canonical.clone();
     let walker = WalkBuilder::new(&start)
@@ -189,6 +197,16 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
         if scanned > max_scanned {
             truncated = true;
             break;
+        }
+
+        if let Some(cb) = on_progress.as_ref() {
+            if scanned == 1
+                || scanned % PROGRESS_EVERY_FILES == 0
+                || last_progress.elapsed() >= PROGRESS_EVERY
+            {
+                cb(scanned, hits.len() as u64);
+                last_progress = Instant::now();
+            }
         }
 
         match params.mode {
@@ -453,6 +471,7 @@ mod tests {
                 max_results: Some(50),
                 context: None,
                 cancel: None,
+                on_progress: None,
             },
         )
         .unwrap();
@@ -485,6 +504,7 @@ mod tests {
                 max_results: Some(10),
                 context: Some(2),
                 cancel: None,
+                on_progress: None,
             },
         )
         .unwrap();
@@ -517,6 +537,7 @@ mod tests {
                 max_results: Some(20),
                 context: Some(1),
                 cancel: None,
+                on_progress: None,
             },
         )
         .unwrap();
@@ -545,6 +566,7 @@ mod tests {
                 max_results: Some(20),
                 context: Some(1),
                 cancel: None,
+                on_progress: None,
             },
         )
         .unwrap();
@@ -577,6 +599,7 @@ mod tests {
                 max_results: Some(50),
                 context: None,
                 cancel: None,
+                on_progress: None,
             },
         )
         .unwrap();
@@ -613,6 +636,7 @@ mod tests {
                 max_results: Some(20),
                 context: Some(1),
                 cancel: None,
+                on_progress: None,
             },
         )
         .unwrap();
@@ -640,6 +664,7 @@ mod tests {
                 max_results: Some(3),
                 context: Some(0),
                 cancel: None,
+                on_progress: None,
             },
         )
         .unwrap();
@@ -667,6 +692,7 @@ mod tests {
                 max_results: Some(20),
                 context: Some(0),
                 cancel: None,
+                on_progress: None,
             },
         )
         .unwrap();
@@ -691,6 +717,7 @@ mod tests {
                 max_results: Some(20),
                 context: Some(0),
                 cancel: None,
+                on_progress: None,
             },
         )
         .unwrap();
@@ -718,6 +745,7 @@ mod tests {
                 max_results: Some(50),
                 context: Some(0),
                 cancel: Some(cancel),
+                on_progress: None,
             },
         )
         .unwrap_err();

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { AgentInfo, SearchHit, SearchMode, WorkspaceSearchResult } from '../api/client';
 import { cancelRequest, friendlyMessage, workspaceSearch } from '../api/client';
+import { useSse } from '../state/events';
 import { c, radius, font } from '../theme';
 
 interface Props {
@@ -49,9 +50,15 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [slow, setSlow] = useState(false);
+  const [progressText, setProgressText] = useState<string | null>(null);
+  const [scannedLive, setScannedLive] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const reqIdRef = useRef<string | null>(null);
   const reqGen = useRef(0);
+  /** Synced immediately in runSearch (not waiting for React render). */
+  const searchingRef = useRef(false);
+  /** Previous agent id for cancel-on-switch (updated only in the effect). */
+  const agentIdRef = useRef(agent.id);
 
   useEffect(() => {
     const roots = (agent.roots ?? []).filter((r) => r.enabled);
@@ -69,23 +76,54 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
   }, [agent.id, initialRoot]);
 
   useEffect(() => {
+    // Agent switch: cancel any in-flight search for the previous agent.
+    const prevAgent = agentIdRef.current;
+    const prevReq = reqIdRef.current;
     abortRef.current?.abort();
     abortRef.current = null;
     reqIdRef.current = null;
+    searchingRef.current = false;
     reqGen.current += 1;
     setResult(null);
     setError(null);
     setLoading(false);
     setSlow(false);
+    setProgressText(null);
+    setScannedLive(null);
     setQuery('');
     setFolder('/');
+    if (prevReq && prevAgent && prevAgent !== agent.id) {
+      void cancelRequest(prevAgent, prevReq).catch(() => {});
+    }
+    agentIdRef.current = agent.id;
   }, [agent.id]);
 
-  useEffect(() => {
-    return () => {
-      abortRef.current?.abort();
-    };
+  // True unmount (logout / deselect agent): stop the worker.
+  useEffect(() => () => {
+    const req = reqIdRef.current;
+    const aid = agentIdRef.current;
+    searchingRef.current = false;
+    abortRef.current?.abort();
+    if (req) void cancelRequest(aid, req).catch(() => {});
   }, []);
+
+  // Stay subscribed while mounted (App keeps this view mounted across nav) so
+  // progress/cancel keep working if the user browses Files mid-search.
+  useSse(useCallback((evt) => {
+    if (evt.event !== 'progress') return;
+    const d = evt.data as {
+      req_id?: string;
+      phase?: string;
+      processed?: number;
+      message?: string | null;
+    };
+    if (d.phase !== 'search' || !d.req_id) return;
+    if (!searchingRef.current) return;
+    // Capture req_id from hub's "Search started" even before fetch returns.
+    reqIdRef.current = d.req_id;
+    if (typeof d.processed === 'number') setScannedLive(d.processed);
+    if (d.message) setProgressText(d.message);
+  }, []));
 
   async function runSearch() {
     if (!root) {
@@ -97,15 +135,25 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
       return;
     }
 
+    // Cancel previous search (if any) before starting another.
+    const prevReq = reqIdRef.current;
     abortRef.current?.abort();
+    if (prevReq) {
+      void cancelRequest(agent.id, prevReq).catch(() => {});
+    }
+
     const ac = new AbortController();
     abortRef.current = ac;
     const gen = ++reqGen.current;
     reqIdRef.current = null;
+    searchingRef.current = true;
 
     setLoading(true);
     setSlow(false);
     setError(null);
+    setResult(null);
+    setProgressText('Starting search…');
+    setScannedLive(0);
 
     const slowTimer = window.setTimeout(() => {
       if (reqGen.current === gen) setSlow(true);
@@ -114,7 +162,6 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     const ctx = clampContext(contextLines);
 
     try {
-      // Extensions are matched case-insensitively on the agent; normalize here too.
       const exts = extensions
         .split(/[,\s]+/)
         .map((e) => e.trim().replace(/^\./, '').toLowerCase())
@@ -139,28 +186,36 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
         setError(searchErrorMessage({ error: data.error, message: data.error }));
       } else {
         setResult(data.result);
+        setError(null);
       }
     } catch (e: unknown) {
       if (gen !== reqGen.current) return;
-      if ((e as { name?: string })?.name === 'AbortError') return;
+      if ((e as { name?: string })?.name === 'AbortError') {
+        setError('Cancelled');
+        return;
+      }
       setResult(null);
       setError(searchErrorMessage(e));
     } finally {
       window.clearTimeout(slowTimer);
       if (gen === reqGen.current) {
+        searchingRef.current = false;
         setLoading(false);
         setSlow(false);
+        setProgressText(null);
       }
     }
   }
 
   async function handleCancel() {
     const reqId = reqIdRef.current;
-    abortRef.current?.abort();
     reqGen.current += 1;
+    searchingRef.current = false;
     setLoading(false);
     setSlow(false);
+    setProgressText(null);
     setError('Cancelled');
+    // Prefer hub cancel (stops agent worker) then abort the HTTP wait.
     if (reqId) {
       try {
         await cancelRequest(agent.id, reqId);
@@ -168,6 +223,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
         /* best-effort */
       }
     }
+    abortRef.current?.abort();
   }
 
   return (
@@ -272,24 +328,18 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           </label>
         )}
 
-        {loading ? (
-          <button type="button" onClick={() => void handleCancel()} style={styles.cancelBtn}>
-            Cancel
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => void runSearch()}
-            disabled={!root}
-            style={{
-              ...styles.searchBtn,
-              opacity: !root ? 0.55 : 1,
-              cursor: !root ? 'default' : 'pointer',
-            }}
-          >
-            Search
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => void (loading ? handleCancel() : runSearch())}
+          disabled={!root && !loading}
+          style={{
+            ...(loading ? styles.cancelBtn : styles.searchBtn),
+            opacity: !root && !loading ? 0.55 : 1,
+            cursor: !root && !loading ? 'default' : 'pointer',
+          }}
+        >
+          {loading ? 'Cancel' : 'Search'}
+        </button>
       </div>
 
       <p id="search-ext-hint" style={styles.fieldHint}>
@@ -317,13 +367,29 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
         })()}
       </div>
 
-      {slow && loading && (
-        <div style={styles.slow}>Still searching — large folders can take a while. You can Cancel.</div>
+      {loading && (
+        <div style={styles.progressBox}>
+          <div style={styles.progressRow}>
+            <span style={styles.progressSpin} aria-hidden />
+            <span style={styles.progressLabel}>
+              {progressText || 'Searching…'}
+              {scannedLive != null ? ` (${scannedLive.toLocaleString()} files)` : ''}
+            </span>
+            <button type="button" onClick={() => void handleCancel()} style={styles.cancelInline}>
+              Cancel
+            </button>
+          </div>
+          {slow && (
+            <div style={styles.slowNote}>
+              Still running — you can switch to Files or other views; this search keeps going until it finishes or you Cancel.
+            </div>
+          )}
+        </div>
       )}
 
       {error && <div style={styles.error}>{error}</div>}
 
-      {result && (
+      {result && !loading && (
         <div style={styles.meta}>
           {result.hits.length} hit{result.hits.length === 1 ? '' : 's'}
           {result.truncated ? ' (truncated)' : ''}
@@ -537,13 +603,48 @@ const styles: Record<string, CSSProperties> = {
     color: c.textMuted,
     marginBottom: 12,
   },
-  slow: {
-    padding: '8px 12px',
+  progressBox: {
+    padding: '10px 12px',
     borderRadius: radius.sm,
-    background: c.warningBg,
-    color: c.textSecondary,
-    fontSize: 13,
+    background: c.accentBg,
     marginBottom: 12,
+  },
+  progressRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+  },
+  progressSpin: {
+    width: 14,
+    height: 14,
+    borderRadius: '50%',
+    border: `2px solid ${c.accent}`,
+    borderTopColor: 'transparent',
+    animation: 'spin 0.8s linear infinite',
+    flexShrink: 0,
+  },
+  progressLabel: {
+    flex: 1,
+    fontSize: 13,
+    color: c.text,
+    minWidth: 0,
+  },
+  cancelInline: {
+    border: `1px solid ${c.border}`,
+    background: c.surface,
+    color: c.danger,
+    borderRadius: radius.sm,
+    padding: '4px 10px',
+    fontSize: 12,
+    fontFamily: font.sans,
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  slowNote: {
+    marginTop: 8,
+    fontSize: 12,
+    color: c.textSecondary,
+    lineHeight: 1.4,
   },
   error: {
     padding: '8px 12px',
