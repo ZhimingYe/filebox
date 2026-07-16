@@ -63,9 +63,11 @@ components are `React.lazy()`-loaded (`PdfPreview`, `TextPreview`,
 `MarkdownPreview`, `HtmlPreview`, `CsvPreview`); `ImagePreview` stays inline.
 `previewShared.tsx` holds shared utilities. `PreviewPane` is a memoized
 dispatcher — memoization is what stops splitter-drag stutter. Vite
-`manualChunks` splits react / monaco / markdown vendor chunks so
-deployments that don't bump a vendor reuse the cached chunk. PDF uses
-`react-pdf` + `pdfjs-dist` worker (bundled via
+`manualChunks` splits react / markdown vendor chunks so
+deployments that don't bump a vendor reuse the cached chunk. Monaco is
+kept behind the `TextPreview` lazy import (do not force it into a manual
+chunk — that previously pulled the ~4MB editor into the main preload).
+PDF uses `react-pdf` + `pdfjs-dist` worker (bundled via
 `new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url)`) because
 some mobile browsers ship no native PDF viewer.
 
@@ -226,7 +228,8 @@ filebox/
     agent/src/              # main.rs, config.rs, config_store.rs, connection.rs,
                             # resources.rs, fs.rs, sysinfo.rs
   frontend/
-    vite.config.ts          # manualChunks: react / monaco / markdown vendor
+    vite.config.ts          # manualChunks: react / markdown vendor
+                            # (Monaco stays behind TextPreview lazy import)
     src/
       App.tsx               # layout, sidebar, routing, mobile drawer, toasts
       theme.ts              # all design tokens

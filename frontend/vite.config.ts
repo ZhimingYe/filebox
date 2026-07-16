@@ -34,15 +34,11 @@ export default defineConfig({
             ) {
               return 'react-vendor';
             }
-            // Monaco editor + workers is large (~2MB+). Its own chunk so the
-            // rest of vendor doesn't invalidate when it updates; TextPreview
-            // already lazy-loads this path.
-            if (
-              id.includes('/monaco-editor/') ||
-              id.includes('/@monaco-editor/')
-            ) {
-              return 'monaco-vendor';
-            }
+            // NOTE: do NOT force monaco-editor into a manual chunk. Putting it in
+            // `monaco-vendor` caused Vite's shared module-preload helper to land
+            // in that same chunk, so the main index eagerly imported the whole
+            // ~4MB Monaco bundle on every page load. TextPreview is already
+            // React.lazy()'d — Monaco stays behind that dynamic import.
             // react-markdown + remark + micromark pipeline.
             if (
               id.includes('/react-markdown/') ||
