@@ -323,6 +323,15 @@ impl AgentRegistry {
         }
     }
 
+    /// Agent rejected a pending collections update — drop the queued desired state
+    /// but keep the last applied collections mirror intact.
+    pub fn reject_pending_collections_update(&mut self, agent_id: &str, error: String) {
+        if let Some(agent) = self.agents.get_mut(agent_id) {
+            agent.pending_collections_update = None;
+            agent.last_config_error = Some(error);
+        }
+    }
+
     pub fn send_to_agent(&self, agent_id: &str, msg: HubMessage) -> bool {
         if let Some(agent) = self.agents.get(agent_id) {
             agent.sender.send(msg).is_ok()
@@ -663,6 +672,32 @@ mod tests {
         assert_eq!(agent.roots.len(), 1);
         assert!(agent.pending_update.is_none());
         assert!(agent.last_config_error.is_none());
+    }
+
+    #[test]
+    fn reject_pending_collections_update_clears_pending_keeps_mirror() {
+        let mut reg = AgentRegistry::new();
+        register_simple(&mut reg, "a1");
+
+        reg.set_pending_collections_update(
+            "a1",
+            DesiredCollections {
+                collections: vec![CollectionConfig {
+                    name: "bad".to_string(),
+                    items: vec![],
+                }],
+            },
+        );
+
+        reg.reject_pending_collections_update("a1", "duplicate name".to_string());
+
+        let agent = reg.get("a1").unwrap();
+        assert!(agent.pending_collections_update.is_none());
+        assert_eq!(
+            agent.last_config_error.as_deref(),
+            Some("duplicate name")
+        );
+        assert!(agent.collections.is_empty());
     }
 
     #[test]

@@ -87,6 +87,24 @@ export function CollectionsView({
     [collections, selectedName],
   );
 
+  // Stable fingerprint so health polling (new agent object every ~5s) does not
+  // restart metadata probes when collection items are unchanged.
+  const selectedItemsKey = useMemo(() => {
+    if (!selectedName) return '';
+    const col = collections.find((c) => c.name === selectedName);
+    if (!col) return '';
+    return col.items
+      .map((item) => `${item.root}::${item.path}::${item.label ?? ''}`)
+      .join('|');
+  }, [collections, selectedName]);
+
+  const selectedItems = useMemo(() => {
+    if (!selectedName) return [] as CollectionItem[];
+    return collections.find((c) => c.name === selectedName)?.items ?? [];
+  // Re-read collections only when the item fingerprint changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedItemsKey tracks item content
+  }, [selectedName, selectedItemsKey]);
+
   const activeTab = previewTabs.activeTab;
   const showInlinePreview = !hidePreview && !!activeTab && activeTab.agentId === agent.id;
 
@@ -120,12 +138,12 @@ export function CollectionsView({
 
   // Probe file metadata for status badges, size, and modified columns.
   useEffect(() => {
-    if (!selected || agent.status !== 'online') return;
+    if (selectedItems.length === 0 || agent.status !== 'online') return;
     let cancelled = false;
     const abort = new AbortController();
 
     (async () => {
-      for (const item of selected.items) {
+      for (const item of selectedItems) {
         if (cancelled) return;
         const key = `${item.root}::${item.path}`;
         try {
@@ -155,7 +173,7 @@ export function CollectionsView({
       cancelled = true;
       abort.abort();
     };
-  }, [agent.id, agent.status, selected]);
+  }, [agent.id, agent.status, selectedItems, selectedItemsKey]);
 
   const openItem = useCallback(
     async (item: CollectionItem) => {

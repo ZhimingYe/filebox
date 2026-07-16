@@ -571,7 +571,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                 {
                                     let mut inner = state.inner.write().await;
                                     let err_msg = if message.is_empty() { error.clone() } else { message.clone() };
-                                    inner.agents.set_config_error(&agent_id_for_msgs, err_msg);
+                                    inner
+                                        .agents
+                                        .reject_pending_collections_update(&agent_id_for_msgs, err_msg);
                                 }
                                 if let Some(pending_resp) = pending_resp {
                                     let _ = pending_resp.tx

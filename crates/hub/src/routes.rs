@@ -1884,7 +1884,7 @@ async fn apply_collections_state(
                     .unwrap_or("Collection change rejected")
                     .to_string();
                 let mut inner = state.inner.write().await;
-                inner.agents.set_config_error(&agent_id, err_msg);
+                inner.agents.reject_pending_collections_update(&agent_id, err_msg);
             }
             Json(value).into_response()
         }

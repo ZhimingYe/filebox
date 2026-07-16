@@ -547,6 +547,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     padRight,
     outerElementType,
     hoverNamePad,
+    showSizeColumn: layoutShowSize,
   } = useFileListLayout(containerRef, {
     showRootColumn: false,
     isMobile,
@@ -574,6 +575,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
       nowMs,
       gridTemplateColumns,
       hoverNamePad,
+      showSizeColumn: layoutShowSize,
       selectedRoot,
       onAddToCollection,
     }),
@@ -592,6 +594,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
       nowMs,
       gridTemplateColumns,
       hoverNamePad,
+      layoutShowSize,
       selectedRoot,
       onAddToCollection,
     ],
@@ -935,7 +938,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
             >
               Modified{sortIndicator('modified')}
             </span>
-            {!isMobile && (
+            {!isMobile && layoutShowSize && (
               <span
                 style={{ ...fileListStyles.colSize, cursor: 'pointer' }}
                 onClick={() => toggleSort('size')}
@@ -1351,6 +1354,7 @@ interface RowItemData {
   nowMs: number;
   gridTemplateColumns: string;
   hoverNamePad: number;
+  showSizeColumn: boolean;
   selectedRoot: string | null;
   onAddToCollection?: (root: string, path: string, anchor: HTMLElement) => void;
 }
@@ -1375,6 +1379,7 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
     nowMs,
     gridTemplateColumns,
     hoverNamePad,
+    showSizeColumn,
     selectedRoot,
     onAddToCollection,
   } = data;
@@ -1422,6 +1427,7 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
       isMobile={isMobile}
       nowMs={nowMs}
       showRootColumn={false}
+      showSizeColumn={showSizeColumn}
       copiedPath={copiedPath}
       copyToClipboard={copyToClipboard}
       nameAlignRight={nameAlignRight}

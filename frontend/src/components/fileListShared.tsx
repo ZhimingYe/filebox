@@ -216,6 +216,31 @@ const META_GRID_FONT_SIZE = 12;
 const LIST_ICON_PX = 20;
 const LIST_H_PAD_PX = 24;
 const LIST_COL_GAP_PX = 8;
+/** Hide optional columns when the split list pane is too narrow. */
+const ROOT_COL_MIN_WIDTH = 220;
+const SIZE_COL_MIN_WIDTH = 160;
+const NAME_MIN_NARROW = 24;
+const NAME_MIN_DEFAULT = 56;
+
+function resolveFileListColumns(opts: {
+  showRootColumn: boolean;
+  isMobile: boolean;
+  listWidth: number;
+}): { showRoot: boolean; showSize: boolean } {
+  const { showRootColumn, isMobile, listWidth: w } = opts;
+  if (w <= 0) {
+    return { showRoot: showRootColumn, showSize: !isMobile };
+  }
+  return {
+    showRoot: showRootColumn && w >= ROOT_COL_MIN_WIDTH,
+    showSize: !isMobile && w >= SIZE_COL_MIN_WIDTH,
+  };
+}
+
+function listFixedOverheadPx(columnCount: number): number {
+  const gapCount = Math.max(0, columnCount - 1);
+  return LIST_ICON_PX + LIST_H_PAD_PX + LIST_COL_GAP_PX * gapCount;
+}
 
 const metaChPxCache = new Map<number, number>();
 
@@ -271,20 +296,25 @@ function allocateMetaColumnWidths(
 
   if (listWidth <= 0 || cols.length === 0) return out;
 
-  const gapCount = cols.length + 1;
-  const budgetPx = listWidth - nameMinPx - LIST_ICON_PX - LIST_H_PAD_PX - LIST_COL_GAP_PX * gapCount;
-  const budgetCh = Math.max(0, budgetPx / CH_PX);
-  const totalIdeal = cols.reduce((sum, c) => sum + c.idealCh, 0);
-  if (totalIdeal <= budgetCh) return out;
+  const fixedPx = listFixedOverheadPx(cols.length + 2);
+  let budgetPx = listWidth - nameMinPx - fixedPx;
+  if (budgetPx >= 0) {
+    const totalIdealPx = cols.reduce((sum, col) => sum + measureMetaChPx(out[col.key]), 0);
+    if (totalIdealPx <= budgetPx) return out;
+  }
 
-  let deficit = totalIdeal - budgetCh;
+  let deficitPx = cols.reduce((sum, col) => sum + measureMetaChPx(out[col.key]), 0) - Math.max(0, budgetPx);
   const order = [...cols].sort((a, b) => a.shrinkPriority - b.shrinkPriority);
   for (const col of order) {
-    if (deficit <= 0) break;
-    const canLose = Math.max(0, out[col.key] - col.minCh);
-    const lose = Math.min(deficit, canLose);
-    out[col.key] -= lose;
-    deficit -= lose;
+    if (deficitPx <= 0) break;
+    const minPx = measureMetaChPx(col.minCh);
+    const currentPx = measureMetaChPx(out[col.key]);
+    const canLose = Math.max(0, currentPx - minPx);
+    const lose = Math.min(deficitPx, canLose);
+    if (lose > 0) {
+      out[col.key] = (currentPx - lose) / measureMetaChPx(1);
+      deficitPx -= lose;
+    }
   }
   return out;
 }
@@ -349,42 +379,63 @@ export function fileListGridColumns(opts: {
     showRootColumn, isMobile, rootColWidth, dateColWidth, sizeColWidth, listWidth: w,
   } = opts;
 
-  // Name owns leftover space; floor scales with panel width so narrow splits stay readable.
-  const nameMin = w > 0 ? Math.max(56, Math.floor(w * 0.36)) : 96;
+  const visible = resolveFileListColumns({ showRootColumn, isMobile, listWidth: w });
   const tight = w > 0 && w < 300;
 
+  // Name owns leftover space; shrink the floor on narrow split panes.
+  let nameMin = w > 0
+    ? (w < 280 ? Math.max(NAME_MIN_NARROW, Math.floor(w * 0.28)) : Math.max(NAME_MIN_DEFAULT, Math.floor(w * 0.36)))
+    : 96;
+
   const metaCols: MetaColumnSpec[] = [];
-  if (showRootColumn) {
+  if (visible.showRoot) {
     metaCols.push({
       key: 'root',
       idealCh: parseChWidth(rootColWidth),
-      minCh: tight ? 4 : ROOT_HEADER_MIN,
+      minCh: tight ? 3 : ROOT_HEADER_MIN,
       shrinkPriority: 1,
     });
   }
   metaCols.push({
     key: 'date',
     idealCh: parseChWidth(dateColWidth),
-    minCh: tight ? 8 : DATE_HEADER_MIN,
+    minCh: tight ? 6 : DATE_HEADER_MIN,
     shrinkPriority: 3,
   });
-  if (!isMobile) {
+  if (visible.showSize) {
     metaCols.push({
       key: 'size',
       idealCh: parseChWidth(sizeColWidth),
-      minCh: tight ? 4 : SIZE_HEADER_MIN,
+      minCh: tight ? 3 : SIZE_HEADER_MIN,
       shrinkPriority: 2,
     });
   }
 
-  const allocated = allocateMetaColumnWidths(w, nameMin, metaCols);
+  let allocated = allocateMetaColumnWidths(w, nameMin, metaCols);
+
+  if (w > 0) {
+    const metaPx = metaCols.reduce(
+      (sum, col) => sum + measureMetaChPx(allocated[col.key]),
+      0,
+    );
+    let total = listFixedOverheadPx(metaCols.length + 2) + nameMin + metaPx;
+    if (total > w) {
+      const overflow = total - w;
+      const nameCanLose = Math.max(0, nameMin - NAME_MIN_NARROW);
+      const nameLose = Math.min(overflow, nameCanLose);
+      nameMin -= nameLose;
+      if (nameLose < overflow) {
+        allocated = allocateMetaColumnWidths(w, nameMin, metaCols);
+      }
+    }
+  }
 
   const parts: string[] = ['20px', `minmax(${nameMin}px, 1fr)`];
-  if (showRootColumn) {
+  if (visible.showRoot) {
     parts.push(metaColTrack(allocated.root));
   }
   parts.push(metaColTrack(allocated.date));
-  if (!isMobile) {
+  if (visible.showSize) {
     parts.push(metaColTrack(allocated.size));
   }
 
@@ -518,6 +569,15 @@ export function useFileListLayout(
     [opts.showRootColumn, opts.isMobile, rootColWidth, dateColWidth, sizeColWidth, layoutWidth],
   );
 
+  const visibleColumns = useMemo(
+    () => resolveFileListColumns({
+      showRootColumn: opts.showRootColumn,
+      isMobile: opts.isMobile,
+      listWidth: layoutWidth,
+    }),
+    [opts.showRootColumn, opts.isMobile, layoutWidth],
+  );
+
   const outerElementType = useMemo(() => {
     const Outer = ({ style, ...rest }: HTMLAttributes<HTMLDivElement>) => (
       <div
@@ -541,6 +601,8 @@ export function useFileListLayout(
     outerElementType,
     hoverNamePad,
     listWidth: layoutWidth,
+    showRootColumn: visibleColumns.showRoot,
+    showSizeColumn: visibleColumns.showSize,
   };
 }
 

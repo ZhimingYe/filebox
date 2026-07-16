@@ -130,6 +130,7 @@ export interface FileEntryListRowProps {
   isMobile: boolean;
   nowMs: number;
   showRootColumn: boolean;
+  showSizeColumn: boolean;
   copiedPath: string | null;
   copyToClipboard: (text: string, label: string) => void;
   nameAlignRight?: boolean;
@@ -151,6 +152,7 @@ export function FileEntryListRow({
   isMobile,
   nowMs,
   showRootColumn,
+  showSizeColumn,
   copiedPath,
   copyToClipboard,
   nameAlignRight = false,
@@ -222,7 +224,7 @@ export function FileEntryListRow({
           ? (isMobile ? formatDateShort(entry.modified) : formatDate(entry.modified))
           : '—'}
       </span>
-      {!isMobile && (
+      {!isMobile && showSizeColumn && (
         <span
           style={fileListStyles.entryMeta}
           title={entry.size !== null ? formatSize(entry.size) : undefined}
@@ -243,6 +245,7 @@ interface RowItemData {
   isMobile: boolean;
   nowMs: number;
   showRootColumn: boolean;
+  showSizeColumn: boolean;
   copiedPath: string | null;
   copyToClipboard: (text: string, label: string) => void;
   onRowClick: (row: FileEntryListRowModel, index: number) => void;
@@ -259,6 +262,7 @@ const VirtualRow = ({ index, style, data }: ListChildComponentProps<RowItemData>
     isMobile,
     nowMs,
     showRootColumn,
+    showSizeColumn,
     copiedPath,
     copyToClipboard,
     onRowClick,
@@ -283,6 +287,7 @@ const VirtualRow = ({ index, style, data }: ListChildComponentProps<RowItemData>
       isMobile={isMobile}
       nowMs={nowMs}
       showRootColumn={showRootColumn}
+      showSizeColumn={showSizeColumn}
       copiedPath={copiedPath}
       copyToClipboard={copyToClipboard}
       renderNameHoverActions={renderNameHoverActions}
@@ -315,6 +320,8 @@ export function FileEntryList({
     padRight,
     outerElementType,
     hoverNamePad,
+    showRootColumn: layoutShowRoot,
+    showSizeColumn: layoutShowSize,
   } = useFileListLayout(panelRef, {
     showRootColumn,
     isMobile,
@@ -337,14 +344,16 @@ export function FileEntryList({
       hoverNamePad,
       isMobile,
       nowMs,
-      showRootColumn,
+      showRootColumn: layoutShowRoot,
+      showSizeColumn: layoutShowSize,
       copiedPath,
       copyToClipboard,
       onRowClick,
       renderNameHoverActions,
     }),
     [
-      rows, hoveredIdx, gridTemplateColumns, hoverNamePad, isMobile, nowMs, showRootColumn,
+      rows, hoveredIdx, gridTemplateColumns, hoverNamePad, isMobile, nowMs,
+      layoutShowRoot, layoutShowSize,
       copiedPath, copyToClipboard, onRowClick, renderNameHoverActions,
     ],
   );
@@ -363,7 +372,7 @@ export function FileEntryList({
         >
           Name{sortIndicator('name')}
         </span>
-        {showRootColumn && (
+        {layoutShowRoot && (
           <span
             style={{ ...fileListStyles.colSource, cursor: 'pointer' }}
             onClick={() => onToggleSort('root')}
@@ -377,7 +386,7 @@ export function FileEntryList({
         >
           Modified{sortIndicator('modified')}
         </span>
-        {!isMobile && (
+        {layoutShowSize && (
           <span
             style={{ ...fileListStyles.colSize, cursor: 'pointer' }}
             onClick={() => onToggleSort('size')}
