@@ -533,6 +533,15 @@ export default function App() {
     }
   }, [refresh]), loggedIn === true);
 
+  const openCollectionPicker = useCallback((root: string, path: string, anchor: HTMLElement) => {
+    setCollectionPicker({ root, path, rect: anchor.getBoundingClientRect() });
+  }, []);
+
+  const openInFiles = useCallback((root: string, path: string) => {
+    setView('files');
+    setNavRequest({ root, path, nonce: Date.now() });
+  }, []);
+
   const activeProgress = Array.from(progressMap.values());
 
   if (loggedIn === null) {
@@ -717,15 +726,6 @@ export default function App() {
 
   // ── Mobile file view: show list OR preview, not both ──
   const showMobilePreview = isMobile && !!activeTab && (view === 'files' || view === 'collections');
-
-  const openCollectionPicker = useCallback((root: string, path: string, anchor: HTMLElement) => {
-    setCollectionPicker({ root, path, rect: anchor.getBoundingClientRect() });
-  }, []);
-
-  const openInFiles = useCallback((root: string, path: string) => {
-    setView('files');
-    setNavRequest({ root, path, nonce: Date.now() });
-  }, []);
 
   return (
     <div style={styles.app}>
