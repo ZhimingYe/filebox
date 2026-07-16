@@ -26,6 +26,7 @@ export function friendlyMessage(error: any): string {
     invalid_root_name: 'Invalid root name.',
     invalid_pinned_path: 'Invalid pinned folder path.',
     invalid_collection_name: 'Invalid collection name.',
+    unsupported: 'This agent does not support that feature. Upgrade the agent.',
     invalid_collection_path: 'Invalid collection file path.',
     collection_name_conflict: 'A collection with this name already exists.',
     resource_rejected: 'Agent rejected this change. The folder may be missing or the root changed.',
@@ -170,6 +171,55 @@ export async function getSysStats(agentId: string): Promise<SysStats & { error?:
   );
   if (raw.error) return { ...emptyStats(), error: raw.error };
   return raw.stats!;
+}
+
+export type SearchMode = 'find' | 'content';
+
+export interface SearchContextLine {
+  line: number;
+  text: string;
+  is_match: boolean;
+}
+
+export interface SearchHit {
+  root: string;
+  path: string;
+  line?: number | null;
+  context: SearchContextLine[];
+}
+
+export interface WorkspaceSearchResult {
+  hits: SearchHit[];
+  truncated: boolean;
+  scanned: number;
+}
+
+export async function workspaceSearch(
+  agentId: string,
+  body: {
+    mode: SearchMode;
+    root: string;
+    path?: string;
+    query: string;
+    extensions?: string[];
+    max_results?: number;
+    context?: number;
+  },
+): Promise<{ result: WorkspaceSearchResult | null; error?: string }> {
+  const raw = await request<{
+    type?: string;
+    result: WorkspaceSearchResult | null;
+    error: string | null;
+  }>(`/api/agents/${agentId}/workspace-search`, {
+    method: 'POST',
+    body: JSON.stringify({
+      path: '/',
+      extensions: [],
+      ...body,
+    }),
+  });
+  if (raw.error) return { result: null, error: raw.error };
+  return { result: raw.result };
 }
 
 function emptyStats(): SysStats {

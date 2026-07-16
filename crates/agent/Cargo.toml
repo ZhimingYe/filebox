@@ -25,6 +25,9 @@ sysinfo = { workspace = true }
 rand = { workspace = true }
 libc = { workspace = true }
 filebox-updater = { path = "../updater" }
+# In-process fd/rg substitutes — no system binaries required.
+ignore = "0.4"
+regex = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

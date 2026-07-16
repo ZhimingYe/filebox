@@ -8,6 +8,7 @@ mod fs_proxy;
 mod health;
 mod net;
 mod routes;
+mod search_proxy;
 mod state;
 mod ws;
 

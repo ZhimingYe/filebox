@@ -13,6 +13,7 @@ import { usePreviewTabs } from './hooks/usePreviewTabs';
 import { AgentSettings } from './components/AgentSettings';
 import { AboutDialog } from './components/AboutDialog';
 import { SystemStats } from './components/SystemStats';
+import { WorkspaceSearch } from './components/WorkspaceSearch';
 import { PinnedFolders } from './components/PinnedFolders';
 import { CollectionsView } from './components/CollectionsView';
 import { WorkspaceSplit } from './components/WorkspaceSplit';
@@ -22,6 +23,7 @@ import {
   IconChevronLeft,
   IconFolder,
   IconCollection,
+  IconSearch,
   IconSettings,
   IconStats,
   IconLogout,
@@ -58,7 +60,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'collections' | 'settings' | 'stats';
+type View = 'files' | 'collections' | 'search' | 'settings' | 'stats';
 
 interface ProgressEvent {
   req_id: string;
@@ -530,6 +532,7 @@ export default function App() {
   const navItems = [
     { v: 'files' as const, label: 'Files', Icon: IconFolder },
     { v: 'collections' as const, label: 'Collections', Icon: IconCollection },
+    { v: 'search' as const, label: 'Search', Icon: IconSearch },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
     { v: 'stats' as const, label: 'System', Icon: IconStats },
   ];
@@ -920,6 +923,11 @@ export default function App() {
                     hideList={isMobile && showMobilePreview}
                     hidePreview={isMobile}
                   />
+                </div>
+              )}
+              {view === 'search' && (
+                <div style={styles.secondaryView}>
+                  <WorkspaceSearch agent={selectedAgent} onOpenFile={openInFiles} />
                 </div>
               )}
               {view === 'settings' && (

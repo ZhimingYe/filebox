@@ -6,6 +6,7 @@ mod connection;
 mod dir_cache;
 mod fs;
 mod resources;
+mod search;
 mod sysinfo;
 
 #[tokio::main]

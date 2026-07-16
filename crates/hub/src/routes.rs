@@ -74,6 +74,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/file/raw", get(fs_proxy::file_raw_handler))
         .route("/api/preview/sessions", post(preview_session_create_handler))
         .route("/api/agents/{agent_id}/sys-stats", get(fs_proxy::sys_stats_handler))
+        .route(
+            "/api/agents/{agent_id}/workspace-search",
+            post(crate::search_proxy::workspace_search_handler),
+        )
         .route("/api/cancel", post(cancel_handler))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

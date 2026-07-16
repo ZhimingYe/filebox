@@ -254,6 +254,7 @@ async fn run_one_connection(
     let mut capabilities = Capabilities::default();
     capabilities.pinned_folders = true;
     capabilities.collections = true;
+    capabilities.workspace_search = true;
     let register = AgentMessage::Register {
         agent_id: Some(stable_agent_id.to_string()),
         name: config.agent_name.clone(),
@@ -497,6 +498,60 @@ async fn run_one_connection(
                                 let _ = send_with_timeout(&mut write, Message::Text(
                                     serde_json::to_string(&response).unwrap().into(),
                                 )).await;
+                            }
+                            Ok(HubMessage::WorkspaceSearchRequest {
+                                req_id,
+                                mode,
+                                root,
+                                path,
+                                query,
+                                extensions,
+                                max_results,
+                                context,
+                            }) => {
+                                tracing::debug!(
+                                    "Workspace search: mode={:?} root={} path={} query_len={}",
+                                    mode,
+                                    root,
+                                    path,
+                                    query.len()
+                                );
+                                let roots_vec = resource_mgr.roots().to_vec();
+                                let params = crate::search::SearchParams {
+                                    mode,
+                                    root,
+                                    path,
+                                    query,
+                                    extensions,
+                                    max_results,
+                                    context,
+                                };
+                                let result = tokio::task::spawn_blocking(move || {
+                                    crate::search::run_search(&roots_vec, params)
+                                })
+                                .await;
+                                let response = match result {
+                                    Ok(Ok(result)) => AgentMessage::WorkspaceSearchResponse {
+                                        req_id,
+                                        result: Some(result),
+                                        error: None,
+                                    },
+                                    Ok(Err(e)) => AgentMessage::WorkspaceSearchResponse {
+                                        req_id,
+                                        result: None,
+                                        error: Some(e),
+                                    },
+                                    Err(join_err) => AgentMessage::WorkspaceSearchResponse {
+                                        req_id,
+                                        result: None,
+                                        error: Some(format!("agent worker panicked: {}", join_err)),
+                                    },
+                                };
+                                let _ = send_with_timeout(
+                                    &mut write,
+                                    Message::Text(serde_json::to_string(&response).unwrap().into()),
+                                )
+                                .await;
                             }
                             Ok(HubMessage::Error { message }) => {
                                 tracing::warn!("Hub error: {}", message);
