@@ -7,7 +7,7 @@
 <meta name="description" content="Browse and preview files on remote servers through one HTTPS page. Agents dial out. No public IP, no inbound port, no VPN. Self-hosted, read-only, v0.9.5." />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <style>
   :root {
     --void: #09090b;
@@ -22,8 +22,7 @@
     --ink-4: #8b8b96;
     --hair: #dcdce0;
     --hair-dark: rgba(255, 255, 255, .09);
-    --font-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
-    --font-sans: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+    --font-sans: "IBM Plex Sans", "Helvetica Neue", sans-serif;
     --font-mono: "IBM Plex Mono", "SF Mono", ui-monospace, monospace;
     --max: 1120px;
     --ease: cubic-bezier(.22, 1, .36, 1);
@@ -44,10 +43,10 @@
   p { margin: 0; }
   h1, h2, h3 {
     margin: 0;
-    font-family: var(--font-display);
-    letter-spacing: -.035em;
-    line-height: 1.02;
-    font-weight: 700;
+    font-family: var(--font-sans);
+    letter-spacing: -.02em;
+    line-height: 1.12;
+    font-weight: 600;
   }
   code, .mono { font-family: var(--font-mono); }
   .wrap { max-width: var(--max); margin: 0 auto; padding: 0 28px; }
@@ -67,10 +66,10 @@
     display: flex; align-items: center; height: 68px; gap: 20px;
   }
   .brand {
-    font-family: var(--font-display);
-    font-weight: 700;
-    font-size: 1.2rem;
-    letter-spacing: -.04em;
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1.05rem;
+    letter-spacing: -.015em;
     color: var(--chalk);
   }
   .top.is-light .brand { color: var(--ink); }
@@ -150,20 +149,21 @@
     animation: rise 1s var(--ease) both;
   }
   .brand-hero {
-    font-family: var(--font-display);
-    font-weight: 800;
-    font-size: clamp(4.2rem, 12vw, 7.5rem);
-    letter-spacing: -.06em;
-    line-height: .88;
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: clamp(3.2rem, 8vw, 5.5rem);
+    letter-spacing: -.03em;
+    line-height: 1;
     color: var(--chalk);
-    margin-bottom: clamp(20px, 3vh, 32px);
+    margin-bottom: clamp(20px, 3vh, 28px);
   }
   .hero h1 {
-    font-size: clamp(1.45rem, 2.8vw, 1.9rem);
-    font-weight: 600;
-    letter-spacing: -.03em;
+    font-size: clamp(1.35rem, 2.4vw, 1.7rem);
+    font-weight: 500;
+    letter-spacing: -.015em;
     color: var(--chalk);
-    max-width: 16ch;
+    max-width: 18ch;
+    line-height: 1.25;
   }
   .hero .lede {
     margin-top: 16px;
@@ -375,9 +375,12 @@
   }
   .sec-head { max-width: 36em; margin-bottom: clamp(44px, 7vh, 72px); }
   .sec-head h2 {
-    font-size: clamp(2.1rem, 4.4vw, 3.2rem);
+    font-size: clamp(1.75rem, 3.4vw, 2.4rem);
+    font-weight: 600;
+    letter-spacing: -.02em;
     color: var(--ink);
-    max-width: 14ch;
+    max-width: 16ch;
+    line-height: 1.15;
   }
   .sec-head p {
     margin-top: 20px;
@@ -417,8 +420,9 @@
     margin-bottom: 14px;
   }
   .node h3 {
-    font-size: clamp(1.6rem, 2.4vw, 2rem);
-    font-weight: 700;
+    font-size: clamp(1.35rem, 2vw, 1.6rem);
+    font-weight: 600;
+    letter-spacing: -.015em;
   }
   .node p {
     margin-top: 12px;
@@ -463,8 +467,9 @@
     letter-spacing: .04em;
   }
   .cap h3 {
-    font-size: 1.2rem;
-    font-weight: 700;
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: -.01em;
   }
   .cap p {
     font-size: 1.02rem;
@@ -500,10 +505,10 @@
     padding-top: 3px;
   }
   .step b {
-    font-family: var(--font-display);
+    font-family: var(--font-sans);
     font-weight: 600;
-    font-size: 1.02rem;
-    letter-spacing: -.02em;
+    font-size: .98rem;
+    letter-spacing: -.01em;
     display: block;
     margin-bottom: 4px;
   }
