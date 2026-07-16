@@ -5,7 +5,11 @@ import { c, radius, font } from '../theme';
 import { PreviewWorkspace } from './PreviewWorkspace';
 import { PreviewErrorBoundary } from './PreviewErrorBoundary';
 import type { usePreviewTabs } from '../hooks/usePreviewTabs';
-import { IconClose } from './icons';
+import {
+  CollectionItemList,
+  type CollectionItemRow,
+  type CollectionItemStatus,
+} from './CollectionItemList';
 
 interface Props {
   agent: AgentInfo;
@@ -15,12 +19,11 @@ interface Props {
   onRefresh: () => void;
 }
 
-type ItemStatus = 'ok' | 'missing' | 'denied' | 'unknown';
+type ItemStatus = CollectionItemStatus;
 
-interface DisplayItem extends CollectionItem {
-  id: string;
-  basename: string;
+interface ItemMeta {
   status: ItemStatus;
+  size: number | null;
 }
 
 function basenameFromPath(path: string): string {
@@ -32,12 +35,17 @@ function basenameFromPath(path: string): string {
 export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles, onRefresh }: Props) {
   const collections = agent.collections ?? [];
   const [selectedName, setSelectedName] = useState<string | null>(collections[0]?.name ?? null);
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [newOpen, setNewOpen] = useState(false);
   const [newName, setNewName] = useState('');
-  const statusCache = useRef<Map<string, ItemStatus>>(new Map());
+  const [metaVersion, setMetaVersion] = useState(0);
+  const metaCache = useRef<Map<string, ItemMeta>>(new Map());
+
+  useEffect(() => {
+    metaCache.current.clear();
+    setMetaVersion((v) => v + 1);
+  }, [selectedName]);
 
   useEffect(() => {
     if (collections.length === 0) {
@@ -54,45 +62,57 @@ export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles,
     [collections, selectedName],
   );
 
-  const displayItems: DisplayItem[] = useMemo(() => {
+  const activeTab = previewTabs.activeTab;
+
+  const listRows: CollectionItemRow[] = useMemo(() => {
     if (!selected) return [];
-    return selected.items.map((item, idx) => {
-      const id = `${item.root}:${item.path}:${idx}`;
+    return selected.items.map((item) => {
+      const key = `${item.root}::${item.path}`;
+      const meta = metaCache.current.get(key);
       return {
-        ...item,
-        id,
-        basename: item.label?.trim() || basenameFromPath(item.path),
-        status: statusCache.current.get(id) ?? 'unknown',
+        item,
+        name: item.label?.trim() || basenameFromPath(item.path),
+        status: meta?.status ?? 'unknown',
+        size: meta?.size,
       };
     });
-  }, [selected]);
+    // metaVersion forces recompute after background stat probes.
+  }, [selected, metaVersion]);
 
-  // Probe file existence for cosmetic status badges.
+  const selectedKey = useMemo(() => {
+    if (!activeTab) return null;
+    return `${activeTab.root}::${activeTab.path}`;
+  }, [activeTab]);
+
+  // Probe file metadata for status badges and size column.
   useEffect(() => {
     if (!selected || agent.status !== 'online') return;
     let cancelled = false;
     const abort = new AbortController();
 
     (async () => {
-      for (let i = 0; i < selected.items.length; i++) {
+      for (const item of selected.items) {
         if (cancelled) return;
-        const item = selected.items[i];
-        const id = `${item.root}:${item.path}:${i}`;
+        const key = `${item.root}::${item.path}`;
         try {
           const res = await api.fsStat(agent.id, item.root, item.path, abort.signal);
           let status: ItemStatus = 'ok';
-          if (res.error || !res.stat) status = 'missing';
-          else if (res.stat.denied) status = 'denied';
-          else if (res.stat.entry_type !== 'file') status = 'missing';
-          statusCache.current.set(id, status);
+          let size: number | null = null;
+          if (res.error || !res.stat) {
+            status = 'missing';
+          } else if (res.stat.denied) {
+            status = 'denied';
+          } else if (res.stat.entry_type !== 'file') {
+            status = 'missing';
+          } else {
+            size = res.stat.size;
+          }
+          metaCache.current.set(key, { status, size });
         } catch {
           /* offline / aborted — leave unknown */
         }
       }
-      if (!cancelled) {
-        // Force re-render to pick up cache updates.
-        setHoveredId((v) => v);
-      }
+      if (!cancelled) setMetaVersion((v) => v + 1);
     })();
 
     return () => {
@@ -182,7 +202,28 @@ export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles,
     }
   };
 
-  const activeTab = previewTabs.activeTab;
+  const handleSelectRow = useCallback(
+    (row: CollectionItemRow) => {
+      openItem(row.item);
+    },
+    [openItem],
+  );
+
+  const handleOpenInFiles = useCallback(
+    (row: CollectionItemRow) => {
+      const dir = row.item.path.replace(/\/[^/]+$/, '') || '/';
+      onOpenInFiles(row.item.root, dir);
+    },
+    [onOpenInFiles],
+  );
+
+  const handleRemoveRow = useCallback(
+    (row: CollectionItemRow) => {
+      removeItem(row.item);
+    },
+    [removeItem],
+  );
+
   const listWidthPct = splitRatio * 100;
 
   if (collections.length === 0) {
@@ -259,66 +300,13 @@ export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles,
 
       <div style={styles.split}>
         <div style={{ ...styles.listPane, width: `${listWidthPct}%` }}>
-          {!selected || selected.items.length === 0 ? (
-            <div style={styles.listEmpty}>
-              Empty collection — add files from the Files browser.
-            </div>
-          ) : (
-            <div style={styles.list}>
-              {displayItems.map((item) => {
-                const muted = item.status === 'missing' || item.status === 'denied';
-                const isActive = activeTab?.root === item.root && activeTab?.path === item.path;
-                return (
-                  <div
-                    key={item.id}
-                    style={{
-                      ...styles.row,
-                      ...(hoveredId === item.id ? styles.rowHover : {}),
-                      ...(isActive ? styles.rowActive : {}),
-                      opacity: muted ? 0.55 : 1,
-                    }}
-                    onMouseEnter={() => setHoveredId(item.id)}
-                    onMouseLeave={() => setHoveredId(null)}
-                    onClick={() => openItem(item)}
-                  >
-                    <div style={styles.rowMain}>
-                      <div style={styles.rowTitle}>{item.basename}</div>
-                      <div style={styles.rowMeta}>
-                        {item.root} · {item.path}
-                        {item.status === 'missing' && ' · not found'}
-                        {item.status === 'denied' && ' · denied'}
-                      </div>
-                    </div>
-                    <div style={styles.rowActions}>
-                      <button
-                        type="button"
-                        title="Open in Files"
-                        style={styles.iconBtn}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const dir = item.path.replace(/\/[^/]+$/, '') || '/';
-                          onOpenInFiles(item.root, dir);
-                        }}
-                      >
-                        Files
-                      </button>
-                      <button
-                        type="button"
-                        title="Remove from collection"
-                        style={styles.iconBtn}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeItem(item);
-                        }}
-                      >
-                        <IconClose style={{ width: 12, height: 12 }} />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          <CollectionItemList
+            rows={listRows}
+            selectedKey={selectedKey}
+            onSelect={handleSelectRow}
+            onOpenInFiles={handleOpenInFiles}
+            onRemove={handleRemoveRow}
+          />
         </div>
         <div style={styles.previewPane}>
           {activeTab ? (
@@ -387,31 +375,9 @@ const styles: Record<string, React.CSSProperties> = {
   errorText: { fontSize: 12, color: c.danger, marginTop: 8 },
   split: { display: 'flex', flex: 1, minHeight: 0 },
   listPane: {
-    borderRight: `1px solid ${c.border}`, overflowY: 'auto', minWidth: 200,
+    borderRight: `1px solid ${c.border}`, minWidth: 200,
+    display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden',
   },
-  list: { display: 'flex', flexDirection: 'column' },
-  row: {
-    display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
-    borderBottom: `1px solid ${c.borderSubtle}`, cursor: 'pointer',
-  },
-  rowHover: { background: c.bgMuted },
-  rowActive: { background: c.accentBg },
-  rowMain: { flex: 1, minWidth: 0 },
-  rowTitle: {
-    fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap', color: c.text,
-  },
-  rowMeta: {
-    fontSize: 11, color: c.textMuted, overflow: 'hidden', textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap', fontFamily: font.mono, marginTop: 2,
-  },
-  rowActions: { display: 'flex', gap: 4, flexShrink: 0 },
-  iconBtn: {
-    padding: '2px 6px', borderRadius: radius.sm, border: `1px solid ${c.border}`,
-    background: 'transparent', color: c.textSecondary, cursor: 'pointer',
-    fontSize: 10, fontFamily: font.sans,
-  },
-  listEmpty: { padding: 16, color: c.textMuted, fontSize: 13 },
   previewPane: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' },
   previewPlaceholder: {
     flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
