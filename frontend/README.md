@@ -19,7 +19,7 @@ A minimal read-only remote file browser built with React, TypeScript, and Vite.
 - TypeScript
 - Vite 8
 - `react-window` for virtualized file lists
-- `react-syntax-highlighter` for code preview
+- Monaco Editor for code preview (find, wrap, syntax highlight)
 - `react-markdown` for Markdown rendering
 - PDF.js for PDF preview
 

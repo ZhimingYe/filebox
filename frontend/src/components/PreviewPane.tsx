@@ -9,10 +9,10 @@ import {
 
 // Heavy preview components are lazy-loaded so their deps only download when
 // the user actually opens that file type. The biggest is TextPreview
-// (react-syntax-highlighter with all languages ~600KB), followed by
-// MarkdownPreview (react-markdown + remark-gfm ~80KB). PdfPreview pulls
-// pdfjs-dist (~500KB + 1.2MB worker) only when a PDF is opened. ImagePreview
-// pulls UTIF (~50KB) only when a TIFF is opened.
+// (monaco-editor ~2MB+), followed by MarkdownPreview (react-markdown +
+// remark-gfm ~80KB). PdfPreview pulls pdfjs-dist (~500KB + 1.2MB worker)
+// only when a PDF is opened. ImagePreview pulls UTIF (~50KB) only when a
+// TIFF is opened.
 const ImagePreview = lazy(() => import('./ImagePreview').then(m => ({ default: m.ImagePreview })));
 const PdfPreview = lazy(() => import('./PdfPreview').then(m => ({ default: m.PdfPreview })));
 const TextPreview = lazy(() => import('./TextPreview').then(m => ({ default: m.TextPreview })));
@@ -42,9 +42,9 @@ function SuspenseFallback({ label }: { label: string }) {
 }
 
 // Memoized so dragging the file/preview splitter (which re-renders App and
-// would otherwise cascade into a SyntaxHighlighter re-tokenize on every
-// animation frame) does not re-render the preview subtree. Props are all
-// primitives that only change when the selected file changes.
+// would otherwise cascade into a Monaco layout pass on every animation
+// frame) does not re-render the preview subtree. Props are all primitives
+// that only change when the selected file changes.
 export const PreviewPane = memo(function PreviewPane({ agentId, root, path, entryType, denied }: Props) {
   if (denied) {
     return (

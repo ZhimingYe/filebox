@@ -63,7 +63,7 @@ components are `React.lazy()`-loaded (`PdfPreview`, `TextPreview`,
 `MarkdownPreview`, `HtmlPreview`, `CsvPreview`); `ImagePreview` stays inline.
 `previewShared.tsx` holds shared utilities. `PreviewPane` is a memoized
 dispatcher — memoization is what stops splitter-drag stutter. Vite
-`manualChunks` splits react / highlighter / markdown vendor chunks so
+`manualChunks` splits react / monaco / markdown vendor chunks so
 deployments that don't bump a vendor reuse the cached chunk. PDF uses
 `react-pdf` + `pdfjs-dist` worker (bundled via
 `new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url)`) because
@@ -196,9 +196,9 @@ good state.** Rejection is non-destructive.
 ## Preview Behavior
 
 - **Markdown**: fetch raw → render → sanitize HTML → safe mode for large.
-- **Code**: Prism via react-syntax-highlighter, word-wrap toggle. Disable
-  highlighter for large files (plain `<pre>` fallback). Partial /
-  virtualized for very large.
+- **Code**: Monaco Editor (read-only), word-wrap toggle, Find (Ctrl/Cmd+F).
+  Lazy-loaded; large files gated by size threshold (Monaco virtualizes
+  rendering so Prism-style truncation is no longer needed).
 - **PDF**: react-pdf, range requests honored, never force full download,
   slow detection at 8s.
 - **Image**: large OK (30MB+); judge by decoded dimensions/memory not
@@ -226,7 +226,7 @@ filebox/
     agent/src/              # main.rs, config.rs, config_store.rs, connection.rs,
                             # resources.rs, fs.rs, sysinfo.rs
   frontend/
-    vite.config.ts          # manualChunks: react / highlighter / markdown vendor
+    vite.config.ts          # manualChunks: react / monaco / markdown vendor
     src/
       App.tsx               # layout, sidebar, routing, mobile drawer, toasts
       theme.ts              # all design tokens

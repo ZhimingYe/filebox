@@ -34,17 +34,14 @@ export default defineConfig({
             ) {
               return 'react-vendor';
             }
-            // react-syntax-highlighter pulls refractor + a full language
-            // bundle (~600KB). Its own chunk so the rest of vendor doesn't
-            // invalidate when it updates.
+            // Monaco editor + workers is large (~2MB+). Its own chunk so the
+            // rest of vendor doesn't invalidate when it updates; TextPreview
+            // already lazy-loads this path.
             if (
-              id.includes('/react-syntax-highlighter/') ||
-              id.includes('/refractor/') ||
-              id.includes('/prismjs/') ||
-              id.includes('/prism-') ||
-              id.includes('/refractor-')
+              id.includes('/monaco-editor/') ||
+              id.includes('/@monaco-editor/')
             ) {
-              return 'highlighter-vendor';
+              return 'monaco-vendor';
             }
             // react-markdown + remark + micromark pipeline.
             if (

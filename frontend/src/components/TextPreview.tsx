@@ -1,7 +1,8 @@
-import { useState } from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { useState, useRef, useEffect } from 'react';
+import Editor, { type OnMount } from '@monaco-editor/react';
+import type { editor as MonacoEditor } from 'monaco-editor';
 
+import { ensureMonacoConfigured, MONACO_THEME, monacoFontFamily } from '../monacoSetup';
 import {
   useFetchText,
   useFileGate,
@@ -16,6 +17,8 @@ import {
   styles,
 } from './previewShared';
 
+ensureMonacoConfigured();
+
 interface Props {
   url: string;
   ext: string;
@@ -29,6 +32,12 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
   const canLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
   const { text, error, loading, cancel, retry } = useFetchText(url, canLoad);
   const [wrap, setWrap] = useState(wrapPref);
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+
+  // Keep word-wrap in sync when the toolbar toggle flips after mount.
+  useEffect(() => {
+    editorRef.current?.updateOptions({ wordWrap: wrap ? 'on' : 'off' });
+  }, [wrap]);
 
   if (gate.sizeUnknown) {
     return (
@@ -78,49 +87,76 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
 
   const raw = text!;
   const totalLines = raw.split('\n').length;
-  const isLarge = raw.length > 100000;
-  const displayText = isLarge ? raw.slice(0, 100000) + '\n... (truncated)' : raw;
-  const lang = extToLang[ext] || 'text';
+  const lang = extToLang[ext] || 'plaintext';
+
+  const handleMount: OnMount = (ed) => {
+    editorRef.current = ed;
+    ed.updateOptions({ wordWrap: wrap ? 'on' : 'off' });
+  };
+
+  const openFind = () => {
+    void editorRef.current?.getAction('actions.find')?.run();
+  };
 
   return (
-    <div style={styles.codeContainer}>
+    <div style={styles.monacoContainer}>
       <div style={styles.codeToolbar}>
         <span style={styles.metaInfo}>
-          {totalLines.toLocaleString()} lines · {raw.length.toLocaleString()} chars{isLarge ? ' · truncated' : ''}
+          {totalLines.toLocaleString()} lines · {raw.length.toLocaleString()} chars · {lang}
         </span>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <button onClick={openFind} style={styles.toolBtn} title="Find (Ctrl/Cmd+F)">
+            Find
+          </button>
           <button onClick={toggleWrap} style={styles.toolBtn}>
             {wrap ? 'Wrap: On' : 'Wrap: Off'}
           </button>
           <CopyButton text={raw} />
         </div>
       </div>
-      {isLarge ? (
-        <pre style={{
-          ...styles.code,
-          whiteSpace: wrap ? 'pre-wrap' : 'pre',
-          wordBreak: wrap ? 'break-all' : 'normal',
-        }}>{displayText}</pre>
-      ) : (
-        <div className={wrap ? 'code-transparent code-wrap' : 'code-transparent'}>
-          <SyntaxHighlighter
-            language={lang}
-            style={oneLight}
-            showLineNumbers
-            customStyle={{
-              margin: 0,
-              padding: '16px',
-              background: 'transparent',
-              fontSize: 13,
-              lineHeight: 1.5,
-              overflowX: wrap ? 'hidden' : 'auto',
-              minWidth: 0,
-            }}
-          >
-            {displayText}
-          </SyntaxHighlighter>
-        </div>
-      )}
+      <div style={styles.monacoEditorHost}>
+        <Editor
+          height="100%"
+          language={lang}
+          value={raw}
+          theme={MONACO_THEME}
+          onMount={handleMount}
+          loading={<LoadingOverlay message="Loading editor..." />}
+          options={{
+            readOnly: true,
+            domReadOnly: true,
+            wordWrap: wrap ? 'on' : 'off',
+            minimap: { enabled: false },
+            scrollBeyondLastLine: false,
+            fontFamily: monacoFontFamily,
+            fontSize: 13,
+            lineHeight: 20,
+            padding: { top: 12, bottom: 12 },
+            automaticLayout: true,
+            folding: true,
+            renderLineHighlight: 'line',
+            contextmenu: true,
+            quickSuggestions: false,
+            suggestOnTriggerCharacters: false,
+            parameterHints: { enabled: false },
+            hover: { enabled: true },
+            links: true,
+            find: {
+              addExtraSpaceOnTop: false,
+              autoFindInSelection: 'never',
+              seedSearchStringFromSelection: 'selection',
+            },
+            // Read-only: hide the cursor caret blink noise; selection still works.
+            cursorStyle: 'line-thin',
+            overviewRulerLanes: 0,
+            hideCursorInOverviewRuler: true,
+            scrollbar: {
+              verticalScrollbarSize: 10,
+              horizontalScrollbarSize: 10,
+            },
+          }}
+        />
+      </div>
     </div>
   );
 }

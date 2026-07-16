@@ -11,7 +11,7 @@ import type { PreviewTab } from '../hooks/usePreviewTabs';
 // than one tab is open), the active tab's header (path + download + close),
 // and exactly ONE PreviewPane for the active tab. Inactive tabs are pure
 // metadata held by the parent's usePreviewTabs hook — they never mount a
-// preview body, so PDF/Image/HTML/syntax-highlighter resources are only
+// preview body, so PDF/Image/HTML/Monaco resources are only
 // alive for the visible tab.
 //
 // Switching tabs remounts PreviewPane internals via the `key` prop (the

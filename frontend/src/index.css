@@ -160,19 +160,6 @@ a:hover {
   color: #6366f1;
 }
 
-/* Syntax highlighter: force transparent background on all tokens */
-.code-transparent pre code,
-.code-transparent pre code span {
-  background: transparent !important;
-}
-/* Force word-wrap on syntax highlighter (overrides inline styles) */
-.code-wrap pre,
-.code-wrap pre code,
-.code-wrap pre code span {
-  white-space: pre-wrap !important;
-  word-break: break-all !important;
-}
-
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
