@@ -210,22 +210,49 @@ export function dateColWidthForRows(rows: { modified?: string | null; entry?: Fs
   return `${Math.max(11, maxChars)}ch`;
 }
 
+/** Size the root column to the longest root label in `rows`. */
+export function rootColWidthForRows(rows: { rootLabel?: string }[]): string {
+  let maxChars = 4;
+  for (const row of rows) {
+    if (row.rootLabel) maxChars = Math.max(maxChars, row.rootLabel.length);
+  }
+  return `${maxChars}ch`;
+}
+
+/** Shared CSS grid template for list header + rows (keeps columns aligned). */
+export function fileListGridColumns(opts: {
+  showRootColumn: boolean;
+  isMobile: boolean;
+  dateColWidth: string;
+  rootColWidth: string;
+  /** Trailing hover-actions column; omit with '0px'. */
+  actionsColWidth: string;
+}): string {
+  const parts = ['20px', 'minmax(0, 1fr)'];
+  if (opts.showRootColumn) parts.push(opts.rootColWidth);
+  parts.push(opts.dateColWidth);
+  if (!opts.isMobile) parts.push('80px');
+  if (opts.actionsColWidth !== '0px') parts.push(opts.actionsColWidth);
+  return parts.join(' ');
+}
+
 /** List row + column chrome shared with FileBrowser. */
 export const fileListStyles: Record<string, CSSProperties> = {
   colHeader: {
-    display: 'flex', alignItems: 'center', gap: 8,
+    display: 'grid', alignItems: 'center', columnGap: 8,
     padding: '6px 12px', borderBottom: `1px solid ${c.border}`,
     fontSize: 11, color: c.textMuted, textTransform: 'uppercase', letterSpacing: 0.5,
     userSelect: 'none', flexShrink: 0, fontWeight: 500, background: c.bgSubtle,
   },
-  colIcon: { width: 20, flexShrink: 0 },
-  colName: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  colDate: { flexShrink: 0, textAlign: 'right' },
-  colSize: { width: 80, flexShrink: 0, textAlign: 'right' },
-  colSource: { width: 200, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  colIcon: { minWidth: 0 },
+  colName: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  colDate: { textAlign: 'right', minWidth: 0 },
+  colSize: { textAlign: 'right', minWidth: 0 },
+  colSource: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  colActions: { minWidth: 0 },
   listContainer: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' },
   entry: {
-    display: 'flex', alignItems: 'center', gap: 8,
+    display: 'grid', alignItems: 'center', columnGap: 8,
     padding: '0 12px', boxSizing: 'border-box',
     minHeight: 32, borderRadius: radius.sm, margin: '0 4px',
     transition: 'background 0.1s',
@@ -235,29 +262,35 @@ export const fileListStyles: Record<string, CSSProperties> = {
   },
   icon: { fontSize: 14, width: 20, textAlign: 'center', flexShrink: 0 },
   entryNameCell: {
-    flex: 1, minWidth: 0, display: 'flex',
+    minWidth: 0, display: 'flex',
     alignItems: 'center', gap: 4, overflow: 'hidden', boxSizing: 'border-box',
   },
-  entryName: { color: c.text, fontSize: 14, fontWeight: 500, flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  entryName: {
+    color: c.text, fontSize: 14, fontWeight: 500,
+    minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  },
   entrySource: {
     color: c.textMuted, fontSize: 11, fontFamily: font.mono,
-    flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-    width: 200,
+    minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
   },
   entryDate: {
     color: c.textMuted, fontSize: 12, textAlign: 'right',
-    flexShrink: 0, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+    minWidth: 0, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
     letterSpacing: '-0.02em',
     fontFeatureSettings: '"tnum" 1, "kern" 1',
   },
   entryDateMobile: {
-    color: c.textMuted, fontSize: 10, textAlign: 'right', flexShrink: 0,
+    color: c.textMuted, fontSize: 10, textAlign: 'right', minWidth: 0,
     whiteSpace: 'nowrap', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums',
+  },
+  entryActions: {
+    display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
+    gap: 2, minWidth: 0,
   },
   entryDateRecent: {
     color: c.accent, fontWeight: 600, letterSpacing: '-0.03em',
   },
-  entryMeta: { color: c.textFaint, fontSize: 12, width: 80, textAlign: 'right', flexShrink: 0 },
+  entryMeta: { color: c.textFaint, fontSize: 12, textAlign: 'right', minWidth: 0 },
   deniedBadge: {
     color: c.warning, fontSize: 10, fontStyle: 'normal', fontWeight: 500,
     padding: '1px 6px', background: c.warningBg, borderRadius: radius.pill, flexShrink: 0,
@@ -265,7 +298,7 @@ export const fileListStyles: Record<string, CSSProperties> = {
   copyNameBtn: {
     padding: 0, borderRadius: radius.sm, border: 'none',
     background: 'transparent', color: c.textMuted, cursor: 'pointer',
-    lineHeight: 1, width: 24, height: 24, flexShrink: 0, marginLeft: 'auto',
+    lineHeight: 1, width: 24, height: 24, flexShrink: 0,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     boxSizing: 'border-box', transition: 'color 0.15s',
   },

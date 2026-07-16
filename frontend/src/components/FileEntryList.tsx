@@ -16,12 +16,14 @@ import {
   FILE_LIST_ROW_HEIGHT_DESKTOP,
   FILE_LIST_ROW_HEIGHT_MOBILE,
   dateColWidthForRows,
+  fileListGridColumns,
   fileListStyles,
   formatDate,
   formatDateShort,
   formatSize,
   getEntryIcon,
   isRecentlyModified,
+  rootColWidthForRows,
   type FileListSortKey,
 } from './fileListShared';
 
@@ -148,7 +150,7 @@ export interface FileEntryListRowProps {
   onMouseEnter: () => void;
   onMouseLeave: () => void;
   onClick: () => void;
-  dateColWidth: string;
+  gridTemplateColumns: string;
   isMobile: boolean;
   nowMs: number;
   showRootColumn: boolean;
@@ -168,7 +170,7 @@ export function FileEntryListRow({
   onMouseEnter,
   onMouseLeave,
   onClick,
-  dateColWidth,
+  gridTemplateColumns,
   isMobile,
   nowMs,
   showRootColumn,
@@ -188,6 +190,7 @@ export function FileEntryListRow({
       style={{
         ...style,
         ...fileListStyles.entry,
+        gridTemplateColumns,
         ...(isHovered ? fileListStyles.entryHover : {}),
         opacity: blocked ? 0.4 : 1,
         cursor: blocked ? 'not-allowed' : 'pointer',
@@ -202,13 +205,36 @@ export function FileEntryListRow({
           style={{
             ...fileListStyles.entryName,
             fontFamily: fileNameSerif ? font.serif : font.sans,
-            ...(nameAlignRight ? { direction: 'rtl', textAlign: 'right', flex: '1 1 auto' } : {}),
+            ...(nameAlignRight ? { direction: 'rtl', textAlign: 'right' } : {}),
           }}
           title={fullPath}
         >
           {nameAlignRight ? <bdi dir="ltr">{entry.name}</bdi> : entry.name}
         </span>
         {entry.denied && <span style={fileListStyles.deniedBadge}>denied</span>}
+      </div>
+      {showRootColumn && (
+        <span style={fileListStyles.entrySource} title={fullPath}>
+          {rootLabel ?? '—'}
+        </span>
+      )}
+      <span
+        style={{
+          ...(isMobile ? fileListStyles.entryDateMobile : fileListStyles.entryDate),
+          ...(entry.modified && isRecent ? fileListStyles.entryDateRecent : {}),
+        }}
+        title={entry.modified && isRecent ? 'Modified within the last 15 minutes' : undefined}
+      >
+        {entry.modified
+          ? (isMobile ? formatDateShort(entry.modified) : formatDate(entry.modified))
+          : '—'}
+      </span>
+      {!isMobile && (
+        <span style={fileListStyles.entryMeta}>
+          {entry.size !== null ? formatSize(entry.size) : '—'}
+        </span>
+      )}
+      <span style={fileListStyles.entryActions}>
         {isHovered && renderNameHoverActions?.(row, index)}
         {isHovered && !blocked && (
           <CopyPathButton
@@ -216,28 +242,7 @@ export function FileEntryListRow({
             onCopy={() => copyToClipboard(fullPath, copyLabel)}
           />
         )}
-      </div>
-      {showRootColumn && (
-        <span style={fileListStyles.entrySource} title={fullPath}>
-          {rootLabel ?? '—'}
-        </span>
-      )}
-      {entry.modified && (
-        <span
-          style={{
-            ...(isMobile
-              ? { ...fileListStyles.entryDateMobile, width: dateColWidth }
-              : { ...fileListStyles.entryDate, width: dateColWidth }),
-            ...(isRecent ? fileListStyles.entryDateRecent : {}),
-          }}
-          title={isRecent ? 'Modified within the last 15 minutes' : undefined}
-        >
-          {isMobile ? formatDateShort(entry.modified) : formatDate(entry.modified)}
-        </span>
-      )}
-      {entry.size !== null && !isMobile && (
-        <span style={fileListStyles.entryMeta}>{formatSize(entry.size)}</span>
-      )}
+      </span>
     </div>
   );
 }
@@ -246,7 +251,7 @@ interface RowItemData {
   rows: FileEntryListRowModel[];
   hoveredIdx: number | null;
   setHoveredIdx: (idx: number | null) => void;
-  dateColWidth: string;
+  gridTemplateColumns: string;
   isMobile: boolean;
   nowMs: number;
   showRootColumn: boolean;
@@ -261,7 +266,7 @@ const VirtualRow = ({ index, style, data }: ListChildComponentProps<RowItemData>
     rows,
     hoveredIdx,
     setHoveredIdx,
-    dateColWidth,
+    gridTemplateColumns,
     isMobile,
     nowMs,
     showRootColumn,
@@ -284,7 +289,7 @@ const VirtualRow = ({ index, style, data }: ListChildComponentProps<RowItemData>
       onClick={() => {
         if (!blocked) onRowClick(row, index);
       }}
-      dateColWidth={dateColWidth}
+      gridTemplateColumns={gridTemplateColumns}
       isMobile={isMobile}
       nowMs={nowMs}
       showRootColumn={showRootColumn}
@@ -314,6 +319,21 @@ export function FileEntryList({
   const entries = useMemo(() => rows.map((r) => r.entry), [rows]);
   const nowMs = useRecentEntryClock(entries);
   const dateColWidth = useMemo(() => dateColWidthForRows(rows), [rows]);
+  const rootColWidth = useMemo(
+    () => (showRootColumn ? rootColWidthForRows(rows) : '0px'),
+    [rows, showRootColumn],
+  );
+  const actionsColWidth = renderNameHoverActions ? '72px' : '28px';
+  const gridTemplateColumns = useMemo(
+    () => fileListGridColumns({
+      showRootColumn,
+      isMobile,
+      dateColWidth,
+      rootColWidth,
+      actionsColWidth,
+    }),
+    [showRootColumn, isMobile, dateColWidth, rootColWidth, actionsColWidth],
+  );
 
   const sortIndicator = (key: FileListSortKey) => {
     if (sortBy !== key) return '';
@@ -325,7 +345,7 @@ export function FileEntryList({
       rows,
       hoveredIdx,
       setHoveredIdx,
-      dateColWidth,
+      gridTemplateColumns,
       isMobile,
       nowMs,
       showRootColumn,
@@ -335,7 +355,7 @@ export function FileEntryList({
       renderNameHoverActions,
     }),
     [
-      rows, hoveredIdx, dateColWidth, isMobile, nowMs, showRootColumn,
+      rows, hoveredIdx, gridTemplateColumns, isMobile, nowMs, showRootColumn,
       copiedPath, copyToClipboard, onRowClick, renderNameHoverActions,
     ],
   );
@@ -344,7 +364,7 @@ export function FileEntryList({
 
   return (
     <div ref={containerRef} style={{ ...fileListStyles.listContainer, flex: 1, minHeight: 0 }}>
-      <div style={fileListStyles.colHeader}>
+      <div style={{ ...fileListStyles.colHeader, gridTemplateColumns }}>
         <span style={fileListStyles.colIcon} />
         <span
           style={{ ...fileListStyles.colName, cursor: 'pointer' }}
@@ -361,7 +381,7 @@ export function FileEntryList({
           </span>
         )}
         <span
-          style={{ ...fileListStyles.colDate, width: dateColWidth, cursor: 'pointer' }}
+          style={{ ...fileListStyles.colDate, cursor: 'pointer' }}
           onClick={() => onToggleSort('modified')}
         >
           Modified{sortIndicator('modified')}
@@ -374,6 +394,7 @@ export function FileEntryList({
             Size{sortIndicator('size')}
           </span>
         )}
+        <span style={fileListStyles.colActions} aria-hidden />
       </div>
       {rows.length === 0 ? (
         <div style={fileListStyles.empty}>{emptyMessage}</div>

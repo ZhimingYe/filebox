@@ -15,7 +15,7 @@ import {
   matchesDateFilter,
   type DateFilterValue,
 } from './DateFilterControl';
-import { formatDate, formatDateShort, IconUpDir, isRecentlyModified } from './fileListShared';
+import { formatDate, formatDateShort, IconUpDir, isRecentlyModified, fileListGridColumns, fileListStyles } from './fileListShared';
 import { FileEntryListRow } from './FileEntryList';
 
 // ── Directory-tree resize splitter (desktop only) ──────────────────────────
@@ -571,6 +571,18 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     return `${Math.max(11, maxChars)}ch`;
   }, [filteredEntries, isMobile]);
 
+  const actionsColWidth = onAddToCollection ? '72px' : '28px';
+  const gridTemplateColumns = useMemo(
+    () => fileListGridColumns({
+      showRootColumn: false,
+      isMobile,
+      dateColWidth,
+      rootColWidth: '0px',
+      actionsColWidth,
+    }),
+    [isMobile, dateColWidth, actionsColWidth, onAddToCollection],
+  );
+
   const rowItemData = useMemo(
     () => ({
       rows,
@@ -587,6 +599,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
       onNavigateEntry: navigateTo,
       nowMs,
       dateColWidth,
+      gridTemplateColumns,
       selectedRoot,
       onAddToCollection,
     }),
@@ -604,6 +617,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
       navigateTo,
       nowMs,
       dateColWidth,
+      gridTemplateColumns,
       selectedRoot,
       onAddToCollection,
     ],
@@ -929,28 +943,29 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
           />
 
           {/* Column headers */}
-          <div style={styles.colHeader}>
-            <span style={styles.colIcon} />
-            <span style={{ ...styles.colName, cursor: 'pointer', ...(nameAlignRight ? { textAlign: 'right' } : {}) }} onClick={() => toggleSort('name')}>
+          <div style={{ ...fileListStyles.colHeader, gridTemplateColumns }}>
+            <span style={fileListStyles.colIcon} />
+            <span
+              style={{ ...fileListStyles.colName, cursor: 'pointer', ...(nameAlignRight ? { textAlign: 'right' } : {}) }}
+              onClick={() => toggleSort('name')}
+            >
               Name{sortIndicator('name')}
             </span>
-            {isMobile ? (
+            <span
+              style={{ ...fileListStyles.colDate, cursor: 'pointer' }}
+              onClick={() => toggleSort('modified')}
+            >
+              Modified{sortIndicator('modified')}
+            </span>
+            {!isMobile && (
               <span
-                style={{ ...styles.colDate, width: dateColWidth, cursor: 'pointer' }}
-                onClick={() => toggleSort('modified')}
+                style={{ ...fileListStyles.colSize, cursor: 'pointer' }}
+                onClick={() => toggleSort('size')}
               >
-                Modified{sortIndicator('modified')}
+                Size{sortIndicator('size')}
               </span>
-            ) : (
-              <>
-                <span style={{ ...styles.colDate, width: dateColWidth, cursor: 'pointer' }} onClick={() => toggleSort('modified')}>
-                  Modified{sortIndicator('modified')}
-                </span>
-                <span style={{ ...styles.colSize, cursor: 'pointer' }} onClick={() => toggleSort('size')}>
-                  Size{sortIndicator('size')}
-                </span>
-              </>
             )}
+            <span style={fileListStyles.colActions} aria-hidden />
           </div>
 
           <div ref={containerRef} style={styles.listContainer}>
@@ -1357,6 +1372,7 @@ interface RowItemData {
   onNavigateEntry: (entry: api.FsEntry) => void;
   nowMs: number;
   dateColWidth: string;
+  gridTemplateColumns: string;
   selectedRoot: string | null;
   onAddToCollection?: (root: string, path: string, anchor: HTMLElement) => void;
 }
@@ -1379,7 +1395,7 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
     onNavigateUp,
     onNavigateEntry,
     nowMs,
-    dateColWidth,
+    gridTemplateColumns,
     selectedRoot,
     onAddToCollection,
   } = data;
@@ -1393,16 +1409,17 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
       <div
         style={{
           ...style,
-          ...styles.entry,
-          ...(isHovered ? styles.entryHover : {}),
+          ...fileListStyles.entry,
+          gridTemplateColumns,
+          ...(isHovered ? fileListStyles.entryHover : {}),
         }}
         onClick={() => onNavigateUp()}
         onMouseEnter={() => setHoveredIdx(index)}
         onMouseLeave={() => setHoveredIdx(null)}
       >
-        <span style={styles.icon}><IconUpDir /></span>
-        <div style={styles.entryNameCell}>
-          <span style={styles.entryName}>..</span>
+        <span style={fileListStyles.icon}><IconUpDir /></span>
+        <div style={{ ...fileListStyles.entryNameCell, gridColumn: '2 / -1' }}>
+          <span style={fileListStyles.entryName}>..</span>
         </div>
       </div>
     );
@@ -1421,7 +1438,7 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
       onMouseEnter={() => setHoveredIdx(index)}
       onMouseLeave={() => setHoveredIdx(null)}
       onClick={() => onNavigateEntry(displayEntry!)}
-      dateColWidth={dateColWidth}
+      gridTemplateColumns={gridTemplateColumns}
       isMobile={isMobile}
       nowMs={nowMs}
       showRootColumn={false}
