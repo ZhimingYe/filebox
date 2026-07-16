@@ -155,6 +155,8 @@ cd ..
 cargo build --release
 ```
 
+Rust crate layout and architecture: [`crates/README.md`](crates/README.md).
+
 ### Configure Hub
 
 ```bash
