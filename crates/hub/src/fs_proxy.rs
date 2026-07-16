@@ -152,6 +152,7 @@ pub async fn fs_list_handler(
             agent_id: params.agent_id.clone(),
             session_id: Some(session.id.clone()),
             desired_roots: None,
+            desired_collections: None,
         });
     }
 
@@ -224,6 +225,7 @@ pub async fn fs_stat_handler(
             agent_id: params.agent_id.clone(),
             session_id: Some(session.id.clone()),
             desired_roots: None,
+            desired_collections: None,
         });
     }
 
@@ -425,6 +427,7 @@ async fn serve_raw_file(
                 agent_id: target.agent_id.clone(),
                 session_id: target.session_id.clone(),
                 desired_roots: None,
+                desired_collections: None,
             });
             drop(pending);
             inner.agents.send_to_agent(&target.agent_id, msg)
@@ -764,6 +767,7 @@ pub async fn sys_stats_handler(
             agent_id: agent_id.clone(),
             session_id: Some(session.id.clone()),
             desired_roots: None,
+            desired_collections: None,
         });
     }
 
@@ -1285,6 +1289,8 @@ mod tests {
             "MockAgent".to_string(),
             tx,
             Arc::new(Notify::new()),
+            0,
+            vec![],
             0,
             vec![],
             Capabilities::default(),

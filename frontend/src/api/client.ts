@@ -25,6 +25,9 @@ export function friendlyMessage(error: any): string {
     invalid_root_path: 'Path does not exist or is not accessible.',
     invalid_root_name: 'Invalid root name.',
     invalid_pinned_path: 'Invalid pinned folder path.',
+    invalid_collection_name: 'Invalid collection name.',
+    invalid_collection_path: 'Invalid collection file path.',
+    collection_name_conflict: 'A collection with this name already exists.',
     resource_rejected: 'Agent rejected this change. The folder may be missing or the root changed.',
     unsupported_feature: 'This agent version does not support pinned folders.',
   };
@@ -71,6 +74,20 @@ export interface AgentInfo {
   pending_resource_update: boolean;
   last_config_error: string | null;
   roots: RootInfo[];
+  collections_revision: number;
+  pending_collections_update: boolean;
+  collections: CollectionInfo[];
+}
+
+export interface CollectionItem {
+  root: string;
+  path: string;
+  label?: string | null;
+}
+
+export interface CollectionInfo {
+  name: string;
+  items: CollectionItem[];
 }
 
 /// A root as returned by the hub (display shape). `pinned_folders` holds
@@ -233,6 +250,57 @@ export async function deleteRoot(agentId: string, rootName: string) {
   });
 }
 
+// ── Virtual Collections ─────────────────────────────────────────────────────
+
+async function throwIfCollectionRejected(res: any) {
+  if (res && typeof res === 'object' && (res.ok === false || res.state === 'rejected')) {
+    throw {
+      status: 200,
+      error: res.error || 'collection_rejected',
+      message: res.message || 'Agent rejected the collection update.',
+      retryable: true,
+    };
+  }
+  return res;
+}
+
+export async function createCollection(
+  agentId: string,
+  name: string,
+  /** Optional initial item — create+add in one desired-state rewrite. */
+  item?: CollectionItem,
+) {
+  const res = await request<any>(`/api/agents/${agentId}/collections`, {
+    method: 'POST',
+    body: JSON.stringify(item ? { name, item } : { name }),
+  });
+  return throwIfCollectionRejected(res);
+}
+
+export async function patchCollection(
+  agentId: string,
+  collectionName: string,
+  patch: {
+    rename?: string;
+    item_add?: CollectionItem;
+    item_remove?: { root: string; path: string };
+    items?: CollectionItem[];
+  },
+) {
+  const res = await request<any>(`/api/agents/${agentId}/collections/${encodeURIComponent(collectionName)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+  return throwIfCollectionRejected(res);
+}
+
+export async function deleteCollection(agentId: string, collectionName: string) {
+  const res = await request<any>(`/api/agents/${agentId}/collections/${encodeURIComponent(collectionName)}`, {
+    method: 'DELETE',
+  });
+  return throwIfCollectionRejected(res);
+}
+
 // ── Filesystem ───────────────────────────────────────────────────────────────
 
 export interface FsEntry {
@@ -241,6 +309,29 @@ export interface FsEntry {
   size: number | null;
   modified: string | null;
   denied: boolean;
+}
+
+/** Agent stat payload — uses `path`; list entries use `name`. */
+export interface FileStat {
+  path: string;
+  entry_type: 'file' | 'directory' | 'symlink';
+  size: number;
+  modified: string | null;
+  permissions?: string | null;
+  denied: boolean;
+}
+
+export function statToFsEntry(stat: FileStat, pathHint?: string): FsEntry {
+  const path = stat.path || pathHint || '';
+  const parts = path.split('/').filter(Boolean);
+  const name = parts[parts.length - 1] ?? path;
+  return {
+    name,
+    entry_type: stat.entry_type,
+    size: stat.size ?? null,
+    modified: stat.modified ?? null,
+    denied: stat.denied,
+  };
 }
 
 export async function fsList(agentId: string, root: string, path: string, limit = 200, cursor?: string, dirsOnly = false) {
@@ -259,7 +350,7 @@ export async function fsList(agentId: string, root: string, path: string, limit 
 
 export async function fsStat(agentId: string, root: string, path: string, signal?: AbortSignal) {
   const params = new URLSearchParams({ agent_id: agentId, root, path });
-  return request<{ stat: FsEntry | null; error?: string }>(`/api/fs/stat?${params}`, { signal });
+  return request<{ stat: FileStat | null; error?: string }>(`/api/fs/stat?${params}`, { signal });
 }
 
 export function fileRawUrl(agentId: string, root: string, path: string) {

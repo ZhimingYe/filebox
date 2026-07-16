@@ -92,6 +92,11 @@ pub struct Capabilities {
     /// a legacy agent is unambiguous.
     #[serde(default)]
     pub pinned_folders: bool,
+    /// Whether this agent understands virtual collections and will persist them.
+    /// Defaults to `false` for rolling-upgrade safety (same pattern as
+    /// `pinned_folders`).
+    #[serde(default)]
+    pub collections: bool,
 }
 
 impl Default for Capabilities {
@@ -106,8 +111,58 @@ impl Default for Capabilities {
             resource_management: true,
             sys_stats: true,
             pinned_folders: false,
+            collections: false,
         }
     }
+}
+
+/// A file reference inside a virtual collection. Paths are root-relative with a
+/// leading `/` (same shape rules as pinned folders). Existence is NOT checked.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CollectionItem {
+    pub root: String,
+    pub path: String,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// Agent-persisted virtual collection (per-agent, may span multiple roots).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CollectionConfig {
+    pub name: String,
+    #[serde(default)]
+    pub items: Vec<CollectionItem>,
+}
+
+/// Display shape returned by the hub API.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CollectionInfo {
+    pub name: String,
+    pub items: Vec<CollectionItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DesiredCollections {
+    pub collections: Vec<CollectionConfig>,
+}
+
+/// Validate a collection name (same rules as root names).
+pub fn validate_collection_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Collection name cannot be empty".to_string());
+    }
+    if name.len() > 128 {
+        return Err("Collection name exceeds 128 chars".to_string());
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return Err("Collection name must not contain slashes or NUL".to_string());
+    }
+    Ok(())
+}
+
+/// Validate the shape of a collection item path (root-relative file path).
+pub fn validate_collection_item_path(p: &str) -> Result<(), String> {
+    validate_pinned_path(p)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,6 +335,10 @@ mod tests {
         assert!(
             !caps.pinned_folders,
             "pinned_folders must default to false (legacy-detection sentinel)"
+        );
+        assert!(
+            !caps.collections,
+            "collections must default to false (legacy-detection sentinel)"
         );
     }
 

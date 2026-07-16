@@ -1,6 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::{Error as DeError, SeqAccess, Visitor};
-use crate::resources::{Capabilities, FileStat, FsEntry, RootConfig, SysStats};
+use crate::resources::{Capabilities, CollectionConfig, FileStat, FsEntry, RootConfig, SysStats};
 
 // ── Agent → Hub ──────────────────────────────────────────────────────────────
 
@@ -16,6 +16,11 @@ pub enum AgentMessage {
         resource_revision: u64,
         roots: Vec<RootConfig>,
         capabilities: Capabilities,
+        /// Virtual collections persisted on this agent. Omitted by legacy agents.
+        #[serde(default)]
+        collections_revision: u64,
+        #[serde(default)]
+        collections: Vec<CollectionConfig>,
     },
     Pong,
     Heartbeat,
@@ -35,6 +40,23 @@ pub enum AgentMessage {
         agent_id: String,
         resource_revision: u64,
         roots: Vec<RootConfig>,
+    },
+    CollectionsApplied {
+        req_id: String,
+        agent_id: String,
+        collections_revision: u64,
+    },
+    CollectionsRejected {
+        req_id: String,
+        agent_id: String,
+        current_collections_revision: u64,
+        error: String,
+        message: String,
+    },
+    CollectionsUpdated {
+        agent_id: String,
+        collections_revision: u64,
+        collections: Vec<CollectionConfig>,
     },
     FsListResponse {
         req_id: String,
@@ -135,6 +157,11 @@ pub enum HubMessage {
         desired_revision: u64,
         roots: Vec<RootConfig>,
     },
+    CollectionsSetDesired {
+        req_id: String,
+        desired_revision: u64,
+        collections: Vec<CollectionConfig>,
+    },
     FsListRequest {
         req_id: String,
         root: String,
@@ -212,6 +239,8 @@ mod tests {
                 pinned_folders: vec![],
             }],
             capabilities: Capabilities::default(),
+            collections_revision: 0,
+            collections: vec![],
         };
         let back = round_trip_agent(&msg);
         match back {
@@ -221,6 +250,7 @@ mod tests {
                 resource_revision,
                 roots,
                 capabilities,
+                ..
             } => {
                 assert_eq!(agent_id.as_deref(), Some("stable-uuid"));
                 assert_eq!(name, "Lab Server 1");
@@ -240,6 +270,8 @@ mod tests {
             resource_revision: 0,
             roots: vec![],
             capabilities: Capabilities::default(),
+            collections_revision: 0,
+            collections: vec![],
         };
         let back = round_trip_agent(&msg);
         match back {

@@ -3,7 +3,7 @@ import { FixedSizeList as VList, type ListChildComponentProps } from 'react-wind
 import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
 import { useIsMobile } from '../state/useIsMobile';
-import { c, radius, font, fileType, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
+import { c, radius, font, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import { AddressBar } from './AddressBar';
 import { DirectoryTree } from './DirectoryTree';
 import { IconPin, IconClose } from './icons';
@@ -15,135 +15,8 @@ import {
   matchesDateFilter,
   type DateFilterValue,
 } from './DateFilterControl';
-
-// ── Inline SVG Icons (16x16) ───────────────────────────────────────────
-
-const iconStyle: React.CSSProperties = { display: 'block', width: 16, height: 16 };
-
-function IconFolder() {
-  return (
-    <svg style={iconStyle} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M2 4.5C2 3.67 2.67 3 3.5 3H6.29a1 1 0 0 1 .7.29L8 4.5h4.5c.83 0 1.5.67 1.5 1.5v5.5c0 .83-.67 1.5-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z" fill="#94a3b8"/>
-      <path d="M2 6h12v5.5c0 .83-.67 1.5-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5V6Z" fill="#cbd5e1"/>
-    </svg>
-  );
-}
-
-function IconFile() {
-  return (
-    <svg style={iconStyle} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M4 2h5.59a1 1 0 0 1 .7.29l2.71 2.71a1 1 0 0 1 .29.7V13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z" fill="#e2e8f0"/>
-      <path d="M10 2.5V5a.5.5 0 0 0 .5.5h2.5" stroke="#94a3b8" strokeWidth="1" strokeLinecap="round"/>
-      <line x1="5" y1="8" x2="11" y2="8" stroke="#cbd5e1" strokeWidth="1" strokeLinecap="round"/>
-      <line x1="5" y1="10.5" x2="9" y2="10.5" stroke="#cbd5e1" strokeWidth="1" strokeLinecap="round"/>
-    </svg>
-  );
-}
-
-function IconSymlink() {
-  return (
-    <svg style={iconStyle} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M4 2h5.59a1 1 0 0 1 .7.29l2.71 2.71a1 1 0 0 1 .29.7V13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z" fill="#e2e8f0"/>
-      <path d="M10 2.5V5a.5.5 0 0 0 .5.5h2.5" stroke="#94a3b8" strokeWidth="1" strokeLinecap="round"/>
-      <path d="M5 11L10 6" stroke="#6366f1" strokeWidth="1.3" strokeLinecap="round"/>
-      <path d="M7 6h3v3" stroke="#6366f1" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
-  );
-}
-
-function IconUpDir() {
-  return (
-    <svg style={iconStyle} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M8 3v9M5 6l3-3 3 3" stroke="#94a3b8" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-      <path d="M3 11a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-1Z" fill="#e2e8f0"/>
-    </svg>
-  );
-}
-
-// ── File-type badge icon ───────────────────────────────────────────────
-//
-// A single reusable document glyph FILLED with the category color, with a
-// folded corner and a short white extension LABEL. Category → color lives in
-// theme.fileType; the label is the extension itself. This scales to any
-// extension without a bespoke SVG per type: color = category, text = exact
-// ext. Files with no extension (README, Makefile, LICENSE) fall back to the
-// plain IconFile — a colored badge with no label reads as noise.
-//
-// The label uses a FIXED font size that steps down by length (never
-// textLength/lengthAdjust, which distorts the glyphs), so "R", "PDF" and
-// "JSON" stay in their natural proportions and just center within the page.
-
-type FileCat = keyof typeof fileType;
-
-// extension → category. Built via `add(cat, [...exts])` then inverted so the
-// source reads by category (easy to extend) but lookup is O(1) by extension.
-const EXT_CAT: Record<string, FileCat> = {};
-const add = (cat: FileCat, exts: string[]) => { for (const e of exts) EXT_CAT[e] = cat; };
-add('pdf', ['pdf']);
-add('doc', ['doc', 'docx', 'odt', 'rtf', 'pages']);
-add('sheet', ['xls', 'xlsx', 'ods', 'csv', 'tsv', 'numbers']);
-add('slide', ['ppt', 'pptx', 'odp', 'key']);
-add('image', ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tif', 'tiff', 'heic', 'avif', 'psd']);
-add('video', ['mp4', 'mov', 'mkv', 'avi', 'webm', 'flv', 'wmv', 'm4v', 'mpg', 'mpeg']);
-add('audio', ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'wma', 'opus', 'aiff']);
-add('archive', ['zip', 'tar', 'gz', 'tgz', 'rar', '7z', 'bz2', 'xz', 'zst', 'lz', 'lzma']);
-add('r', ['r', 'rmd', 'rds', 'rdata']);
-add('python', ['py', 'pyw', 'pyi', 'ipynb']);
-add('js', ['js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx']);
-add('data', ['json', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'xml', 'parquet', 'arrow', 'feather']);
-add('markdown', ['md', 'markdown', 'mdx', 'rst']);
-add('text', ['txt', 'text', 'log', 'out', 'err']);
-add('code', ['html', 'htm', 'css', 'scss', 'sass', 'less', 'rs', 'go', 'c', 'h', 'cpp', 'cc',
-  'cxx', 'hpp', 'java', 'kt', 'kts', 'swift', 'rb', 'php', 'sh', 'bash', 'zsh', 'fish', 'sql',
-  'lua', 'vue', 'svelte', 'pl', 'scala', 'clj', 'ex', 'exs', 'dart', 'jl', 'm', 'f90', 'vim']);
-
-// Display label overrides where the raw uppercased extension is wrong or ugly.
-const EXT_LABEL: Record<string, string> = {
-  jpeg: 'JPG', tiff: 'TIF', markdown: 'MD', text: 'TXT', tgz: 'GZ', lzma: 'LZ',
-  ipynb: 'NB', pyw: 'PY', pyi: 'PY', cpp: 'C++', cc: 'C++', cxx: 'C++', hpp: 'H',
-  htm: 'HTML', yaml: 'YML', yml: 'YML', mjs: 'JS', cjs: 'JS', rdata: 'RDA', rds: 'RDS',
-};
-
-function fileExt(name: string): string {
-  const dot = name.lastIndexOf('.');
-  // dot at 0 = dotfile (.bashrc) — treat as extensionless; -1 = no dot.
-  if (dot <= 0) return '';
-  return name.slice(dot + 1).toLowerCase();
-}
-
-function FileTypeIcon({ name }: { name: string }) {
-  const ext = fileExt(name);
-  if (!ext) return <IconFile />;
-  const cat = EXT_CAT[ext];
-  const color = cat ? fileType[cat] : fileType.neutral;
-  const label = EXT_LABEL[ext] ?? ext.toUpperCase().slice(0, 4);
-  // Step font size down by length so glyphs keep their natural shape (no
-  // horizontal stretching) AND stay inside the page's ~9px inner width — at
-  // the previous sizes a 3–4 char label (e.g. "RMD") overflowed the fill edge.
-  const fontSize = label.length <= 1 ? 6.4 : label.length === 2 ? 5.3 : label.length === 3 ? 4.3 : 3.5;
-  return (
-    <svg style={iconStyle} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-      {/* Whole document filled with the category color. */}
-      <path d="M4 2h5.59a1 1 0 0 1 .7.29l2.71 2.71a1 1 0 0 1 .29.7V13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z" fill={color}/>
-      {/* Folded top-right corner as a lighter overlay. */}
-      <path d="M9.7 2.2 13 5.5H10.2a.5.5 0 0 1-.5-.5V2.2Z" fill="#ffffff" fillOpacity="0.4"/>
-      {/* Extension label, natural proportions, centered on the lower page. */}
-      <text
-        x="8" y="11.8"
-        fontFamily={font.sans} fontSize={fontSize} fontWeight={700}
-        fill="#ffffff" textAnchor="middle"
-      >{label}</text>
-    </svg>
-  );
-}
-
-function getEntryIcon(entry: api.FsEntry) {
-  switch (entry.entry_type) {
-    case 'directory': return <IconFolder />;
-    case 'symlink': return <IconSymlink />;
-    default: return <FileTypeIcon name={entry.name} />;
-  }
-}
+import { IconUpDir, isRecentlyModified, fileListStyles, useFileListLayout } from './fileListShared';
+import { FileEntryListRow } from './FileEntryList';
 
 // ── Directory-tree resize splitter (desktop only) ──────────────────────────
 // A 6px grab strip sitting to the right of the tree's border. Transparent at
@@ -205,13 +78,15 @@ interface Props {
   // root-selector dropdown calls this. Distinct from onApplyNav because the
   // child doesn't (and shouldn't) know the remembered path.
   onSwitchRoot: (root: string) => void;
+  /** Open the collection picker for a file (root + full file path). */
+  onAddToCollection?: (root: string, path: string, anchor: HTMLElement) => void;
 }
 
 type SortKey = 'name' | 'modified' | 'size';
 
 const PAGE_LIMIT = 200;
 
-export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onRootsChange, navRequest, onNavHandled, selectedRoot, currentPath, onApplyNav, onSwitchRoot }: Props) {
+export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onRootsChange, navRequest, onNavHandled, selectedRoot, currentPath, onApplyNav, onSwitchRoot, onAddToCollection }: Props) {
   const isMobile = useIsMobile();
   const ROW_HEIGHT = isMobile ? 44 : 32;
 
@@ -232,7 +107,6 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   const [rootOpen, setRootOpen] = useState(false);
   const [hoveredRoot, setHoveredRoot] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const [listHeight, setListHeight] = useState(400);
   const [sortBy, setSortBy] = useState<SortKey>('name');
   const [sortAsc, setSortAsc] = useState(true);
   const [filterText, setFilterText] = useState('');
@@ -441,26 +315,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     }
   }, []);
 
-  // Measure container height for virtualized list.
-  // rAF-coalesce: parent width/height changes (sidebar snap, splitter) can
-  // deliver multiple RO callbacks; one setState per frame is enough.
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    let raf = 0;
-    const obs = new ResizeObserver(([entry]) => {
-      const h = entry.contentRect.height;
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        setListHeight((prev) => (Math.abs(prev - h) < 1 ? prev : h));
-      });
-    });
-    obs.observe(el);
-    return () => {
-      cancelAnimationFrame(raf);
-      obs.disconnect();
-    };
-  }, []);
+  // Measure container height for virtualized list — handled by useFileListLayout.
 
   // Close the root dropdown when clicking outside it or pressing Escape.
   // The panel is anchored to the trigger via the shared `rootRef` wrapper.
@@ -681,20 +536,27 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     return sortAsc ? ' ↑' : ' ↓';
   };
 
-  // Date formats vary in length (e.g. "MM-DD HH:MM" vs "YY-MM-DD HH:MM"). Size
-  // the date column to the longest rendered date string actually present, with
-  // a minimum that still fits the "Modified" header.
-  const dateColWidth = useMemo(() => {
-    let maxChars = 0;
-    filteredEntries.forEach((e) => {
-      if (!e.modified) return;
-      const d = new Date(e.modified);
-      if (Number.isNaN(d.getTime())) return;
-      const s = isMobile ? formatDateShort(e.modified) : formatDate(e.modified);
-      maxChars = Math.max(maxChars, s.length);
-    });
-    return `${Math.max(11, maxChars)}ch`;
-  }, [filteredEntries, isMobile]);
+  // Date column width is derived inside useFileListLayout from visible entries.
+  const layoutRows = useMemo(
+    () => filteredEntries.map((e) => ({ entry: e, modified: e.modified })),
+    [filteredEntries],
+  );
+  const {
+    gridTemplateColumns,
+    bodyHeight,
+    padRight,
+    outerElementType,
+    hoverNamePad,
+    showSizeColumn: layoutShowSize,
+  } = useFileListLayout(containerRef, {
+    showRootColumn: false,
+    isMobile,
+    rows: layoutRows,
+    hasRows: rows.length > 0,
+    extraHoverActions: onAddToCollection ? 1 : 0,
+    // Header is a sibling above containerRef — pass bodyRef so we do not
+    // incorrectly subtract FILE_LIST_COL_HEADER_HEIGHT from the list height.
+  }, containerRef);
 
   const rowItemData = useMemo(
     () => ({
@@ -711,7 +573,11 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
       onNavigateUp: navigateUp,
       onNavigateEntry: navigateTo,
       nowMs,
-      dateColWidth,
+      gridTemplateColumns,
+      hoverNamePad,
+      showSizeColumn: layoutShowSize,
+      selectedRoot,
+      onAddToCollection,
     }),
     [
       rows,
@@ -726,7 +592,11 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
       navigateUp,
       navigateTo,
       nowMs,
-      dateColWidth,
+      gridTemplateColumns,
+      hoverNamePad,
+      layoutShowSize,
+      selectedRoot,
+      onAddToCollection,
     ],
   );
   return (
@@ -1050,27 +920,31 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
           />
 
           {/* Column headers */}
-          <div style={styles.colHeader}>
-            <span style={styles.colIcon} />
-            <span style={{ ...styles.colName, cursor: 'pointer', ...(nameAlignRight ? { textAlign: 'right' } : {}) }} onClick={() => toggleSort('name')}>
+          <div style={{
+            ...fileListStyles.colHeader,
+            gridTemplateColumns,
+            paddingRight: 12 + padRight,
+          }}>
+            <span style={fileListStyles.colIcon} />
+            <span
+              style={{ ...fileListStyles.colName, cursor: 'pointer', ...(nameAlignRight ? { textAlign: 'right' } : {}) }}
+              onClick={() => toggleSort('name')}
+            >
               Name{sortIndicator('name')}
             </span>
-            {isMobile ? (
+            <span
+              style={{ ...fileListStyles.colDate, cursor: 'pointer' }}
+              onClick={() => toggleSort('modified')}
+            >
+              Modified{sortIndicator('modified')}
+            </span>
+            {!isMobile && layoutShowSize && (
               <span
-                style={{ ...styles.colDate, width: dateColWidth, cursor: 'pointer' }}
-                onClick={() => toggleSort('modified')}
+                style={{ ...fileListStyles.colSize, cursor: 'pointer' }}
+                onClick={() => toggleSort('size')}
               >
-                Modified{sortIndicator('modified')}
+                Size{sortIndicator('size')}
               </span>
-            ) : (
-              <>
-                <span style={{ ...styles.colDate, width: dateColWidth, cursor: 'pointer' }} onClick={() => toggleSort('modified')}>
-                  Modified{sortIndicator('modified')}
-                </span>
-                <span style={{ ...styles.colSize, cursor: 'pointer' }} onClick={() => toggleSort('size')}>
-                  Size{sortIndicator('size')}
-                </span>
-              </>
             )}
           </div>
 
@@ -1097,11 +971,12 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
               <>
                 <VList
                   ref={listRef as any}
-                  height={listHeight - (nextCursor ? 40 : 0)}
+                  height={Math.max(0, bodyHeight - (nextCursor ? 40 : 0))}
                   itemCount={rows.length}
                   itemSize={ROW_HEIGHT}
                   itemData={rowItemData}
                   width="100%"
+                  outerElementType={outerElementType}
                 >
                   {Row}
                 </VList>
@@ -1147,56 +1022,7 @@ function globToRegex(glob: string): string {
   return re;
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
-
-// Entries modified within this window get a "new" badge in the file list.
-const NEW_ENTRY_MS = 15 * 60 * 1000;
-
-/** True when `modified` is a parseable ISO time within the last 15 minutes. */
-function isRecentlyModified(modified: string | null | undefined, nowMs: number): boolean {
-  if (!modified) return false;
-  const t = Date.parse(modified);
-  if (Number.isNaN(t)) return false;
-  const age = nowMs - t;
-  // Allow a small future skew (agent/host clock slightly ahead of browser).
-  return age <= NEW_ENTRY_MS && age >= -60_000;
-}
-
-// Current year omits the year; post-2000 years use 2 digits (25 not 2025).
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  if (d.getFullYear() === now.getFullYear()) {
-    return `${md} ${hm}`;
-  }
-  const yr = d.getFullYear() >= 2000
-    ? String(d.getFullYear()).slice(-2)
-    : String(d.getFullYear());
-  return `${yr}-${md} ${hm}`;
-}
-
-// Compact form for narrow mobile rows.
-function formatDateShort(iso: string): string {
-  const d = new Date(iso);
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  if (d.getFullYear() === now.getFullYear()) {
-    return `${md} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  }
-  const yr = d.getFullYear() >= 2000
-    ? String(d.getFullYear()).slice(-2)
-    : String(d.getFullYear());
-  return `${yr}-${md}`;
-}
+// Compact form for narrow mobile rows — see fileListShared.formatDateShort.
 
 const styles: Record<string, React.CSSProperties> = {
   container: { display: 'flex', flexDirection: 'column', height: '100%', fontFamily: font.sans },
@@ -1526,7 +1352,11 @@ interface RowItemData {
   onNavigateUp: () => void;
   onNavigateEntry: (entry: api.FsEntry) => void;
   nowMs: number;
-  dateColWidth: string;
+  gridTemplateColumns: string;
+  hoverNamePad: number;
+  showSizeColumn: boolean;
+  selectedRoot: string | null;
+  onAddToCollection?: (root: string, path: string, anchor: HTMLElement) => void;
 }
 
 // Module-level row component so react-window does not treat it as a fresh
@@ -1547,89 +1377,84 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
     onNavigateUp,
     onNavigateEntry,
     nowMs,
-    dateColWidth,
+    gridTemplateColumns,
+    hoverNamePad,
+    showSizeColumn,
+    selectedRoot,
+    onAddToCollection,
   } = data;
   const entry = rows[index];
   const isBack = entry === null;
   const displayEntry = isBack ? null : entry as api.FsEntry;
   const isHovered = hoveredIdx === index;
-  const isRecent = !isBack && !displayEntry!.denied && isRecentlyModified(displayEntry!.modified, nowMs);
 
+  if (isBack) {
+    return (
+      <div
+        style={{
+          ...style,
+          ...fileListStyles.entry,
+          gridTemplateColumns,
+          ...(isHovered ? fileListStyles.entryHover : {}),
+        }}
+        onClick={() => onNavigateUp()}
+        onMouseEnter={() => setHoveredIdx(index)}
+        onMouseLeave={() => setHoveredIdx(null)}
+      >
+        <span style={fileListStyles.icon}><IconUpDir /></span>
+        <div style={{ ...fileListStyles.entryNameCell, gridColumn: '2 / -1' }}>
+          <span style={fileListStyles.entryName}>..</span>
+        </div>
+      </div>
+    );
+  }
+
+  const sep = currentPath === '/' ? '' : '/';
   return (
-    <div
-      style={{
-        ...style,
-        ...styles.entry,
-        ...(isHovered ? styles.entryHover : {}),
-        opacity: displayEntry?.denied ? 0.4 : 1,
-        cursor: displayEntry?.denied ? 'not-allowed' : 'pointer',
+    <FileEntryListRow
+      style={style}
+      index={index}
+      row={{
+        entry: displayEntry!,
+        fullPath: fullAddress + sep + displayEntry!.name,
       }}
-      onClick={() => isBack ? onNavigateUp() : onNavigateEntry(displayEntry!)}
+      isHovered={isHovered}
       onMouseEnter={() => setHoveredIdx(index)}
       onMouseLeave={() => setHoveredIdx(null)}
-    >
-      <span style={styles.icon}>
-        {isBack ? <IconUpDir /> : getEntryIcon(displayEntry!)}
-      </span>
-      <div style={styles.entryNameCell}>
-        <span
-          style={{
-            ...styles.entryName,
-            fontFamily: fileNameSerif ? font.serif : font.sans,
-            ...(!isBack && nameAlignRight ? { direction: 'rtl', textAlign: 'right', flex: '1 1 auto' } : {}),
-          }}
-          title={isBack ? undefined : displayEntry!.name}
-        >
-          {isBack ? (
-            '..'
-          ) : nameAlignRight ? (
-            // bidi-isolate the name so characters still render LTR while the
-            // cell is RTL: overflow + ellipsis then clip the PREFIX, keeping
-            // the filename suffix pinned to the right edge of the cell.
-            <bdi dir="ltr">{displayEntry!.name}</bdi>
-          ) : (
-            displayEntry!.name
-          )}
-        </span>
-        {!isBack && displayEntry!.denied && <span style={styles.deniedBadge}>denied</span>}
-        {!isBack && isHovered && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              const sep = currentPath === '/' ? '' : '/';
-              copyToClipboard(fullAddress + sep + displayEntry!.name, `name-${index}`);
-            }}
-            style={styles.copyNameBtn}
-            title="Copy full path"
-          >
-            {copiedPath === `name-${index}` ? (
+      onClick={() => onNavigateEntry(displayEntry!)}
+      gridTemplateColumns={gridTemplateColumns}
+      hoverNamePad={hoverNamePad}
+      isMobile={isMobile}
+      nowMs={nowMs}
+      showRootColumn={false}
+      showSizeColumn={showSizeColumn}
+      copiedPath={copiedPath}
+      copyToClipboard={copyToClipboard}
+      nameAlignRight={nameAlignRight}
+      fileNameSerif={fileNameSerif}
+      renderNameHoverActions={
+        onAddToCollection && selectedRoot
+        && displayEntry!.entry_type === 'file' && !displayEntry!.denied
+          ? () => (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                const filePath = currentPath === '/'
+                  ? `/${displayEntry!.name}`
+                  : `${currentPath}/${displayEntry!.name}`;
+                onAddToCollection(selectedRoot, filePath, e.currentTarget);
+              }}
+              style={styles.copyNameBtn}
+              title="Add to collection"
+            >
               <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M3.5 8.5l3 3 6-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
               </svg>
-            ) : (
-              <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="3" y="4" width="9" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
-                <path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                <path d="M6 8h4M6 10.5h2.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
-              </svg>
-            )}
-          </button>
-        )}
-      </div>
-      {!isBack && displayEntry!.modified && (
-        <span
-          style={{
-            ...(isMobile ? { ...styles.entryDateMobile, width: dateColWidth } : { ...styles.entryDate, width: dateColWidth }),
-            ...(isRecent ? styles.entryDateRecent : {}),
-          }}
-          title={isRecent ? 'Modified within the last 15 minutes' : undefined}
-        >
-          {isMobile ? formatDateShort(displayEntry!.modified) : formatDate(displayEntry!.modified)}
-        </span>
-      )}
-      {!isBack && displayEntry!.size !== null && !isMobile && (
-        <span style={styles.entryMeta}>{formatSize(displayEntry!.size)}</span>
-      )}
-    </div>
+            </button>
+          )
+          : undefined
+      }
+    />
   );
 };

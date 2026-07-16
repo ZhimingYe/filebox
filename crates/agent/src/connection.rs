@@ -245,6 +245,7 @@ async fn run_one_connection(
 
     // Step 4: Send Register with persisted resource state
     let (rev, roots) = resource_mgr.current_state();
+    let (collections_rev, collections) = resource_mgr.current_collections_state();
     // Advertise pinned_folders support explicitly. Capabilities::default()
     // leaves it false (the legacy-detection sentinel), so a NEW agent must opt
     // in here — this is what lets the hub tell a new agent from a pre-pin
@@ -252,12 +253,15 @@ async fn run_one_connection(
     // store them.
     let mut capabilities = Capabilities::default();
     capabilities.pinned_folders = true;
+    capabilities.collections = true;
     let register = AgentMessage::Register {
         agent_id: Some(stable_agent_id.to_string()),
         name: config.agent_name.clone(),
         resource_revision: rev,
         roots,
         capabilities,
+        collections_revision: collections_rev,
+        collections,
     };
     let register_msg = Message::Text(serde_json::to_string(&register).unwrap().into());
     if !send_with_timeout(&mut write, register_msg).await {
@@ -345,6 +349,54 @@ async fn run_one_connection(
                                             agent_id: assigned_agent_id.clone(),
                                             current_resource_revision: resource_mgr.resource_revision(),
                                             error: "invalid_resource".to_string(),
+                                            message: err_msg,
+                                        }
+                                    }
+                                };
+
+                                let _ = send_with_timeout(&mut write, Message::Text(
+                                    serde_json::to_string(&response).unwrap().into(),
+                                )).await;
+                            }
+                            Ok(HubMessage::CollectionsSetDesired {
+                                req_id,
+                                desired_revision,
+                                collections,
+                            }) => {
+                                tracing::info!(
+                                    "Received collections update: rev={}, {} collections",
+                                    desired_revision,
+                                    collections.len()
+                                );
+
+                                let response = match resource_mgr.apply_collections_desired(
+                                    desired_revision,
+                                    collections,
+                                ) {
+                                    Ok(new_rev) => {
+                                        let update = AgentMessage::CollectionsUpdated {
+                                            agent_id: assigned_agent_id.clone(),
+                                            collections_revision: new_rev,
+                                            collections: resource_mgr.collections().to_vec(),
+                                        };
+                                        let _ = send_with_timeout(&mut write, Message::Text(
+                                            serde_json::to_string(&update).unwrap().into(),
+                                        )).await;
+
+                                        AgentMessage::CollectionsApplied {
+                                            req_id: req_id.clone(),
+                                            agent_id: assigned_agent_id.clone(),
+                                            collections_revision: new_rev,
+                                        }
+                                    }
+                                    Err(err_msg) => {
+                                        tracing::warn!("Collections update rejected: {}", err_msg);
+                                        AgentMessage::CollectionsRejected {
+                                            req_id: req_id.clone(),
+                                            agent_id: assigned_agent_id.clone(),
+                                            current_collections_revision: resource_mgr
+                                                .collections_revision(),
+                                            error: "invalid_collection".to_string(),
                                             message: err_msg,
                                         }
                                     }

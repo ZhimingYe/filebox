@@ -44,6 +44,17 @@ export function IconFolder({ style }: SvgProps) {
   );
 }
 
+/** Stacked layers — virtual collections workspace nav icon. */
+export function IconCollection({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <path d="M2.5 4.5h11v2H2.5z" />
+      <path d="M3 7h10l-1 5.5H4L3 7z" />
+      <path d="M4.5 2.5h7v2h-7z" opacity={0.55} />
+    </Svg>
+  );
+}
+
 export function IconSettings({ style }: SvgProps) {
   return (
     <Svg style={style}>

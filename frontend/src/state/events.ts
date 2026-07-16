@@ -52,6 +52,9 @@ class SseManager {
     es.addEventListener('resources_updated', (e) => {
       this.dispatch('resources_updated', e.data);
     });
+    es.addEventListener('collections_updated', (e) => {
+      this.dispatch('collections_updated', e.data);
+    });
     es.addEventListener('progress', (e) => {
       this.dispatch('progress', e.data);
     });
