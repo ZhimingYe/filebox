@@ -198,6 +198,11 @@ export function sortFileListRows<T extends { entry: FsEntry; rootLabel?: string 
   return sorted;
 }
 
+/** Longest desktop label: pre-2000 is "1999-12-31 23:59" (16 chars). */
+const DATE_LABEL_MAX_DESKTOP = 16;
+/** Longest mobile label: current-year with time "12-31 23:59" (11 chars). */
+const DATE_LABEL_MAX_MOBILE = 11;
+
 /** Size the date column to the longest rendered date string in `rows`. */
 export function dateColWidthForRows(
   rows: { modified?: string | null; entry?: FsEntry }[],
@@ -212,7 +217,9 @@ export function dateColWidthForRows(
     const label = isMobile ? formatDateShort(modified) : formatDate(modified);
     maxChars = Math.max(maxChars, label.length);
   }
-  return `${Math.max(11, maxChars)}ch`;
+  const floor = isMobile ? DATE_LABEL_MAX_MOBILE : DATE_LABEL_MAX_DESKTOP;
+  // When the list is empty, reserve enough for cross-year / pre-2000 dates.
+  return `${Math.max(floor, maxChars)}ch`;
 }
 
 /** Size the root column to the longest root label in `rows`. */
@@ -243,14 +250,12 @@ export function fileListGridColumns(opts: {
   const compact = w > 0 && w < 400;
 
   if (showRootColumn) {
-    parts.push(tight
-      ? 'minmax(0, 4ch)'
-      : `minmax(0, min(${rootColWidth}, 20%))`);
+    parts.push(tight ? 'minmax(0, 4ch)' : rootColWidth);
   }
 
-  parts.push(tight
-    ? `minmax(0, ${dateColWidth})`
-    : `minmax(0, min(${dateColWidth}, 28%))`);
+  // Fixed to measured content width so cross-year / pre-2000 dates are not truncated.
+  // Only in very tight panels allow shrink + ellipsis (title carries full value).
+  parts.push(tight ? `minmax(0, ${dateColWidth})` : dateColWidth);
 
   if (!isMobile) {
     parts.push(compact

@@ -212,7 +212,11 @@ export function FileEntryListRow({
           ...(isMobile ? fileListStyles.entryDateMobile : fileListStyles.entryDate),
           ...(entry.modified && isRecent ? fileListStyles.entryDateRecent : {}),
         }}
-        title={entry.modified && isRecent ? 'Modified within the last 15 minutes' : undefined}
+        title={
+          entry.modified
+            ? (isMobile ? formatDateShort(entry.modified) : formatDate(entry.modified))
+            : undefined
+        }
       >
         {entry.modified
           ? (isMobile ? formatDateShort(entry.modified) : formatDate(entry.modified))
