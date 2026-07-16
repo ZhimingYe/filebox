@@ -15,7 +15,7 @@ import {
   matchesDateFilter,
   type DateFilterValue,
 } from './DateFilterControl';
-import { formatSize, getEntryIcon, IconUpDir } from './fileListShared';
+import { formatSize, getEntryIcon, IconUpDir, formatDate } from './fileListShared';
 
 // ── Directory-tree resize splitter (desktop only) ──────────────────────────
 // A 6px grab strip sitting to the right of the tree's border. Transparent at
@@ -1036,22 +1036,6 @@ function isRecentlyModified(modified: string | null | undefined, nowMs: number):
   const age = nowMs - t;
   // Allow a small future skew (agent/host clock slightly ahead of browser).
   return age <= NEW_ENTRY_MS && age >= -60_000;
-}
-
-// Current year omits the year; post-2000 years use 2 digits (25 not 2025).
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  if (d.getFullYear() === now.getFullYear()) {
-    return `${md} ${hm}`;
-  }
-  const yr = d.getFullYear() >= 2000
-    ? String(d.getFullYear()).slice(-2)
-    : String(d.getFullYear());
-  return `${yr}-${md} ${hm}`;
 }
 
 // Compact form for narrow mobile rows.

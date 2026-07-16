@@ -306,6 +306,29 @@ export interface FsEntry {
   denied: boolean;
 }
 
+/** Agent stat payload — uses `path`; list entries use `name`. */
+export interface FileStat {
+  path: string;
+  entry_type: 'file' | 'directory' | 'symlink';
+  size: number;
+  modified: string | null;
+  permissions?: string | null;
+  denied: boolean;
+}
+
+export function statToFsEntry(stat: FileStat, pathHint?: string): FsEntry {
+  const path = stat.path || pathHint || '';
+  const parts = path.split('/').filter(Boolean);
+  const name = parts[parts.length - 1] ?? path;
+  return {
+    name,
+    entry_type: stat.entry_type,
+    size: stat.size ?? null,
+    modified: stat.modified ?? null,
+    denied: stat.denied,
+  };
+}
+
 export async function fsList(agentId: string, root: string, path: string, limit = 200, cursor?: string, dirsOnly = false) {
   const params = new URLSearchParams({
     agent_id: agentId,
@@ -322,7 +345,7 @@ export async function fsList(agentId: string, root: string, path: string, limit 
 
 export async function fsStat(agentId: string, root: string, path: string, signal?: AbortSignal) {
   const params = new URLSearchParams({ agent_id: agentId, root, path });
-  return request<{ stat: FsEntry | null; error?: string }>(`/api/fs/stat?${params}`, { signal });
+  return request<{ stat: FileStat | null; error?: string }>(`/api/fs/stat?${params}`, { signal });
 }
 
 export function fileRawUrl(agentId: string, root: string, path: string) {

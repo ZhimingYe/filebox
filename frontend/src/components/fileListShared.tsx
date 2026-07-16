@@ -126,6 +126,34 @@ export function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+// Current year omits the year; post-2000 years use 2 digits (25 not 2025).
+export function formatDate(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (d.getFullYear() === now.getFullYear()) {
+    return `${md} ${hm}`;
+  }
+  const yr = d.getFullYear() >= 2000
+    ? String(d.getFullYear()).slice(-2)
+    : String(d.getFullYear());
+  return `${yr}-${md} ${hm}`;
+}
+
+/** Size the date column to the longest rendered date string in `rows`. */
+export function dateColWidthForRows(rows: { modified?: string | null }[]): string {
+  let maxChars = 0;
+  for (const row of rows) {
+    if (!row.modified) continue;
+    const d = new Date(row.modified);
+    if (Number.isNaN(d.getTime())) continue;
+    maxChars = Math.max(maxChars, formatDate(row.modified).length);
+  }
+  return `${Math.max(11, maxChars)}ch`;
+}
+
 /** List row + column chrome shared with FileBrowser. */
 export const fileListStyles: Record<string, CSSProperties> = {
   colHeader: {

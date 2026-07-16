@@ -325,11 +325,9 @@ export default function App() {
 
   // Esc closes the active tab; ← → replace it with the previous/next
   // file in the directory currently shown by FileBrowser.
-  // Only while Files is the active view: FileBrowser stays mounted (hidden)
-  // under Settings/Stats, so without this gate arrows would still flip
-  // previews while the user is configuring roots or reading stats.
+  // Files and Collections both use preview tabs; Settings/Stats do not.
   useEffect(() => {
-    if (!activeTab || view !== 'files') return;
+    if (!activeTab || (view !== 'files' && view !== 'collections')) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
@@ -339,6 +337,8 @@ export default function App() {
         previewTabs.close(activeTab.id);
         return;
       }
+      // Arrow prev/next only applies in Files view (directory context).
+      if (view !== 'files') return;
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       const info = fileListRef.current;
       if (!info || info.root !== activeTab.root) return;
@@ -820,7 +820,7 @@ export default function App() {
                 type="button"
                 onClick={() => previewTabs.closeAll()}
                 style={styles.backBtn}
-                title="Back to files"
+                title={view === 'collections' ? 'Back to collection' : 'Back to files'}
               >
                 <IconChevronLeft />
                 <span>Back</span>
@@ -879,34 +879,7 @@ export default function App() {
                     onSwitchRoot={switchRoot}
                   />
                 </div>
-                {isMobile
-                  ? showMobilePreview && activeTab && (view === 'files' || view === 'collections') && (
-                      <div style={styles.mobilePreviewWrap}>
-                        <div style={styles.previewHeader}>
-                          <span style={styles.previewPath}>{activeTab.path}</span>
-                          <div style={styles.previewActions}>
-                            <a
-                              href={fileRawUrl(selectedAgent.id, activeTab.root, activeTab.path)}
-                              download
-                              style={styles.headerLink}
-                              title="Download"
-                            >
-                              Download
-                            </a>
-                          </div>
-                        </div>
-                        <PreviewErrorBoundary key={activeTab.id}>
-                          <PreviewPane
-                            agentId={selectedAgent.id}
-                            root={activeTab.root}
-                            path={activeTab.path}
-                            entryType={activeTab.entry.entry_type}
-                            denied={activeTab.entry.denied}
-                          />
-                        </PreviewErrorBoundary>
-                      </div>
-                    )
-                  : activeTab && view === 'files' && (
+                {!isMobile && activeTab && view === 'files' && (
                       <>
                         <div
                           onMouseDown={startSplitDrag}
@@ -929,14 +902,45 @@ export default function App() {
                       </>
                     )}
               </div>
+              {isMobile && showMobilePreview && activeTab && (view === 'files' || view === 'collections') && (
+                <div style={styles.mobilePreviewWrap}>
+                  <div style={styles.previewHeader}>
+                    <span style={styles.previewPath}>{activeTab.path}</span>
+                    <div style={styles.previewActions}>
+                      <a
+                        href={fileRawUrl(selectedAgent.id, activeTab.root, activeTab.path)}
+                        download
+                        style={styles.headerLink}
+                        title="Download"
+                      >
+                        Download
+                      </a>
+                    </div>
+                  </div>
+                  <PreviewErrorBoundary key={activeTab.id}>
+                    <PreviewPane
+                      agentId={selectedAgent.id}
+                      root={activeTab.root}
+                      path={activeTab.path}
+                      entryType={activeTab.entry.entry_type}
+                      denied={activeTab.entry.denied}
+                    />
+                  </PreviewErrorBoundary>
+                </div>
+              )}
               {view === 'collections' && (
-                <div style={styles.secondaryView}>
+                <div style={{
+                  ...styles.secondaryView,
+                  ...(isMobile && showMobilePreview ? styles.filesViewHidden : {}),
+                }}>
                   <CollectionsView
                     agent={selectedAgent}
                     previewTabs={previewTabs}
                     splitRatio={splitRatio}
                     onOpenInFiles={openInFiles}
                     onRefresh={refresh}
+                    hideList={isMobile && showMobilePreview}
+                    hidePreview={isMobile}
                   />
                 </div>
               )}

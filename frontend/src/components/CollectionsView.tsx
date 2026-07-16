@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentInfo, CollectionInfo, CollectionItem, FsEntry } from '../api/client';
+import type { AgentInfo, CollectionInfo, CollectionItem } from '../api/client';
 import * as api from '../api/client';
+import { statToFsEntry } from '../api/client';
 import { c, radius, font } from '../theme';
 import { PreviewWorkspace } from './PreviewWorkspace';
-import { PreviewErrorBoundary } from './PreviewErrorBoundary';
 import type { usePreviewTabs } from '../hooks/usePreviewTabs';
+import { useIsMobile } from '../state/useIsMobile';
 import {
   CollectionItemList,
   type CollectionItemRow,
@@ -17,6 +18,10 @@ interface Props {
   splitRatio: number;
   onOpenInFiles: (root: string, path: string) => void;
   onRefresh: () => void;
+  /** Mobile: hide file list while preview is fullscreen in App. */
+  hideList?: boolean;
+  /** Mobile: preview is rendered by App, not inline here. */
+  hidePreview?: boolean;
 }
 
 type ItemStatus = CollectionItemStatus;
@@ -24,6 +29,7 @@ type ItemStatus = CollectionItemStatus;
 interface ItemMeta {
   status: ItemStatus;
   size: number | null;
+  modified: string | null;
 }
 
 function basenameFromPath(path: string): string {
@@ -32,7 +38,16 @@ function basenameFromPath(path: string): string {
   return idx >= 0 ? p.slice(idx + 1) : p;
 }
 
-export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles, onRefresh }: Props) {
+export function CollectionsView({
+  agent,
+  previewTabs,
+  splitRatio,
+  onOpenInFiles,
+  onRefresh,
+  hideList = false,
+  hidePreview = false,
+}: Props) {
+  const isMobile = useIsMobile();
   const collections = agent.collections ?? [];
   const [selectedName, setSelectedName] = useState<string | null>(collections[0]?.name ?? null);
   const [busy, setBusy] = useState(false);
@@ -63,6 +78,7 @@ export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles,
   );
 
   const activeTab = previewTabs.activeTab;
+  const hasTabs = previewTabs.tabs.length > 0;
 
   const listRows: CollectionItemRow[] = useMemo(() => {
     if (!selected) return [];
@@ -74,17 +90,17 @@ export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles,
         name: item.label?.trim() || basenameFromPath(item.path),
         status: meta?.status ?? 'unknown',
         size: meta?.size,
+        modified: meta?.modified,
       };
     });
-    // metaVersion forces recompute after background stat probes.
   }, [selected, metaVersion]);
 
   const selectedKey = useMemo(() => {
-    if (!activeTab) return null;
+    if (!activeTab || activeTab.agentId !== agent.id) return null;
     return `${activeTab.root}::${activeTab.path}`;
-  }, [activeTab]);
+  }, [activeTab, agent.id]);
 
-  // Probe file metadata for status badges and size column.
+  // Probe file metadata for status badges, size, and modified columns.
   useEffect(() => {
     if (!selected || agent.status !== 'online') return;
     let cancelled = false;
@@ -98,6 +114,7 @@ export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles,
           const res = await api.fsStat(agent.id, item.root, item.path, abort.signal);
           let status: ItemStatus = 'ok';
           let size: number | null = null;
+          let modified: string | null = null;
           if (res.error || !res.stat) {
             status = 'missing';
           } else if (res.stat.denied) {
@@ -106,13 +123,14 @@ export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles,
             status = 'missing';
           } else {
             size = res.stat.size;
+            modified = res.stat.modified;
           }
-          metaCache.current.set(key, { status, size });
+          metaCache.current.set(key, { status, size, modified });
+          if (!cancelled) setMetaVersion((v) => v + 1);
         } catch {
           /* offline / aborted — leave unknown */
         }
       }
-      if (!cancelled) setMetaVersion((v) => v + 1);
     })();
 
     return () => {
@@ -124,6 +142,16 @@ export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles,
   const openItem = useCallback(
     async (item: CollectionItem) => {
       setError(null);
+      const key = `${item.root}::${item.path}`;
+      const cached = metaCache.current.get(key);
+      if (cached?.status === 'missing') {
+        setError('File not found');
+        return;
+      }
+      if (cached?.status === 'denied') {
+        setError('Access denied');
+        return;
+      }
       try {
         const res = await api.fsStat(agent.id, item.root, item.path);
         if (res.error || !res.stat) {
@@ -138,17 +166,23 @@ export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles,
           setError('Not a file');
           return;
         }
-        previewTabs.openOrActivate({
+        const entry = statToFsEntry(res.stat, item.path);
+        const input = {
           agentId: agent.id,
           root: item.root,
           path: item.path,
-          entry: res.stat as FsEntry,
-        });
+          entry,
+        };
+        if (isMobile) {
+          previewTabs.replaceAll(input);
+        } else {
+          previewTabs.openOrActivate(input);
+        }
       } catch (e: any) {
         setError(api.friendlyMessage(e));
       }
     },
-    [agent.id, previewTabs],
+    [agent.id, isMobile, previewTabs],
   );
 
   const removeItem = useCallback(
@@ -225,6 +259,7 @@ export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles,
   );
 
   const listWidthPct = splitRatio * 100;
+  const showInlinePreview = !hidePreview && hasTabs;
 
   if (collections.length === 0) {
     return (
@@ -299,34 +334,42 @@ export function CollectionsView({ agent, previewTabs, splitRatio, onOpenInFiles,
       {error && <div style={styles.errorBar}>{error}</div>}
 
       <div style={styles.split}>
-        <div style={{ ...styles.listPane, width: `${listWidthPct}%` }}>
-          <CollectionItemList
-            rows={listRows}
-            selectedKey={selectedKey}
-            onSelect={handleSelectRow}
-            onOpenInFiles={handleOpenInFiles}
-            onRemove={handleRemoveRow}
-          />
-        </div>
-        <div style={styles.previewPane}>
-          {activeTab ? (
-            <PreviewErrorBoundary key={activeTab.id}>
-              <PreviewWorkspace
-                agentId={agent.id}
-                tabs={previewTabs.tabs}
-                activeTab={activeTab}
-                activeTabId={previewTabs.activeTabId}
-                onActivate={previewTabs.activate}
-                onClose={previewTabs.close}
-                onCloseAll={previewTabs.closeAll}
-                onCloseLeft={previewTabs.closeLeft}
-                onCloseRight={previewTabs.closeRight}
-              />
-            </PreviewErrorBoundary>
-          ) : (
+        {!hideList && (
+          <div
+            style={{
+              ...styles.listPane,
+              width: showInlinePreview ? `${listWidthPct}%` : '100%',
+            }}
+          >
+            <CollectionItemList
+              rows={listRows}
+              selectedKey={selectedKey}
+              onSelect={handleSelectRow}
+              onOpenInFiles={handleOpenInFiles}
+              onRemove={handleRemoveRow}
+            />
+          </div>
+        )}
+        {showInlinePreview && (
+          <div style={styles.previewPane}>
+            <PreviewWorkspace
+              agentId={agent.id}
+              tabs={previewTabs.tabs}
+              activeTab={activeTab}
+              activeTabId={previewTabs.activeTabId}
+              onActivate={previewTabs.activate}
+              onClose={previewTabs.close}
+              onCloseAll={previewTabs.closeAll}
+              onCloseLeft={previewTabs.closeLeft}
+              onCloseRight={previewTabs.closeRight}
+            />
+          </div>
+        )}
+        {!showInlinePreview && !hideList && !hidePreview && (
+          <div style={styles.previewPane}>
             <div style={styles.previewPlaceholder}>Select a file to preview</div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );
