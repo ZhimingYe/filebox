@@ -1,55 +1,72 @@
-# Filebox Frontend
+# filebox Frontend
 
-A minimal read-only remote file browser built with React, TypeScript, and Vite.
+Read-only remote file browser UI built with React, TypeScript, and Vite.
+Served by the Hub from `frontend/dist` in production; Vite proxies API
+requests to `http://localhost:3000` in development.
 
 ## Features
 
-- **Authentication**: Username/password login with bcrypt-validated credentials
-- **File Browser**: Virtualized file list with glob/regex filename filter and refresh button
-- **File Preview**: Markdown, code (with syntax highlighting and word-wrap toggle), PDF, and images
-- **System Monitoring**: Real-time CPU, memory, swap, load average, and top processes display
-- **Agent Management**: Add/remove/enable/disable filesystem roots from the UI
-- **Health Panel**: Hub and agent status, RTT, inflight requests, resource revision
-- **Responsive Design**: Mobile-friendly with hamburger drawer navigation
-- **Warm UI Theme**: Neutral-beige color scheme consistent across all components
+- **Authentication** — username/password login (session cookie)
+- **File browser** — virtualized list, directory tree, address bar, glob/regex + date filters, path memory, pinned folders
+- **Virtual collections** — per-agent file groups across roots; Collections workspace + CollectionPicker
+- **Multi-tab preview** — Markdown, code, PDF, image, HTML, CSV; tab jump / bulk close; error boundary isolation
+- **System monitoring** — Overview / Users / Processes tabs
+- **Agent settings** — add/remove/enable/disable roots (including `~/…` home paths)
+- **Health** — hub/agent status via polling + SSE
+- **Responsive layout** — mobile drawer; Files and Collections share a split workspace on desktop
+
+Design tokens live in `src/theme.ts` (white/slate surfaces, indigo accent).
+Inline styles only — no CSS modules or Tailwind. Custom 16×16 SVG icons; no emojis.
 
 ## Tech Stack
 
-- React 19
-- TypeScript
-- Vite 8
-- `react-window` for virtualized file lists
+- React 19 + TypeScript + Vite
+- `react-window` for virtualized lists
 - `react-syntax-highlighter` for code preview
-- `react-markdown` for Markdown rendering
-- PDF.js for PDF preview
+- `react-markdown` for Markdown
+- `react-pdf` / `pdfjs-dist` for PDF
+- Lazy-loaded heavy preview chunks (`manualChunks` in `vite.config.ts`)
 
 ## Project Structure
 
-```
+```text
 src/
-  api/
-    client.ts          # API client with friendly error messages
+  api/client.ts              # fetch wrapper + types
+  hooks/usePreviewTabs.ts    # multi-tab preview state
   state/
-    session.ts         # Login/logout state management
-    health.ts          # Health polling state
-    events.ts          # SSE event stream
-    useIsMobile.ts     # Responsive breakpoint hook
+    session.ts               # login / logout
+    events.ts                # SSE (agents, roots, collections, progress)
+    health.ts                # health polling
+    useIsMobile.ts           # breakpoint hook
   components/
-    Login.tsx           # Username/password login form
-    BackendList.tsx     # Agent selector sidebar
-    FileBrowser.tsx     # File list with filter and refresh
-    PreviewPane.tsx     # File preview container
-    MarkdownPreview.tsx # Markdown renderer
-    CodePreview.tsx     # Code highlighter with word-wrap toggle
-    PdfPreview.tsx      # PDF.js viewer
-    ImagePreview.tsx    # Image viewer
-    HealthPanel.tsx     # Hub/agent health display
-    AgentSettings.tsx   # Root management UI
-    RootManager.tsx     # Root CRUD operations
-    SystemStats.tsx     # CPU/memory/processes monitor
-  App.tsx              # Main app layout with sidebar and routing
-  main.tsx             # Entry point
-  index.css            # Global styles
+    Login.tsx
+    BackendList.tsx          # agent sidebar
+    FileBrowser.tsx
+    FileEntryList.tsx        # shared list (Files + Collections)
+    fileListShared.tsx       # grid columns, icons, row chrome
+    DirectoryTree.tsx
+    AddressBar.tsx
+    DateFilterControl.tsx
+    PinnedFolders.tsx
+    CollectionsView.tsx
+    CollectionPicker.tsx
+    WorkspaceSplit.tsx
+    PreviewWorkspace.tsx     # tabs + jump / bulk close
+    PreviewPane.tsx          # memoized dispatcher
+    previewShared.tsx
+    PreviewErrorBoundary.tsx
+    {Markdown,Text,Pdf,Html,Csv,Image}Preview.tsx
+    AgentSettings.tsx
+    RootManager.tsx
+    SystemStats.tsx
+    HealthPanel.tsx
+    AboutDialog.tsx
+    NoAgentSelected.tsx
+    icons.tsx
+  App.tsx
+  theme.ts
+  main.tsx
+  index.css
 ```
 
 ## Development
@@ -59,7 +76,10 @@ npm install
 npm run dev
 ```
 
-The dev server proxies API requests to the Hub at `http://localhost:3000`.
+The Vite dev server proxies `/api`, `/ws`, and related Hub routes to
+`http://localhost:3000`. You still need a running Hub (and usually an Agent);
+there is no mock backend. For bring-up traps and curl probes, see
+[`docs/local-debugging.md`](../docs/local-debugging.md).
 
 ## Building
 
@@ -67,35 +87,37 @@ The dev server proxies API requests to the Hub at `http://localhost:3000`.
 npm run build
 ```
 
-Output goes to `dist/`. The Hub serves these static files in production.
+Output goes to `dist/`. The Hub serves these static files via `ServeDir`
+(reads from disk at request time — rebuild frontend, hard-refresh browser;
+no Hub restart required for UI-only changes).
 
-## API Endpoints
+## API Endpoints (used by the UI)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/session/exchange` | POST | Login with username/password |
+| `/api/session/exchange` | POST | Login |
 | `/api/session/logout` | POST | Logout |
 | `/api/health` | GET | Public hub health |
-| `/api/agents` | GET | List connected agents |
-| `/api/agents/:id` | GET | Get agent details |
-| `/api/agents/:id/resources` | GET | Get agent resources |
-| `/api/agents/:id/sys-stats` | GET | Get system stats |
-| `/api/events` | GET | SSE event stream (agent connect/disconnect, resource updates, progress) |
+| `/api/agents` | GET | List agents |
+| `/api/agents/:id` | GET | Agent detail (roots, collections, …) |
+| `/api/agents/:id/resources` | GET / PUT | Resource snapshot / full replace |
 | `/api/agents/:id/roots` | POST | Add root |
-| `/api/agents/:id/roots/:name` | PATCH | Update root |
-| `/api/agents/:id/roots/:name` | DELETE | Remove root |
-| `/api/fs/list` | GET | List directory contents |
-| `/api/fs/stat` | GET | Get file stats |
-| `/api/file/raw` | GET | Read file content |
-
-## Configuration
-
-The frontend connects to the Hub API. In development, Vite proxies requests to `http://localhost:3000`. In production, the Hub serves the built frontend files directly.
+| `/api/agents/:id/roots/:name` | PATCH / DELETE | Update / remove root |
+| `/api/agents/:id/collections` | POST | Create collection (optional initial item) |
+| `/api/agents/:id/collections/:name` | PATCH / DELETE | Rename / add / remove items / delete |
+| `/api/agents/:id/sys-stats` | GET | System stats |
+| `/api/events` | GET | SSE stream |
+| `/api/fs/list` | GET | Directory listing |
+| `/api/fs/stat` | GET | File metadata |
+| `/api/file/raw` | GET | File bytes (streaming) |
+| `/api/preview/sessions` | POST | HTML preview session token |
+| `/api/preview/:token/*` | GET | HTML relative asset fetch |
+| `/api/cancel` | POST | Cancel in-flight request |
 
 ## Mobile Support
 
-The UI adapts to mobile screens (below 768px) with:
-- Hamburger menu for sidebar navigation
-- Full-screen file browser or preview (not side-by-side)
-- Touch-friendly button sizes
-- Responsive table layouts
+Below 768px the UI uses:
+- Hamburger drawer for sidebar navigation
+- Full-screen browser or preview (not side-by-side)
+- Touch-friendly controls
+- Horizontally scrollable dense tables (e.g. processes)

@@ -1,4 +1,4 @@
-# Filebox
+# filebox
 
 A minimal, secure, read-only remote file browser.
 
@@ -7,9 +7,9 @@ A minimal, secure, read-only remote file browser.
 
 ## Overview
 
-Filebox is a read-only remote file browsing system that lets you access files on remote servers through a web browser. It consists of three parts:
+filebox is a read-only remote file browsing system that lets you access files on remote servers through a web browser. It consists of three parts:
 
-- **Frontend**: Web UI for browsing files and managing servers
+- **Frontend**: Web UI for browsing files, collections, and managing servers
 - **Hub**: Central server handling authentication and request routing
 - **Agent**: Daemon running on remote servers, providing file access
 
@@ -19,40 +19,58 @@ Browser ──HTTPS──▶ Hub ◀──WSS── Agent ──▶ local files
 
 Agents connect outward to the Hub. No public IPs, port mapping, or VPN required.
 
+Current release: **v0.9.0**. See [NEWS.md](NEWS.md) for the full changelog.
+
 ## Features
 
 ### File Browsing
-- Virtualized file list for large directories
-- Glob/regex filename filter
-- File modification time sorting
+- Virtualized file list with adaptive column widths
+- Resizable directory tree
+- Address bar (breadcrumbs, paste path, autocomplete)
+- Glob/regex filename filter and modification-date filter
+- File-type badges; recently modified highlighting
+- Filename alignment and font toggles
+- Path memory per agent + root
 - One-click refresh
 
+### Virtual Collections
+- Per-agent named lists of files across roots
+- Collections workspace with shared preview pane
+- Add files from the browser via CollectionPicker
+- Persisted on the agent; offline edits apply on reconnect
+
 ### File Preview
+- Multi-tab preview workspace (tab jump, bulk close, Esc to close)
 - Markdown rendering
 - Code highlighting with word-wrap toggle
-- PDF reader
-- Image viewer
-- Binary file detection
+- PDF reader, image viewer (including TIFF)
+- HTML preview (sandboxed session for relative assets)
+- CSV table view
+- Binary / inaccessible file handling with isolated error UI
+
+### Roots & Pins
+- Dynamic root allowlist managed from the UI
+- Home-path roots (`~/…`) expanded on the agent
+- Per-root pinned folders in the sidebar
 
 ### System Monitoring
-- CPU usage
-- Memory/Swap usage
-- System load
-- Top processes by memory
+- Overview: CPU, memory/swap, load
+- Per-user share breakdown
+- Virtualized process table with detail panel
 
 ### Security
 - Username/password authentication (bcrypt)
 - Agent token authentication (bcrypt)
 - Sensitive files denied by default
 - Read-only access
-- Path safety checks
+- Path safety checks (canonicalize, symlink escape, denylist)
 
-### Other
+### Operations
 - Responsive mobile layout
-- Automatic Agent reconnection
+- Automatic agent reconnection
 - Real-time status updates (SSE)
-- Request progress display
-- Request cancellation
+- Request progress and cancellation
+- Built-in `--init-config` and in-place `--update`
 
 ## Quick Start
 
@@ -119,7 +137,7 @@ generator when prompted. Existing files are never overwritten unless you add
 
 ```bash
 # Clone
-git clone <repository-url>
+git clone https://github.com/ZhimingYe/filebox.git
 cd filebox
 
 # Build frontend
@@ -209,40 +227,46 @@ Open `http://localhost:3000` in a browser and log in with the configured credent
 
 1. Log in to the frontend
 2. Select an Agent in the sidebar
-3. Click "Settings"
-4. Click "Add Root"
-5. Enter a name and path for the root directory
-6. Click "Save"
+3. Open Settings
+4. Add a root (absolute path, or `~/…` for a path under the agent's home)
+5. Save
 
-The Agent validates the path and applies it immediately.
+The Agent validates the path and applies it immediately. Invalid new roots
+are rejected without destroying the last known-good configuration.
 
 ### Browsing Files
 
 1. Select an Agent
-2. Click "Files"
-3. Click folders to navigate
-4. Click files to preview
-5. Use the filter bar to search
+2. Open Files
+3. Navigate with the tree, address bar, or folder clicks
+4. Click files to preview (multi-tab on desktop)
+5. Use the filename filter and date filter as needed
+6. Pin frequently used folders from the sidebar
+
+### Collections
+
+1. Select an Agent
+2. Open Collections to create a named collection
+3. Or from Files, use the row action to add a file to an existing or new collection
+4. Open a collection to preview its files; remove items or open a file's location in Files
+
+Collections are stored on the agent and survive reconnects. They do not move
+or copy files on disk — they are virtual references only.
 
 ### System Monitoring
 
 1. Select an Agent
-2. Click "Stats"
-3. View CPU, memory, load, and process info
-4. Data refreshes every 30 seconds
+2. Open Stats
+3. Use Overview / Users / Processes tabs
+4. Data is TTL-cached on the agent (default 60s)
 
 ### Sensitive File Protection
 
-The following files/directories are denied by default:
+The following files/directories are denied by default (abbreviated):
 
 ```text
-.git/
-.ssh/
-.env
-*.pem
-*.key
-id_rsa
-credentials.json
+.git/  .ssh/  .gnupg/  .aws/  .kube/
+.env*  *.pem  *.key  id_*  credentials*.json  *.sqlite*
 ...
 ```
 
@@ -252,7 +276,7 @@ Full list in `crates/protocol/src/denylist.rs`.
 
 ### Rootless Deployment (Recommended)
 
-Filebox is designed to run fully rootless:
+filebox is designed to run fully rootless:
 
 ```bash
 # Download pre-built tarballs from the Releases page, then extract into

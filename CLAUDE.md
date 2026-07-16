@@ -9,9 +9,10 @@
 
 ## What This Is
 
-Filebox is a **read-only remote file browser with system monitoring**. User
-logs into one HTTPS web page, sees backend machines ("Agents") that have
-dialed out to a central Hub, and browses files / reads system stats.
+filebox is a **read-only remote file browser with system monitoring**.
+User logs into one HTTPS web page, sees backend machines ("Agents") that
+have dialed out to a central Hub, browses files, organizes virtual
+collections, and reads system stats.
 
 ```text
 Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ local files + sysinfo
@@ -38,8 +39,8 @@ machines need no public IP, inbound port, VPN, or port mapping.
   irrecoverable. When you need to revert a specific edit you made, use the
   Edit tool to undo that specific edit, not a git command that nukes the
   entire file.
-- **Frontend is the control surface.** Roots are managed from the UI. CLI
-  is bootstrap / automation / recovery only.
+- **Frontend is the control surface.** Roots, pins, and collections are
+  managed from the UI. CLI is bootstrap / automation / recovery only.
 - **Read-only.** Never add writes, shell, or arbitrary proxying.
 - **Reconnect forever.** Survives 24h+ outages; identity persists; no
   duplicate backend entries on reconnect.
@@ -58,10 +59,11 @@ machines need no public IP, inbound port, VPN, or port mapping.
 
 ## Stack
 
-**Frontend** (`frontend/`): TypeScript + Vite + React. Heavy preview
+**Frontend** (`frontend/`): TypeScript + Vite + React. Files and
+Collections share `FileEntryList` / `WorkspaceSplit`. Heavy preview
 components are `React.lazy()`-loaded (`PdfPreview`, `TextPreview`,
 `MarkdownPreview`, `HtmlPreview`, `CsvPreview`); `ImagePreview` stays inline.
-`previewShared.tsx` holds shared utilities. `PreviewPane` is a memoized
+`PreviewWorkspace` owns multi-tab state; `PreviewPane` is a memoized
 dispatcher — memoization is what stops splitter-drag stutter. Vite
 `manualChunks` splits react / highlighter / markdown vendor chunks so
 deployments that don't bump a vendor reuse the cached chunk. PDF uses
@@ -73,25 +75,34 @@ some mobile browsers ship no native PDF viewer.
 tokio-tungstenite. Serves the built frontend via `ServeDir`. 1MB body
 limit. CORS mirrors request origin (credentials need non-`*` ACAO). See
 `routes.rs` for the full route table; `auth.rs` (bcrypt + sessions +
-per-IP login rate limit), `agent_registry.rs` (lifecycle + coalesced
-pending root updates + config_error), `ws.rs` (agent WSS handler with
+per-IP login rate limit), `net.rs` (`FILEBOX_TRUST_XFF` for client IP),
+`agent_registry.rs` (lifecycle + coalesced pending root/collection
+updates + config_error), `ws.rs` (agent WSS handler with
 abort-on-reregister), `events.rs` (SSE fanout), `fs_proxy.rs` (proxies
 file ops to agent WS), `health.rs`.
 
 **Agent** (`crates/agent/`): Rust + Tokio + tokio-tungstenite (rustls
 webpki-roots) + sysinfo. Connects outward, reconnects forever.
 `connection.rs` (reconnect loop — see "Reconnect & liveness" below),
-`resources.rs` (validate + apply root updates atomically; bad updates
-never destroy last good state), `fs.rs` (read-only ops + path safety +
-denylist), `sysinfo.rs` (TTL-cached stats — see below), `config_store.rs`
-(persists `agent_id`, roots, revision under `data_dir`).
+`resources.rs` (validate + apply root/pin/collection updates atomically;
+bad updates never destroy last good state), `fs.rs` (read-only ops + path
+safety + denylist), `dir_cache.rs` (mtime-keyed directory listing cache,
+cleared on root apply, capped), `sysinfo.rs` (TTL-cached stats — see
+below), `config_store.rs` (persists `agent_id`, roots, pins, collections,
+revisions under `data_dir` in `agent_state.json`).
+
+**Updater** (`crates/updater/`): shared CLI for hub and agent —
+`--init-config` (interactive bcrypt hashing, `0600` files) and `--update`
+(download musl release tarball, verify `SHA256SUMS.txt`, refuse downgrade
+by default; mirrors via `--update-base-url`).
 
 **Protocol** (`crates/protocol/`): JSON over WS, tagged enums in
 `message.rs`. Every request has `req_id`, supports `Cancel` / `Progress` /
 `Error` / terminal response. File reads stream as `FileChunk { offset,
-data, done }` — agent never slurps whole files. `Capabilities` struct has
-vestigial flags (`image_preview`, `pdf_preview`, `serve_dir`) that default
-`false` and aren't gated on — don't read meaning into them.
+data, done }` — agent never slurps whole files. `Capabilities` gates real
+features (`pinned_folders`, `collections`); vestigial flags
+(`image_preview`, `pdf_preview`, `serve_dir`) default `false` and aren't
+gated on — don't read meaning into them.
 
 ## Reconnect & Liveness (non-obvious invariants)
 
@@ -147,7 +158,9 @@ periodic timer — if nobody asks, no work happens.
 
 ## Runtime Resource Management (roots)
 
-Roots are a dynamic allowlist, not hardcoded.
+Roots are a dynamic allowlist, not hardcoded. Paths may be absolute or
+home-relative (`~` / `~/…`); the agent expands `~` against its own `$HOME`
+and rejects escapes.
 
 ```text
 Frontend POST /api/agents/{id}/roots
@@ -164,6 +177,30 @@ prior pending; last write wins, no queue), returns
 If agent rejects (e.g. path missing): hub stores the message as
 `config_error`, surfaces via SSE. **Bad updates never destroy last known
 good state.** Rejection is non-destructive.
+
+Pinned folders are per-root path lists on the same resources channel
+(`pin_add` / `pin_remove` PATCH deltas), gated by
+`capabilities.pinned_folders`.
+
+## Virtual Collections
+
+Collections are per-agent named lists of file references (`root` +
+root-relative `path`). Items may span multiple roots. They are virtual —
+no files are copied or moved on disk. Existence is not checked on apply;
+the UI probes `fsStat` and shows ok / missing / denied.
+
+```text
+Frontend POST/PATCH/DELETE /api/agents/{id}/collections
+  → Hub rewrites DesiredCollections (collections_revision++)
+  → Hub sends CollectionsSetDesired over WS
+  → Agent validates, persists agent_state.json, replies CollectionsApplied
+  → Hub mirrors state, SSE collections_updated
+```
+
+Offline: `pending_collections_update` (coalesced). Reject clears pending and
+keeps last good collections. Legacy agents without
+`capabilities.collections` get `400 unsupported_feature`. Revision is
+independent of `resource_revision`.
 
 ## Security
 
@@ -195,17 +232,24 @@ good state.** Rejection is non-destructive.
 
 ## Preview Behavior
 
+- **Workspace**: multi-tab on desktop (`PreviewWorkspace` +
+  `usePreviewTabs`); only the active body is mounted. Arrow keys walk
+  files in the current directory or collection; Esc closes the active
+  tab; context menu supports bulk close; tab-jump dropdown among open
+  tabs. `PreviewErrorBoundary` isolates viewer crashes.
 - **Markdown**: fetch raw → render → sanitize HTML → safe mode for large.
-- **Code**: Prism via react-syntax-highlighter, word-wrap toggle. Disable
-  highlighter for large files (plain `<pre>` fallback). Partial /
-  virtualized for very large.
+- **Code**: Prism via react-syntax-highlighter (`TextPreview`), word-wrap
+  toggle. Disable highlighter for large files (plain `<pre>` fallback).
+  Partial / virtualized for very large.
 - **PDF**: react-pdf, range requests honored, never force full download,
   slow detection at 8s.
 - **Image**: large OK (30MB+); judge by decoded dimensions/memory not
   just size; downscaled preview when needed; slow detection at 8s.
-- **HTML**: Blob URL with `<base>` injection. Toolbar with open-in-new-tab
-  + copy-HTML. Sanitization not enforced — previewing attacker-controlled
-  HTML is out of threat-model scope for this trusted-internal tool.
+- **HTML**: sandboxed preview sessions (`/api/preview/sessions` + token
+  resource fetch) with Blob URL / `<base>` injection. Toolbar with
+  open-in-new-tab + copy-HTML. Sanitization not enforced — previewing
+  attacker-controlled HTML is out of threat-model scope for this
+  trusted-internal tool.
 - **CSV**: rendered as table.
 - **Long ops**: `LoadingOverlay` shows spinner + (after 8s) slow warning.
   Does not force cancel — user waits or cancels.
@@ -215,27 +259,33 @@ good state.** Rejection is non-destructive.
 ```text
 filebox/
   CLAUDE.md
-  Cargo.toml                # Rust workspace
+  Cargo.toml                # Rust workspace (protocol, updater, hub, agent)
   README.md
+  NEWS.md
+  docs/local-debugging.md   # local bring-up + curl probes
   crates/
-    protocol/src/           # message.rs (tagged enums), agent.rs, resources.rs,
-                            # denylist.rs
+    protocol/src/           # message.rs, agent.rs, resources.rs (roots/pins/
+                            # collections), denylist.rs
+    updater/src/            # --init-config, --update
     hub/src/                # main.rs, config.rs, routes.rs, state.rs, ws.rs,
-                            # auth.rs, agent_registry.rs, events.rs, fs_proxy.rs,
-                            # health.rs
+                            # auth.rs, net.rs, agent_registry.rs, events.rs,
+                            # fs_proxy.rs, health.rs
     agent/src/              # main.rs, config.rs, config_store.rs, connection.rs,
-                            # resources.rs, fs.rs, sysinfo.rs
+                            # resources.rs, fs.rs, dir_cache.rs, sysinfo.rs
   frontend/
     vite.config.ts          # manualChunks: react / highlighter / markdown vendor
     src/
-      App.tsx               # layout, sidebar, routing, mobile drawer, toasts
+      App.tsx               # layout, sidebar, Files/Collections/Stats/Settings
       theme.ts              # all design tokens
       api/client.ts         # fetch wrapper + types
+      hooks/                # usePreviewTabs
       state/                # session, events (SSE), health, useIsMobile
       components/
-        Login BackendList FileBrowser PreviewPane previewShared
-        {Pdf,Text,Markdown,Html,Csv}Preview   # lazy
-        AgentSettings RootManager HealthPanel SystemStats
+        Login BackendList FileBrowser FileEntryList CollectionsView
+        CollectionPicker WorkspaceSplit PreviewWorkspace PreviewPane
+        previewShared {Pdf,Text,Markdown,Html,Csv}Preview
+        DirectoryTree AddressBar DateFilterControl PinnedFolders
+        AgentSettings RootManager HealthPanel SystemStats AboutDialog
   scripts/
     release.sh              # bump + commit + tag + push → triggers release.yml
     gen_notice.sh           # refreshes Rust/frontend license manifests
@@ -278,13 +328,16 @@ set `proxy_buffering off` + `proxy_cache off` (SSE). Forward
 
 ## Final Notes
 
-- When touching the reconnect path or the sysinfo cache, re-read the code
-  first. Both have non-obvious invariants (abort-on-reregister,
-  `same_channel` ownership check, atomic `refreshing` flag, stable-conn
-  backoff reset) that a "small" refactor can break silently.
-- Hub body limit is 1MB. Resource payloads are tiny by design — don't
-  raise this without reason.
+- When touching the reconnect path, the sysinfo cache, or collections /
+  roots apply, re-read the code first. Non-obvious invariants include
+  abort-on-reregister, `same_channel` ownership check, atomic
+  `refreshing` flag, stable-conn backoff reset, and independent
+  `collections_revision` vs `resource_revision`.
+- Hub body limit is 1MB. Resource / collection payloads are tiny by
+  design — don't raise this without reason.
 - The Hub→Agent WS is a single JSON channel; large file reads stream as
   `FileChunk` on the same channel but never block control messages
   (agent's read loop is independent of its writer; writes have a 10s
   timeout).
+- `DirCache` on the agent caches directory listings by mtime (cap 256);
+  it is cleared when roots are applied. Do not assume every list hits disk.
