@@ -16,7 +16,7 @@ use filebox_protocol::denylist;
 /// path escapes the root. The specific message lets the frontend distinguish
 /// "your root directory is gone" from "this file doesn't exist" from "path
 /// escape attempt" — all of which used to return the same opaque None.
-fn resolve_path(
+pub(crate) fn resolve_path(
     roots: &[RootConfig],
     root_name: &str,
     relative_path: &str,

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::{Error as DeError, SeqAccess, Visitor};
 use crate::resources::{Capabilities, CollectionConfig, FileStat, FsEntry, RootConfig, SysStats};
+use crate::search::{SearchMode, SearchResult};
 
 // ── Agent → Hub ──────────────────────────────────────────────────────────────
 
@@ -87,6 +88,11 @@ pub enum AgentMessage {
     SysStatsResponse {
         req_id: String,
         stats: Option<SysStats>,
+        error: Option<String>,
+    },
+    WorkspaceSearchResponse {
+        req_id: String,
+        result: Option<SearchResult>,
         error: Option<String>,
     },
 }
@@ -196,6 +202,27 @@ pub enum HubMessage {
     },
     SysStatsRequest {
         req_id: String,
+    },
+    /// In-process find (fd-like) / content (rg-like) search under one root.
+    WorkspaceSearchRequest {
+        req_id: String,
+        mode: SearchMode,
+        root: String,
+        /// Subdirectory within the root to start from (default `/`).
+        #[serde(default)]
+        path: String,
+        /// Find: case-insensitive name substring (empty = all names).
+        /// Content: regex pattern (invalid regex → agent error).
+        query: String,
+        /// Extension filter without dots, e.g. `["rs","ts"]`. Empty = no filter.
+        #[serde(default)]
+        extensions: Vec<String>,
+        /// Cap on returned hits (agent clamps to a hard max).
+        #[serde(default)]
+        max_results: Option<u32>,
+        /// Content-mode ±context lines (default 10; ignored for find).
+        #[serde(default)]
+        context: Option<u32>,
     },
 }
 
@@ -420,6 +447,65 @@ mod tests {
             AgentMessage::SysStatsResponse { stats, .. } => {
                 assert!(stats.is_some());
                 assert_eq!(stats.unwrap().cpu_usage_percent, 10.0);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn workspace_search_request_response_round_trips() {
+        let req = HubMessage::WorkspaceSearchRequest {
+            req_id: "s1".into(),
+            mode: crate::search::SearchMode::Content,
+            root: "data".into(),
+            path: "/src".into(),
+            query: "TODO".into(),
+            extensions: vec!["rs".into()],
+            max_results: Some(50),
+            context: Some(10),
+        };
+        let back = round_trip_hub(&req);
+        match back {
+            HubMessage::WorkspaceSearchRequest {
+                mode,
+                query,
+                extensions,
+                context,
+                ..
+            } => {
+                assert_eq!(mode, crate::search::SearchMode::Content);
+                assert_eq!(query, "TODO");
+                assert_eq!(extensions, vec!["rs"]);
+                assert_eq!(context, Some(10));
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let resp = AgentMessage::WorkspaceSearchResponse {
+            req_id: "s1".into(),
+            result: Some(crate::search::SearchResult {
+                hits: vec![crate::search::SearchHit {
+                    root: "data".into(),
+                    path: "/src/main.rs".into(),
+                    line: Some(12),
+                    context: vec![crate::search::SearchContextLine {
+                        line: 12,
+                        text: "TODO".into(),
+                        is_match: true,
+                    }],
+                }],
+                truncated: false,
+                scanned: 3,
+            }),
+            error: None,
+        };
+        let back = round_trip_agent(&resp);
+        match back {
+            AgentMessage::WorkspaceSearchResponse { result, .. } => {
+                let r = result.expect("result");
+                assert_eq!(r.hits.len(), 1);
+                assert_eq!(r.hits[0].line, Some(12));
+                assert_eq!(r.scanned, 3);
             }
             _ => panic!("wrong variant"),
         }

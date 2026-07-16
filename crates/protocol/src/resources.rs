@@ -97,6 +97,11 @@ pub struct Capabilities {
     /// `pinned_folders`).
     #[serde(default)]
     pub collections: bool,
+    /// Whether this agent supports Workspace find/content search (fd/rg-like,
+    /// implemented in-process — no system `fd`/`rg` binary required).
+    /// Defaults to `false` for rolling-upgrade safety.
+    #[serde(default)]
+    pub workspace_search: bool,
 }
 
 impl Default for Capabilities {
@@ -112,6 +117,7 @@ impl Default for Capabilities {
             sys_stats: true,
             pinned_folders: false,
             collections: false,
+            workspace_search: false,
         }
     }
 }
@@ -339,6 +345,10 @@ mod tests {
         assert!(
             !caps.collections,
             "collections must default to false (legacy-detection sentinel)"
+        );
+        assert!(
+            !caps.workspace_search,
+            "workspace_search must default to false (legacy-detection sentinel)"
         );
     }
 
