@@ -4,21 +4,22 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>filebox</title>
-<meta name="description" content="Browse and preview remote files through one HTTPS page. Agents dial out — no public IP, no inbound port, no VPN. v0.9.5." />
+<meta name="description" content="A read-only remote file browser. Agents dial out — no public IP, no inbound port, no VPN. v0.9.5." />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
 <style>
   :root {
-    --ink: #1a2e28;
-    --ink-2: #3d524a;
-    --ink-3: #6a7f76;
-    --paper: #f4f7f5;
-    --wash: #d7e6df;
-    --leaf: #3f6b5a;
-    --leaf-deep: #2d5244;
-    --line: rgba(26, 46, 40, .12);
-    --font: "IBM Plex Sans", "Helvetica Neue", sans-serif;
+    --ink: #14241f;
+    --muted: #5c6e66;
+    --faint: #8a9a92;
+    --paper: #f3f6f4;
+    --panel: #ffffff;
+    --accent: #2f5d4c;
+    --accent-soft: #c9ddd3;
+    --line: rgba(20, 36, 31, .11);
+    --serif: "Source Serif 4", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    --sans: "IBM Plex Sans", "Helvetica Neue", sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, monospace;
     --ease: cubic-bezier(.22, 1, .36, 1);
   }
@@ -27,530 +28,480 @@
   html { scroll-behavior: smooth; }
   body {
     margin: 0;
-    font-family: var(--font);
+    font-family: var(--sans);
     color: var(--ink);
     background: var(--paper);
     line-height: 1.65;
-    font-weight: 400;
     -webkit-font-smoothing: antialiased;
   }
   a { color: inherit; text-decoration: none; }
   p, h1, h2, h3 { margin: 0; }
-  code { font-family: var(--mono); }
+  code { font-family: var(--mono); font-size: .9em; }
 
-  /* ─── Hero: one full-bleed atmosphere ─── */
-  .hero {
-    position: relative;
-    min-height: 100svh;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    color: var(--ink);
+  /* soft page wash — one continuous field, not blobs */
+  .wash {
+    position: fixed; inset: 0; z-index: -1; pointer-events: none;
     background:
-      radial-gradient(120% 80% at 70% -10%, #e7f0eb 0%, transparent 55%),
-      radial-gradient(90% 70% at -10% 60%, var(--wash) 0%, transparent 50%),
-      linear-gradient(165deg, #eef4f1 0%, var(--paper) 45%, #e8efe9 100%);
-  }
-  .hero::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background-image:
-      linear-gradient(rgba(26, 46, 40, .045) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(26, 46, 40, .045) 1px, transparent 1px);
-    background-size: 72px 72px;
-    mask-image: linear-gradient(180deg, #000 0%, transparent 72%);
-    pointer-events: none;
-    animation: drift 36s linear infinite;
-  }
-  @keyframes drift {
-    from { background-position: 0 0, 0 0; }
-    to { background-position: 72px 36px, 36px 72px; }
+      linear-gradient(180deg,
+        #e4eee8 0%,
+        var(--paper) 34%,
+        var(--paper) 70%,
+        #e8efe9 100%);
   }
 
-  .nav {
-    position: relative;
-    z-index: 2;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 28px clamp(24px, 5vw, 56px) 0;
+  .shell { width: min(880px, calc(100% - 56px)); margin: 0 auto; }
+  @media (max-width: 600px) { .shell { width: calc(100% - 36px); } }
+
+  /* nav — quiet */
+  .top {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 32px 0 0;
   }
-  .nav .mark {
-    font-size: 1rem;
+  .top .brand {
+    font-family: var(--serif);
+    font-size: 1.15rem;
     font-weight: 500;
-    letter-spacing: -.01em;
+    letter-spacing: -.02em;
   }
-  .nav-right {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+  .top nav {
+    display: flex; align-items: center; gap: 4px;
   }
-  .nav a {
-    font-size: .875rem;
-    font-weight: 400;
-    color: var(--ink-2);
-    padding: 8px 12px;
+  .top nav a {
+    font-size: .84rem;
+    color: var(--muted);
+    padding: 6px 10px;
     transition: color .2s;
   }
-  .nav a:hover { color: var(--ink); }
-  .nav .dl {
-    margin-left: 4px;
-    padding: 8px 16px;
-    border-radius: 999px;
+  .top nav a:hover { color: var(--ink); }
+  .top .dl {
+    margin-left: 8px;
+    padding: 7px 14px !important;
     background: var(--ink);
-    color: #f4f7f5;
-    font-weight: 500;
+    color: var(--paper) !important;
+    border-radius: 4px;
   }
-  .nav .dl:hover { background: var(--leaf-deep); color: #fff; }
+  .top .dl:hover { background: var(--accent); color: #fff !important; }
   @media (max-width: 640px) {
-    .nav a:not(.dl):not(.mark) { display: none; }
+    .top nav a:not(.dl) { display: none; }
   }
 
-  .hero-main {
-    position: relative;
-    z-index: 2;
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    padding: clamp(48px, 10vh, 96px) clamp(24px, 5vw, 56px) clamp(40px, 8vh, 72px);
-    max-width: 920px;
-    animation: rise 1s var(--ease) both;
+  /* hero — typography is the composition */
+  .hero {
+    padding: clamp(72px, 16vh, 140px) 0 clamp(64px, 12vh, 110px);
+    animation: in .9s var(--ease) both;
   }
-  .hero-main .mark-lg {
-    font-size: clamp(3rem, 8vw, 5rem);
-    font-weight: 300;
-    letter-spacing: -.04em;
+  .hero .brand-lg {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: clamp(3.4rem, 9vw, 5.6rem);
+    letter-spacing: -.035em;
     line-height: .95;
-    margin-bottom: clamp(24px, 4vh, 40px);
     color: var(--ink);
+    margin-bottom: clamp(28px, 5vh, 44px);
   }
-  .hero-main h1 {
-    font-size: clamp(1.35rem, 2.6vw, 1.75rem);
+  .hero h1 {
+    font-family: var(--serif);
     font-weight: 400;
-    letter-spacing: -.015em;
-    line-height: 1.35;
+    font-size: clamp(1.55rem, 3.2vw, 2.05rem);
+    letter-spacing: -.02em;
+    line-height: 1.3;
     max-width: 16em;
     color: var(--ink);
   }
-  .hero-main .lede {
-    margin-top: 18px;
+  .hero .lede {
+    margin-top: 20px;
     font-size: 1.05rem;
-    font-weight: 400;
-    color: var(--ink-2);
-    max-width: 30em;
+    color: var(--muted);
+    max-width: 28em;
     line-height: 1.7;
   }
-  .cta {
+  .hero .actions {
     margin-top: 36px;
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    padding: 13px 22px;
-    border-radius: 999px;
-    background: var(--leaf);
-    color: #f4f7f5;
-    font-size: .95rem;
-    font-weight: 500;
-    width: fit-content;
-    transition: background .2s, transform .25s var(--ease);
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
   }
-  .cta:hover { background: var(--leaf-deep); transform: translateY(-1px); color: #fff; }
-  .cta svg { opacity: .85; }
-  .ver {
-    margin-top: 20px;
+  .btn {
+    display: inline-flex; align-items: center;
+    font-family: var(--sans);
+    font-size: .92rem;
+    font-weight: 500;
+    padding: 11px 18px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    transition: background .2s, color .2s, border-color .2s, transform .2s var(--ease);
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn-solid {
+    background: var(--accent);
+    color: #f5f8f6;
+  }
+  .btn-solid:hover { background: var(--ink); color: #fff; }
+  .btn-line {
+    border-color: var(--line);
+    color: var(--ink);
+    background: transparent;
+  }
+  .btn-line:hover { border-color: rgba(20,36,31,.28); background: rgba(255,255,255,.5); }
+  .hero .meta {
+    margin-top: 28px;
     font-family: var(--mono);
-    font-size: .7rem;
-    color: var(--ink-3);
-    letter-spacing: .06em;
+    font-size: .68rem;
+    letter-spacing: .08em;
+    color: var(--faint);
   }
 
-  /* Full-bleed product plane — not a card */
-  .plane {
-    position: relative;
-    z-index: 2;
-    margin-top: auto;
+  /* product — full-bleed band, not a floating card */
+  .band {
     border-top: 1px solid var(--line);
-    background: rgba(255, 255, 255, .55);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    animation: rise 1.1s .1s var(--ease) both;
+    border-bottom: 1px solid var(--line);
+    background: rgba(255,255,255,.62);
+    animation: in 1s .12s var(--ease) both;
   }
-  .plane-inner {
-    max-width: 1100px;
+  .band-frame {
+    width: min(1080px, 100%);
     margin: 0 auto;
     display: grid;
-    grid-template-columns: 150px 1fr 1.05fr;
-    min-height: 220px;
+    grid-template-columns: 160px 1fr 1.1fr;
+    min-height: 280px;
   }
-  @media (max-width: 800px) {
-    .plane-inner { grid-template-columns: 1fr; min-height: 180px; }
-    .plane-side, .plane-prev { display: none; }
+  @media (max-width: 820px) {
+    .band-frame { grid-template-columns: 1fr; min-height: 200px; }
+    .b-side, .b-prev { display: none; }
   }
-  .plane-side {
-    padding: 20px 16px;
+  .b-side {
+    padding: 22px 18px;
     border-right: 1px solid var(--line);
+    background: rgba(201, 221, 211, .22);
   }
-  .plane-side .lab {
+  .lab {
     font-family: var(--mono);
     font-size: .62rem;
-    letter-spacing: .12em;
+    letter-spacing: .14em;
     text-transform: uppercase;
-    color: var(--ink-3);
-    margin-bottom: 12px;
+    color: var(--faint);
+    margin-bottom: 14px;
   }
   .agent {
-    display: flex; align-items: center; gap: 8px;
-    padding: 6px 0;
-    font-size: .84rem;
-    color: var(--ink-2);
+    display: flex; gap: 8px; align-items: center;
+    padding: 7px 0;
+    font-size: .86rem;
+    color: var(--muted);
   }
   .agent.on { color: var(--ink); font-weight: 500; }
   .agent i {
     width: 5px; height: 5px; border-radius: 50%;
-    background: var(--ink-3);
+    background: var(--faint);
   }
-  .agent.on i { background: var(--leaf); }
-  .plane-files {
+  .agent.on i { background: var(--accent); }
+  .b-files {
     border-right: 1px solid var(--line);
-    display: flex; flex-direction: column; min-width: 0;
+    min-width: 0;
   }
   .path {
-    padding: 12px 18px;
+    padding: 14px 18px;
     border-bottom: 1px solid var(--line);
     font-family: var(--mono);
     font-size: .7rem;
-    color: var(--ink-3);
+    color: var(--faint);
   }
-  .path em { font-style: normal; color: var(--leaf); }
-  .rows { padding: 6px 8px; }
+  .path em { font-style: normal; color: var(--accent); }
+  .rows { padding: 8px; }
   .row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 16px;
-    padding: 8px 10px;
-    border-radius: 6px;
-    font-size: .86rem;
-    color: var(--ink-2);
-    transition: background .4s var(--ease), color .4s;
+    display: flex; justify-content: space-between; gap: 16px;
+    padding: 9px 12px;
+    border-radius: 3px;
+    font-size: .88rem;
+    color: var(--muted);
+    transition: background .35s, color .35s;
   }
   .row.sel {
-    background: rgba(63, 107, 90, .1);
+    background: rgba(47, 93, 76, .1);
     color: var(--ink);
   }
   .row .sz {
     font-family: var(--mono);
     font-size: .68rem;
-    color: var(--ink-3);
+    color: var(--faint);
   }
-  .plane-prev {
-    display: flex; flex-direction: column;
-    min-width: 0;
-  }
-  .plane-prev .path { border-right: none; }
-  .chart-wrap {
+  .b-prev { min-width: 0; display: flex; flex-direction: column; }
+  .chart-box {
     flex: 1;
     display: flex; align-items: center; justify-content: center;
-    padding: 16px 20px;
+    padding: 20px;
   }
-  .chart { width: 100%; max-width: 300px; }
-  .chart .draw {
-    stroke-dasharray: 400;
-    stroke-dashoffset: 400;
-    animation: draw 1.8s .5s var(--ease) forwards;
+  .chart { width: min(100%, 320px); }
+  .chart .line {
+    stroke-dasharray: 420;
+    stroke-dashoffset: 420;
+    animation: draw 1.8s .4s var(--ease) forwards;
   }
   @keyframes draw { to { stroke-dashoffset: 0; } }
-  @keyframes rise {
-    from { opacity: 0; transform: translateY(14px); }
+  @keyframes in {
+    from { opacity: 0; transform: translateY(12px); }
     to { opacity: 1; transform: none; }
   }
 
-  /* ─── Content ─── */
-  .wrap {
-    width: min(920px, calc(100% - 48px));
-    margin: 0 auto;
-  }
-  section { padding: clamp(72px, 12vh, 120px) 0; }
-  .sec h2 {
-    font-size: clamp(1.5rem, 3vw, 2rem);
+  /* sections */
+  section { padding: clamp(80px, 14vh, 130px) 0; }
+  .lead {
+    font-family: var(--serif);
     font-weight: 400;
+    font-size: clamp(1.6rem, 3.2vw, 2.15rem);
     letter-spacing: -.02em;
-    line-height: 1.25;
-    max-width: 14em;
+    line-height: 1.28;
+    max-width: 16em;
   }
-  .sec .sub {
-    margin-top: 16px;
+  .sub {
+    margin-top: 18px;
     font-size: 1.02rem;
-    color: var(--ink-2);
-    max-width: 34em;
+    color: var(--muted);
+    max-width: 32em;
     line-height: 1.7;
   }
 
-  .trio {
-    margin-top: 48px;
+  .flow {
+    margin-top: 52px;
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 0;
-    border-top: 1px solid var(--line);
+    border-top: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
   }
   @media (max-width: 700px) {
-    .trio { grid-template-columns: 1fr; }
-    .trio article { border-right: none !important; border-bottom: 1px solid var(--line); padding: 24px 0 !important; }
-    .trio article:last-child { border-bottom: none; }
+    .flow { grid-template-columns: 1fr; }
+    .flow > div { border-right: none !important; border-bottom: 1px solid var(--line); padding: 24px 0 !important; }
+    .flow > div:last-child { border-bottom: none; }
   }
-  .trio article {
-    padding: 28px 24px 8px 0;
+  .flow > div {
+    padding: 28px 28px 28px 0;
     border-right: 1px solid var(--line);
   }
-  .trio article:nth-child(2) { padding-left: 24px; }
-  .trio article:last-child { border-right: none; padding-left: 24px; padding-right: 0; }
-  .trio .n {
+  .flow > div:nth-child(2) { padding-left: 28px; }
+  .flow > div:last-child { border-right: none; padding-right: 0; padding-left: 28px; }
+  .flow .n {
     font-family: var(--mono);
     font-size: .68rem;
-    color: var(--leaf);
-    letter-spacing: .08em;
-    margin-bottom: 10px;
+    letter-spacing: .1em;
+    color: var(--accent);
+    margin-bottom: 12px;
   }
-  .trio h3 {
-    font-size: 1.2rem;
+  .flow h3 {
+    font-family: var(--serif);
+    font-size: 1.35rem;
     font-weight: 500;
     letter-spacing: -.015em;
   }
-  .trio p {
+  .flow p {
     margin-top: 8px;
-    font-size: .95rem;
-    color: var(--ink-2);
+    font-size: .94rem;
+    color: var(--muted);
     line-height: 1.55;
   }
 
-  .list { margin-top: 48px; border-top: 1px solid var(--ink); }
-  .item {
+  .caps { background: rgba(201, 221, 211, .25); }
+  .cap-list { margin-top: 48px; border-top: 1px solid var(--ink); }
+  .cap {
     display: grid;
-    grid-template-columns: 2.5rem 10rem 1fr;
-    gap: 20px;
+    grid-template-columns: 2.2rem 9.5rem 1fr;
+    gap: 18px;
     padding: 22px 0;
     border-bottom: 1px solid var(--line);
     align-items: baseline;
   }
-  .item:last-child { border-bottom-color: var(--ink); }
-  @media (max-width: 640px) {
-    .item { grid-template-columns: 2rem 1fr; gap: 8px 14px; }
-    .item p { grid-column: 2; }
+  .cap:last-child { border-bottom-color: var(--ink); }
+  @media (max-width: 600px) {
+    .cap { grid-template-columns: 2rem 1fr; gap: 6px 14px; }
+    .cap p { grid-column: 2; }
   }
-  .item .n {
-    font-family: var(--mono);
-    font-size: .72rem;
-    color: var(--leaf);
-  }
-  .item h3 {
-    font-size: 1rem;
-    font-weight: 500;
-  }
-  .item p {
-    font-size: .95rem;
-    color: var(--ink-2);
-    line-height: 1.55;
-  }
+  .cap .n { font-family: var(--mono); font-size: .72rem; color: var(--accent); }
+  .cap h3 { font-size: .98rem; font-weight: 500; }
+  .cap p { font-size: .95rem; color: var(--muted); line-height: 1.55; }
 
-  .install {
+  .install-grid {
     display: grid;
-    grid-template-columns: 1fr 1.2fr;
+    grid-template-columns: 1fr 1.15fr;
     gap: 40px;
     align-items: start;
   }
-  @media (max-width: 800px) {
-    .install { grid-template-columns: 1fr; }
-  }
+  @media (max-width: 800px) { .install-grid { grid-template-columns: 1fr; } }
   .steps { margin-top: 28px; }
   .step {
-    padding: 14px 0;
+    padding: 13px 0;
     border-bottom: 1px solid var(--line);
-    font-size: .95rem;
+    font-size: .94rem;
   }
   .step:last-child { border-bottom: none; }
   .step b { font-weight: 500; }
-  .step span { color: var(--ink-2); }
+  .step span { color: var(--muted); }
   .step code {
-    font-size: .8rem;
-    background: rgba(26, 46, 40, .06);
+    background: rgba(20, 36, 31, .06);
     padding: 1px 5px;
     border-radius: 3px;
+    font-size: .8rem;
   }
 
   .term {
     background: var(--ink);
-    color: rgba(244, 247, 245, .55);
-    border-radius: 12px;
-    padding: 24px 26px;
+    color: rgba(243, 246, 244, .5);
+    border-radius: 6px;
+    padding: 24px;
     font-family: var(--mono);
     font-size: .78rem;
     line-height: 1.85;
     overflow-x: auto;
   }
-  .term .c { color: #f4f7f5; }
-  .term .a { color: #a8c4b8; }
-  .term .p { color: rgba(244, 247, 245, .28); }
+  .term .c { color: #f3f6f4; }
+  .term .a { color: var(--accent-soft); }
+  .term .p { color: rgba(243, 246, 244, .28); }
 
   footer {
     border-top: 1px solid var(--line);
-    padding: 40px 0 36px;
+    padding: 36px 0 40px;
   }
   .foot {
-    display: flex;
-    justify-content: space-between;
-    gap: 24px;
-    flex-wrap: wrap;
+    display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
     align-items: baseline;
   }
-  .foot .mark { font-weight: 500; }
-  .foot nav {
-    display: flex; flex-wrap: wrap; gap: 8px 20px;
+  .foot .brand {
+    font-family: var(--serif);
+    font-weight: 500;
   }
-  .foot a {
-    font-size: .88rem;
-    color: var(--ink-2);
-    transition: color .2s;
-  }
-  .foot a:hover { color: var(--leaf); }
+  .foot nav { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  .foot a { font-size: .86rem; color: var(--muted); transition: color .2s; }
+  .foot a:hover { color: var(--accent); }
   .foot .copy {
     width: 100%;
-    margin-top: 24px;
-    padding-top: 20px;
+    margin-top: 22px;
+    padding-top: 18px;
     border-top: 1px solid var(--line);
     font-family: var(--mono);
-    font-size: .68rem;
-    color: var(--ink-3);
-    letter-spacing: .04em;
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
+    font-size: .66rem;
+    letter-spacing: .05em;
+    color: var(--faint);
+    display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
   }
 
   .reveal {
-    opacity: 0;
-    transform: translateY(12px);
-    transition: opacity .7s var(--ease), transform .7s var(--ease);
+    opacity: 0; transform: translateY(10px);
+    transition: opacity .65s var(--ease), transform .65s var(--ease);
   }
   .reveal.in { opacity: 1; transform: none; }
 
   @media (prefers-reduced-motion: reduce) {
-    .hero::before, .chart .draw, .hero-main, .plane { animation: none !important; }
-    .chart .draw { stroke-dashoffset: 0; }
+    .hero, .band, .chart .line { animation: none !important; }
+    .chart .line { stroke-dashoffset: 0; }
     .reveal { opacity: 1; transform: none; transition: none; }
   }
 </style>
 </head>
 <body>
+<div class="wash" aria-hidden="true"></div>
 
-<header class="hero" id="top">
-  <nav class="nav">
-    <a class="mark" href="#top">filebox</a>
-    <div class="nav-right">
+<div class="shell">
+  <header class="top">
+    <a class="brand" href="#top">filebox</a>
+    <nav>
       <a href="#how">Architecture</a>
       <a href="#capabilities">Capabilities</a>
       <a href="#install">Install</a>
       <a href="https://github.com/ZhimingYe/filebox" target="_blank" rel="noopener">GitHub</a>
       <a class="dl" href="https://github.com/ZhimingYe/filebox/releases/latest" target="_blank" rel="noopener">Download</a>
-    </div>
-  </nav>
+    </nav>
+  </header>
+</div>
 
-  <div class="hero-main">
-    <div class="mark-lg">filebox</div>
-    <h1>Remote files, one tab — without opening the firewall.</h1>
-    <p class="lede">Agents dial out from your machines. Browse, preview, and search where the data already lives.</p>
-    <a class="cta" href="#install">
-      Get started
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
-    </a>
-    <p class="ver">v0.9.5 · read-only · self-hosted</p>
+<section class="hero shell" id="top">
+  <div class="brand-lg">filebox</div>
+  <h1>Remote files, one tab — without opening the firewall.</h1>
+  <p class="lede">Agents dial out from your machines. Browse, preview, and search where the data already lives.</p>
+  <div class="actions">
+    <a class="btn btn-solid" href="#install">Get started</a>
+    <a class="btn btn-line" href="https://github.com/ZhimingYe/filebox" target="_blank" rel="noopener">View source</a>
   </div>
+  <p class="meta">v0.9.5 · read-only · self-hosted · MIT</p>
+</section>
 
-  <div class="plane" aria-hidden="true">
-    <div class="plane-inner">
-      <aside class="plane-side">
-        <div class="lab">Agents</div>
-        <div class="agent on"><i></i>hpc-node-01</div>
-        <div class="agent on"><i></i>data-server</div>
-        <div class="agent"><i></i>edge-relay</div>
-      </aside>
-      <div class="plane-files">
-        <div class="path"><em>/data/analysis</em>/cohort-2024</div>
-        <div class="rows" id="rows">
-          <div class="row sel"><span>trend.png</span><span class="sz">180K</span></div>
-          <div class="row"><span>correlation.png</span><span class="sz">305K</span></div>
-          <div class="row"><span>summary.csv</span><span class="sz">82K</span></div>
-          <div class="row"><span>pipeline.log</span><span class="sz">1.2M</span></div>
-          <div class="row"><span>report.pdf</span><span class="sz">4.6M</span></div>
-        </div>
-      </div>
-      <div class="plane-prev">
-        <div class="path" id="prev">trend.png</div>
-        <div class="chart-wrap">
-          <svg class="chart" viewBox="0 0 300 120" xmlns="http://www.w3.org/2000/svg">
-            <path d="M10 90 C40 86, 55 70, 80 64 S120 74, 150 48 S210 28, 290 34 L290 110 L10 110 Z" fill="rgba(63,107,90,.12)"/>
-            <path class="draw" d="M10 90 C40 86, 55 70, 80 64 S120 74, 150 48 S210 28, 290 34" fill="none" stroke="#3f6b5a" stroke-width="1.8" stroke-linecap="round"/>
-            <path d="M10 98 C50 92, 90 84, 130 78 S210 72, 290 66" fill="none" stroke="rgba(26,46,40,.22)" stroke-width="1.2" stroke-dasharray="3 4"/>
-          </svg>
-        </div>
+<div class="band" aria-hidden="true">
+  <div class="band-frame">
+    <aside class="b-side">
+      <div class="lab">Agents</div>
+      <div class="agent on"><i></i>hpc-node-01</div>
+      <div class="agent on"><i></i>data-server</div>
+      <div class="agent"><i></i>edge-relay</div>
+    </aside>
+    <div class="b-files">
+      <div class="path"><em>/data/analysis</em>/cohort-2024</div>
+      <div class="rows" id="rows">
+        <div class="row sel"><span>trend.png</span><span class="sz">180K</span></div>
+        <div class="row"><span>correlation.png</span><span class="sz">305K</span></div>
+        <div class="row"><span>summary.csv</span><span class="sz">82K</span></div>
+        <div class="row"><span>pipeline.log</span><span class="sz">1.2M</span></div>
+        <div class="row"><span>report.pdf</span><span class="sz">4.6M</span></div>
       </div>
     </div>
+    <div class="b-prev">
+      <div class="path" id="prev">trend.png</div>
+      <div class="chart-box">
+        <svg class="chart" viewBox="0 0 320 130" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 95 C48 90, 65 72, 95 66 S145 78, 180 50 S245 28, 308 36 L308 118 L12 118 Z" fill="rgba(47,93,76,.1)"/>
+          <path class="line" d="M12 95 C48 90, 65 72, 95 66 S145 78, 180 50 S245 28, 308 36" fill="none" stroke="#2f5d4c" stroke-width="1.7" stroke-linecap="round"/>
+          <path d="M12 104 C55 98, 100 88, 145 82 S230 74, 308 68" fill="none" stroke="rgba(20,36,31,.2)" stroke-width="1.2" stroke-dasharray="3 4"/>
+        </svg>
+      </div>
+    </div>
   </div>
-</header>
+</div>
 
-<section class="sec" id="how">
-  <div class="wrap">
-    <h2 class="reveal">Agents reach out. The firewall stays shut.</h2>
+<section id="how">
+  <div class="shell">
+    <h2 class="lead reveal">Agents reach out. The firewall stays shut.</h2>
     <p class="sub reveal">The browser talks only to the hub. Each agent opens one outbound WebSocket — nothing inbound on the machines that hold the data.</p>
-    <div class="trio reveal">
-      <article>
+    <div class="flow reveal">
+      <div>
         <div class="n">01</div>
         <h3>Browser</h3>
         <p>HTTPS from anywhere. Auth, browse, preview.</p>
-      </article>
-      <article>
+      </div>
+      <div>
         <div class="n">02</div>
         <h3>Hub</h3>
         <p>One endpoint. Routing, sessions, progress.</p>
-      </article>
-      <article>
+      </div>
+      <div>
         <div class="n">03</div>
         <h3>Agents</h3>
         <p>Dial home from HPC, data boxes, edge hosts.</p>
-      </article>
-    </div>
-  </div>
-</section>
-
-<section class="sec" id="capabilities" style="background: rgba(215,230,223,.28); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);">
-  <div class="wrap">
-    <h2 class="reveal">Glance at remote data. Leave it where it is.</h2>
-    <p class="sub reveal">No scp for a quick look. No VPN for a figure. Read-only by protocol.</p>
-    <div class="list">
-      <div class="item reveal"><div class="n">01</div><h3>Preview</h3><p>Images, PDF, Markdown, CSV, HTML, Monaco code — rendered on the server.</p></div>
-      <div class="item reveal"><div class="n">02</div><h3>Search</h3><p>Filename and content search, scoped and cancelable, denylist-aware.</p></div>
-      <div class="item reveal"><div class="n">03</div><h3>Collections</h3><p>Named lists of files across roots, without moving data.</p></div>
-      <div class="item reveal"><div class="n">04</div><h3>Monitor</h3><p>CPU, memory, load, processes — safe on large HPC boxes.</p></div>
-      <div class="item reveal"><div class="n">05</div><h3>Update</h3><p><code>--update</code> verifies checksums and replaces the install in place.</p></div>
-    </div>
-  </div>
-</section>
-
-<section class="sec" id="install">
-  <div class="wrap install">
-    <div class="reveal">
-      <h2>Download. Init. Run.</h2>
-      <p class="sub">Static musl binaries. Config from the binaries themselves.</p>
-      <div class="steps">
-        <div class="step"><b>01 · Release</b> — <span>Hub on the exposed host; agent on each backend.</span></div>
-        <div class="step"><b>02 · Config</b> — <span><code>./bin/hub --init-config</code> · <code>./agent --init-config</code></span></div>
-        <div class="step"><b>03 · Hub</b> — <span><code>./bin/hub</code> serves the UI on <code>:3000</code>.</span></div>
-        <div class="step"><b>04 · Agents</b> — <span>Paste hub URL and token. Add roots in the UI.</span></div>
       </div>
     </div>
-    <pre class="term reveal"><span class="p">$</span> <span class="c">cd filebox-hub-* && ./bin/hub --init-config</span>
-<span class="p">$</span> <span class="c">./bin/hub</span>
+  </div>
+</section>
+
+<section class="caps" id="capabilities">
+  <div class="shell">
+    <h2 class="lead reveal">Glance at remote data. Leave it where it is.</h2>
+    <p class="sub reveal">No scp for a quick look. Read-only by protocol.</p>
+    <div class="cap-list">
+      <div class="cap reveal"><div class="n">01</div><h3>Preview</h3><p>Images, PDF, Markdown, CSV, HTML, Monaco code — rendered on the server.</p></div>
+      <div class="cap reveal"><div class="n">02</div><h3>Search</h3><p>Filename and content search, scoped and cancelable, denylist-aware.</p></div>
+      <div class="cap reveal"><div class="n">03</div><h3>Collections</h3><p>Named lists of files across roots, without moving data.</p></div>
+      <div class="cap reveal"><div class="n">04</div><h3>Monitor</h3><p>CPU, memory, load, processes — safe on large HPC boxes.</p></div>
+      <div class="cap reveal"><div class="n">05</div><h3>Update</h3><p><code>--update</code> verifies checksums and replaces the install in place.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="shell install-grid">
+    <div class="reveal">
+      <h2 class="lead">Download. Init. Run.</h2>
+      <p class="sub">Static musl binaries. Config from the binaries themselves.</p>
+      <div class="steps">
+        <div class="step"><b>01</b> — <span>Grab hub &amp; agent releases.</span></div>
+        <div class="step"><b>02</b> — <span><code>./bin/hub --init-config</code> · <code>./agent --init-config</code></span></div>
+        <div class="step"><b>03</b> — <span><code>./bin/hub</code> on <code>:3000</code>.</span></div>
+        <div class="step"><b>04</b> — <span>Point agents out. Add roots in the UI.</span></div>
+      </div>
+    </div>
+    <pre class="term reveal"><span class="p">$</span> <span class="c">./bin/hub --init-config && ./bin/hub</span>
 <span class="a">  filebox-hub</span> v0.9.5
   · listening on 0.0.0.0:3000
 
@@ -560,8 +511,8 @@
 </section>
 
 <footer>
-  <div class="wrap foot">
-    <a class="mark" href="#top">filebox</a>
+  <div class="shell foot">
+    <a class="brand" href="#top">filebox</a>
     <nav>
       <a href="#how">Architecture</a>
       <a href="#capabilities">Capabilities</a>
@@ -570,10 +521,7 @@
       <a href="https://github.com/ZhimingYe/filebox/releases/latest" target="_blank" rel="noopener">Releases</a>
       <a href="https://github.com/ZhimingYe/filebox/blob/main/NEWS.md" target="_blank" rel="noopener">Changelog</a>
     </nav>
-    <div class="copy">
-      <span>© 2026 filebox · MIT</span>
-      <span>v0.9.5</span>
-    </div>
+    <div class="copy"><span>© 2026 filebox · MIT</span><span>v0.9.5</span></div>
   </div>
 </footer>
 
@@ -582,16 +530,15 @@
   var reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
   var els = document.querySelectorAll(".reveal");
   if ("IntersectionObserver" in window && !reduce) {
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
+    var io = new IntersectionObserver(function (es) {
+      es.forEach(function (e) {
         if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
       });
-    }, { threshold: 0.14 });
+    }, { threshold: 0.12 });
     els.forEach(function (el) { io.observe(el); });
   } else {
     els.forEach(function (el) { el.classList.add("in"); });
   }
-
   var rows = document.querySelectorAll("#rows .row");
   var prev = document.getElementById("prev");
   var names = ["trend.png", "correlation.png", "summary.csv", "pipeline.log", "report.pdf"];
