@@ -136,7 +136,7 @@ export function NoAgentSelected({
           <>
             <h2 style={styles.title}>No agents connected</h2>
             <p style={styles.subtitle}>
-              Filebox shows remote machines that have dialed out to this hub.
+              filebox shows remote machines that have dialed out to this hub.
               Once an agent is running, it appears here and in the sidebar.
             </p>
 

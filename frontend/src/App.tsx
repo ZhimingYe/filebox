@@ -573,7 +573,7 @@ export default function App() {
           <>
             <div style={styles.brandRow}>
               <span style={styles.brandMark}><IconBrandMark style={{ width: 18, height: 18 }} /></span>
-              <span style={styles.logo}>Filebox</span>
+              <span style={styles.logo}>filebox</span>
             </div>
             {isMobile ? (
               <button
@@ -674,7 +674,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleOpenAbout}
-                title="About Filebox"
+                title="About filebox"
                 style={styles.aboutEntry}
               >
                 <span style={styles.aboutVersion}>v{health.hub.version}</span>
@@ -690,7 +690,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleOpenAbout}
-                title={`About Filebox v${health.hub.version}`}
+                title={`About filebox v${health.hub.version}`}
                 style={styles.aboutEntryCollapsed}
               >
                 <span style={styles.aboutVersionCollapsed}>
@@ -777,7 +777,7 @@ export default function App() {
               <IconMenu />
             </button>
             <div style={styles.mobileTitleBlock}>
-              <span style={styles.mobileTitle}>{selectedAgent?.name || 'Filebox'}</span>
+              <span style={styles.mobileTitle}>{selectedAgent?.name || 'filebox'}</span>
               {selectedAgent && (
                 <span style={styles.mobileSubtitle}>
                   <span

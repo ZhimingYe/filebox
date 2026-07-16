@@ -51,7 +51,7 @@ export function Login({ onLogin }: Props) {
               <span style={styles.brandMark}>
                 <IconBrandMark style={{ width: 22, height: 22 }} />
               </span>
-              <span style={styles.brandName}>Filebox</span>
+              <span style={styles.brandName}>filebox</span>
             </div>
             <div style={styles.headerCopy}>
               <h1 style={styles.heading}>Sign in</h1>

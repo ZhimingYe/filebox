@@ -21,7 +21,7 @@ export function AboutDialog({ open, health, agents, healthError, isLikelyDev, on
         <div style={styles.header}>
           <div style={styles.brandRow}>
             <span style={styles.brandMark}><IconBrandMark style={{ width: 18, height: 18 }} /></span>
-            <div style={styles.logo}>Filebox</div>
+            <div style={styles.logo}>filebox</div>
           </div>
           <button onClick={onClose} style={styles.closeBtn} aria-label="Close">×</button>
         </div>

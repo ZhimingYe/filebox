@@ -223,7 +223,7 @@ async fn require_session(
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
                 "error": "permission_denied",
-                "message": "Sandboxed previews cannot call Filebox control APIs",
+                "message": "Sandboxed previews cannot call filebox control APIs",
                 "retryable": false,
             })),
         )
