@@ -142,14 +142,70 @@ export function formatDate(iso: string): string {
   return `${yr}-${md} ${hm}`;
 }
 
+/** Desktop/mobile row heights — must match FileBrowser. */
+export const FILE_LIST_ROW_HEIGHT_DESKTOP = 32;
+export const FILE_LIST_ROW_HEIGHT_MOBILE = 44;
+export const FILE_LIST_COL_HEADER_HEIGHT = 28;
+
+export const NEW_ENTRY_MS = 15 * 60 * 1000;
+
+export function isRecentlyModified(modified: string | null | undefined, nowMs: number): boolean {
+  if (!modified) return false;
+  const t = Date.parse(modified);
+  if (Number.isNaN(t)) return false;
+  const age = nowMs - t;
+  return age <= NEW_ENTRY_MS && age >= -60_000;
+}
+
+export function formatDateShort(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  if (d.getFullYear() === now.getFullYear()) {
+    return `${md} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  const yr = d.getFullYear() >= 2000
+    ? String(d.getFullYear()).slice(-2)
+    : String(d.getFullYear());
+  return `${yr}-${md}`;
+}
+
+export type FileListSortKey = 'name' | 'modified' | 'size' | 'root';
+
+export function sortFileListRows<T extends { entry: FsEntry; rootLabel?: string }>(
+  rows: T[],
+  sortBy: FileListSortKey,
+  sortAsc: boolean,
+): T[] {
+  const sorted = [...rows];
+  sorted.sort((a, b) => {
+    let cmp = 0;
+    if (sortBy === 'name') {
+      cmp = a.entry.name.localeCompare(b.entry.name, undefined, { sensitivity: 'base' });
+    } else if (sortBy === 'modified') {
+      const da = a.entry.modified ? new Date(a.entry.modified).getTime() : 0;
+      const db = b.entry.modified ? new Date(b.entry.modified).getTime() : 0;
+      cmp = da - db;
+    } else if (sortBy === 'size') {
+      cmp = (a.entry.size ?? 0) - (b.entry.size ?? 0);
+    } else if (sortBy === 'root') {
+      cmp = (a.rootLabel ?? '').localeCompare(b.rootLabel ?? '', undefined, { sensitivity: 'base' });
+    }
+    return sortAsc ? cmp : -cmp;
+  });
+  return sorted;
+}
+
 /** Size the date column to the longest rendered date string in `rows`. */
-export function dateColWidthForRows(rows: { modified?: string | null }[]): string {
+export function dateColWidthForRows(rows: { modified?: string | null; entry?: FsEntry }[]): string {
   let maxChars = 0;
   for (const row of rows) {
-    if (!row.modified) continue;
-    const d = new Date(row.modified);
+    const modified = row.modified ?? row.entry?.modified;
+    if (!modified) continue;
+    const d = new Date(modified);
     if (Number.isNaN(d.getTime())) continue;
-    maxChars = Math.max(maxChars, formatDate(row.modified).length);
+    maxChars = Math.max(maxChars, formatDate(modified).length);
   }
   return `${Math.max(11, maxChars)}ch`;
 }
@@ -194,19 +250,22 @@ export const fileListStyles: Record<string, CSSProperties> = {
     letterSpacing: '-0.02em',
     fontFeatureSettings: '"tnum" 1, "kern" 1',
   },
+  entryDateMobile: {
+    color: c.textMuted, fontSize: 10, textAlign: 'right', flexShrink: 0,
+    whiteSpace: 'nowrap', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums',
+  },
+  entryDateRecent: {
+    color: c.accent, fontWeight: 600, letterSpacing: '-0.03em',
+  },
   entryMeta: { color: c.textFaint, fontSize: 12, width: 80, textAlign: 'right', flexShrink: 0 },
   deniedBadge: {
     color: c.warning, fontSize: 10, fontStyle: 'normal', fontWeight: 500,
     padding: '1px 6px', background: c.warningBg, borderRadius: radius.pill, flexShrink: 0,
   },
-  missingBadge: {
-    color: c.textMuted, fontSize: 10, fontStyle: 'normal', fontWeight: 500,
-    padding: '1px 6px', background: c.bgMuted, borderRadius: radius.pill, flexShrink: 0,
-  },
-  rowActionBtn: {
+  copyNameBtn: {
     padding: 0, borderRadius: radius.sm, border: 'none',
     background: 'transparent', color: c.textMuted, cursor: 'pointer',
-    lineHeight: 1, width: 24, height: 24, flexShrink: 0,
+    lineHeight: 1, width: 24, height: 24, flexShrink: 0, marginLeft: 'auto',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     boxSizing: 'border-box', transition: 'color 0.15s',
   },

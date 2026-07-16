@@ -5,13 +5,10 @@ import { statToFsEntry } from '../api/client';
 import { c, radius, font } from '../theme';
 import { PreviewWorkspace } from './PreviewWorkspace';
 import { WorkspaceSplit } from './WorkspaceSplit';
+import { FileEntryList, type FileEntryListRowModel } from './FileEntryList';
+import { fileListStyles, sortFileListRows, type FileListSortKey } from './fileListShared';
 import type { usePreviewTabs } from '../hooks/usePreviewTabs';
 import { useIsMobile } from '../state/useIsMobile';
-import {
-  CollectionItemList,
-  type CollectionItemRow,
-  type CollectionItemStatus,
-} from './CollectionItemList';
 
 interface Props {
   agent: AgentInfo;
@@ -26,7 +23,7 @@ interface Props {
   hidePreview?: boolean;
 }
 
-type ItemStatus = CollectionItemStatus;
+type ItemStatus = 'ok' | 'missing' | 'denied' | 'unknown';
 
 interface ItemMeta {
   status: ItemStatus;
@@ -58,7 +55,17 @@ export function CollectionsView({
   const [newOpen, setNewOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [metaVersion, setMetaVersion] = useState(0);
+  const [sortBy, setSortBy] = useState<FileListSortKey>('name');
+  const [sortAsc, setSortAsc] = useState(true);
   const metaCache = useRef<Map<string, ItemMeta>>(new Map());
+
+  const toggleSort = useCallback((key: FileListSortKey) => {
+    if (sortBy === key) setSortAsc((a) => !a);
+    else {
+      setSortBy(key);
+      setSortAsc(true);
+    }
+  }, [sortBy]);
 
   useEffect(() => {
     metaCache.current.clear();
@@ -83,20 +90,33 @@ export function CollectionsView({
   const activeTab = previewTabs.activeTab;
   const showInlinePreview = !hidePreview && !!activeTab && activeTab.agentId === agent.id;
 
-  const listRows: CollectionItemRow[] = useMemo(() => {
+  const rawListRows: FileEntryListRowModel[] = useMemo(() => {
     if (!selected) return [];
     return selected.items.map((item) => {
       const key = `${item.root}::${item.path}`;
       const meta = metaCache.current.get(key);
+      const name = item.label?.trim() || basenameFromPath(item.path);
+      const status = meta?.status ?? 'unknown';
       return {
-        item,
-        name: item.label?.trim() || basenameFromPath(item.path),
-        status: meta?.status ?? 'unknown',
-        size: meta?.size,
-        modified: meta?.modified,
+        entry: {
+          name,
+          entry_type: 'file' as const,
+          size: meta?.size ?? null,
+          modified: meta?.modified ?? null,
+          denied: status === 'denied',
+        },
+        fullPath: `${item.root}${item.path}`,
+        rootLabel: item.root,
+        unavailable: status === 'missing',
+        data: item,
       };
     });
   }, [selected, metaVersion]);
+
+  const listRows = useMemo(
+    () => sortFileListRows(rawListRows, sortBy, sortAsc),
+    [rawListRows, sortBy, sortAsc],
+  );
 
   // Probe file metadata for status badges, size, and modified columns.
   useEffect(() => {
@@ -235,25 +255,58 @@ export function CollectionsView({
   };
 
   const handleSelectRow = useCallback(
-    (row: CollectionItemRow) => {
-      openItem(row.item);
+    (row: FileEntryListRowModel) => {
+      openItem(row.data as CollectionItem);
     },
     [openItem],
   );
 
-  const handleOpenInFiles = useCallback(
-    (row: CollectionItemRow) => {
-      const dir = row.item.path.replace(/\/[^/]+$/, '') || '/';
-      onOpenInFiles(row.item.root, dir);
+  const handleOpenInFilesRow = useCallback(
+    (row: FileEntryListRowModel) => {
+      const item = row.data as CollectionItem;
+      const dir = item.path.replace(/\/[^/]+$/, '') || '/';
+      onOpenInFiles(item.root, dir);
     },
     [onOpenInFiles],
   );
 
   const handleRemoveRow = useCallback(
-    (row: CollectionItemRow) => {
-      removeItem(row.item);
+    (row: FileEntryListRowModel) => {
+      removeItem(row.data as CollectionItem);
     },
     [removeItem],
+  );
+
+  const renderNameHoverActions = useCallback(
+    (row: FileEntryListRowModel) => (
+      <>
+        <button
+          type="button"
+          title="Open in Files"
+          style={fileListStyles.copyNameBtn}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleOpenInFilesRow(row);
+          }}
+        >
+          <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M2 4.5C2 3.67 2.67 3 3.5 3H6.29a1 1 0 0 1 .7.29L8 4.5h4.5c.83 0 1.5.67 1.5 1.5v5.5c0 .83-.67 1.5-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z" fill="currentColor"/>
+          </svg>
+        </button>
+        <button
+          type="button"
+          title="Remove from collection"
+          style={fileListStyles.copyNameBtn}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleRemoveRow(row);
+          }}
+        >
+          ×
+        </button>
+      </>
+    ),
+    [handleOpenInFilesRow, handleRemoveRow],
   );
 
   // ← → flip through collection files (same affordance as Files directory nav).
@@ -265,14 +318,17 @@ export function CollectionsView({
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return;
       }
-      const navigable = listRows.filter((r) => r.status !== 'missing' && r.status !== 'denied');
+      const navigable = listRows.filter((r) => !r.entry.denied && !r.unavailable);
       const currentKey = `${activeTab.root}::${activeTab.path}`;
-      const idx = navigable.findIndex((r) => `${r.item.root}::${r.item.path}` === currentKey);
+      const idx = navigable.findIndex((r) => {
+        const item = r.data as CollectionItem;
+        return `${item.root}::${item.path}` === currentKey;
+      });
       if (idx === -1) return;
       const nextIdx = e.key === 'ArrowRight' ? idx + 1 : idx - 1;
       if (nextIdx < 0 || nextIdx >= navigable.length) return;
       e.preventDefault();
-      openItem(navigable[nextIdx].item);
+      openItem(navigable[nextIdx].data as CollectionItem);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -357,11 +413,15 @@ export function CollectionsView({
           showPreview={showInlinePreview}
           style={{ flex: 1 }}
           list={(
-            <CollectionItemList
+            <FileEntryList
               rows={listRows}
-              onSelect={handleSelectRow}
-              onOpenInFiles={handleOpenInFiles}
-              onRemove={handleRemoveRow}
+              sortBy={sortBy}
+              sortAsc={sortAsc}
+              onToggleSort={toggleSort}
+              showRootColumn
+              emptyMessage="Empty collection — add files from the Files browser."
+              onRowClick={(row) => handleSelectRow(row)}
+              renderNameHoverActions={renderNameHoverActions}
             />
           )}
           preview={(

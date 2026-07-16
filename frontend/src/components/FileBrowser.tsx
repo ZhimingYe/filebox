@@ -15,7 +15,8 @@ import {
   matchesDateFilter,
   type DateFilterValue,
 } from './DateFilterControl';
-import { formatSize, getEntryIcon, IconUpDir, formatDate } from './fileListShared';
+import { formatDate, formatDateShort, IconUpDir, isRecentlyModified } from './fileListShared';
+import { FileEntryListRow } from './FileEntryList';
 
 // ── Directory-tree resize splitter (desktop only) ──────────────────────────
 // A 6px grab strip sitting to the right of the tree's border. Transparent at
@@ -1025,33 +1026,7 @@ function globToRegex(glob: string): string {
   return re;
 }
 
-// Entries modified within this window get a "new" badge in the file list.
-const NEW_ENTRY_MS = 15 * 60 * 1000;
-
-/** True when `modified` is a parseable ISO time within the last 15 minutes. */
-function isRecentlyModified(modified: string | null | undefined, nowMs: number): boolean {
-  if (!modified) return false;
-  const t = Date.parse(modified);
-  if (Number.isNaN(t)) return false;
-  const age = nowMs - t;
-  // Allow a small future skew (agent/host clock slightly ahead of browser).
-  return age <= NEW_ENTRY_MS && age >= -60_000;
-}
-
-// Compact form for narrow mobile rows.
-function formatDateShort(iso: string): string {
-  const d = new Date(iso);
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  if (d.getFullYear() === now.getFullYear()) {
-    return `${md} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  }
-  const yr = d.getFullYear() >= 2000
-    ? String(d.getFullYear()).slice(-2)
-    : String(d.getFullYear());
-  return `${yr}-${md}`;
-}
+// Compact form for narrow mobile rows — see fileListShared.formatDateShort.
 
 const styles: Record<string, React.CSSProperties> = {
   container: { display: 'flex', flexDirection: 'column', height: '100%', fontFamily: font.sans },
@@ -1412,99 +1387,71 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
   const isBack = entry === null;
   const displayEntry = isBack ? null : entry as api.FsEntry;
   const isHovered = hoveredIdx === index;
-  const isRecent = !isBack && !displayEntry!.denied && isRecentlyModified(displayEntry!.modified, nowMs);
 
+  if (isBack) {
+    return (
+      <div
+        style={{
+          ...style,
+          ...styles.entry,
+          ...(isHovered ? styles.entryHover : {}),
+        }}
+        onClick={() => onNavigateUp()}
+        onMouseEnter={() => setHoveredIdx(index)}
+        onMouseLeave={() => setHoveredIdx(null)}
+      >
+        <span style={styles.icon}><IconUpDir /></span>
+        <div style={styles.entryNameCell}>
+          <span style={styles.entryName}>..</span>
+        </div>
+      </div>
+    );
+  }
+
+  const sep = currentPath === '/' ? '' : '/';
   return (
-    <div
-      style={{
-        ...style,
-        ...styles.entry,
-        ...(isHovered ? styles.entryHover : {}),
-        opacity: displayEntry?.denied ? 0.4 : 1,
-        cursor: displayEntry?.denied ? 'not-allowed' : 'pointer',
+    <FileEntryListRow
+      style={style}
+      index={index}
+      row={{
+        entry: displayEntry!,
+        fullPath: fullAddress + sep + displayEntry!.name,
       }}
-      onClick={() => isBack ? onNavigateUp() : onNavigateEntry(displayEntry!)}
+      isHovered={isHovered}
       onMouseEnter={() => setHoveredIdx(index)}
       onMouseLeave={() => setHoveredIdx(null)}
-    >
-      <span style={styles.icon}>
-        {isBack ? <IconUpDir /> : getEntryIcon(displayEntry!)}
-      </span>
-      <div style={styles.entryNameCell}>
-        <span
-          style={{
-            ...styles.entryName,
-            fontFamily: fileNameSerif ? font.serif : font.sans,
-            ...(!isBack && nameAlignRight ? { direction: 'rtl', textAlign: 'right', flex: '1 1 auto' } : {}),
-          }}
-          title={isBack ? undefined : displayEntry!.name}
-        >
-          {isBack ? (
-            '..'
-          ) : nameAlignRight ? (
-            // bidi-isolate the name so characters still render LTR while the
-            // cell is RTL: overflow + ellipsis then clip the PREFIX, keeping
-            // the filename suffix pinned to the right edge of the cell.
-            <bdi dir="ltr">{displayEntry!.name}</bdi>
-          ) : (
-            displayEntry!.name
-          )}
-        </span>
-        {!isBack && displayEntry!.denied && <span style={styles.deniedBadge}>denied</span>}
-        {!isBack && isHovered && onAddToCollection && selectedRoot
-          && displayEntry!.entry_type === 'file' && !displayEntry!.denied && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              const filePath = currentPath === '/' ? `/${displayEntry!.name}` : `${currentPath}/${displayEntry!.name}`;
-              onAddToCollection(selectedRoot, filePath, e.currentTarget);
-            }}
-            style={styles.copyNameBtn}
-            title="Add to collection"
-          >
-            <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-            </svg>
-          </button>
-        )}
-        {!isBack && isHovered && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              const sep = currentPath === '/' ? '' : '/';
-              copyToClipboard(fullAddress + sep + displayEntry!.name, `name-${index}`);
-            }}
-            style={styles.copyNameBtn}
-            title="Copy full path"
-          >
-            {copiedPath === `name-${index}` ? (
+      onClick={() => onNavigateEntry(displayEntry!)}
+      dateColWidth={dateColWidth}
+      isMobile={isMobile}
+      nowMs={nowMs}
+      showRootColumn={false}
+      copiedPath={copiedPath}
+      copyToClipboard={copyToClipboard}
+      nameAlignRight={nameAlignRight}
+      fileNameSerif={fileNameSerif}
+      renderNameHoverActions={
+        onAddToCollection && selectedRoot
+        && displayEntry!.entry_type === 'file' && !displayEntry!.denied
+          ? () => (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                const filePath = currentPath === '/'
+                  ? `/${displayEntry!.name}`
+                  : `${currentPath}/${displayEntry!.name}`;
+                onAddToCollection(selectedRoot, filePath, e.currentTarget);
+              }}
+              style={styles.copyNameBtn}
+              title="Add to collection"
+            >
               <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M3.5 8.5l3 3 6-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
               </svg>
-            ) : (
-              <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="3" y="4" width="9" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3"/>
-                <path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                <path d="M6 8h4M6 10.5h2.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round"/>
-              </svg>
-            )}
-          </button>
-        )}
-      </div>
-      {!isBack && displayEntry!.modified && (
-        <span
-          style={{
-            ...(isMobile ? { ...styles.entryDateMobile, width: dateColWidth } : { ...styles.entryDate, width: dateColWidth }),
-            ...(isRecent ? styles.entryDateRecent : {}),
-          }}
-          title={isRecent ? 'Modified within the last 15 minutes' : undefined}
-        >
-          {isMobile ? formatDateShort(displayEntry!.modified) : formatDate(displayEntry!.modified)}
-        </span>
-      )}
-      {!isBack && displayEntry!.size !== null && !isMobile && (
-        <span style={styles.entryMeta}>{formatSize(displayEntry!.size)}</span>
-      )}
-    </div>
+            </button>
+          )
+          : undefined
+      }
+    />
   );
 };
