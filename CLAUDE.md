@@ -301,6 +301,7 @@ filebox/
   NEWS.md
   docs/local-debugging.md   # local bring-up + curl probes
   crates/
+    README.md               # Rust workspace architecture
     protocol/src/           # message.rs, agent.rs, resources.rs (roots/pins/
                             # collections), search.rs, denylist.rs
     updater/src/            # --init-config, --update
