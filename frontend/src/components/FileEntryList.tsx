@@ -302,7 +302,8 @@ export function FileEntryList({
 }: FileEntryListProps) {
   const isMobile = useIsMobile();
   const rowHeight = isMobile ? FILE_LIST_ROW_HEIGHT_MOBILE : FILE_LIST_ROW_HEIGHT_DESKTOP;
-  const containerRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const { copiedPath, copyToClipboard } = useCopyToClipboard();
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const entries = useMemo(() => rows.map((r) => r.entry), [rows]);
@@ -314,13 +315,13 @@ export function FileEntryList({
     padRight,
     outerElementType,
     hoverNamePad,
-  } = useFileListLayout(containerRef, {
+  } = useFileListLayout(panelRef, {
     showRootColumn,
     isMobile,
     rows,
     hasRows: rows.length > 0,
     extraHoverActions,
-  });
+  }, bodyRef);
 
   const sortIndicator = (key: FileListSortKey) => {
     if (sortBy !== key) return '';
@@ -349,7 +350,7 @@ export function FileEntryList({
   );
 
   return (
-    <div ref={containerRef} style={{ ...fileListStyles.listContainer, flex: 1, minHeight: 0 }}>
+    <div ref={panelRef} style={{ ...fileListStyles.listContainer, flex: 1, minHeight: 0 }}>
       <div style={{
         ...fileListStyles.colHeader,
         gridTemplateColumns,
@@ -385,20 +386,30 @@ export function FileEntryList({
           </span>
         )}
       </div>
-      {rows.length === 0 ? (
-        <div style={fileListStyles.empty}>{emptyMessage}</div>
-      ) : (
-        <FixedSizeList
-          height={bodyHeight}
-          itemCount={rows.length}
-          itemSize={rowHeight}
-          itemData={rowItemData}
-          width="100%"
-          outerElementType={outerElementType}
-        >
-          {VirtualRow}
-        </FixedSizeList>
-      )}
+      <div ref={bodyRef} style={listBodyStyle}>
+        {rows.length === 0 ? (
+          <div style={fileListStyles.empty}>{emptyMessage}</div>
+        ) : (
+          <FixedSizeList
+            height={bodyHeight}
+            itemCount={rows.length}
+            itemSize={rowHeight}
+            itemData={rowItemData}
+            width="100%"
+            outerElementType={outerElementType}
+          >
+            {VirtualRow}
+          </FixedSizeList>
+        )}
+      </div>
     </div>
   );
 }
+
+const listBodyStyle: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  overflow: 'hidden',
+  display: 'flex',
+  flexDirection: 'column',
+};

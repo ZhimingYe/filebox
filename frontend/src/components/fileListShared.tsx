@@ -371,7 +371,7 @@ export interface FileListLayoutRow {
 
 /** Measure list size, scrollbar gutter, and adaptive column template together. */
 export function useFileListLayout(
-  containerRef: RefObject<HTMLDivElement | null>,
+  widthRef: RefObject<HTMLDivElement | null>,
   opts: {
     showRootColumn: boolean;
     isMobile: boolean;
@@ -380,50 +380,86 @@ export function useFileListLayout(
     /** Extra hover icon buttons besides copy (Collections: 2). */
     extraHoverActions: number;
   },
+  /** When set, height is measured here (header is a sibling above this node). */
+  bodyRef?: RefObject<HTMLDivElement | null>,
 ) {
   const [listWidth, setListWidth] = useState(0);
   const [listHeight, setListHeight] = useState(400);
   const outerRef = useRef<HTMLDivElement>(null);
   const [scrollPad, setScrollPad] = useState(0);
+  const headerInsidePanel = bodyRef == null;
 
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
+    const widthEl = widthRef.current;
+    const heightEl = (bodyRef ?? widthRef).current;
+    if (!widthEl || !heightEl) return;
     let raf = 0;
-    const obs = new ResizeObserver(([entry]) => {
+    const obs = new ResizeObserver((entries) => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
-        const { width, height } = entry.contentRect;
-        setListWidth((prev) => (Math.abs(prev - width) < 1 ? prev : width));
-        setListHeight((prev) => (Math.abs(prev - height) < 1 ? prev : height));
+        for (const entry of entries) {
+          if (entry.target === widthEl) {
+            const { width } = entry.contentRect;
+            setListWidth((prev) => (Math.abs(prev - width) < 1 ? prev : width));
+          }
+          if (entry.target === heightEl) {
+            const { height } = entry.contentRect;
+            setListHeight((prev) => (Math.abs(prev - height) < 1 ? prev : height));
+          }
+        }
       });
     });
-    obs.observe(el);
+    obs.observe(widthEl);
+    if (heightEl !== widthEl) obs.observe(heightEl);
     return () => {
       cancelAnimationFrame(raf);
       obs.disconnect();
     };
-  }, [containerRef]);
+  }, [widthRef, bodyRef]);
 
   useEffect(() => {
     if (!opts.hasRows) {
       setScrollPad(0);
       return;
     }
-    const el = outerRef.current;
-    if (!el) return;
-    const update = () => {
-      setScrollPad(Math.max(0, el.offsetWidth - el.clientWidth));
+    let ro: ResizeObserver | null = null;
+    let raf = 0;
+    let cancelled = false;
+
+    const attach = () => {
+      const el = outerRef.current;
+      if (!el) return false;
+      const update = () => {
+        if (!cancelled) {
+          setScrollPad(Math.max(0, el.offsetWidth - el.clientWidth));
+        }
+      };
+      update();
+      ro = new ResizeObserver(update);
+      ro.observe(el);
+      return true;
     };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
+
+    if (!attach()) {
+      raf = requestAnimationFrame(() => { attach(); });
+    }
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      ro?.disconnect();
+    };
   }, [opts.hasRows, opts.rows.length, listHeight]);
 
+  // Row grid sits inside the scroll body (scrollbar gutter); budget columns on that width.
+  const layoutWidth = useMemo(() => {
+    if (listWidth <= 0) return 0;
+    return scrollPad > 0 ? Math.max(0, listWidth - scrollPad) : listWidth;
+  }, [listWidth, scrollPad]);
+
   const rootColWidth = useMemo(
-    () => (opts.showRootColumn ? rootColWidthForRows(opts.rows, listWidth) : '0px'),
-    [opts.rows, opts.showRootColumn, listWidth],
+    () => (opts.showRootColumn ? rootColWidthForRows(opts.rows, layoutWidth) : '0px'),
+    [opts.rows, opts.showRootColumn, layoutWidth],
   );
   const dateColWidth = useMemo(
     () => dateColWidthForRows(opts.rows, opts.isMobile),
@@ -440,9 +476,9 @@ export function useFileListLayout(
       rootColWidth,
       dateColWidth,
       sizeColWidth,
-      listWidth,
+      listWidth: layoutWidth,
     }),
-    [opts.showRootColumn, opts.isMobile, rootColWidth, dateColWidth, sizeColWidth, listWidth],
+    [opts.showRootColumn, opts.isMobile, rootColWidth, dateColWidth, sizeColWidth, layoutWidth],
   );
 
   const outerElementType = useMemo(() => {
@@ -456,7 +492,9 @@ export function useFileListLayout(
     return Outer;
   }, []);
 
-  const bodyHeight = Math.max(0, listHeight - FILE_LIST_COL_HEADER_HEIGHT);
+  const bodyHeight = headerInsidePanel
+    ? Math.max(0, listHeight - FILE_LIST_COL_HEADER_HEIGHT)
+    : Math.max(0, listHeight);
   const hoverNamePad = fileListHoverNamePad(opts.extraHoverActions);
 
   return {
@@ -465,7 +503,7 @@ export function useFileListLayout(
     padRight: scrollPad,
     outerElementType,
     hoverNamePad,
-    listWidth,
+    listWidth: layoutWidth,
   };
 }
 
