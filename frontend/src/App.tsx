@@ -93,7 +93,7 @@ export default function App() {
   const [collectionPicker, setCollectionPicker] = useState<{
     root: string;
     path: string;
-    rect: DOMRect;
+    anchor: HTMLElement;
   } | null>(null);
 
   // ── File browsing position, owned HERE (not in FileBrowser) ──
@@ -300,6 +300,8 @@ export default function App() {
         return;
       }
       if (e.key === 'Escape') {
+        // CollectionPicker handles its own Esc in capture phase.
+        if (collectionPicker) return;
         previewTabs.close(activeTab.id);
         return;
       }
@@ -330,7 +332,7 @@ export default function App() {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [activeTab, previewTabs, view]);
+  }, [activeTab, previewTabs, view, collectionPicker]);
 
   const selectedAgent = useMemo(() => agents.find((a) => a.id === selectedAgentId) || null, [agents, selectedAgentId]);
 
@@ -500,7 +502,7 @@ export default function App() {
   }, [refresh]), loggedIn === true);
 
   const openCollectionPicker = useCallback((root: string, path: string, anchor: HTMLElement) => {
-    setCollectionPicker({ root, path, rect: anchor.getBoundingClientRect() });
+    setCollectionPicker({ root, path, anchor });
   }, []);
 
   const openInFiles = useCallback((root: string, path: string) => {
@@ -939,7 +941,7 @@ export default function App() {
         <CollectionPicker
           agent={selectedAgent}
           target={{ root: collectionPicker.root, path: collectionPicker.path }}
-          anchorRect={collectionPicker.rect}
+          anchorEl={collectionPicker.anchor}
           onClose={() => setCollectionPicker(null)}
           onChanged={refresh}
         />
