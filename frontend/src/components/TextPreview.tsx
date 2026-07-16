@@ -139,7 +139,9 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
             quickSuggestions: false,
             suggestOnTriggerCharacters: false,
             parameterHints: { enabled: false },
-            hover: { enabled: true },
+            // Read-only viewer: hover tooltips add little value and can sit
+            // under the Find widget / toolbar, so keep them off.
+            hover: { enabled: false },
             links: true,
             find: {
               addExtraSpaceOnTop: false,
