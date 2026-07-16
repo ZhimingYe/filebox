@@ -15,7 +15,6 @@ import {
   FILE_LIST_COL_HEADER_HEIGHT,
   FILE_LIST_ROW_HEIGHT_DESKTOP,
   FILE_LIST_ROW_HEIGHT_MOBILE,
-  dateColWidthForRows,
   fileListGridColumns,
   fileListStyles,
   formatDate,
@@ -23,7 +22,7 @@ import {
   formatSize,
   getEntryIcon,
   isRecentlyModified,
-  rootColWidthForRows,
+  useListScrollGutter,
   type FileListSortKey,
 } from './fileListShared';
 
@@ -318,22 +317,16 @@ export function FileEntryList({
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const entries = useMemo(() => rows.map((r) => r.entry), [rows]);
   const nowMs = useRecentEntryClock(entries);
-  const dateColWidth = useMemo(() => dateColWidthForRows(rows), [rows]);
-  const rootColWidth = useMemo(
-    () => (showRootColumn ? rootColWidthForRows(rows) : '0px'),
-    [rows, showRootColumn],
-  );
   const actionsColWidth = renderNameHoverActions ? '72px' : '28px';
   const gridTemplateColumns = useMemo(
     () => fileListGridColumns({
       showRootColumn,
       isMobile,
-      dateColWidth,
-      rootColWidth,
       actionsColWidth,
     }),
-    [showRootColumn, isMobile, dateColWidth, rootColWidth, actionsColWidth],
+    [showRootColumn, isMobile, actionsColWidth],
   );
+  const { padRight, outerElementType } = useListScrollGutter(rows.length > 0);
 
   const sortIndicator = (key: FileListSortKey) => {
     if (sortBy !== key) return '';
@@ -364,7 +357,11 @@ export function FileEntryList({
 
   return (
     <div ref={containerRef} style={{ ...fileListStyles.listContainer, flex: 1, minHeight: 0 }}>
-      <div style={{ ...fileListStyles.colHeader, gridTemplateColumns }}>
+      <div style={{
+        ...fileListStyles.colHeader,
+        gridTemplateColumns,
+        paddingRight: 12 + padRight,
+      }}>
         <span style={fileListStyles.colIcon} />
         <span
           style={{ ...fileListStyles.colName, cursor: 'pointer' }}
@@ -405,6 +402,7 @@ export function FileEntryList({
           itemSize={rowHeight}
           itemData={rowItemData}
           width="100%"
+          outerElementType={outerElementType}
         >
           {VirtualRow}
         </FixedSizeList>

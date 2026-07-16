@@ -15,7 +15,7 @@ import {
   matchesDateFilter,
   type DateFilterValue,
 } from './DateFilterControl';
-import { formatDate, formatDateShort, IconUpDir, isRecentlyModified, fileListGridColumns, fileListStyles } from './fileListShared';
+import { formatDate, formatDateShort, IconUpDir, isRecentlyModified, fileListGridColumns, fileListStyles, useListScrollGutter } from './fileListShared';
 import { FileEntryListRow } from './FileEntryList';
 
 // ── Directory-tree resize splitter (desktop only) ──────────────────────────
@@ -576,12 +576,11 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     () => fileListGridColumns({
       showRootColumn: false,
       isMobile,
-      dateColWidth,
-      rootColWidth: '0px',
       actionsColWidth,
     }),
-    [isMobile, dateColWidth, actionsColWidth, onAddToCollection],
+    [isMobile, actionsColWidth],
   );
+  const { padRight, outerElementType } = useListScrollGutter(rows.length > 0);
 
   const rowItemData = useMemo(
     () => ({
@@ -943,7 +942,11 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
           />
 
           {/* Column headers */}
-          <div style={{ ...fileListStyles.colHeader, gridTemplateColumns }}>
+          <div style={{
+            ...fileListStyles.colHeader,
+            gridTemplateColumns,
+            paddingRight: 12 + padRight,
+          }}>
             <span style={fileListStyles.colIcon} />
             <span
               style={{ ...fileListStyles.colName, cursor: 'pointer', ...(nameAlignRight ? { textAlign: 'right' } : {}) }}
@@ -996,6 +999,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
                   itemSize={ROW_HEIGHT}
                   itemData={rowItemData}
                   width="100%"
+                  outerElementType={outerElementType}
                 >
                   {Row}
                 </VList>

@@ -1,4 +1,5 @@
-import type { CSSProperties } from 'react';
+import type { CSSProperties, HTMLAttributes } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FsEntry } from '../api/client';
 import { c, radius, font, fileType } from '../theme';
 
@@ -223,17 +224,56 @@ export function rootColWidthForRows(rows: { rootLabel?: string }[]): string {
 export function fileListGridColumns(opts: {
   showRootColumn: boolean;
   isMobile: boolean;
-  dateColWidth: string;
-  rootColWidth: string;
   /** Trailing hover-actions column; omit with '0px'. */
   actionsColWidth: string;
 }): string {
-  const parts = ['20px', 'minmax(0, 1fr)'];
-  if (opts.showRootColumn) parts.push(opts.rootColWidth);
-  parts.push(opts.dateColWidth);
-  if (!opts.isMobile) parts.push('80px');
-  if (opts.actionsColWidth !== '0px') parts.push(opts.actionsColWidth);
+  // Name absorbs free space but never collapses below a readable minimum.
+  // Root / date / size shrink with ellipsis before name is crushed.
+  const name = 'minmax(64px, 1fr)';
+  const meta = 'minmax(0, max-content)';
+  const parts = ['20px', name];
+  if (opts.showRootColumn) parts.push(meta);
+  parts.push(meta); // modified
+  if (!opts.isMobile) parts.push(meta); // size
+  if (opts.actionsColWidth !== '0px') {
+    parts.push(`minmax(48px, ${opts.actionsColWidth})`);
+  }
   return parts.join(' ');
+}
+
+/** Keep column header aligned with react-window body when a vertical scrollbar appears. */
+export function useListScrollGutter(active: boolean) {
+  const outerRef = useRef<HTMLDivElement>(null);
+  const [padRight, setPadRight] = useState(0);
+
+  useEffect(() => {
+    if (!active) {
+      setPadRight(0);
+      return;
+    }
+    const el = outerRef.current;
+    if (!el) return;
+    const update = () => {
+      setPadRight(Math.max(0, el.offsetWidth - el.clientWidth));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [active]);
+
+  const outerElementType = useMemo(() => {
+    const Outer = ({ style, ...rest }: HTMLAttributes<HTMLDivElement>) => (
+      <div
+        {...rest}
+        ref={outerRef}
+        style={{ ...style, scrollbarGutter: 'stable' }}
+      />
+    );
+    return Outer;
+  }, []);
+
+  return { padRight, outerElementType };
 }
 
 /** List row + column chrome shared with FileBrowser. */
@@ -246,15 +286,15 @@ export const fileListStyles: Record<string, CSSProperties> = {
   },
   colIcon: { minWidth: 0 },
   colName: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  colDate: { textAlign: 'right', minWidth: 0 },
-  colSize: { textAlign: 'right', minWidth: 0 },
+  colDate: { textAlign: 'right', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  colSize: { textAlign: 'right', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   colSource: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   colActions: { minWidth: 0 },
   listContainer: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' },
   entry: {
     display: 'grid', alignItems: 'center', columnGap: 8,
     padding: '0 12px', boxSizing: 'border-box',
-    minHeight: 32, borderRadius: radius.sm, margin: '0 4px',
+    minHeight: 32, borderRadius: radius.sm,
     transition: 'background 0.1s',
   },
   entryHover: {
@@ -275,13 +315,15 @@ export const fileListStyles: Record<string, CSSProperties> = {
   },
   entryDate: {
     color: c.textMuted, fontSize: 12, textAlign: 'right',
-    minWidth: 0, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums',
+    minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    fontVariantNumeric: 'tabular-nums',
     letterSpacing: '-0.02em',
     fontFeatureSettings: '"tnum" 1, "kern" 1',
   },
   entryDateMobile: {
     color: c.textMuted, fontSize: 10, textAlign: 'right', minWidth: 0,
-    whiteSpace: 'nowrap', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums',
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums',
   },
   entryActions: {
     display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
@@ -290,7 +332,10 @@ export const fileListStyles: Record<string, CSSProperties> = {
   entryDateRecent: {
     color: c.accent, fontWeight: 600, letterSpacing: '-0.03em',
   },
-  entryMeta: { color: c.textFaint, fontSize: 12, textAlign: 'right', minWidth: 0 },
+  entryMeta: {
+    color: c.textFaint, fontSize: 12, textAlign: 'right', minWidth: 0,
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  },
   deniedBadge: {
     color: c.warning, fontSize: 10, fontStyle: 'normal', fontWeight: 500,
     padding: '1px 6px', background: c.warningBg, borderRadius: radius.pill, flexShrink: 0,
