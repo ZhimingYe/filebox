@@ -224,8 +224,6 @@ export function rootColWidthForRows(rows: { rootLabel?: string }[]): string {
 export function fileListGridColumns(opts: {
   showRootColumn: boolean;
   isMobile: boolean;
-  /** Trailing hover-actions column; omit with '0px'. */
-  actionsColWidth: string;
 }): string {
   // Name absorbs free space but never collapses below a readable minimum.
   // Root / date / size shrink with ellipsis before name is crushed.
@@ -235,9 +233,6 @@ export function fileListGridColumns(opts: {
   if (opts.showRootColumn) parts.push(meta);
   parts.push(meta); // modified
   if (!opts.isMobile) parts.push(meta); // size
-  if (opts.actionsColWidth !== '0px') {
-    parts.push(`minmax(48px, ${opts.actionsColWidth})`);
-  }
   return parts.join(' ');
 }
 
@@ -289,7 +284,6 @@ export const fileListStyles: Record<string, CSSProperties> = {
   colDate: { textAlign: 'right', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   colSize: { textAlign: 'right', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   colSource: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  colActions: { minWidth: 0 },
   listContainer: { flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' },
   entry: {
     display: 'grid', alignItems: 'center', columnGap: 8,
@@ -302,12 +296,20 @@ export const fileListStyles: Record<string, CSSProperties> = {
   },
   icon: { fontSize: 14, width: 20, textAlign: 'center', flexShrink: 0 },
   entryNameCell: {
-    minWidth: 0, display: 'flex',
+    position: 'relative', minWidth: 0, display: 'flex',
     alignItems: 'center', gap: 4, overflow: 'hidden', boxSizing: 'border-box',
   },
   entryName: {
     color: c.text, fontSize: 14, fontWeight: 500,
     minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  },
+  /** Hover-only action buttons — overlay on the name cell, no reserved grid column. */
+  entryNameHoverActions: {
+    position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)',
+    display: 'flex', alignItems: 'center', gap: 2,
+    paddingLeft: 20,
+    background: `linear-gradient(to right, transparent, ${c.bgMuted} 55%, ${c.bgMuted})`,
+    borderRadius: radius.sm,
   },
   entrySource: {
     color: c.textMuted, fontSize: 11, fontFamily: font.mono,
@@ -324,10 +326,6 @@ export const fileListStyles: Record<string, CSSProperties> = {
     color: c.textMuted, fontSize: 10, textAlign: 'right', minWidth: 0,
     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
     letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums',
-  },
-  entryActions: {
-    display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
-    gap: 2, minWidth: 0,
   },
   entryDateRecent: {
     color: c.accent, fontWeight: 600, letterSpacing: '-0.03em',

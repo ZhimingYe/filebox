@@ -571,14 +571,9 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     return `${Math.max(11, maxChars)}ch`;
   }, [filteredEntries, isMobile]);
 
-  const actionsColWidth = onAddToCollection ? '72px' : '28px';
   const gridTemplateColumns = useMemo(
-    () => fileListGridColumns({
-      showRootColumn: false,
-      isMobile,
-      actionsColWidth,
-    }),
-    [isMobile, actionsColWidth],
+    () => fileListGridColumns({ showRootColumn: false, isMobile }),
+    [isMobile],
   );
   const { padRight, outerElementType } = useListScrollGutter(rows.length > 0);
 
@@ -968,7 +963,6 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
                 Size{sortIndicator('size')}
               </span>
             )}
-            <span style={fileListStyles.colActions} aria-hidden />
           </div>
 
           <div ref={containerRef} style={styles.listContainer}>

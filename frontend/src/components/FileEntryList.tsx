@@ -183,6 +183,8 @@ export function FileEntryListRow({
   const blocked = entry.denied || unavailable;
   const isRecent = !blocked && isRecentlyModified(entry.modified, nowMs);
   const copyLabel = `path-${index}`;
+  const showHoverActions = isHovered && !blocked;
+  const nameHoverPad = showHoverActions ? (renderNameHoverActions ? 76 : 28) : 0;
 
   return (
     <div
@@ -205,12 +207,22 @@ export function FileEntryListRow({
             ...fileListStyles.entryName,
             fontFamily: fileNameSerif ? font.serif : font.sans,
             ...(nameAlignRight ? { direction: 'rtl', textAlign: 'right' } : {}),
+            ...(nameHoverPad ? { paddingRight: nameHoverPad } : {}),
           }}
           title={fullPath}
         >
           {nameAlignRight ? <bdi dir="ltr">{entry.name}</bdi> : entry.name}
         </span>
         {entry.denied && <span style={fileListStyles.deniedBadge}>denied</span>}
+        {showHoverActions && (
+          <span style={fileListStyles.entryNameHoverActions}>
+            {renderNameHoverActions?.(row, index)}
+            <CopyPathButton
+              copied={copiedPath === copyLabel}
+              onCopy={() => copyToClipboard(fullPath, copyLabel)}
+            />
+          </span>
+        )}
       </div>
       {showRootColumn && (
         <span style={fileListStyles.entrySource} title={fullPath}>
@@ -233,15 +245,6 @@ export function FileEntryListRow({
           {entry.size !== null ? formatSize(entry.size) : '—'}
         </span>
       )}
-      <span style={fileListStyles.entryActions}>
-        {isHovered && renderNameHoverActions?.(row, index)}
-        {isHovered && !blocked && (
-          <CopyPathButton
-            copied={copiedPath === copyLabel}
-            onCopy={() => copyToClipboard(fullPath, copyLabel)}
-          />
-        )}
-      </span>
     </div>
   );
 }
@@ -317,14 +320,9 @@ export function FileEntryList({
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const entries = useMemo(() => rows.map((r) => r.entry), [rows]);
   const nowMs = useRecentEntryClock(entries);
-  const actionsColWidth = renderNameHoverActions ? '72px' : '28px';
   const gridTemplateColumns = useMemo(
-    () => fileListGridColumns({
-      showRootColumn,
-      isMobile,
-      actionsColWidth,
-    }),
-    [showRootColumn, isMobile, actionsColWidth],
+    () => fileListGridColumns({ showRootColumn, isMobile }),
+    [showRootColumn, isMobile],
   );
   const { padRight, outerElementType } = useListScrollGutter(rows.length > 0);
 
@@ -391,7 +389,6 @@ export function FileEntryList({
             Size{sortIndicator('size')}
           </span>
         )}
-        <span style={fileListStyles.colActions} aria-hidden />
       </div>
       {rows.length === 0 ? (
         <div style={fileListStyles.empty}>{emptyMessage}</div>
