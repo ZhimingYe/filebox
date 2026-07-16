@@ -13,6 +13,72 @@ interface Props {
 
 const DEFAULT_CONTEXT = 10;
 const MAX_CONTEXT = 20;
+/** Default dirs to skip so package / venv trees do not flood hits. */
+const DEFAULT_SEARCH_IGNORE = [
+  'renv',
+  'packrat',
+  'venv',
+  '.venv',
+  'node_modules',
+  '__pycache__',
+  'site-packages',
+  '.tox',
+  '.nox',
+  'target',
+  '.mypy_cache',
+  '.pytest_cache',
+  '.ruff_cache',
+  '.cache',
+  'bower_components',
+  '.parcel-cache',
+  '.turbo',
+  '.bundle',
+  '.gradle',
+  '.pixi',
+];
+const IGNORE_STORAGE_KEY = 'filebox.search.ignore';
+const DEPTH_STORAGE_KEY = 'filebox.search.maxDepth';
+/** Soft UI cap; hub clamps to 256. Empty / 0 = unlimited. */
+const HARD_MAX_DEPTH = 256;
+
+function loadStoredIgnore(): string {
+  try {
+    const raw = localStorage.getItem(IGNORE_STORAGE_KEY);
+    if (raw != null) return raw;
+  } catch {
+    /* private mode / blocked storage */
+  }
+  return DEFAULT_SEARCH_IGNORE.join(', ');
+}
+
+function loadStoredMaxDepth(): string {
+  try {
+    const raw = localStorage.getItem(DEPTH_STORAGE_KEY);
+    if (raw != null) return raw;
+  } catch {
+    /* ignore */
+  }
+  return '';
+}
+
+function parseIgnoreList(raw: string): string[] {
+  const out: string[] = [];
+  for (const part of raw.split(/[,\s]+/)) {
+    const name = part.trim().replace(/^\/+|\/+$/g, '');
+    if (!name || name === '.' || name === '..') continue;
+    if (name.includes('/') || name.includes('\\')) continue;
+    if (!out.some((x) => x.toLowerCase() === name.toLowerCase())) out.push(name);
+  }
+  return out;
+}
+
+function parseMaxDepth(raw: string): number | null {
+  const t = raw.trim();
+  if (!t) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(HARD_MAX_DEPTH, Math.floor(n));
+}
 
 function searchErrorMessage(err: unknown): string {
   const mapped = friendlyMessage(err);
@@ -55,6 +121,8 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
   const [query, setQuery] = useState('');
   const [extensions, setExtensions] = useState('');
   const [contextLines, setContextLines] = useState(DEFAULT_CONTEXT);
+  const [ignoreText, setIgnoreText] = useState(loadStoredIgnore);
+  const [maxDepthText, setMaxDepthText] = useState(loadStoredMaxDepth);
   const [result, setResult] = useState<WorkspaceSearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -203,6 +271,14 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     }, 8000);
 
     const ctx = clampContext(contextLines);
+    const ignore = parseIgnoreList(ignoreText);
+    const maxDepth = parseMaxDepth(maxDepthText);
+    try {
+      localStorage.setItem(IGNORE_STORAGE_KEY, ignoreText);
+      localStorage.setItem(DEPTH_STORAGE_KEY, maxDepthText);
+    } catch {
+      /* ignore */
+    }
 
     try {
       const exts = extensions
@@ -219,6 +295,8 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           extensions: exts,
           max_results: mode === 'find' ? 200 : 60,
           context: mode === 'content' ? ctx : 0,
+          ignore,
+          max_depth: maxDepth,
           client_nonce: clientNonce,
         },
         ac.signal,
@@ -379,6 +457,23 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           </label>
         )}
 
+        <label style={{ ...styles.label, flex: '0 0 96px', minWidth: 96 }}>
+          Max depth
+          <input
+            type="number"
+            min={0}
+            max={HARD_MAX_DEPTH}
+            value={maxDepthText}
+            onChange={(e) => setMaxDepthText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+            placeholder="∞"
+            style={styles.input}
+            disabled={loading}
+            title="Max directory layers under the folder (1 = this folder only). Leave empty for unlimited."
+            aria-describedby="search-depth-hint"
+          />
+        </label>
+
         <button
           type="button"
           onClick={() => void (loading ? handleCancel() : runSearch())}
@@ -393,6 +488,22 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
         </button>
       </div>
 
+      <label style={{ ...styles.label, flex: '1 1 100%', maxWidth: 720, marginBottom: 8 }}>
+        Ignore folders
+        <input
+          value={ignoreText}
+          onChange={(e) => setIgnoreText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+          placeholder="e.g. renv, venv, node_modules"
+          style={styles.input}
+          disabled={loading}
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          aria-describedby="search-ignore-hint"
+        />
+      </label>
+
       <p id="search-ext-hint" style={styles.fieldHint}>
         File types: leave empty for all files. Use extensions only —{' '}
         <code style={styles.code}>rs, ts, py</code> or{' '}
@@ -400,6 +511,15 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
         . Comma or space separated; case does not matter (
         <code style={styles.code}>RS</code> = <code style={styles.code}>rs</code>
         ). Not full filenames or globs.
+      </p>
+      <p id="search-ignore-hint" style={styles.fieldHint}>
+        Ignore: folder names skipped at any depth (defaults cover common package /
+        venv trees). Comma or space separated. Clear the field to search everything.
+        Saved in this browser.
+      </p>
+      <p id="search-depth-hint" style={styles.fieldHint}>
+        Max depth: <code style={styles.code}>1</code> = this folder only,{' '}
+        <code style={styles.code}>2</code> = one level of subfolders, empty = unlimited.
       </p>
 
       <div style={styles.scopeHint}>
@@ -415,6 +535,18 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           return exts.length
             ? <> · types <code style={styles.code}>{exts.map((e) => `.${e}`).join(' ')}</code></>
             : ' · all types';
+        })()}
+        {(() => {
+          const names = parseIgnoreList(ignoreText);
+          return names.length
+            ? <> · ignore <code style={styles.code}>{names.slice(0, 6).join(', ')}{names.length > 6 ? '…' : ''}</code></>
+            : ' · no ignore';
+        })()}
+        {(() => {
+          const d = parseMaxDepth(maxDepthText);
+          return d != null
+            ? <> · depth ≤ <code style={styles.code}>{d}</code></>
+            : ' · unlimited depth';
         })()}
       </div>
 

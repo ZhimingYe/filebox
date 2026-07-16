@@ -249,13 +249,15 @@ curl -s -b /tmp/fb.cookie --noproxy '*' \
 curl -s -b /tmp/fb.cookie --noproxy '*' \
   -X POST "http://127.0.0.1:3000/api/agents/$AGENT_ID/workspace-search" \
   -H 'Content-Type: application/json' \
-  -d '{"mode":"content","root":"demo","path":"/reports","query":"TODO|FIXME","extensions":["md","rs"],"context":2}'
+  -d '{"mode":"content","root":"demo","path":"/reports","query":"TODO|FIXME","extensions":["md","rs"],"context":2,"ignore":["renv","venv","node_modules"],"max_depth":8}'
 ```
 
-Progress events use SSE `phase: "search"`. Cancel with `POST /api/cancel`
-(and the same `client_nonce` if you sent one). Only one search runs per
-agent at a time; long trees are truncated by scan/result caps. Legacy
-agents without `capabilities.workspace_search` return unsupported.
+Optional body fields: `ignore` (folder-name list) and `max_depth`
+(directory layers under `path`; omit/`0` = unlimited). Progress events
+use SSE `phase: "search"`. Cancel with `POST /api/cancel` (and the same
+`client_nonce` if you sent one). Only one search runs per agent at a
+time; long trees are truncated by scan/result caps. Legacy agents
+without `capabilities.workspace_search` return unsupported.
 
 ---
 

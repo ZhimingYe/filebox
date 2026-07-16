@@ -47,6 +47,11 @@ pub struct SearchParams {
     pub extensions: Vec<String>,
     pub max_results: Option<u32>,
     pub context: Option<u32>,
+    /// Path-component names to prune (from the UI per request).
+    pub ignore: Vec<String>,
+    /// Max directory depth under the search start. `None` / `0` = unlimited.
+    /// `1` = files in the start folder only (walkdir depth semantics).
+    pub max_depth: Option<u32>,
     /// Cooperative cancel — checked between files.
     pub cancel: Option<Arc<AtomicBool>>,
     /// Optional progress hook: (scanned_files, hit_count).
@@ -126,7 +131,9 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
         .unwrap_or_else(Instant::now);
 
     let root_canonical_for_filter = root_canonical.clone();
-    let walker = WalkBuilder::new(&start)
+    let ignore_names = params.ignore.clone();
+    let mut builder = WalkBuilder::new(&start);
+    builder
         .hidden(false)
         .git_ignore(false)
         .git_global(false)
@@ -147,10 +154,18 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
             if rel.as_os_str().is_empty() {
                 return true;
             }
+            if path_has_ignored_component(rel, &ignore_names) {
+                return false;
+            }
             let rel_str = format_rel(rel);
             !denylist::is_denied(&rel_str)
-        })
-        .build();
+        });
+    // walkdir: depth 0 = start path; depth 1 = its immediate children.
+    // UI "max depth" N means search at most N levels under the start folder.
+    if let Some(depth) = params.max_depth.filter(|d| *d > 0) {
+        builder.max_depth(Some(depth as usize));
+    }
+    let walker = builder.build();
 
     for entry in walker {
         if cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
@@ -282,6 +297,28 @@ fn format_rel(rel: &Path) -> String {
     } else {
         format!("/{s}")
     }
+}
+
+/// True when any path component equals an ignore name (case-insensitive).
+fn path_has_ignored_component(rel: &Path, names: &[String]) -> bool {
+    if names.is_empty() {
+        return false;
+    }
+    for component in rel.components() {
+        let std::path::Component::Normal(os) = component else {
+            continue;
+        };
+        let Some(name) = os.to_str() else {
+            continue;
+        };
+        if names
+            .iter()
+            .any(|ignored| ignored.eq_ignore_ascii_case(name))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 enum MatchFileError {
@@ -503,6 +540,8 @@ mod tests {
                 extensions: vec!["rs".into()],
                 max_results: Some(50),
                 context: None,
+                ignore: vec![],
+                max_depth: None,
                 cancel: None,
                 on_progress: None,
             },
@@ -536,6 +575,8 @@ mod tests {
                 extensions: vec!["txt".into()],
                 max_results: Some(10),
                 context: Some(2),
+                ignore: vec![],
+                max_depth: None,
                 cancel: None,
                 on_progress: None,
             },
@@ -569,6 +610,8 @@ mod tests {
                 extensions: vec!["txt".into()],
                 max_results: Some(20),
                 context: Some(1),
+                ignore: vec![],
+                max_depth: None,
                 cancel: None,
                 on_progress: None,
             },
@@ -598,6 +641,8 @@ mod tests {
                 extensions: vec![],
                 max_results: Some(20),
                 context: Some(1),
+                ignore: vec![],
+                max_depth: None,
                 cancel: None,
                 on_progress: None,
             },
@@ -631,6 +676,8 @@ mod tests {
                 extensions: vec!["rs".into()],
                 max_results: Some(50),
                 context: None,
+                ignore: vec![],
+                max_depth: None,
                 cancel: None,
                 on_progress: None,
             },
@@ -668,6 +715,8 @@ mod tests {
                 extensions: vec![],
                 max_results: Some(20),
                 context: Some(1),
+                ignore: vec![],
+                max_depth: None,
                 cancel: None,
                 on_progress: None,
             },
@@ -696,6 +745,8 @@ mod tests {
                 extensions: vec!["txt".into()],
                 max_results: Some(3),
                 context: Some(0),
+                ignore: vec![],
+                max_depth: None,
                 cancel: None,
                 on_progress: None,
             },
@@ -724,6 +775,8 @@ mod tests {
                 extensions: vec![],
                 max_results: Some(20),
                 context: Some(0),
+                ignore: vec![],
+                max_depth: None,
                 cancel: None,
                 on_progress: None,
             },
@@ -749,6 +802,8 @@ mod tests {
                 extensions: vec!["Rs".into(), "tXt".into()],
                 max_results: Some(20),
                 context: Some(0),
+                ignore: vec![],
+                max_depth: None,
                 cancel: None,
                 on_progress: None,
             },
@@ -777,6 +832,8 @@ mod tests {
                 extensions: vec!["txt".into()],
                 max_results: Some(50),
                 context: Some(0),
+                ignore: vec![],
+                max_depth: None,
                 cancel: Some(cancel),
                 on_progress: None,
             },
@@ -803,6 +860,8 @@ mod tests {
                 extensions: vec!["rs".into()],
                 max_results: Some(20),
                 context: Some(0),
+                ignore: vec![],
+                max_depth: None,
                 cancel: None,
                 on_progress: None,
             },
@@ -815,6 +874,103 @@ mod tests {
             "extension skips must still count toward scanned (got {})",
             result.scanned
         );
+    }
+
+    #[test]
+    fn ignore_names_prune_venv_and_renv_trees() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("app.R"), "MARK").unwrap();
+        fs::create_dir_all(dir.path().join("renv/library")).unwrap();
+        fs::write(dir.path().join("renv/library/pkg.R"), "MARK").unwrap();
+        fs::create_dir_all(dir.path().join("venv/lib")).unwrap();
+        fs::write(dir.path().join("venv/lib/site.py"), "MARK").unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/ok.py"), "MARK").unwrap();
+
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        let result = run_search(
+            &roots,
+            SearchParams {
+                mode: SearchMode::Content,
+                root: "ws".into(),
+                path: "/".into(),
+                query: "MARK".into(),
+                extensions: vec![],
+                max_results: Some(20),
+                context: Some(0),
+                ignore: vec!["renv".into(), "venv".into()],
+                max_depth: None,
+                cancel: None,
+                on_progress: None,
+            },
+        )
+        .unwrap();
+
+        let paths: Vec<_> = result.hits.iter().map(|h| h.path.as_str()).collect();
+        assert!(paths.contains(&"/app.R"));
+        assert!(paths.contains(&"/src/ok.py"));
+        assert!(
+            !paths.iter().any(|p| p.contains("renv") || p.contains("venv")),
+            "dependency trees must be pruned: {paths:?}"
+        );
+        assert!(
+            result.scanned <= 3,
+            "expected only project files scanned, got {}",
+            result.scanned
+        );
+    }
+
+    #[test]
+    fn max_depth_limits_directory_layers() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("root.txt"), "NEEDLE").unwrap();
+        fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        fs::write(dir.path().join("a/mid.txt"), "NEEDLE").unwrap();
+        fs::write(dir.path().join("a/b/deep.txt"), "NEEDLE").unwrap();
+
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        // depth 1 = start folder files only (immediate children of walk root).
+        let shallow = run_search(
+            &roots,
+            SearchParams {
+                mode: SearchMode::Content,
+                root: "ws".into(),
+                path: "/".into(),
+                query: "NEEDLE".into(),
+                extensions: vec![],
+                max_results: Some(20),
+                context: Some(0),
+                ignore: vec![],
+                max_depth: Some(1),
+                cancel: None,
+                on_progress: None,
+            },
+        )
+        .unwrap();
+        let shallow_paths: Vec<_> = shallow.hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(shallow_paths, vec!["/root.txt"]);
+
+        let deeper = run_search(
+            &roots,
+            SearchParams {
+                mode: SearchMode::Content,
+                root: "ws".into(),
+                path: "/".into(),
+                query: "NEEDLE".into(),
+                extensions: vec![],
+                max_results: Some(20),
+                context: Some(0),
+                ignore: vec![],
+                max_depth: Some(2),
+                cancel: None,
+                on_progress: None,
+            },
+        )
+        .unwrap();
+        let deeper_paths: Vec<_> = deeper.hits.iter().map(|h| h.path.as_str()).collect();
+        assert!(deeper_paths.contains(&"/root.txt"));
+        assert!(deeper_paths.contains(&"/a/mid.txt"));
+        assert!(!deeper_paths.iter().any(|p| p.ends_with("deep.txt")));
     }
 
     #[test]

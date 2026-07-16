@@ -537,6 +537,8 @@ async fn run_one_connection(
                                 extensions,
                                 max_results,
                                 context,
+                                ignore,
+                                max_depth,
                             }) => {
                                 tracing::debug!(
                                     "Workspace search: mode={:?} root={} path={} query_len={}",
@@ -604,6 +606,8 @@ async fn run_one_connection(
                                     extensions,
                                     max_results,
                                     context,
+                                    ignore,
+                                    max_depth,
                                     cancel: Some(cancel),
                                     on_progress: Some(on_progress),
                                 };

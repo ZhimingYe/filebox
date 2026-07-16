@@ -26,11 +26,21 @@ pub struct WorkspaceSearchBody {
     pub max_results: Option<u32>,
     #[serde(default)]
     pub context: Option<u32>,
+    /// Path-component names to skip (from the UI). Empty = no name skips.
+    #[serde(default)]
+    pub ignore: Vec<String>,
+    /// Max directory depth under the search start. `None` / `0` = unlimited.
+    #[serde(default)]
+    pub max_depth: Option<u32>,
     /// Optional client correlation token echoed on the initial SSE progress
     /// event so the UI can bind Cancel to this request (not a stale one).
     #[serde(default)]
     pub client_nonce: Option<String>,
 }
+
+const MAX_IGNORE_NAMES: usize = 128;
+const MAX_IGNORE_NAME_LEN: usize = 128;
+const HARD_MAX_DEPTH: u32 = 256;
 
 /// Sends Cancel to the agent + clears pending when the HTTP waiter goes away
 /// (client abort / timeout) so the agent does not keep burning CPU.
@@ -129,6 +139,27 @@ pub async fn workspace_search_handler(
             );
         }
     }
+    if body.ignore.len() > MAX_IGNORE_NAMES {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "too many ignore names (max 128)",
+            false,
+        );
+    }
+    let ignore = match normalize_ignore_names(&body.ignore) {
+        Ok(list) => list,
+        Err(msg) => {
+            return error_response(StatusCode::BAD_REQUEST, "invalid_request", msg, false);
+        }
+    };
+    let max_depth = body.max_depth.and_then(|d| {
+        if d == 0 {
+            None
+        } else {
+            Some(d.min(HARD_MAX_DEPTH))
+        }
+    });
 
     let path = normalize_search_path(&body.path);
     let client_nonce = body
@@ -178,6 +209,8 @@ pub async fn workspace_search_handler(
         extensions: body.extensions,
         max_results: body.max_results,
         context: body.context,
+        ignore,
+        max_depth,
     };
 
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
@@ -291,6 +324,33 @@ fn path_has_dotdot(path: &str) -> bool {
     path.split(['/', '\\']).any(|part| part == "..")
 }
 
+fn normalize_ignore_names(names: &[String]) -> Result<Vec<String>, &'static str> {
+    let mut out = Vec::with_capacity(names.len());
+    for raw in names {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.len() > MAX_IGNORE_NAME_LEN {
+            return Err("ignore name too long (max 128)");
+        }
+        if trimmed.contains('\0') || trimmed.contains('/') || trimmed.contains('\\') {
+            return Err("ignore names must be single path components (no slashes)");
+        }
+        let cleaned = trimmed.trim_matches(['/', '\\']);
+        if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+            return Err("invalid ignore name");
+        }
+        if !out
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(cleaned))
+        {
+            out.push(cleaned.to_string());
+        }
+    }
+    Ok(out)
+}
+
 fn error_response(status: StatusCode, error: &str, message: &str, retryable: bool) -> Response {
     (
         status,
@@ -305,7 +365,7 @@ fn error_response(status: StatusCode, error: &str, message: &str, retryable: boo
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_search_path, path_has_dotdot};
+    use super::{normalize_ignore_names, normalize_search_path, path_has_dotdot};
 
     #[test]
     fn rejects_dotdot_components_only() {
@@ -325,5 +385,23 @@ mod tests {
         assert_eq!(normalize_search_path("./src"), "/src");
         assert_eq!(normalize_search_path("src"), "/src");
         assert_eq!(normalize_search_path("/src/lib"), "/src/lib");
+    }
+
+    #[test]
+    fn normalize_ignore_names_strips_and_dedupes() {
+        let list = normalize_ignore_names(&[
+            " venv ".into(),
+            "venv".into(),
+            "renv".into(),
+            "".into(),
+        ])
+        .unwrap();
+        assert_eq!(list, vec!["venv".to_string(), "renv".to_string()]);
+    }
+
+    #[test]
+    fn normalize_ignore_names_rejects_paths() {
+        assert!(normalize_ignore_names(&["a/b".into()]).is_err());
+        assert!(normalize_ignore_names(&["..".into()]).is_err());
     }
 }

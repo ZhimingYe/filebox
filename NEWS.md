@@ -6,6 +6,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ### Added
 - **Workspace Search** — sidebar Search view with fd-like Files mode (filename substring) and rg-like Content mode (case-insensitive regex + context). Scoped to one root and optional folder; optional extension filter. In-process on the agent (`ignore` + `regex`); path-safe, no symlink follow, denylist-aware. Progress via SSE, cancelable, one concurrent search per agent, scan/result caps for high-load trees. Gated by `capabilities.workspace_search`.
+- **Workspace Search ignore + depth** — UI fields for folder names to skip (`renv`, `venv`, `node_modules`, … by default) and max directory depth. Sent per request; prefs saved in the browser. No agent.toml required.
 - **Monaco code preview** — read-only Monaco Editor replaces Prism / `react-syntax-highlighter` for code files (Find, wrap, syntax highlight). Lazy-loaded; not placed in Vite `manualChunks` so the ~4MB editor is not preloaded on every page.
 
 ### Changed
