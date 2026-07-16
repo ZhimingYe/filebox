@@ -69,7 +69,6 @@ export function Login({ onLogin }: Props) {
                 onChange={(e) => { setUsername(e.target.value); if (error) setError(''); }}
                 onFocus={() => setFocused('user')}
                 onBlur={() => setFocused(null)}
-                placeholder="admin"
                 style={{
                   ...styles.input,
                   ...(focused === 'user' ? styles.inputFocus : null),
