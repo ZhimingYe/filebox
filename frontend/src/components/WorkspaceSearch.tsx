@@ -319,6 +319,7 @@ function ModeButton({
       }}
     >
       <span style={styles.modeLabel}>{label}</span>
+      {' '}
       <span style={styles.modeHint}>{hint}</span>
     </button>
   );
