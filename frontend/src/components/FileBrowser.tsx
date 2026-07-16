@@ -205,13 +205,15 @@ interface Props {
   // root-selector dropdown calls this. Distinct from onApplyNav because the
   // child doesn't (and shouldn't) know the remembered path.
   onSwitchRoot: (root: string) => void;
+  /** Open the collection picker for a file (root + full file path). */
+  onAddToCollection?: (root: string, path: string, anchor: HTMLElement) => void;
 }
 
 type SortKey = 'name' | 'modified' | 'size';
 
 const PAGE_LIMIT = 200;
 
-export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onRootsChange, navRequest, onNavHandled, selectedRoot, currentPath, onApplyNav, onSwitchRoot }: Props) {
+export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onRootsChange, navRequest, onNavHandled, selectedRoot, currentPath, onApplyNav, onSwitchRoot, onAddToCollection }: Props) {
   const isMobile = useIsMobile();
   const ROW_HEIGHT = isMobile ? 44 : 32;
 
@@ -712,6 +714,8 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
       onNavigateEntry: navigateTo,
       nowMs,
       dateColWidth,
+      selectedRoot,
+      onAddToCollection,
     }),
     [
       rows,
@@ -727,6 +731,8 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
       navigateTo,
       nowMs,
       dateColWidth,
+      selectedRoot,
+      onAddToCollection,
     ],
   );
   return (
@@ -1527,6 +1533,8 @@ interface RowItemData {
   onNavigateEntry: (entry: api.FsEntry) => void;
   nowMs: number;
   dateColWidth: string;
+  selectedRoot: string | null;
+  onAddToCollection?: (root: string, path: string, anchor: HTMLElement) => void;
 }
 
 // Module-level row component so react-window does not treat it as a fresh
@@ -1548,6 +1556,8 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
     onNavigateEntry,
     nowMs,
     dateColWidth,
+    selectedRoot,
+    onAddToCollection,
   } = data;
   const entry = rows[index];
   const isBack = entry === null;
@@ -1592,6 +1602,22 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
           )}
         </span>
         {!isBack && displayEntry!.denied && <span style={styles.deniedBadge}>denied</span>}
+        {!isBack && isHovered && onAddToCollection && selectedRoot
+          && displayEntry!.entry_type === 'file' && !displayEntry!.denied && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              const filePath = currentPath === '/' ? `/${displayEntry!.name}` : `${currentPath}/${displayEntry!.name}`;
+              onAddToCollection(selectedRoot, filePath, e.currentTarget);
+            }}
+            style={styles.copyNameBtn}
+            title="Add to collection"
+          >
+            <svg style={{ display: 'block' }} width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+            </svg>
+          </button>
+        )}
         {!isBack && isHovered && (
           <button
             onClick={(e) => {

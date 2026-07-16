@@ -4,7 +4,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use filebox_protocol::message::HubMessage;
-use filebox_protocol::resources::{validate_pinned_path, DesiredResources, FileStat, FsEntryType, RootConfig};
+use filebox_protocol::resources::{
+    validate_collection_item_path, validate_collection_name, validate_pinned_path,
+    CollectionConfig, CollectionItem, DesiredCollections, DesiredResources, FileStat, FsEntryType,
+    RootConfig,
+};
 use rand::Rng;
 use tokio::sync::mpsc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -52,6 +56,18 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/agents/{agent_id}/roots/{root_name}",
             delete(delete_root_handler),
+        )
+        .route(
+            "/api/agents/{agent_id}/collections",
+            post(add_collection_handler),
+        )
+        .route(
+            "/api/agents/{agent_id}/collections/{collection_name}",
+            patch(patch_collection_handler),
+        )
+        .route(
+            "/api/agents/{agent_id}/collections/{collection_name}",
+            delete(delete_collection_handler),
         )
         .route("/api/fs/list", get(fs_proxy::fs_list_handler))
         .route("/api/fs/stat", get(fs_proxy::fs_stat_handler))
@@ -631,6 +647,7 @@ async fn request_agent_once(
                 agent_id: agent_id.to_string(),
                 session_id: Some(session_id.to_string()),
                 desired_roots: None,
+                desired_collections: None,
             },
         );
         drop(pending);
@@ -1360,6 +1377,494 @@ async fn delete_root_handler(
     apply_desired_state(state, agent_id, DesiredResources { roots }, session.id).await
 }
 
+#[derive(serde::Deserialize)]
+struct AddCollectionRequest {
+    name: String,
+}
+
+async fn add_collection_handler(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
+    Path(agent_id): Path<String>,
+    Json(req): Json<AddCollectionRequest>,
+) -> Response {
+    if let Err(e) = validate_collection_name(&req.name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_collection_name",
+                "message": e,
+                "retryable": false,
+            })),
+        )
+            .into_response();
+    }
+
+    let inner = state.inner.read().await;
+    let agent = match inner.agents.get(&agent_id) {
+        Some(a) => a,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "not_found", "message": "Agent not found", "retryable": false})),
+            ).into_response();
+        }
+    };
+
+    if !agent.capabilities.collections {
+        drop(inner);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "unsupported_feature",
+                "message": "This agent version does not support collections. Update the agent and retry.",
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+
+    if agent.collections.iter().any(|c| c.name == req.name) {
+        drop(inner);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "collection_name_conflict",
+                "message": format!("Collection '{}' already exists", req.name),
+                "retryable": false,
+            })),
+        )
+            .into_response();
+    }
+
+    let base_collections = agent
+        .pending_collections_update
+        .as_ref()
+        .map(|p| p.collections.clone())
+        .unwrap_or_else(|| agent.collections.clone());
+    let mut collections = base_collections;
+    collections.push(CollectionConfig {
+        name: req.name.clone(),
+        items: vec![],
+    });
+    drop(inner);
+
+    tracing::info!(
+        target: "audit",
+        session = %session.id,
+        agent_id = %agent_id,
+        collection = %req.name,
+        "collection_create_requested"
+    );
+
+    apply_collections_state(
+        state,
+        agent_id,
+        DesiredCollections { collections },
+        session.id,
+    )
+    .await
+}
+
+#[derive(serde::Deserialize)]
+struct PatchCollectionRequest {
+    rename: Option<String>,
+    item_add: Option<CollectionItem>,
+    item_remove: Option<CollectionItemRef>,
+    items: Option<Vec<CollectionItem>>,
+}
+
+#[derive(serde::Deserialize)]
+struct CollectionItemRef {
+    root: String,
+    path: String,
+}
+
+fn normalize_collection_path(p: &str) -> String {
+    let mut s = p.to_string();
+    if !s.starts_with('/') {
+        s = format!("/{s}");
+    }
+    if s.len() > 1 && s.ends_with('/') {
+        s = s.trim_end_matches('/').to_string();
+    }
+    s
+}
+
+async fn patch_collection_handler(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
+    Path((agent_id, collection_name)): Path<(String, String)>,
+    Json(req): Json<PatchCollectionRequest>,
+) -> Response {
+    let inner = state.inner.read().await;
+    let agent = match inner.agents.get(&agent_id) {
+        Some(a) => a,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "not_found", "message": "Agent not found", "retryable": false})),
+            ).into_response();
+        }
+    };
+
+    if !agent.capabilities.collections {
+        drop(inner);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "unsupported_feature",
+                "message": "This agent version does not support collections. Update the agent and retry.",
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+
+    let base_collections = agent
+        .pending_collections_update
+        .as_ref()
+        .map(|p| p.collections.clone())
+        .unwrap_or_else(|| agent.collections.clone());
+    let mut collections = base_collections;
+    let coll_idx = match collections.iter().position(|c| c.name == collection_name) {
+        Some(i) => i,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "not_found",
+                    "message": format!("Collection '{}' not found", collection_name),
+                    "retryable": false,
+                })),
+            ).into_response();
+        }
+    };
+
+    if let Some(ref new_name) = req.rename {
+        if let Err(e) = validate_collection_name(new_name) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_collection_name",
+                    "message": e,
+                    "retryable": false,
+                })),
+            )
+                .into_response();
+        }
+        if new_name != &collection_name && collections.iter().any(|c| c.name == *new_name) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "collection_name_conflict",
+                    "message": format!("Collection '{}' already exists", new_name),
+                    "retryable": false,
+                })),
+            )
+                .into_response();
+        }
+        collections[coll_idx].name = new_name.clone();
+    }
+
+    let coll = &mut collections[coll_idx];
+
+    if req.item_add.is_some() || req.item_remove.is_some() {
+        if let Some(ref add) = req.item_add {
+            if let Err(e) = validate_collection_item_path(&add.path) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_collection_path",
+                        "message": e,
+                        "retryable": false,
+                    })),
+                )
+                    .into_response();
+            }
+            let norm_path = normalize_collection_path(&add.path);
+            if !coll.items.iter().any(|i| i.root == add.root && normalize_collection_path(&i.path) == norm_path) {
+                coll.items.push(CollectionItem {
+                    root: add.root.clone(),
+                    path: norm_path,
+                    label: add.label.clone(),
+                });
+            }
+        }
+        if let Some(ref remove) = req.item_remove {
+            if let Err(e) = validate_collection_item_path(&remove.path) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_collection_path",
+                        "message": e,
+                        "retryable": false,
+                    })),
+                )
+                    .into_response();
+            }
+            let norm_path = normalize_collection_path(&remove.path);
+            coll.items.retain(|i| !(i.root == remove.root && normalize_collection_path(&i.path) == norm_path));
+        }
+    } else if let Some(ref items) = req.items {
+        for item in items {
+            if let Err(e) = validate_collection_item_path(&item.path) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_collection_path",
+                        "message": e,
+                        "retryable": false,
+                    })),
+                )
+                    .into_response();
+            }
+        }
+        coll.items = items
+            .iter()
+            .map(|item| CollectionItem {
+                root: item.root.clone(),
+                path: normalize_collection_path(&item.path),
+                label: item.label.clone(),
+            })
+            .collect();
+    }
+
+    drop(inner);
+
+    tracing::info!(
+        target: "audit",
+        session = %session.id,
+        agent_id = %agent_id,
+        collection = %collection_name,
+        "collection_patch_requested"
+    );
+
+    apply_collections_state(
+        state,
+        agent_id,
+        DesiredCollections { collections },
+        session.id,
+    )
+    .await
+}
+
+async fn delete_collection_handler(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
+    Path((agent_id, collection_name)): Path<(String, String)>,
+) -> Response {
+    let inner = state.inner.read().await;
+    let agent = match inner.agents.get(&agent_id) {
+        Some(a) => a,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "not_found", "message": "Agent not found", "retryable": false})),
+            ).into_response();
+        }
+    };
+
+    if !agent.capabilities.collections {
+        drop(inner);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "unsupported_feature",
+                "message": "This agent version does not support collections. Update the agent and retry.",
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+
+    let base_collections = agent
+        .pending_collections_update
+        .as_ref()
+        .map(|p| p.collections.clone())
+        .unwrap_or_else(|| agent.collections.clone());
+    let base_len = base_collections.len();
+    let collections: Vec<CollectionConfig> = base_collections
+        .into_iter()
+        .filter(|c| c.name != collection_name)
+        .collect();
+    if collections.len() == base_len {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "not_found",
+                "message": format!("Collection '{}' not found", collection_name),
+                "retryable": false,
+            })),
+        )
+            .into_response();
+    }
+
+    drop(inner);
+
+    tracing::info!(
+        target: "audit",
+        session = %session.id,
+        agent_id = %agent_id,
+        collection = %collection_name,
+        "collection_delete_requested"
+    );
+
+    apply_collections_state(
+        state,
+        agent_id,
+        DesiredCollections { collections },
+        session.id,
+    )
+    .await
+}
+
+async fn apply_collections_state(
+    state: AppState,
+    agent_id: String,
+    desired: DesiredCollections,
+    session_id: String,
+) -> Response {
+    let inner = state.inner.read().await;
+    let agent = match inner.agents.get(&agent_id) {
+        Some(a) => a,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "not_found", "message": "Agent not found", "retryable": false})),
+            )
+                .into_response();
+        }
+    };
+
+    if agent.status == AgentStatus::Offline {
+        if !agent.capabilities.collections && !desired.collections.is_empty() {
+            drop(inner);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "unsupported_feature",
+                    "message": "This agent version does not support collections. Update the agent and retry.",
+                    "retryable": true,
+                })),
+            )
+                .into_response();
+        }
+        drop(inner);
+        let mut inner = state.inner.write().await;
+        inner.agents.set_pending_collections_update(&agent_id, desired);
+        return Json(serde_json::json!({
+            "ok": true,
+            "state": "pending_agent_reconnect",
+            "message": "Agent is offline. This change will be applied after it reconnects.",
+        }))
+        .into_response();
+    }
+
+    if !agent.capabilities.collections {
+        drop(inner);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "unsupported_feature",
+                "message": "This agent version does not support collections. Update the agent and retry.",
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+
+    let next_revision = match agent.collections_revision.checked_add(1) {
+        Some(revision) => revision,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "revision_overflow",
+                    "message": "Collections revision overflow",
+                    "retryable": false,
+                })),
+            )
+                .into_response();
+        }
+    };
+    let req_id = format!("col_{}", uuid::Uuid::new_v4());
+    let desired_collections = desired.collections.clone();
+
+    let msg = HubMessage::CollectionsSetDesired {
+        req_id: req_id.clone(),
+        desired_revision: next_revision,
+        collections: desired.collections,
+    };
+
+    let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel(1);
+    {
+        let mut pending = inner.pending_responses.write().await;
+        pending.insert(
+            req_id.clone(),
+            PendingResponse {
+                tx: resp_tx,
+                agent_id: agent_id.clone(),
+                session_id: Some(session_id),
+                desired_roots: None,
+                desired_collections: Some(desired_collections),
+            },
+        );
+    }
+
+    if !inner.agents.send_to_agent(&agent_id, msg) {
+        {
+            let mut pending = inner.pending_responses.write().await;
+            pending.remove(&req_id);
+        }
+        drop(inner);
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "backend_offline",
+                "message": "Failed to send update to agent",
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+
+    drop(inner);
+
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx.recv()).await;
+
+    {
+        let inner = state.inner.read().await;
+        let mut pending = inner.pending_responses.write().await;
+        pending.remove(&req_id);
+    }
+
+    match resp {
+        Ok(Some(value)) => {
+            if value.get("state").and_then(|s| s.as_str()) == Some("rejected") {
+                let err_msg = value
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .or_else(|| value.get("error").and_then(|e| e.as_str()))
+                    .unwrap_or("Collection change rejected")
+                    .to_string();
+                let mut inner = state.inner.write().await;
+                inner.agents.set_config_error(&agent_id, err_msg);
+            }
+            Json(value).into_response()
+        }
+        _ => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(serde_json::json!({
+                "error": "request_timeout",
+                "message": "Timed out waiting for agent to apply collection change",
+                "retryable": true,
+            })),
+        )
+            .into_response(),
+    }
+}
+
 // ── Helper ───────────────────────────────────────────────────────────────────
 
 async fn apply_desired_state(
@@ -1473,6 +1978,7 @@ async fn apply_desired_state(
                 agent_id: agent_id.clone(),
                 session_id: Some(session_id),
                 desired_roots: Some(desired_roots),
+                desired_collections: None,
             },
         );
     }
@@ -1592,6 +2098,8 @@ mod tests {
                 enabled: true,
                 pinned_folders: vec![],
             }],
+            0,
+            vec![],
             Capabilities::default(),
         );
     }
@@ -1682,7 +2190,9 @@ mod tests {
                     enabled: true,
                     pinned_folders: vec![],
                 }],
-                Capabilities::default(), // pinned_folders = false
+            0,
+            vec![],
+            Capabilities::default(), // pinned_folders = false
             );
         }
 
@@ -1731,7 +2241,9 @@ mod tests {
                     enabled: true,
                     pinned_folders: vec![],
                 }],
-                Capabilities::default(),
+            0,
+            vec![],
+            Capabilities::default(),
             );
         }
 

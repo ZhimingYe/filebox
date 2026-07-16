@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use filebox_protocol::resources::{validate_pinned_path, RootConfig};
+use filebox_protocol::resources::{
+    validate_collection_item_path, validate_collection_name, validate_pinned_path, CollectionConfig,
+    RootConfig,
+};
 
 use crate::config_store::PersistedConfig;
 
@@ -78,6 +81,51 @@ impl ResourceManager {
             self.config.roots.clone(),
         )
     }
+
+    pub fn collections_revision(&self) -> u64 {
+        self.config.collections_revision
+    }
+
+    pub fn collections(&self) -> &[CollectionConfig] {
+        &self.config.collections
+    }
+
+    pub fn current_collections_state(&self) -> (u64, Vec<CollectionConfig>) {
+        (
+            self.config.collections_revision,
+            self.config.collections.clone(),
+        )
+    }
+
+    /// Validate and atomically apply a desired collections state.
+    pub fn apply_collections_desired(
+        &mut self,
+        desired_revision: u64,
+        collections: Vec<CollectionConfig>,
+    ) -> Result<u64, String> {
+        if desired_revision <= self.config.collections_revision {
+            return Err(format!(
+                "Stale collections revision {} (current {}); ignoring",
+                desired_revision, self.config.collections_revision
+            ));
+        }
+
+        for coll in &collections {
+            validate_collection(&coll, &self.config.roots)?;
+        }
+
+        self.config.collections_revision = desired_revision;
+        self.config.collections = collections;
+        self.config.save(&self.data_dir);
+
+        tracing::info!(
+            "Applied collections: rev={}, {} collections",
+            desired_revision,
+            self.config.collections.len(),
+        );
+
+        Ok(desired_revision)
+    }
 }
 
 /// Expand `~` / `~/…` (and `~\…` on Windows-style inputs) to an absolute path
@@ -147,6 +195,51 @@ fn expand_root_homes(mut roots: Vec<RootConfig>) -> Vec<RootConfig> {
         root.path = expand_home_path(&root.path);
     }
     roots
+}
+
+fn normalize_item_path(p: &str) -> String {
+    let mut s = p.to_string();
+    if !s.starts_with('/') {
+        s = format!("/{s}");
+    }
+    if s.len() > 1 && s.ends_with('/') {
+        s = s.trim_end_matches('/').to_string();
+    }
+    s
+}
+
+fn validate_collection(collection: &CollectionConfig, roots: &[RootConfig]) -> Result<(), String> {
+    validate_collection_name(&collection.name)?;
+
+    let mut seen = std::collections::HashSet::new();
+    for item in &collection.items {
+        validate_collection_item_path(&item.path)
+            .map_err(|e| format!("Collection '{}': {}", collection.name, e))?;
+
+        if item.root.is_empty() {
+            return Err(format!(
+                "Collection '{}': item root name cannot be empty",
+                collection.name
+            ));
+        }
+
+        if !roots.iter().any(|r| r.name == item.root) {
+            return Err(format!(
+                "Collection '{}': unknown root '{}'",
+                collection.name, item.root
+            ));
+        }
+
+        let key = (item.root.clone(), normalize_item_path(&item.path));
+        if !seen.insert(key) {
+            return Err(format!(
+                "Collection '{}': duplicate item {}/{}",
+                collection.name, item.root, item.path
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_root(root: &RootConfig, existing_roots: &[RootConfig]) -> Result<(), String> {

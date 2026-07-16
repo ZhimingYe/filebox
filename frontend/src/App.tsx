@@ -14,10 +14,13 @@ import { AgentSettings } from './components/AgentSettings';
 import { AboutDialog } from './components/AboutDialog';
 import { SystemStats } from './components/SystemStats';
 import { PinnedFolders } from './components/PinnedFolders';
+import { CollectionsView } from './components/CollectionsView';
+import { CollectionPicker } from './components/CollectionPicker';
 import { NoAgentSelected } from './components/NoAgentSelected';
 import {
   IconChevronLeft,
   IconFolder,
+  IconCollection,
   IconSettings,
   IconStats,
   IconLogout,
@@ -54,7 +57,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'settings' | 'stats';
+type View = 'files' | 'collections' | 'settings' | 'stats';
 
 interface ProgressEvent {
   req_id: string;
@@ -86,6 +89,11 @@ export default function App() {
   // the FileBrowser. Driven by `nonce` so re-clicking the same pin still
   // navigates. Cleared via onNavHandled once the browser has acted on it.
   const [navRequest, setNavRequest] = useState<{ root: string; path: string; nonce: number } | null>(null);
+  const [collectionPicker, setCollectionPicker] = useState<{
+    root: string;
+    path: string;
+    rect: DOMRect;
+  } | null>(null);
 
   // ── File browsing position, owned HERE (not in FileBrowser) ──
   // FileBrowser unmounts when the user leaves the Files view (Settings/
@@ -500,6 +508,7 @@ export default function App() {
       evt.event === 'agent_connected' ||
       evt.event === 'agent_disconnected' ||
       evt.event === 'resources_updated' ||
+      evt.event === 'collections_updated' ||
       evt.event === 'sync_required'
     ) {
       refresh();
@@ -543,6 +552,7 @@ export default function App() {
 
   const navItems = [
     { v: 'files' as const, label: 'Files', Icon: IconFolder },
+    { v: 'collections' as const, label: 'Collections', Icon: IconCollection },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
     { v: 'stats' as const, label: 'System', Icon: IconStats },
   ];
@@ -706,7 +716,16 @@ export default function App() {
   );
 
   // ── Mobile file view: show list OR preview, not both ──
-  const showMobilePreview = isMobile && !!activeTab && view === 'files';
+  const showMobilePreview = isMobile && !!activeTab && (view === 'files' || view === 'collections');
+
+  const openCollectionPicker = useCallback((root: string, path: string, anchor: HTMLElement) => {
+    setCollectionPicker({ root, path, rect: anchor.getBoundingClientRect() });
+  }, []);
+
+  const openInFiles = useCallback((root: string, path: string) => {
+    setView('files');
+    setNavRequest({ root, path, nonce: Date.now() });
+  }, []);
 
   return (
     <div style={styles.app}>
@@ -851,6 +870,7 @@ export default function App() {
                     onFileSelect={handleFileSelect}
                     onEntriesChange={handleEntriesChange}
                     onRootsChange={refresh}
+                    onAddToCollection={openCollectionPicker}
                     navRequest={navRequest}
                     onNavHandled={() => setNavRequest(null)}
                     selectedRoot={selectedRoot}
@@ -860,7 +880,7 @@ export default function App() {
                   />
                 </div>
                 {isMobile
-                  ? showMobilePreview && activeTab && view === 'files' && (
+                  ? showMobilePreview && activeTab && (view === 'files' || view === 'collections') && (
                       <div style={styles.mobilePreviewWrap}>
                         <div style={styles.previewHeader}>
                           <span style={styles.previewPath}>{activeTab.path}</span>
@@ -909,6 +929,17 @@ export default function App() {
                       </>
                     )}
               </div>
+              {view === 'collections' && (
+                <div style={styles.secondaryView}>
+                  <CollectionsView
+                    agent={selectedAgent}
+                    previewTabs={previewTabs}
+                    splitRatio={splitRatio}
+                    onOpenInFiles={openInFiles}
+                    onRefresh={refresh}
+                  />
+                </div>
+              )}
               {view === 'settings' && (
                 <div style={styles.secondaryView}>
                   <AgentSettings agent={selectedAgent} onRefresh={refresh} />
@@ -923,6 +954,16 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {collectionPicker && selectedAgent && (
+        <CollectionPicker
+          agent={selectedAgent}
+          target={{ root: collectionPicker.root, path: collectionPicker.path }}
+          anchorRect={collectionPicker.rect}
+          onClose={() => setCollectionPicker(null)}
+          onChanged={refresh}
+        />
+      )}
 
       {/* Progress toasts */}
       {activeProgress.length > 0 && (

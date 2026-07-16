@@ -2,13 +2,18 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use filebox_protocol::resources::RootConfig;
+use filebox_protocol::resources::{CollectionConfig, RootConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedConfig {
     pub agent_id: String,
     pub resource_revision: u64,
     pub roots: Vec<RootConfig>,
+    /// Virtual collections revision. Independent from resource_revision.
+    #[serde(default)]
+    pub collections_revision: u64,
+    #[serde(default)]
+    pub collections: Vec<CollectionConfig>,
 }
 
 impl PersistedConfig {
@@ -17,6 +22,8 @@ impl PersistedConfig {
             agent_id,
             resource_revision: 0,
             roots: vec![],
+            collections_revision: 0,
+            collections: vec![],
         }
     }
 
@@ -187,6 +194,8 @@ mod tests {
                     pinned_folders: vec![],
                 },
             ],
+            collections_revision: 0,
+            collections: vec![],
         };
         cfg.save(&path);
 

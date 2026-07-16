@@ -25,6 +25,9 @@ export function friendlyMessage(error: any): string {
     invalid_root_path: 'Path does not exist or is not accessible.',
     invalid_root_name: 'Invalid root name.',
     invalid_pinned_path: 'Invalid pinned folder path.',
+    invalid_collection_name: 'Invalid collection name.',
+    invalid_collection_path: 'Invalid collection file path.',
+    collection_name_conflict: 'A collection with this name already exists.',
     resource_rejected: 'Agent rejected this change. The folder may be missing or the root changed.',
     unsupported_feature: 'This agent version does not support pinned folders.',
   };
@@ -71,6 +74,20 @@ export interface AgentInfo {
   pending_resource_update: boolean;
   last_config_error: string | null;
   roots: RootInfo[];
+  collections_revision: number;
+  pending_collections_update: boolean;
+  collections: CollectionInfo[];
+}
+
+export interface CollectionItem {
+  root: string;
+  path: string;
+  label?: string | null;
+}
+
+export interface CollectionInfo {
+  name: string;
+  items: CollectionItem[];
 }
 
 /// A root as returned by the hub (display shape). `pinned_folders` holds
@@ -231,6 +248,52 @@ export async function deleteRoot(agentId: string, rootName: string) {
   return request<any>(`/api/agents/${agentId}/roots/${rootName}`, {
     method: 'DELETE',
   });
+}
+
+// ── Virtual Collections ─────────────────────────────────────────────────────
+
+async function throwIfCollectionRejected(res: any) {
+  if (res && typeof res === 'object' && (res.ok === false || res.state === 'rejected')) {
+    throw {
+      status: 200,
+      error: res.error || 'collection_rejected',
+      message: res.message || 'Agent rejected the collection update.',
+      retryable: true,
+    };
+  }
+  return res;
+}
+
+export async function createCollection(agentId: string, name: string) {
+  const res = await request<any>(`/api/agents/${agentId}/collections`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+  return throwIfCollectionRejected(res);
+}
+
+export async function patchCollection(
+  agentId: string,
+  collectionName: string,
+  patch: {
+    rename?: string;
+    item_add?: CollectionItem;
+    item_remove?: { root: string; path: string };
+    items?: CollectionItem[];
+  },
+) {
+  const res = await request<any>(`/api/agents/${agentId}/collections/${encodeURIComponent(collectionName)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+  return throwIfCollectionRejected(res);
+}
+
+export async function deleteCollection(agentId: string, collectionName: string) {
+  const res = await request<any>(`/api/agents/${agentId}/collections/${encodeURIComponent(collectionName)}`, {
+    method: 'DELETE',
+  });
+  return throwIfCollectionRejected(res);
 }
 
 // ── Filesystem ───────────────────────────────────────────────────────────────

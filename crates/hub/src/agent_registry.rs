@@ -5,7 +5,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, Notify};
 
 use filebox_protocol::resources::{
-    Capabilities, DesiredResources, ResourceRevision, RootConfig, RootInfo,
+    Capabilities, CollectionConfig, CollectionInfo, DesiredCollections, DesiredResources,
+    ResourceRevision, RootConfig, RootInfo,
 };
 use filebox_protocol::message::HubMessage;
 
@@ -33,8 +34,11 @@ pub struct AgentConnection {
     pub rtt_ms: Option<u64>,
     pub resource_revision: u64,
     pub roots: Vec<RootConfig>,
+    pub collections_revision: u64,
+    pub collections: Vec<CollectionConfig>,
     pub capabilities: Capabilities,
     pub pending_update: Option<DesiredResources>,
+    pub pending_collections_update: Option<DesiredCollections>,
     pub inflight_requests: u32,
     pub connected_at: u64,
     pub last_config_error: Option<String>,
@@ -71,6 +75,22 @@ impl AgentConnection {
                     pinned_folders: r.pinned_folders.clone(),
                 })
                 .collect(),
+            collections_revision: self.collections_revision,
+            pending_collections_update: self.pending_collections_update.is_some(),
+            collections: {
+                let source = self
+                    .pending_collections_update
+                    .as_ref()
+                    .map(|p| &p.collections)
+                    .unwrap_or(&self.collections);
+                source
+                    .iter()
+                    .map(|c| CollectionInfo {
+                        name: c.name.clone(),
+                        items: c.items.clone(),
+                    })
+                    .collect()
+            },
         }
     }
 
@@ -104,6 +124,9 @@ pub struct AgentInfoResponse {
     pub pending_resource_update: bool,
     pub last_config_error: Option<String>,
     pub roots: Vec<RootInfo>,
+    pub collections_revision: u64,
+    pub pending_collections_update: bool,
+    pub collections: Vec<CollectionInfo>,
 }
 
 pub struct AgentRegistry {
@@ -125,6 +148,8 @@ impl AgentRegistry {
         abort_notify: Arc<Notify>,
         resource_revision: u64,
         roots: Vec<RootConfig>,
+        collections_revision: u64,
+        collections: Vec<CollectionConfig>,
         capabilities: Capabilities,
     ) {
         let now = Instant::now();
@@ -145,8 +170,11 @@ impl AgentRegistry {
             rtt_ms: None,
             resource_revision,
             roots,
+            collections_revision,
+            collections,
             capabilities,
             pending_update: None,
+            pending_collections_update: None,
             inflight_requests: 0,
             connected_at: epoch,
             last_config_error: None,
@@ -265,6 +293,30 @@ impl AgentRegistry {
         }
     }
 
+    pub fn update_collections(
+        &mut self,
+        agent_id: &str,
+        revision: u64,
+        collections: Vec<CollectionConfig>,
+    ) {
+        if let Some(agent) = self.agents.get_mut(agent_id) {
+            agent.collections_revision = revision;
+            agent.collections = collections;
+            agent.pending_collections_update = None;
+            agent.last_config_error = None;
+        }
+    }
+
+    pub fn set_pending_collections_update(
+        &mut self,
+        agent_id: &str,
+        desired: DesiredCollections,
+    ) {
+        if let Some(agent) = self.agents.get_mut(agent_id) {
+            agent.pending_collections_update = Some(desired);
+        }
+    }
+
     pub fn set_config_error(&mut self, agent_id: &str, error: String) {
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.last_config_error = Some(error);
@@ -303,6 +355,8 @@ mod tests {
             format!("agent-{}", id),
             tx.clone(),
             notify,
+            0,
+            vec![],
             0,
             vec![],
             Capabilities::default(),
@@ -344,6 +398,8 @@ mod tests {
             make_sender(),
             Arc::new(Notify::new()),
             5,
+            vec![],
+            0,
             vec![],
             Capabilities::default(),
         );
@@ -395,6 +451,8 @@ mod tests {
             new_notify,
             5,
             vec![],
+            0,
+            vec![],
             Capabilities::default(),
         );
 
@@ -423,6 +481,8 @@ mod tests {
             "first".to_string(),
             make_sender(),
             old_notify.clone(),
+            0,
+            vec![],
             0,
             vec![],
             Capabilities::default(),
@@ -760,6 +820,8 @@ mod tests {
             Arc::new(Notify::new()),
             0,
             vec![],
+            0,
+            vec![],
             Capabilities::default(),
         );
         // After register() the fresh entry has NO pending — this is the bug
@@ -832,6 +894,8 @@ mod tests {
                     pinned_folders: vec![],
                 },
             ],
+            0,
+            vec![],
             Capabilities::default(),
         );
 
@@ -858,6 +922,8 @@ mod tests {
                 enabled: true,
                 pinned_folders: vec![],
             }],
+            0,
+            vec![],
             Capabilities::default(),
         );
 
@@ -896,6 +962,8 @@ mod tests {
             "test".to_string(),
             tx,
             Arc::new(Notify::new()),
+            0,
+            vec![],
             0,
             vec![],
             Capabilities::default(),

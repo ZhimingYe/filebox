@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, RwLock};
 
-use filebox_protocol::resources::RootConfig;
+use filebox_protocol::resources::{CollectionConfig, RootConfig};
 
 use crate::agent_registry::AgentRegistry;
 use crate::auth::SessionStore;
@@ -14,6 +14,7 @@ pub struct PendingResponse {
     pub agent_id: String,
     pub session_id: Option<String>,
     pub desired_roots: Option<Vec<RootConfig>>,
+    pub desired_collections: Option<Vec<CollectionConfig>>,
 }
 
 #[derive(Clone, Debug)]
