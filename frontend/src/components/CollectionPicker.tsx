@@ -16,7 +16,12 @@ interface Props {
   onChanged: () => void;
 }
 
-type PanelPos = { top: number; left: number; maxHeight: number };
+type PanelPos = {
+  top?: number;
+  bottom?: number;
+  left: number;
+  maxHeight: number;
+};
 
 const PANEL_WIDTH = 280;
 
@@ -40,13 +45,13 @@ export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }
     const rect = anchor.getBoundingClientRect();
     const gap = 4;
     const margin = 8;
-    const estHeight = 280;
     const spaceBelow = window.innerHeight - rect.bottom - margin;
     const spaceAbove = rect.top - margin;
+    // Prefer below when there is room; otherwise flip above. When flipping,
+    // anchor with CSS `bottom` (not a guessed `top`) so a short panel stays
+    // glued to the trigger instead of floating mid-viewport under a 280px
+    // height estimate.
     const openBelow = spaceBelow >= 160 || spaceBelow >= spaceAbove;
-    const top = openBelow
-      ? rect.bottom + gap
-      : Math.max(margin, rect.top - gap - estHeight);
     const maxHeight = openBelow
       ? Math.max(120, Math.min(360, spaceBelow - gap))
       : Math.max(120, Math.min(360, spaceAbove - gap));
@@ -54,7 +59,27 @@ export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }
       margin,
       Math.min(rect.left, window.innerWidth - PANEL_WIDTH - margin),
     );
-    setPanelPos({ top, left, maxHeight });
+    const next: PanelPos = openBelow
+      ? { top: rect.bottom + gap, left, maxHeight }
+      : {
+          // Panel bottom edge sits just above the trigger; content height
+          // can change (create form, errors) without leaving a gap.
+          bottom: window.innerHeight - rect.top + gap,
+          left,
+          maxHeight,
+        };
+    setPanelPos((prev) => {
+      if (
+        prev
+        && prev.top === next.top
+        && prev.bottom === next.bottom
+        && prev.left === next.left
+        && prev.maxHeight === next.maxHeight
+      ) {
+        return prev;
+      }
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -146,6 +171,7 @@ export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }
       style={{
         ...styles.panel,
         top: panelPos.top,
+        bottom: panelPos.bottom,
         left: panelPos.left,
         maxHeight: panelPos.maxHeight,
       }}
