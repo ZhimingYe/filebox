@@ -227,6 +227,8 @@ Open `http://localhost:3000` in a browser and log in with the configured credent
 | `token` | `FILEBOX_AGENT_TOKEN` | Agent auth token | Required |
 | `name` | `FILEBOX_AGENT_NAME` | Agent display name | `default-agent` |
 | `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Data storage directory | OS local data directory + `filebox` |
+| `search_ignore` | `FILEBOX_AGENT_SEARCH_IGNORE` | Path-component names Workspace Search skips (comma-separated in env) | `renv`, `venv`, `.venv`, `node_modules`, … |
+| `search_gitignore` | `FILEBOX_AGENT_SEARCH_GITIGNORE` | Honor `.gitignore` / `.ignore` during search (`0`/`false` disables) | `true` |
 
 ## Usage
 
@@ -268,8 +270,10 @@ or copy files on disk — they are virtual references only.
 4. Pick a root and optional folder; optionally filter by extensions
 5. Click a hit to open its parent folder in Files
 
-Search runs on the agent with progress and cancel. Legacy agents without
-the capability show an unsupported message.
+Search runs on the agent with progress and cancel. By default it skips
+common dependency trees (`renv`, `venv`, `node_modules`, …) and honors
+`.gitignore` / `.ignore`; both are configurable in `agent.toml`. Legacy
+agents without the capability show an unsupported message.
 
 ### System Monitoring
 

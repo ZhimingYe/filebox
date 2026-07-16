@@ -604,6 +604,8 @@ async fn run_one_connection(
                                     extensions,
                                     max_results,
                                     context,
+                                    ignore_names: config.search_ignore.clone(),
+                                    respect_gitignore: config.search_gitignore,
                                     cancel: Some(cancel),
                                     on_progress: Some(on_progress),
                                 };

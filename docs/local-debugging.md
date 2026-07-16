@@ -451,6 +451,8 @@ Env vars (verified):
 | `FILEBOX_AGENT_CONFIG` | Agent toml path |
 | `FILEBOX_ALLOW_INSECURE_HUB` | Allow plaintext `ws://` / `http://` hub |
 | `FILEBOX_AGENT_STATS_TTL_SECS` | Sysinfo cache TTL (default 60) |
+| `FILEBOX_AGENT_SEARCH_IGNORE` | Comma-separated path names Workspace Search skips (default: `renv`, `venv`, …) |
+| `FILEBOX_AGENT_SEARCH_GITIGNORE` | Honor `.gitignore` / `.ignore` in search (`0`/`false` disables; default on) |
 | `FILEBOX_UPDATE_BASE_URL` | `--update` mirror base URL |
 | `FILEBOX_ALLOW_INSECURE_UPDATE` | Allow `http://` update source |
 | `FILEBOX_ALLOW_DOWNGRADE` | Allow updater downgrade |

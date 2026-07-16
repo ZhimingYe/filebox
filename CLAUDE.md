@@ -219,8 +219,11 @@ agent (`ignore` + `regex`) — no system `fd`/`rg` binaries.
 
 Scoped to one enabled root + optional folder under that root. Optional
 extension filter (extensions only, not globs). Same path safety /
-denylist / no-symlink-follow as `fs.rs`. Content mode skips binaries
-(NUL in first 8 KiB) and files > 1 MiB.
+denylist / no-symlink-follow as `fs.rs`. Also prunes configurable
+path-component ignores (defaults include `renv`, `venv`, `node_modules`,
+…) and honors `.gitignore` / `.ignore` unless disabled
+(`search_ignore` / `search_gitignore` in `agent.toml`). Content mode
+skips binaries (NUL in first 8 KiB) and files > 1 MiB.
 
 ```text
 Frontend POST /api/agents/{id}/workspace-search

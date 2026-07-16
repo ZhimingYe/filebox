@@ -6,12 +6,47 @@ use filebox_updater::{
 
 const DEFAULT_CONFIG_PATH: &str = "agent.toml";
 
+/// Directory / path-component names skipped by Workspace Search by default.
+/// These are dependency / virtualenv trees that drown out project files.
+/// Override with `search_ignore` in agent.toml or `FILEBOX_AGENT_SEARCH_IGNORE`.
+pub const DEFAULT_SEARCH_IGNORE: &[&str] = &[
+    "renv",
+    "packrat",
+    "venv",
+    ".venv",
+    "node_modules",
+    "__pycache__",
+    "site-packages",
+    ".tox",
+    ".nox",
+    "target",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".cache",
+    "bower_components",
+    ".parcel-cache",
+    ".turbo",
+    ".bundle",
+    ".gradle",
+    ".pixi",
+];
+
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct TomlConfig {
     hub: Option<String>,
     token: Option<String>,
     name: Option<String>,
     data_dir: Option<String>,
+    /// Path-component names to skip during Workspace Search.
+    /// When omitted, [`DEFAULT_SEARCH_IGNORE`] is used. Set to `[]` to disable
+    /// name-based ignores (`.gitignore` may still apply).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    search_ignore: Option<Vec<String>>,
+    /// When true (default), Workspace Search honors `.gitignore` / `.ignore`
+    /// / `.git/info/exclude` under the search tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    search_gitignore: Option<bool>,
 }
 
 pub struct AgentConfig {
@@ -19,6 +54,10 @@ pub struct AgentConfig {
     pub token: String,
     pub agent_name: String,
     pub data_dir: PathBuf,
+    /// Effective path-component names skipped by Workspace Search.
+    pub search_ignore: Vec<String>,
+    /// Whether Workspace Search should honor gitignore-style ignore files.
+    pub search_gitignore: bool,
 }
 
 impl AgentConfig {
@@ -42,6 +81,8 @@ impl AgentConfig {
                 token: None,
                 name: None,
                 data_dir: None,
+                search_ignore: None,
+                search_gitignore: None,
             }
         };
 
@@ -81,6 +122,15 @@ impl AgentConfig {
                     .join("filebox")
             });
 
+        let search_ignore = resolve_search_ignore(
+            std::env::var("FILEBOX_AGENT_SEARCH_IGNORE").ok(),
+            toml_config.search_ignore,
+        );
+        let search_gitignore = resolve_search_gitignore(
+            std::env::var("FILEBOX_AGENT_SEARCH_GITIGNORE").ok(),
+            toml_config.search_gitignore,
+        );
+
         enforce_secure_hub_url(&hub_url);
 
         Self {
@@ -88,6 +138,8 @@ impl AgentConfig {
             token,
             agent_name,
             data_dir,
+            search_ignore,
+            search_gitignore,
         }
     }
 }
@@ -137,6 +189,14 @@ pub fn init_interactive(request: filebox_updater::ConfigInitRequest) -> Result<(
         token: Some(token),
         name: Some(name),
         data_dir: Some(data_dir.to_string_lossy().into_owned()),
+        // Emit defaults so operators can edit the list without hunting docs.
+        search_ignore: Some(
+            DEFAULT_SEARCH_IGNORE
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+        ),
+        search_gitignore: Some(true),
     };
     let mut contents = toml::to_string_pretty(&config)
         .map_err(|error| format!("failed to serialize agent config: {error}"))?;
@@ -198,9 +258,61 @@ fn allow_insecure_hub() -> bool {
         .unwrap_or(false)
 }
 
+/// Resolve the effective search-ignore name list.
+///
+/// Env (`FILEBOX_AGENT_SEARCH_IGNORE`, comma-separated) wins over toml.
+/// When neither is set, [`DEFAULT_SEARCH_IGNORE`] applies. An explicit empty
+/// list (`[]` / `""`) disables name-based ignores.
+fn resolve_search_ignore(env: Option<String>, toml: Option<Vec<String>>) -> Vec<String> {
+    if let Some(raw) = env {
+        return normalize_ignore_names(raw.split(',').map(|s| s.to_string()));
+    }
+    if let Some(list) = toml {
+        return normalize_ignore_names(list);
+    }
+    DEFAULT_SEARCH_IGNORE
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
+fn normalize_ignore_names<I>(names: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut out = Vec::new();
+    for name in names {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Operators may write "venv/" or "/venv"; strip path punctuation so
+        // matching stays a simple path-component compare.
+        let cleaned = trimmed.trim_matches(['/', '\\']);
+        if cleaned.is_empty() || cleaned.contains('/') || cleaned.contains('\\') {
+            continue;
+        }
+        if !out.iter().any(|existing: &String| existing.eq_ignore_ascii_case(cleaned)) {
+            out.push(cleaned.to_string());
+        }
+    }
+    out
+}
+
+fn resolve_search_gitignore(env: Option<String>, toml: Option<bool>) -> bool {
+    if let Some(raw) = env {
+        let v = raw.trim();
+        return !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"));
+    }
+    toml.unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_secure_hub_url, TomlConfig};
+    use super::{
+        is_secure_hub_url, normalize_ignore_names, resolve_search_gitignore, resolve_search_ignore,
+        TomlConfig, DEFAULT_SEARCH_IGNORE,
+    };
 
     #[test]
     fn secure_hub_url_accepts_https_and_wss() {
@@ -223,6 +335,8 @@ mod tests {
             token: Some("secret-token".to_string()),
             name: Some("Lab Server".to_string()),
             data_dir: Some("/var/lib/filebox".to_string()),
+            search_ignore: Some(vec!["renv".into(), "venv".into()]),
+            search_gitignore: Some(true),
         };
         let contents = toml::to_string_pretty(&config).unwrap();
         let reparsed: TomlConfig = toml::from_str(&contents).unwrap();
@@ -230,5 +344,43 @@ mod tests {
         assert_eq!(reparsed.token.as_deref(), Some("secret-token"));
         assert_eq!(reparsed.name.as_deref(), Some("Lab Server"));
         assert_eq!(reparsed.data_dir.as_deref(), Some("/var/lib/filebox"));
+        assert_eq!(
+            reparsed.search_ignore.as_deref(),
+            Some(["renv".to_string(), "venv".to_string()].as_slice())
+        );
+        assert_eq!(reparsed.search_gitignore, Some(true));
+    }
+
+    #[test]
+    fn search_ignore_defaults_when_unset() {
+        let names = resolve_search_ignore(None, None);
+        assert_eq!(names.len(), DEFAULT_SEARCH_IGNORE.len());
+        assert!(names.iter().any(|n| n == "renv"));
+        assert!(names.iter().any(|n| n == "venv"));
+    }
+
+    #[test]
+    fn search_ignore_env_overrides_toml_and_empty_disables() {
+        let from_toml = resolve_search_ignore(None, Some(vec!["custom".into()]));
+        assert_eq!(from_toml, vec!["custom".to_string()]);
+
+        let from_env = resolve_search_ignore(
+            Some("renv, venv/".into()),
+            Some(vec!["custom".into()]),
+        );
+        assert_eq!(from_env, vec!["renv".to_string(), "venv".to_string()]);
+
+        let empty = resolve_search_ignore(Some("".into()), Some(vec!["custom".into()]));
+        assert!(empty.is_empty());
+        assert!(normalize_ignore_names(vec!["  ".into(), "/".into()]).is_empty());
+    }
+
+    #[test]
+    fn search_gitignore_defaults_true_and_env_can_disable() {
+        assert!(resolve_search_gitignore(None, None));
+        assert!(!resolve_search_gitignore(None, Some(false)));
+        assert!(!resolve_search_gitignore(Some("0".into()), Some(true)));
+        assert!(!resolve_search_gitignore(Some("false".into()), None));
+        assert!(resolve_search_gitignore(Some("1".into()), Some(false)));
     }
 }

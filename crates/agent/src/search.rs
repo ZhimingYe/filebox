@@ -47,6 +47,11 @@ pub struct SearchParams {
     pub extensions: Vec<String>,
     pub max_results: Option<u32>,
     pub context: Option<u32>,
+    /// Path-component names to prune (e.g. `venv`, `renv`, `node_modules`).
+    /// Matching is case-insensitive and applies to any depth under the root.
+    pub ignore_names: Vec<String>,
+    /// When true, honor `.gitignore` / `.ignore` / `.git/info/exclude`.
+    pub respect_gitignore: bool,
     /// Cooperative cancel — checked between files.
     pub cancel: Option<Arc<AtomicBool>>,
     /// Optional progress hook: (scanned_files, hit_count).
@@ -126,13 +131,24 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
         .unwrap_or_else(Instant::now);
 
     let root_canonical_for_filter = root_canonical.clone();
+    let ignore_names = params.ignore_names.clone();
+    let respect_gitignore = params.respect_gitignore;
+    // `standard_filters(false)` first — calling it after the individual
+    // toggles would wipe them (it sets the whole group).
+    // Keep `hidden(false)` so dirs like `.github` stay searchable; rely on
+    // denylist + configured name ignores + gitignore for noise control.
+    // `require_git(false)` so a bare `.gitignore` (no `.git` checkout)
+    // still applies — common for copied trees and agent data dirs.
     let walker = WalkBuilder::new(&start)
-        .hidden(false)
-        .git_ignore(false)
-        .git_global(false)
-        .git_exclude(false)
-        .follow_links(false)
         .standard_filters(false)
+        .hidden(false)
+        .git_ignore(respect_gitignore)
+        .git_global(false)
+        .git_exclude(respect_gitignore)
+        .ignore(respect_gitignore)
+        .parents(respect_gitignore)
+        .require_git(false)
+        .follow_links(false)
         // Threads help on large trees without starving the async runtime
         // (this runs inside spawn_blocking).
         .threads(2)
@@ -146,6 +162,9 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
             };
             if rel.as_os_str().is_empty() {
                 return true;
+            }
+            if path_has_ignored_component(rel, &ignore_names) {
+                return false;
             }
             let rel_str = format_rel(rel);
             !denylist::is_denied(&rel_str)
@@ -282,6 +301,29 @@ fn format_rel(rel: &Path) -> String {
     } else {
         format!("/{s}")
     }
+}
+
+/// True when any path component equals an ignore name (case-insensitive).
+/// Used to prune entire dependency trees before they burn scan budget.
+fn path_has_ignored_component(rel: &Path, names: &[String]) -> bool {
+    if names.is_empty() {
+        return false;
+    }
+    for component in rel.components() {
+        let std::path::Component::Normal(os) = component else {
+            continue;
+        };
+        let Some(name) = os.to_str() else {
+            continue;
+        };
+        if names
+            .iter()
+            .any(|ignored| ignored.eq_ignore_ascii_case(name))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 enum MatchFileError {
@@ -483,6 +525,23 @@ mod tests {
         }
     }
 
+    /// Baseline params: no name ignores, no gitignore — keeps legacy tests focused.
+    fn base_params(mode: SearchMode, query: &str) -> SearchParams {
+        SearchParams {
+            mode,
+            root: "ws".into(),
+            path: "/".into(),
+            query: query.into(),
+            extensions: vec![],
+            max_results: Some(50),
+            context: Some(0),
+            ignore_names: vec![],
+            respect_gitignore: false,
+            cancel: None,
+            on_progress: None,
+        }
+    }
+
     #[test]
     fn find_filters_by_extension_and_name() {
         let dir = tempdir().unwrap();
@@ -493,21 +552,9 @@ mod tests {
         fs::write(dir.path().join("sub/alpha_util.rs"), "fn u() {}").unwrap();
 
         let roots = vec![root("ws", dir.path().to_path_buf())];
-        let result = run_search(
-            &roots,
-            SearchParams {
-                mode: SearchMode::Find,
-                root: "ws".into(),
-                path: "/".into(),
-                query: "alpha".into(),
-                extensions: vec!["rs".into()],
-                max_results: Some(50),
-                context: None,
-                cancel: None,
-                on_progress: None,
-            },
-        )
-        .unwrap();
+        let mut params = base_params(SearchMode::Find, "alpha");
+        params.extensions = vec!["rs".into()];
+        let result = run_search(&roots, params).unwrap();
 
         let names: Vec<_> = result.hits.iter().map(|h| h.path.as_str()).collect();
         assert!(names.contains(&"/alpha.rs"));
@@ -526,21 +573,11 @@ mod tests {
         fs::write(dir.path().join("notes.txt"), body).unwrap();
 
         let roots = vec![root("ws", dir.path().to_path_buf())];
-        let result = run_search(
-            &roots,
-            SearchParams {
-                mode: SearchMode::Content,
-                root: "ws".into(),
-                path: "/".into(),
-                query: "line 15".into(),
-                extensions: vec!["txt".into()],
-                max_results: Some(10),
-                context: Some(2),
-                cancel: None,
-                on_progress: None,
-            },
-        )
-        .unwrap();
+        let mut params = base_params(SearchMode::Content, "line 15");
+        params.extensions = vec!["txt".into()];
+        params.max_results = Some(10);
+        params.context = Some(2);
+        let result = run_search(&roots, params).unwrap();
 
         assert_eq!(result.hits.len(), 1);
         let hit = &result.hits[0];
@@ -559,21 +596,11 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("a.txt"), "foo\nfoo\nbar\n").unwrap();
         let roots = vec![root("ws", dir.path().to_path_buf())];
-        let result = run_search(
-            &roots,
-            SearchParams {
-                mode: SearchMode::Content,
-                root: "ws".into(),
-                path: "/".into(),
-                query: "foo".into(),
-                extensions: vec!["txt".into()],
-                max_results: Some(20),
-                context: Some(1),
-                cancel: None,
-                on_progress: None,
-            },
-        )
-        .unwrap();
+        let mut params = base_params(SearchMode::Content, "foo");
+        params.extensions = vec!["txt".into()];
+        params.max_results = Some(20);
+        params.context = Some(1);
+        let result = run_search(&roots, params).unwrap();
         assert_eq!(result.hits.len(), 2);
         assert_eq!(result.hits[0].line, Some(1));
         assert_eq!(result.hits[1].line, Some(2));
@@ -588,21 +615,10 @@ mod tests {
         fs::write(dir.path().join("ok.txt"), "SECRET=1").unwrap();
 
         let roots = vec![root("ws", dir.path().to_path_buf())];
-        let result = run_search(
-            &roots,
-            SearchParams {
-                mode: SearchMode::Content,
-                root: "ws".into(),
-                path: "/".into(),
-                query: "SECRET".into(),
-                extensions: vec![],
-                max_results: Some(20),
-                context: Some(1),
-                cancel: None,
-                on_progress: None,
-            },
-        )
-        .unwrap();
+        let mut params = base_params(SearchMode::Content, "SECRET");
+        params.max_results = Some(20);
+        params.context = Some(1);
+        let result = run_search(&roots, params).unwrap();
 
         assert_eq!(result.hits.len(), 1);
         assert_eq!(result.hits[0].path, "/ok.txt");
@@ -621,21 +637,9 @@ mod tests {
             .unwrap();
         }
         let roots = vec![root("ws", dir.path().to_path_buf())];
-        let result = run_search(
-            &roots,
-            SearchParams {
-                mode: SearchMode::Find,
-                root: "ws".into(),
-                path: "/".into(),
-                query: "".into(),
-                extensions: vec!["rs".into()],
-                max_results: Some(50),
-                context: None,
-                cancel: None,
-                on_progress: None,
-            },
-        )
-        .unwrap();
+        let mut params = base_params(SearchMode::Find, "");
+        params.extensions = vec!["rs".into()];
+        let result = run_search(&roots, params).unwrap();
         let names: Vec<_> = result.hits.iter().map(|h| h.path.as_str()).collect();
         assert!(names.contains(&"/real.rs"));
         assert!(
@@ -658,21 +662,10 @@ mod tests {
         fs::write(dir.path().join("safe.txt"), "safe").unwrap();
 
         let roots = vec![root("ws", dir.path().to_path_buf())];
-        let result = run_search(
-            &roots,
-            SearchParams {
-                mode: SearchMode::Content,
-                root: "ws".into(),
-                path: "/".into(),
-                query: "LEAK_MARKER".into(),
-                extensions: vec![],
-                max_results: Some(20),
-                context: Some(1),
-                cancel: None,
-                on_progress: None,
-            },
-        )
-        .unwrap();
+        let mut params = base_params(SearchMode::Content, "LEAK_MARKER");
+        params.max_results = Some(20);
+        params.context = Some(1);
+        let result = run_search(&roots, params).unwrap();
         assert!(
             result.hits.is_empty(),
             "must not read symlink targets outside the root"
@@ -686,21 +679,10 @@ mod tests {
             fs::write(dir.path().join(format!("f{i}.txt")), "needle").unwrap();
         }
         let roots = vec![root("ws", dir.path().to_path_buf())];
-        let result = run_search(
-            &roots,
-            SearchParams {
-                mode: SearchMode::Content,
-                root: "ws".into(),
-                path: "/".into(),
-                query: "needle".into(),
-                extensions: vec!["txt".into()],
-                max_results: Some(3),
-                context: Some(0),
-                cancel: None,
-                on_progress: None,
-            },
-        )
-        .unwrap();
+        let mut params = base_params(SearchMode::Content, "needle");
+        params.extensions = vec!["txt".into()];
+        params.max_results = Some(3);
+        let result = run_search(&roots, params).unwrap();
         assert_eq!(result.hits.len(), 3);
         assert!(result.truncated);
     }
@@ -714,21 +696,10 @@ mod tests {
         fs::write(dir.path().join("docs/a.md"), "MARKER_IN_DOCS").unwrap();
 
         let roots = vec![root("ws", dir.path().to_path_buf())];
-        let result = run_search(
-            &roots,
-            SearchParams {
-                mode: SearchMode::Content,
-                root: "ws".into(),
-                path: "/src".into(),
-                query: "MARKER_IN".into(),
-                extensions: vec![],
-                max_results: Some(20),
-                context: Some(0),
-                cancel: None,
-                on_progress: None,
-            },
-        )
-        .unwrap();
+        let mut params = base_params(SearchMode::Content, "MARKER_IN");
+        params.path = "/src".into();
+        params.max_results = Some(20);
+        let result = run_search(&roots, params).unwrap();
         assert_eq!(result.hits.len(), 1);
         assert_eq!(result.hits[0].path, "/src/a.rs");
     }
@@ -739,21 +710,10 @@ mod tests {
         fs::write(dir.path().join("Main.RS"), "fn main() { TODO }").unwrap();
         fs::write(dir.path().join("notes.TXT"), "TODO here").unwrap();
         let roots = vec![root("ws", dir.path().to_path_buf())];
-        let result = run_search(
-            &roots,
-            SearchParams {
-                mode: SearchMode::Content,
-                root: "ws".into(),
-                path: "/".into(),
-                query: "TODO".into(),
-                extensions: vec!["Rs".into(), "tXt".into()],
-                max_results: Some(20),
-                context: Some(0),
-                cancel: None,
-                on_progress: None,
-            },
-        )
-        .unwrap();
+        let mut params = base_params(SearchMode::Content, "TODO");
+        params.extensions = vec!["Rs".into(), "tXt".into()];
+        params.max_results = Some(20);
+        let result = run_search(&roots, params).unwrap();
         let paths: Vec<_> = result.hits.iter().map(|h| h.path.as_str()).collect();
         assert!(paths.iter().any(|p| p.eq_ignore_ascii_case("/Main.RS") || p.ends_with(".RS") || p.ends_with(".rs")));
         assert_eq!(result.hits.len(), 2, "both .RS and .TXT should match case-insensitively: {paths:?}");
@@ -767,21 +727,10 @@ mod tests {
         }
         let roots = vec![root("ws", dir.path().to_path_buf())];
         let cancel = Arc::new(AtomicBool::new(true));
-        let err = run_search(
-            &roots,
-            SearchParams {
-                mode: SearchMode::Content,
-                root: "ws".into(),
-                path: "/".into(),
-                query: "needle".into(),
-                extensions: vec!["txt".into()],
-                max_results: Some(50),
-                context: Some(0),
-                cancel: Some(cancel),
-                on_progress: None,
-            },
-        )
-        .unwrap_err();
+        let mut params = base_params(SearchMode::Content, "needle");
+        params.extensions = vec!["txt".into()];
+        params.cancel = Some(cancel);
+        let err = run_search(&roots, params).unwrap_err();
         assert_eq!(err, "cancelled");
     }
 
@@ -793,21 +742,10 @@ mod tests {
         }
         fs::write(dir.path().join("hit.rs"), "needle").unwrap();
         let roots = vec![root("ws", dir.path().to_path_buf())];
-        let result = run_search(
-            &roots,
-            SearchParams {
-                mode: SearchMode::Content,
-                root: "ws".into(),
-                path: "/".into(),
-                query: "needle".into(),
-                extensions: vec!["rs".into()],
-                max_results: Some(20),
-                context: Some(0),
-                cancel: None,
-                on_progress: None,
-            },
-        )
-        .unwrap();
+        let mut params = base_params(SearchMode::Content, "needle");
+        params.extensions = vec!["rs".into()];
+        params.max_results = Some(20);
+        let result = run_search(&roots, params).unwrap();
         assert_eq!(result.hits.len(), 1);
         assert_eq!(result.hits[0].path, "/hit.rs");
         assert!(
@@ -815,6 +753,59 @@ mod tests {
             "extension skips must still count toward scanned (got {})",
             result.scanned
         );
+    }
+
+    #[test]
+    fn ignore_names_prune_venv_and_renv_trees() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("app.R"), "MARK").unwrap();
+        fs::create_dir_all(dir.path().join("renv/library")).unwrap();
+        fs::write(dir.path().join("renv/library/pkg.R"), "MARK").unwrap();
+        fs::create_dir_all(dir.path().join("venv/lib")).unwrap();
+        fs::write(dir.path().join("venv/lib/site.py"), "MARK").unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/ok.py"), "MARK").unwrap();
+
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        let mut params = base_params(SearchMode::Content, "MARK");
+        params.ignore_names = vec!["renv".into(), "venv".into()];
+        params.max_results = Some(20);
+        let result = run_search(&roots, params).unwrap();
+
+        let paths: Vec<_> = result.hits.iter().map(|h| h.path.as_str()).collect();
+        assert!(paths.contains(&"/app.R"));
+        assert!(paths.contains(&"/src/ok.py"));
+        assert!(
+            !paths.iter().any(|p| p.contains("renv") || p.contains("venv")),
+            "dependency trees must be pruned: {paths:?}"
+        );
+        // Pruned dirs must not burn scanned budget on their contents.
+        assert!(
+            result.scanned <= 3,
+            "expected only project files scanned, got {}",
+            result.scanned
+        );
+    }
+
+    #[test]
+    fn respect_gitignore_skips_listed_paths() {
+        let dir = tempdir().unwrap();
+        // ignore crate looks for .git to decide whether gitignore applies.
+        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        fs::write(dir.path().join(".gitignore"), "ignored_dir/\n*.tmp\n").unwrap();
+        fs::create_dir_all(dir.path().join("ignored_dir")).unwrap();
+        fs::write(dir.path().join("ignored_dir/secret.txt"), "NEEDLE").unwrap();
+        fs::write(dir.path().join("keep.txt"), "NEEDLE").unwrap();
+        fs::write(dir.path().join("skip.tmp"), "NEEDLE").unwrap();
+
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        let mut params = base_params(SearchMode::Content, "NEEDLE");
+        params.respect_gitignore = true;
+        params.max_results = Some(20);
+        let result = run_search(&roots, params).unwrap();
+
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].path, "/keep.txt");
     }
 
     #[test]
