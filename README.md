@@ -9,7 +9,7 @@ A minimal, secure, read-only remote file browser.
 
 filebox is a read-only remote file browsing system that lets you access files on remote servers through a web browser. It consists of three parts:
 
-- **Frontend**: Web UI for browsing files, collections, and managing servers
+- **Frontend**: Web UI for browsing files, searching workspaces, collections, and managing servers
 - **Hub**: Central server handling authentication and request routing
 - **Agent**: Daemon running on remote servers, providing file access
 
@@ -39,11 +39,16 @@ Current release: **v0.9.0**. See [NEWS.md](NEWS.md) for the full changelog.
 - Add files from the browser via CollectionPicker
 - Persisted on the agent; offline edits apply on reconnect
 
+### Workspace Search
+- Files mode (fd-like filename substring) and Content mode (rg-like regex)
+- Scoped to one root + optional folder; optional extension filter
+- Progress, cancel, and high-load caps (no system `fd`/`rg` required)
+
 ### File Preview
 - Multi-tab preview workspace (tab jump, bulk close, Esc to close)
 - Markdown rendering
-- Code highlighting with word-wrap toggle
-- PDF reader, image viewer (including TIFF)
+- Read-only Monaco code editor (Find, wrap, syntax highlight)
+- PDF reader; image viewer with zoom/pan (including TIFF)
 - HTML preview (sandboxed session for relative assets)
 - CSV table view
 - Binary / inaccessible file handling with isolated error UI
@@ -252,6 +257,17 @@ are rejected without destroying the last known-good configuration.
 
 Collections are stored on the agent and survive reconnects. They do not move
 or copy files on disk — they are virtual references only.
+
+### Workspace Search
+
+1. Select an Agent
+2. Open Search
+3. Choose Files (filename) or Content (regex in file bodies)
+4. Pick a root and optional folder; optionally filter by extensions
+5. Click a hit to open its parent folder in Files
+
+Search runs on the agent with progress and cancel. Legacy agents without
+the capability show an unsupported message.
 
 ### System Monitoring
 

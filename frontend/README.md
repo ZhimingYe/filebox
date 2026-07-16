@@ -8,8 +8,9 @@ requests to `http://localhost:3000` in development.
 
 - **Authentication** — username/password login (session cookie)
 - **File browser** — virtualized list, directory tree, address bar, glob/regex + date filters, path memory, pinned folders
+- **Workspace Search** — Files (fd-like) and Content (rg-like) modes; progress + cancel
 - **Virtual collections** — per-agent file groups across roots; Collections workspace + CollectionPicker
-- **Multi-tab preview** — Markdown, code, PDF, image, HTML, CSV; tab jump / bulk close; error boundary isolation
+- **Multi-tab preview** — Markdown, Monaco code, PDF, image (zoom/pan), HTML, CSV; tab jump / bulk close; error boundary isolation
 - **System monitoring** — Overview / Users / Processes tabs
 - **Agent settings** — add/remove/enable/disable roots (including `~/…` home paths)
 - **Health** — hub/agent status via polling + SSE
@@ -20,12 +21,13 @@ Inline styles only — no CSS modules or Tailwind. Custom 16×16 SVG icons; no e
 
 ## Tech Stack
 
-- React 19 + TypeScript + Vite
+- React 19 + TypeScript + Vite 8
 - `react-window` for virtualized lists
-- `react-syntax-highlighter` for code preview
+- Monaco Editor (`@monaco-editor/react`) for read-only code preview
 - `react-markdown` for Markdown
 - `react-pdf` / `pdfjs-dist` for PDF
-- Lazy-loaded heavy preview chunks (`manualChunks` in `vite.config.ts`)
+- Lazy-loaded heavy preview chunks; Vite `manualChunks` covers react /
+  markdown / tiff vendors — **not** Monaco (keep it behind `TextPreview`)
 
 ## Project Structure
 
@@ -33,6 +35,7 @@ Inline styles only — no CSS modules or Tailwind. Custom 16×16 SVG icons; no e
 src/
   api/client.ts              # fetch wrapper + types
   hooks/usePreviewTabs.ts    # multi-tab preview state
+  monacoSetup.ts             # Monaco workers/theme (with TextPreview chunk)
   state/
     session.ts               # login / logout
     events.ts                # SSE (agents, roots, collections, progress)
@@ -44,6 +47,7 @@ src/
     FileBrowser.tsx
     FileEntryList.tsx        # shared list (Files + Collections)
     fileListShared.tsx       # grid columns, icons, row chrome
+    WorkspaceSearch.tsx      # fd/rg-like search UI
     DirectoryTree.tsx
     AddressBar.tsx
     DateFilterControl.tsx
@@ -105,6 +109,7 @@ no Hub restart required for UI-only changes).
 | `/api/agents/:id/roots/:name` | PATCH / DELETE | Update / remove root |
 | `/api/agents/:id/collections` | POST | Create collection (optional initial item) |
 | `/api/agents/:id/collections/:name` | PATCH / DELETE | Rename / add / remove items / delete |
+| `/api/agents/:id/workspace-search` | POST | Workspace Search (find / content) |
 | `/api/agents/:id/sys-stats` | GET | System stats |
 | `/api/events` | GET | SSE stream |
 | `/api/fs/list` | GET | Directory listing |

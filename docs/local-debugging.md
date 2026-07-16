@@ -193,6 +193,7 @@ curl -s -N -b /tmp/fb.cookie --noproxy '*' \
 | PATCH / DELETE | `/api/agents/{id}/roots/{name}` | yes | Update / remove root |
 | POST | `/api/agents/{id}/collections` | yes | Create collection (optional initial item) |
 | PATCH / DELETE | `/api/agents/{id}/collections/{name}` | yes | Mutate / delete collection |
+| POST | `/api/agents/{id}/workspace-search` | yes | Workspace Search (find / content modes) |
 | GET | `/api/fs/list` | yes | Directory listing (proxied to agent) |
 | GET | `/api/fs/stat` | yes | File metadata |
 | GET | `/api/file/raw` | yes | File bytes |
@@ -234,6 +235,27 @@ it on reconnect (`state: "pending_agent_reconnect"`). A rejected update
 (e.g. missing root path) becomes `config_error` / clears pending and
 **never destroys the last known good state.** Collection mutations against
 a legacy agent return `400 unsupported_feature`.
+
+### Workspace Search via API
+
+```bash
+# Filename search (fd-like). Empty query lists names under the folder.
+curl -s -b /tmp/fb.cookie --noproxy '*' \
+  -X POST "http://127.0.0.1:3000/api/agents/$AGENT_ID/workspace-search" \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"find","root":"demo","path":"/","query":"REWIND","max_results":50}'
+
+# Content search (rg-like regex). Optional extensions filter.
+curl -s -b /tmp/fb.cookie --noproxy '*' \
+  -X POST "http://127.0.0.1:3000/api/agents/$AGENT_ID/workspace-search" \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"content","root":"demo","path":"/reports","query":"TODO|FIXME","extensions":["md","rs"],"context":2}'
+```
+
+Progress events use SSE `phase: "search"`. Cancel with `POST /api/cancel`
+(and the same `client_nonce` if you sent one). Only one search runs per
+agent at a time; long trees are truncated by scan/result caps. Legacy
+agents without `capabilities.workspace_search` return unsupported.
 
 ---
 

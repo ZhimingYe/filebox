@@ -11,8 +11,8 @@
 
 filebox is a **read-only remote file browser with system monitoring**.
 User logs into one HTTPS web page, sees backend machines ("Agents") that
-have dialed out to a central Hub, browses files, organizes virtual
-collections, and reads system stats.
+have dialed out to a central Hub, browses files, searches workspaces,
+organizes virtual collections, and reads system stats.
 
 ```text
 Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ local files + sysinfo
@@ -60,14 +60,17 @@ machines need no public IP, inbound port, VPN, or port mapping.
 ## Stack
 
 **Frontend** (`frontend/`): TypeScript + Vite + React. Files and
-Collections share `FileEntryList` / `WorkspaceSplit`. Heavy preview
-components are `React.lazy()`-loaded (`PdfPreview`, `TextPreview`,
-`MarkdownPreview`, `HtmlPreview`, `CsvPreview`); `ImagePreview` stays inline.
-`PreviewWorkspace` owns multi-tab state; `PreviewPane` is a memoized
-dispatcher — memoization is what stops splitter-drag stutter. Vite
-`manualChunks` splits react / highlighter / markdown vendor chunks so
-deployments that don't bump a vendor reuse the cached chunk. PDF uses
-`react-pdf` + `pdfjs-dist` worker (bundled via
+Collections share `FileEntryList` / `WorkspaceSplit`. Workspace Search is
+a sibling sidebar view (`WorkspaceSearch`). Heavy preview components are
+`React.lazy()`-loaded (`PdfPreview`, `TextPreview`, `MarkdownPreview`,
+`HtmlPreview`, `CsvPreview`, `ImagePreview`). `PreviewWorkspace` owns
+multi-tab state; `PreviewPane` is a memoized dispatcher — memoization is
+what stops splitter-drag stutter. Vite `manualChunks` splits react /
+markdown / tiff vendor chunks so deployments that don't bump a vendor
+reuse the cached chunk. Monaco is kept behind the `TextPreview` lazy
+import (do not force it into a manual chunk — that previously pulled the
+~4MB editor into the main preload). PDF uses `react-pdf` + `pdfjs-dist`
+worker (bundled via
 `new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url)`) because
 some mobile browsers ship no native PDF viewer.
 
@@ -79,16 +82,17 @@ per-IP login rate limit), `net.rs` (`FILEBOX_TRUST_XFF` for client IP),
 `agent_registry.rs` (lifecycle + coalesced pending root/collection
 updates + config_error), `ws.rs` (agent WSS handler with
 abort-on-reregister), `events.rs` (SSE fanout), `fs_proxy.rs` (proxies
-file ops to agent WS), `health.rs`.
+file ops to agent WS), `search_proxy.rs` (workspace search), `health.rs`.
 
 **Agent** (`crates/agent/`): Rust + Tokio + tokio-tungstenite (rustls
 webpki-roots) + sysinfo. Connects outward, reconnects forever.
 `connection.rs` (reconnect loop — see "Reconnect & liveness" below),
 `resources.rs` (validate + apply root/pin/collection updates atomically;
 bad updates never destroy last good state), `fs.rs` (read-only ops + path
-safety + denylist), `dir_cache.rs` (mtime-keyed directory listing cache,
-cleared on root apply, capped), `sysinfo.rs` (TTL-cached stats — see
-below), `config_store.rs` (persists `agent_id`, roots, pins, collections,
+safety + denylist), `search.rs` (in-process fd/rg-like workspace search),
+`dir_cache.rs` (mtime-keyed directory listing cache, cleared on root
+apply, capped), `sysinfo.rs` (TTL-cached stats — see below),
+`config_store.rs` (persists `agent_id`, roots, pins, collections,
 revisions under `data_dir` in `agent_state.json`).
 
 **Updater** (`crates/updater/`): shared CLI for hub and agent —
@@ -99,10 +103,11 @@ by default; mirrors via `--update-base-url`).
 **Protocol** (`crates/protocol/`): JSON over WS, tagged enums in
 `message.rs`. Every request has `req_id`, supports `Cancel` / `Progress` /
 `Error` / terminal response. File reads stream as `FileChunk { offset,
-data, done }` — agent never slurps whole files. `Capabilities` gates real
-features (`pinned_folders`, `collections`); vestigial flags
-(`image_preview`, `pdf_preview`, `serve_dir`) default `false` and aren't
-gated on — don't read meaning into them.
+data, done }` — agent never slurps whole files. Search types live in
+`search.rs`. `Capabilities` gates real features (`pinned_folders`,
+`collections`, `workspace_search`); vestigial flags (`image_preview`,
+`pdf_preview`, `serve_dir`) default `false` and aren't gated on — don't
+read meaning into them.
 
 ## Reconnect & Liveness (non-obvious invariants)
 
@@ -202,6 +207,35 @@ keeps last good collections. Legacy agents without
 `capabilities.collections` get `400 unsupported_feature`. Revision is
 independent of `resource_revision`.
 
+## Workspace Search
+
+Sibling of Files/Collections (sidebar **Search**). In-process on the
+agent (`ignore` + `regex`) — no system `fd`/`rg` binaries.
+
+| Mode | Behavior |
+|---|---|
+| `find` (Files) | Case-insensitive filename substring (fd-like); empty query matches all names |
+| `content` (Content) | Case-insensitive regex over file lines (rg-like), with ±context |
+
+Scoped to one enabled root + optional folder under that root. Optional
+extension filter (extensions only, not globs). Same path safety /
+denylist / no-symlink-follow as `fs.rs`. Content mode skips binaries
+(NUL in first 8 KiB) and files > 1 MiB.
+
+```text
+Frontend POST /api/agents/{id}/workspace-search
+  → HubMessage::WorkspaceSearchRequest
+  → Agent spawn_blocking run_search (+ Progress phase "search")
+  → AgentMessage::WorkspaceSearchResponse
+```
+
+Hardening: result/scan caps, ~512 KiB payload soft limit, 9 min agent
+deadline / 10 min hub wait, one concurrent search per agent, cancel via
+`/api/cancel` (and on client disconnect). Gated by
+`capabilities.workspace_search`. Hitting a result opens the parent folder
+in Files. The Search view stays mounted when hidden so long scans survive
+navigation.
+
 ## Security
 
 - Users: bcrypt-hashed passwords in `hub.json`. Sessions: `HttpOnly;
@@ -238,13 +272,16 @@ independent of `resource_revision`.
   tab; context menu supports bulk close; tab-jump dropdown among open
   tabs. `PreviewErrorBoundary` isolates viewer crashes.
 - **Markdown**: fetch raw → render → sanitize HTML → safe mode for large.
-- **Code**: Prism via react-syntax-highlighter (`TextPreview`), word-wrap
-  toggle. Disable highlighter for large files (plain `<pre>` fallback).
-  Partial / virtualized for very large.
+- **Code**: Monaco Editor (read-only), word-wrap toggle, Find (Ctrl/Cmd+F).
+  Lazy-loaded via `TextPreview`; large files gated by size threshold
+  (Monaco virtualizes rendering so Prism-style truncation is gone).
 - **PDF**: react-pdf, range requests honored, never force full download,
   slow detection at 8s.
-- **Image**: large OK (30MB+); judge by decoded dimensions/memory not
-  just size; downscaled preview when needed; slow detection at 8s.
+- **Image**: `React.lazy()`-loaded. Large OK (30MB+); judge by decoded
+  dimensions/memory; downscale before display (max edge 8192, max
+  ~16M pixels; GIF/SVG not re-encoded). Stage fits tall images; wheel /
+  pinch zoom, pointer pan when zoomed, toolbar ± / rotate / Reset.
+  Slow detection at 8s.
 - **HTML**: sandboxed preview sessions (`/api/preview/sessions` + token
   resource fetch) with Blob URL / `<base>` injection. Toolbar with
   open-in-new-tab + copy-HTML. Sanitization not enforced — previewing
@@ -265,32 +302,31 @@ filebox/
   docs/local-debugging.md   # local bring-up + curl probes
   crates/
     protocol/src/           # message.rs, agent.rs, resources.rs (roots/pins/
-                            # collections), denylist.rs
+                            # collections), search.rs, denylist.rs
     updater/src/            # --init-config, --update
-    hub/src/                # main.rs, config.rs, routes.rs, state.rs, ws.rs,
-                            # auth.rs, net.rs, agent_registry.rs, events.rs,
-                            # fs_proxy.rs, health.rs
-    agent/src/              # main.rs, config.rs, config_store.rs, connection.rs,
-                            # resources.rs, fs.rs, dir_cache.rs, sysinfo.rs
+    hub/src/                # … + search_proxy.rs, net.rs
+    agent/src/              # … + search.rs, dir_cache.rs
   frontend/
-    vite.config.ts          # manualChunks: react / highlighter / markdown vendor
+    vite.config.ts          # manualChunks: react / markdown / tiff
+                            # (Monaco stays behind TextPreview lazy import)
     src/
-      App.tsx               # layout, sidebar, Files/Collections/Stats/Settings
-      theme.ts              # all design tokens
-      api/client.ts         # fetch wrapper + types
+      App.tsx               # layout, sidebar: Files/Search/Collections/…
+      theme.ts
+      monacoSetup.ts        # Monaco workers/theme (loaded with TextPreview)
+      api/client.ts
       hooks/                # usePreviewTabs
       state/                # session, events (SSE), health, useIsMobile
       components/
-        Login BackendList FileBrowser FileEntryList CollectionsView
-        CollectionPicker WorkspaceSplit PreviewWorkspace PreviewPane
-        previewShared {Pdf,Text,Markdown,Html,Csv}Preview
+        Login BackendList FileBrowser FileEntryList WorkspaceSearch
+        CollectionsView CollectionPicker WorkspaceSplit PreviewWorkspace
+        PreviewPane previewShared {Pdf,Text,Markdown,Html,Csv,Image}Preview
         DirectoryTree AddressBar DateFilterControl PinnedFolders
         AgentSettings RootManager HealthPanel SystemStats AboutDialog
   scripts/
-    release.sh              # bump + commit + tag + push → triggers release.yml
-    gen_notice.sh           # refreshes Rust/frontend license manifests
+    release.sh
+    gen_notice.sh
   .github/workflows/
-    release.yml             # v* tag → musl tarballs + GitHub Release
+    release.yml
 ```
 
 ## Deployment
@@ -341,3 +377,35 @@ set `proxy_buffering off` + `proxy_cache off` (SSE). Forward
   timeout).
 - `DirCache` on the agent caches directory listings by mtime (cap 256);
   it is cleared when roots are applied. Do not assume every list hits disk.
+- Workspace Search is in-process (`ignore` + `regex`); do not assume
+  system `fd`/`rg` binaries. One search per agent at a time; long scans
+  must stay cancelable and progress-visible.
+
+## Cursor Cloud specific instructions
+
+The startup update script runs `rustup default stable` + `npm --prefix
+frontend install`. It intentionally does **not** build — you must build
+before running services.
+
+- **Rust toolchain gotcha:** dependencies (e.g. `bcrypt 0.19`) require
+  `edition2024`, so Rust **≥ 1.85** is mandatory. The base image's default
+  toolchain (1.83) fails with `feature 'edition2024' is required`. The
+  update script pins `rustup default stable`; if you ever hit that error,
+  run `rustup default stable` yourself.
+- **Build before run:** the Hub serves `frontend/dist` from disk (not
+  embedded), so build the frontend first: `cd frontend && npm run build`.
+  Then `cargo build` (debug binaries land at `target/debug/{hub,agent}`).
+- **Dev bring-up** is documented in `docs/local-debugging.md` §1/§8. In
+  short, with no config files: start the Hub with `FILEBOX_DEV_MODE=1`
+  `FILEBOX_FRONTEND_DIR="$(pwd)/frontend/dist"`, then an Agent with
+  `FILEBOX_AGENT_HUB=ws://127.0.0.1:3000 FILEBOX_AGENT_TOKEN=dev-token
+  FILEBOX_ALLOW_INSECURE_HUB=1` (give each agent its own
+  `FILEBOX_AGENT_DATA_DIR`). Dev login is `admin` / `dev-password`.
+- **There is no mock backend:** the UI is useless without a live Hub AND a
+  connected Agent. Add a root (Settings → Add Root, or `POST
+  /api/agents/{id}/roots`) or the file list stays empty. Prove the data
+  path with `curl` (see `docs/local-debugging.md` §2) before blaming the UI.
+- **Browser testing gotchas:** type the username explicitly (`admin` in
+  dev) — the login field has no username placeholder. Use
+  `http://localhost:3000` (not `127.0.0.1`) to avoid HSTS upgrade traps,
+  and prefer an Incognito window to sidestep stale cookie/HSTS state.

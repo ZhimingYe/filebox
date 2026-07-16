@@ -87,6 +87,15 @@ export function IconStats({ style }: SvgProps) {
   );
 }
 
+export function IconSearch({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <circle cx="7" cy="7" r="4.5" />
+      <line x1="10.2" y1="10.2" x2="13.5" y2="13.5" />
+    </Svg>
+  );
+}
+
 export function IconLogout({ style }: SvgProps) {
   return (
     <Svg style={style}>

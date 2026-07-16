@@ -1,7 +1,10 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -12,6 +15,10 @@ use crate::config::AgentConfig;
 use crate::dir_cache::DirCache;
 use crate::resources::ResourceManager;
 use crate::sysinfo::StatsCache;
+
+/// At most one workspace search at a time — large trees are expensive and
+/// must not pile up under load. Additional requests get a fast busy error.
+const MAX_SEARCH_INFLIGHT: usize = 1;
 
 // ── Timeouts and tunables ─────────────────────────────────────────────────
 //
@@ -254,6 +261,7 @@ async fn run_one_connection(
     let mut capabilities = Capabilities::default();
     capabilities.pinned_folders = true;
     capabilities.collections = true;
+    capabilities.workspace_search = true;
     let register = AgentMessage::Register {
         agent_id: Some(stable_agent_id.to_string()),
         name: config.agent_name.clone(),
@@ -278,8 +286,25 @@ async fn run_one_connection(
     // Step 5: Main message loop with liveness timeout.
     let mut ping_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
 
+    // Workspace search runs off the WS loop so heartbeats/liveness keep
+    // working under heavy trees. Completed responses arrive on search_rx.
+    // Capacity >1 so Progress try_send rarely drops under burst.
+    let (search_tx, mut search_rx) = mpsc::channel::<AgentMessage>(32);
+    let search_inflight = Arc::new(AtomicUsize::new(0));
+    let search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
     loop {
         tokio::select! {
+            // Completed (or failed) workspace search — never block the read loop
+            // waiting on spawn_blocking for these.
+            Some(response) = search_rx.recv() => {
+                let _ = send_with_timeout(
+                    &mut write,
+                    Message::Text(serde_json::to_string(&response).unwrap().into()),
+                )
+                .await;
+            }
             // Wrap read.next() in a timeout so a silent half-open TCP is
             // detected within NO_MESSAGE_TIMEOUT rather than waiting for the
             // OS's TCP keepalive (~2 hours on default Linux).
@@ -487,6 +512,11 @@ async fn run_one_connection(
                             }
                             Ok(HubMessage::Cancel { req_id }) => {
                                 tracing::debug!("Cancel request: {}", req_id);
+                                if let Ok(map) = search_cancels.lock() {
+                                    if let Some(flag) = map.get(&req_id) {
+                                        flag.store(true, Ordering::Relaxed);
+                                    }
+                                }
                             }
                             Ok(HubMessage::SysStatsRequest { req_id }) => {
                                 tracing::debug!("Sys stats request");
@@ -497,6 +527,118 @@ async fn run_one_connection(
                                 let _ = send_with_timeout(&mut write, Message::Text(
                                     serde_json::to_string(&response).unwrap().into(),
                                 )).await;
+                            }
+                            Ok(HubMessage::WorkspaceSearchRequest {
+                                req_id,
+                                mode,
+                                root,
+                                path,
+                                query,
+                                extensions,
+                                max_results,
+                                context,
+                            }) => {
+                                tracing::debug!(
+                                    "Workspace search: mode={:?} root={} path={} query_len={}",
+                                    mode,
+                                    root,
+                                    path,
+                                    query.len()
+                                );
+                                // Atomic slot take — avoid TOCTOU where two
+                                // concurrent requests both pass a load() check.
+                                let prev = search_inflight.fetch_add(1, Ordering::AcqRel);
+                                if prev >= MAX_SEARCH_INFLIGHT {
+                                    search_inflight.fetch_sub(1, Ordering::AcqRel);
+                                    let busy = AgentMessage::WorkspaceSearchResponse {
+                                        req_id,
+                                        result: None,
+                                        error: Some(
+                                            "agent_busy: another search is already running"
+                                                .to_string(),
+                                        ),
+                                    };
+                                    let _ = send_with_timeout(
+                                        &mut write,
+                                        Message::Text(
+                                            serde_json::to_string(&busy).unwrap().into(),
+                                        ),
+                                    )
+                                    .await;
+                                    continue;
+                                }
+
+                                let cancel = Arc::new(AtomicBool::new(false));
+                                if let Ok(mut map) = search_cancels.lock() {
+                                    map.insert(req_id.clone(), cancel.clone());
+                                }
+
+                                let roots_vec = resource_mgr.roots().to_vec();
+                                let tx = search_tx.clone();
+                                let progress_tx = search_tx.clone();
+                                let inflight = search_inflight.clone();
+                                let cancels = search_cancels.clone();
+                                let rid = req_id.clone();
+                                let rid_for_progress = req_id.clone();
+                                let on_progress: Arc<dyn Fn(u64, u64) + Send + Sync> =
+                                    Arc::new(move |scanned, hits| {
+                                        let msg = AgentMessage::Progress {
+                                            req_id: rid_for_progress.clone(),
+                                            phase: "search".to_string(),
+                                            processed: scanned,
+                                            total: None,
+                                            message: Some(format!(
+                                                "Scanned {scanned} files · {hits} hits"
+                                            )),
+                                        };
+                                        // Non-blocking: drop progress if the
+                                        // outbound queue is full so search
+                                        // never stalls waiting on the WS loop.
+                                        let _ = progress_tx.try_send(msg);
+                                    });
+                                let params = crate::search::SearchParams {
+                                    mode,
+                                    root,
+                                    path,
+                                    query,
+                                    extensions,
+                                    max_results,
+                                    context,
+                                    cancel: Some(cancel),
+                                    on_progress: Some(on_progress),
+                                };
+                                // Fire-and-forget worker — WS loop stays free
+                                // for heartbeats, FS ops, and Cancel.
+                                tokio::task::spawn_blocking(move || {
+                                    let _ = tx.try_send(AgentMessage::Progress {
+                                        req_id: rid.clone(),
+                                        phase: "search".to_string(),
+                                        processed: 0,
+                                        total: None,
+                                        message: Some("Starting search…".to_string()),
+                                    });
+                                    let outcome = crate::search::run_search(&roots_vec, params);
+                                    let response = match outcome {
+                                        Ok(result) => AgentMessage::WorkspaceSearchResponse {
+                                            req_id: rid.clone(),
+                                            result: Some(result),
+                                            error: None,
+                                        },
+                                        Err(e) => AgentMessage::WorkspaceSearchResponse {
+                                            req_id: rid.clone(),
+                                            result: None,
+                                            error: Some(e),
+                                        },
+                                    };
+                                    if let Ok(mut map) = cancels.lock() {
+                                        map.remove(&rid);
+                                    }
+                                    inflight.fetch_sub(1, Ordering::AcqRel);
+                                    // After WS teardown drops search_rx this
+                                    // returns immediately; while the loop is
+                                    // alive it must deliver the terminal msg.
+                                    let _ = tx.blocking_send(response);
+                                });
                             }
                             Ok(HubMessage::Error { message }) => {
                                 tracing::warn!("Hub error: {}", message);
@@ -528,6 +670,17 @@ async fn run_one_connection(
             }
         }
     }
+
+    // Abort any in-flight search workers before teardown.
+    if let Ok(map) = search_cancels.lock() {
+        for flag in map.values() {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+    // Drop the search result receiver so a worker blocked on
+    // `blocking_send` (channel full of Progress after the read loop
+    // stopped polling) unblocks immediately instead of hanging forever.
+    drop(search_rx);
 
     // Best-effort Close frame so the hub can run cleanup immediately instead
     // of waiting for TCP timeout. Ignore errors — we're tearing down anyway.

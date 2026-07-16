@@ -13,6 +13,7 @@ import { usePreviewTabs } from './hooks/usePreviewTabs';
 import { AgentSettings } from './components/AgentSettings';
 import { AboutDialog } from './components/AboutDialog';
 import { SystemStats } from './components/SystemStats';
+import { WorkspaceSearch } from './components/WorkspaceSearch';
 import { PinnedFolders } from './components/PinnedFolders';
 import { CollectionsView } from './components/CollectionsView';
 import { WorkspaceSplit } from './components/WorkspaceSplit';
@@ -22,6 +23,7 @@ import {
   IconChevronLeft,
   IconFolder,
   IconCollection,
+  IconSearch,
   IconSettings,
   IconStats,
   IconLogout,
@@ -58,7 +60,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'collections' | 'settings' | 'stats';
+type View = 'files' | 'collections' | 'search' | 'settings' | 'stats';
 
 interface ProgressEvent {
   req_id: string;
@@ -483,6 +485,9 @@ export default function App() {
     }
     if (evt.event === 'progress') {
       const d = evt.data as unknown as ProgressEvent;
+      // Workspace Search owns its own progress panel; skip the global toast
+      // so long scans don't flash / steal attention from Files etc.
+      if (d.phase === 'search') return;
       setProgressMap((prev) => {
         const next = new Map(prev);
         next.set(d.req_id, d);
@@ -530,6 +535,7 @@ export default function App() {
   const navItems = [
     { v: 'files' as const, label: 'Files', Icon: IconFolder },
     { v: 'collections' as const, label: 'Collections', Icon: IconCollection },
+    { v: 'search' as const, label: 'Search', Icon: IconSearch },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
     { v: 'stats' as const, label: 'System', Icon: IconStats },
   ];
@@ -922,6 +928,18 @@ export default function App() {
                   />
                 </div>
               )}
+              {/* Keep Search mounted (hidden) so long scans survive nav to
+                  Files/System and Cancel/progress keep working. */}
+              <div style={{
+                ...styles.secondaryView,
+                ...(view !== 'search' ? styles.filesViewHidden : {}),
+              }}>
+                <WorkspaceSearch
+                  agent={selectedAgent}
+                  initialRoot={selectedRoot}
+                  onOpenFile={openInFiles}
+                />
+              </div>
               {view === 'settings' && (
                 <div style={styles.secondaryView}>
                   <AgentSettings agent={selectedAgent} onRefresh={refresh} />
