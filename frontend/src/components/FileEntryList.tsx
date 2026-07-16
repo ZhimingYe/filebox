@@ -203,7 +203,7 @@ export function FileEntryListRow({
         )}
       </div>
       {showRootColumn && (
-        <span style={fileListStyles.entrySource} title={fullPath}>
+        <span style={fileListStyles.entrySource} title={rootLabel ?? undefined}>
           {rootLabel ?? '—'}
         </span>
       )}
@@ -223,7 +223,10 @@ export function FileEntryListRow({
           : '—'}
       </span>
       {!isMobile && (
-        <span style={fileListStyles.entryMeta}>
+        <span
+          style={fileListStyles.entryMeta}
+          title={entry.size !== null ? formatSize(entry.size) : undefined}
+        >
           {entry.size !== null ? formatSize(entry.size) : '—'}
         </span>
       )}

@@ -202,6 +202,59 @@ export function sortFileListRows<T extends { entry: FsEntry; rootLabel?: string 
 const DATE_LABEL_MAX_DESKTOP = 16;
 /** Longest mobile label: current-year with time "12-31 23:59" (11 chars). */
 const DATE_LABEL_MAX_MOBILE = 11;
+/** Root labels truncate beyond this; full value stays in `title`. */
+const ROOT_LABEL_MAX = 24;
+/** Column header floors include sort arrow (" ↑"). */
+const SORT_SUFFIX_LEN = 2;
+const ROOT_HEADER_MIN = 4 + SORT_SUFFIX_LEN;
+const DATE_HEADER_MIN = 8 + SORT_SUFFIX_LEN;
+const SIZE_HEADER_MIN = 4 + SORT_SUFFIX_LEN;
+/** Rough px-per-ch for budget math (mono labels). */
+const CH_PX = 7.2;
+const LIST_ICON_PX = 20;
+const LIST_H_PAD_PX = 24;
+const LIST_COL_GAP_PX = 8;
+
+function parseChWidth(width: string): number {
+  const m = /^(\d+(?:\.\d+)?)ch$/.exec(width);
+  return m ? parseFloat(m[1]) : 0;
+}
+
+interface MetaColumnSpec {
+  key: 'root' | 'date' | 'size';
+  idealCh: number;
+  minCh: number;
+  /** Lower = shrink first when the panel is too narrow. */
+  shrinkPriority: number;
+}
+
+function allocateMetaColumnWidths(
+  listWidth: number,
+  nameMinPx: number,
+  cols: MetaColumnSpec[],
+): Record<'root' | 'date' | 'size', number> {
+  const out: Record<'root' | 'date' | 'size', number> = { root: 0, date: 0, size: 0 };
+  for (const col of cols) out[col.key] = col.idealCh;
+
+  if (listWidth <= 0 || cols.length === 0) return out;
+
+  const gapCount = cols.length + 1;
+  const budgetPx = listWidth - nameMinPx - LIST_ICON_PX - LIST_H_PAD_PX - LIST_COL_GAP_PX * gapCount;
+  const budgetCh = Math.max(0, budgetPx / CH_PX);
+  const totalIdeal = cols.reduce((sum, c) => sum + c.idealCh, 0);
+  if (totalIdeal <= budgetCh) return out;
+
+  let deficit = totalIdeal - budgetCh;
+  const order = [...cols].sort((a, b) => a.shrinkPriority - b.shrinkPriority);
+  for (const col of order) {
+    if (deficit <= 0) break;
+    const canLose = Math.max(0, out[col.key] - col.minCh);
+    const lose = Math.min(deficit, canLose);
+    out[col.key] -= lose;
+    deficit -= lose;
+  }
+  return out;
+}
 
 /** Size the date column to the longest rendered date string in `rows`. */
 export function dateColWidthForRows(
@@ -217,16 +270,34 @@ export function dateColWidthForRows(
     const label = isMobile ? formatDateShort(modified) : formatDate(modified);
     maxChars = Math.max(maxChars, label.length);
   }
-  const floor = isMobile ? DATE_LABEL_MAX_MOBILE : DATE_LABEL_MAX_DESKTOP;
-  // When the list is empty, reserve enough for cross-year / pre-2000 dates.
+  const contentFloor = isMobile ? DATE_LABEL_MAX_MOBILE : DATE_LABEL_MAX_DESKTOP;
+  const floor = Math.max(contentFloor, DATE_HEADER_MIN);
   return `${Math.max(floor, maxChars)}ch`;
 }
 
-/** Size the root column to the longest root label in `rows`. */
-export function rootColWidthForRows(rows: { rootLabel?: string }[]): string {
-  let maxChars = 4;
+/** Size the root column; long labels truncate with ellipsis (see ROOT_LABEL_MAX). */
+export function rootColWidthForRows(
+  rows: { rootLabel?: string }[],
+  listWidth = 0,
+): string {
+  let maxChars = ROOT_HEADER_MIN;
   for (const row of rows) {
     if (row.rootLabel) maxChars = Math.max(maxChars, row.rootLabel.length);
+  }
+  maxChars = Math.min(maxChars, ROOT_LABEL_MAX);
+  if (listWidth > 0) {
+    const panelCap = Math.max(ROOT_HEADER_MIN, Math.floor(listWidth * 0.22 / CH_PX));
+    maxChars = Math.min(maxChars, panelCap);
+  }
+  return `${maxChars}ch`;
+}
+
+/** Size the size column to the longest formatted size string in `rows`. */
+export function sizeColWidthForRows(rows: { entry?: FsEntry }[]): string {
+  let maxChars = SIZE_HEADER_MIN;
+  for (const row of rows) {
+    const size = row.entry?.size;
+    if (size != null) maxChars = Math.max(maxChars, formatSize(size).length);
   }
   return `${maxChars}ch`;
 }
@@ -237,30 +308,51 @@ export function fileListGridColumns(opts: {
   isMobile: boolean;
   rootColWidth: string;
   dateColWidth: string;
+  sizeColWidth: string;
   /** Measured list container width; 0 before first layout. */
   listWidth: number;
 }): string {
-  const { showRootColumn, isMobile, rootColWidth, dateColWidth, listWidth: w } = opts;
+  const {
+    showRootColumn, isMobile, rootColWidth, dateColWidth, sizeColWidth, listWidth: w,
+  } = opts;
 
   // Name owns leftover space; floor scales with panel width so narrow splits stay readable.
   const nameMin = w > 0 ? Math.max(56, Math.floor(w * 0.36)) : 96;
-  const parts: string[] = ['20px', `minmax(${nameMin}px, 1fr)`];
-
   const tight = w > 0 && w < 300;
-  const compact = w > 0 && w < 400;
 
+  const metaCols: MetaColumnSpec[] = [];
   if (showRootColumn) {
-    parts.push(tight ? 'minmax(0, 4ch)' : rootColWidth);
+    metaCols.push({
+      key: 'root',
+      idealCh: parseChWidth(rootColWidth),
+      minCh: tight ? 4 : ROOT_HEADER_MIN,
+      shrinkPriority: 1,
+    });
+  }
+  metaCols.push({
+    key: 'date',
+    idealCh: parseChWidth(dateColWidth),
+    minCh: tight ? 8 : DATE_HEADER_MIN,
+    shrinkPriority: 3,
+  });
+  if (!isMobile) {
+    metaCols.push({
+      key: 'size',
+      idealCh: parseChWidth(sizeColWidth),
+      minCh: tight ? 4 : SIZE_HEADER_MIN,
+      shrinkPriority: 2,
+    });
   }
 
-  // Fixed to measured content width so cross-year / pre-2000 dates are not truncated.
-  // Only in very tight panels allow shrink + ellipsis (title carries full value).
-  parts.push(tight ? `minmax(0, ${dateColWidth})` : dateColWidth);
+  const allocated = allocateMetaColumnWidths(w, nameMin, metaCols);
 
+  const parts: string[] = ['20px', `minmax(${nameMin}px, 1fr)`];
+  if (showRootColumn) {
+    parts.push(`minmax(0, ${allocated.root}ch)`);
+  }
+  parts.push(`minmax(0, ${allocated.date}ch)`);
   if (!isMobile) {
-    parts.push(compact
-      ? 'minmax(0, 5ch)'
-      : 'minmax(0, min(8ch, 16%))');
+    parts.push(`minmax(0, ${allocated.size}ch)`);
   }
 
   return parts.join(' ');
@@ -330,11 +422,15 @@ export function useFileListLayout(
   }, [opts.hasRows, opts.rows.length, listHeight]);
 
   const rootColWidth = useMemo(
-    () => (opts.showRootColumn ? rootColWidthForRows(opts.rows) : '0px'),
-    [opts.rows, opts.showRootColumn],
+    () => (opts.showRootColumn ? rootColWidthForRows(opts.rows, listWidth) : '0px'),
+    [opts.rows, opts.showRootColumn, listWidth],
   );
   const dateColWidth = useMemo(
     () => dateColWidthForRows(opts.rows, opts.isMobile),
+    [opts.rows, opts.isMobile],
+  );
+  const sizeColWidth = useMemo(
+    () => (!opts.isMobile ? sizeColWidthForRows(opts.rows) : '0px'),
     [opts.rows, opts.isMobile],
   );
   const gridTemplateColumns = useMemo(
@@ -343,9 +439,10 @@ export function useFileListLayout(
       isMobile: opts.isMobile,
       rootColWidth,
       dateColWidth,
+      sizeColWidth,
       listWidth,
     }),
-    [opts.showRootColumn, opts.isMobile, rootColWidth, dateColWidth, listWidth],
+    [opts.showRootColumn, opts.isMobile, rootColWidth, dateColWidth, sizeColWidth, listWidth],
   );
 
   const outerElementType = useMemo(() => {
