@@ -41,6 +41,22 @@ pub async fn workspace_search_handler(
             false,
         );
     }
+    if body.root.contains('\0') || body.path.contains('\0') {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "root/path must not contain NUL",
+            false,
+        );
+    }
+    if path_has_dotdot(&body.path) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "path must not contain '..'",
+            false,
+        );
+    }
     if body.query.len() > 512 {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -56,6 +72,16 @@ pub async fn workspace_search_handler(
             "too many extensions (max 64)",
             false,
         );
+    }
+    for ext in &body.extensions {
+        if ext.len() > 32 || ext.contains('/') || ext.contains('\\') || ext.contains('\0') {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "invalid extension filter",
+                false,
+            );
+        }
     }
 
     let inner = state.inner.read().await;
@@ -93,7 +119,7 @@ pub async fn workspace_search_handler(
     let msg = HubMessage::WorkspaceSearchRequest {
         req_id: req_id.clone(),
         mode: body.mode,
-        root: body.root,
+        root: body.root.trim().to_string(),
         path: if body.path.is_empty() {
             "/".to_string()
         } else {
@@ -121,6 +147,8 @@ pub async fn workspace_search_handler(
     }
 
     if !inner.agents.send_to_agent(&agent_id, msg) {
+        drop(inner);
+        cleanup_pending(&state, &req_id).await;
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "backend_offline",
@@ -133,15 +161,19 @@ pub async fn workspace_search_handler(
 
     // Content walks can take longer than sys-stats; keep a firm upper bound.
     let resp = tokio::time::timeout(Duration::from_secs(60), resp_rx.recv()).await;
-
-    {
-        let pending = state.inner.read().await.pending_responses.clone();
-        let mut map = pending.write().await;
-        map.remove(&req_id);
-    }
+    cleanup_pending(&state, &req_id).await;
 
     match resp {
-        Ok(Some(value)) => Json(value).into_response(),
+        Ok(Some(value)) => {
+            // Return a compact payload (drop WS envelope fields the UI doesn't need).
+            let result = value.get("result").cloned().unwrap_or(serde_json::Value::Null);
+            let error = value.get("error").cloned().unwrap_or(serde_json::Value::Null);
+            Json(serde_json::json!({
+                "result": result,
+                "error": error,
+            }))
+            .into_response()
+        }
         _ => error_response(
             StatusCode::GATEWAY_TIMEOUT,
             "request_timeout",
@@ -149,6 +181,17 @@ pub async fn workspace_search_handler(
             true,
         ),
     }
+}
+
+async fn cleanup_pending(state: &AppState, req_id: &str) {
+    let pending = state.inner.read().await.pending_responses.clone();
+    let mut map = pending.write().await;
+    map.remove(req_id);
+}
+
+fn path_has_dotdot(path: &str) -> bool {
+    path.split(['/', '\\'])
+        .any(|part| part == "..")
 }
 
 fn error_response(status: StatusCode, error: &str, message: &str, retryable: bool) -> Response {
@@ -161,4 +204,19 @@ fn error_response(status: StatusCode, error: &str, message: &str, retryable: boo
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::path_has_dotdot;
+
+    #[test]
+    fn rejects_dotdot_components_only() {
+        assert!(path_has_dotdot("../x"));
+        assert!(path_has_dotdot("a/../b"));
+        assert!(path_has_dotdot(r"a\..\b"));
+        assert!(!path_has_dotdot("a/b"));
+        assert!(!path_has_dotdot("foo..bar"));
+        assert!(!path_has_dotdot(""));
+    }
 }

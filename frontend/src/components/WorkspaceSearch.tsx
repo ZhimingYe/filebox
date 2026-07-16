@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { AgentInfo, SearchHit, SearchMode, WorkspaceSearchResult } from '../api/client';
 import { friendlyMessage, workspaceSearch } from '../api/client';
 import { c, radius, font } from '../theme';
@@ -6,6 +6,15 @@ import { c, radius, font } from '../theme';
 interface Props {
   agent: AgentInfo;
   onOpenFile?: (root: string, path: string) => void;
+}
+
+function searchErrorMessage(err: unknown): string {
+  const mapped = friendlyMessage(err);
+  if (mapped !== 'An unexpected error occurred.') return mapped;
+  const e = err as { message?: string; error?: string } | null;
+  const raw = e?.message || e?.error;
+  if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  return mapped;
 }
 
 export function WorkspaceSearch({ agent, onOpenFile }: Props) {
@@ -17,6 +26,9 @@ export function WorkspaceSearch({ agent, onOpenFile }: Props) {
   const [result, setResult] = useState<WorkspaceSearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [slow, setSlow] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const reqGen = useRef(0);
 
   useEffect(() => {
     const roots = (agent.roots ?? []).filter((r) => r.enabled);
@@ -24,6 +36,24 @@ export function WorkspaceSearch({ agent, onOpenFile }: Props) {
       setRoot(roots[0]?.name ?? '');
     }
   }, [agent.id, agent.roots, root]);
+
+  // Reset results when switching agents; abort any in-flight search.
+  useEffect(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    reqGen.current += 1;
+    setResult(null);
+    setError(null);
+    setLoading(false);
+    setSlow(false);
+    setQuery('');
+  }, [agent.id]);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   async function runSearch() {
     if (!root) {
@@ -34,33 +64,56 @@ export function WorkspaceSearch({ agent, onOpenFile }: Props) {
       setError('Enter a search pattern');
       return;
     }
+
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    const gen = ++reqGen.current;
+
     setLoading(true);
+    setSlow(false);
     setError(null);
+
+    const slowTimer = window.setTimeout(() => {
+      if (reqGen.current === gen) setSlow(true);
+    }, 8000);
+
     try {
       const exts = extensions
         .split(/[,\s]+/)
         .map((e) => e.trim().replace(/^\./, ''))
         .filter(Boolean);
-      const data = await workspaceSearch(agent.id, {
-        mode,
-        root,
-        path: '/',
-        query: query.trim(),
-        extensions: exts,
-        max_results: mode === 'find' ? 200 : 80,
-        context: 10,
-      });
+      const data = await workspaceSearch(
+        agent.id,
+        {
+          mode,
+          root,
+          path: '/',
+          query: query.trim(),
+          extensions: exts,
+          max_results: mode === 'find' ? 200 : 80,
+          context: 10,
+        },
+        ac.signal,
+      );
+      if (gen !== reqGen.current) return;
       if (data.error) {
         setResult(null);
-        setError(friendlyMessage({ error: data.error, message: data.error }));
+        setError(searchErrorMessage({ error: data.error, message: data.error }));
       } else {
         setResult(data.result);
       }
     } catch (e: unknown) {
+      if (gen !== reqGen.current) return;
+      if ((e as { name?: string })?.name === 'AbortError') return;
       setResult(null);
-      setError(friendlyMessage(e));
+      setError(searchErrorMessage(e));
     } finally {
-      setLoading(false);
+      window.clearTimeout(slowTimer);
+      if (gen === reqGen.current) {
+        setLoading(false);
+        setSlow(false);
+      }
     }
   }
 
@@ -69,13 +122,14 @@ export function WorkspaceSearch({ agent, onOpenFile }: Props) {
       <div style={styles.header}>
         <h2 style={styles.title}>Search</h2>
         <p style={styles.subtitle}>
-          Find files by name (fd) or search file contents (rg). Runs on the agent — no system fd/rg required.
+          Find files by name or search contents under a root. Runs on the agent
+          (no system fd/rg required).
         </p>
       </div>
 
       <div style={styles.modeRow}>
-        <ModeButton active={mode === 'content'} onClick={() => setMode('content')} label="Content (rg)" />
-        <ModeButton active={mode === 'find'} onClick={() => setMode('find')} label="Files (fd)" />
+        <ModeButton active={mode === 'content'} onClick={() => setMode('content')} label="Content" />
+        <ModeButton active={mode === 'find'} onClick={() => setMode('find')} label="Files" />
       </div>
 
       <div style={styles.form}>
@@ -85,7 +139,7 @@ export function WorkspaceSearch({ agent, onOpenFile }: Props) {
             value={root}
             onChange={(e) => setRoot(e.target.value)}
             style={styles.select}
-            disabled={enabledRoots.length === 0}
+            disabled={enabledRoots.length === 0 || loading}
           >
             {enabledRoots.length === 0 && <option value="">No roots</option>}
             {enabledRoots.map((r) => (
@@ -94,14 +148,18 @@ export function WorkspaceSearch({ agent, onOpenFile }: Props) {
           </select>
         </label>
 
-        <label style={styles.label}>
+        <label style={{ ...styles.label, flex: '2 1 220px' }}>
           {mode === 'find' ? 'Name contains' : 'Pattern (regex)'}
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void runSearch(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
             placeholder={mode === 'find' ? 'e.g. config' : 'e.g. TODO|FIXME'}
             style={styles.input}
+            disabled={loading}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
           />
         </label>
 
@@ -110,9 +168,13 @@ export function WorkspaceSearch({ agent, onOpenFile }: Props) {
           <input
             value={extensions}
             onChange={(e) => setExtensions(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void runSearch(); }}
-            placeholder="rs, ts, py (optional)"
+            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+            placeholder="rs, ts, py"
             style={styles.input}
+            disabled={loading}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
           />
         </label>
 
@@ -129,6 +191,10 @@ export function WorkspaceSearch({ agent, onOpenFile }: Props) {
           {loading ? 'Searching…' : 'Search'}
         </button>
       </div>
+
+      {slow && loading && (
+        <div style={styles.slow}>Still searching — large trees can take a while.</div>
+      )}
 
       {error && <div style={styles.error}>{error}</div>}
 
@@ -197,6 +263,7 @@ function HitCard({
   hit: SearchHit;
   onOpen?: (root: string, path: string) => void;
 }) {
+  const context = hit.context ?? [];
   return (
     <div style={styles.hit}>
       <button
@@ -209,14 +276,15 @@ function HitCard({
         <span>{hit.path}</span>
         {hit.line != null && <span style={styles.hitLine}>:{hit.line}</span>}
       </button>
-      {hit.context.length > 0 && (
+      {context.length > 0 && (
         <pre style={styles.context}>
-          {hit.context.map((line) => (
+          {context.map((line, idx) => (
             <div
-              key={line.line}
+              key={`${line.line}:${idx}`}
               style={{
                 ...styles.contextLine,
                 background: line.is_match ? c.accentBg : 'transparent',
+                color: line.is_match ? c.text : c.textSecondary,
               }}
             >
               <span style={styles.lineNo}>{line.line}</span>
@@ -311,6 +379,14 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 500,
     fontFamily: font.sans,
     flex: '0 0 auto',
+  },
+  slow: {
+    padding: '8px 12px',
+    borderRadius: radius.sm,
+    background: c.warningBg,
+    color: c.textSecondary,
+    fontSize: 13,
+    marginBottom: 12,
   },
   error: {
     padding: '8px 12px',

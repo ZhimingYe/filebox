@@ -5,9 +5,10 @@
 //! canonicalize + starts_with, denylist, no symlink follow.
 
 use std::collections::VecDeque;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use filebox_protocol::denylist;
 use filebox_protocol::resources::RootConfig;
@@ -18,11 +19,17 @@ use ignore::WalkBuilder;
 use regex::RegexBuilder;
 
 const DEFAULT_MAX_RESULTS: usize = 100;
-const HARD_MAX_RESULTS: usize = 500;
+const HARD_MAX_RESULTS_FIND: usize = 500;
+const HARD_MAX_RESULTS_CONTENT: usize = 100;
 const DEFAULT_CONTEXT: usize = 10;
 const HARD_MAX_CONTEXT: usize = 20;
 const MAX_CONTENT_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_LINE_CHARS: usize = 400;
+/// Hard stop so a huge tree cannot pin the agent WS loop indefinitely.
+const MAX_SCANNED_FILES: u64 = 25_000;
+/// Stay under the hub's 60s proxy timeout so the client gets a truncated
+/// result instead of a gateway timeout.
+const SEARCH_DEADLINE: Duration = Duration::from_secs(55);
 
 pub struct SearchParams {
     pub mode: SearchMode,
@@ -35,11 +42,15 @@ pub struct SearchParams {
 }
 
 pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchResult, String> {
+    let hard_max = match params.mode {
+        SearchMode::Find => HARD_MAX_RESULTS_FIND,
+        SearchMode::Content => HARD_MAX_RESULTS_CONTENT,
+    };
     let max_results = params
         .max_results
         .map(|n| n as usize)
         .unwrap_or(DEFAULT_MAX_RESULTS)
-        .clamp(1, HARD_MAX_RESULTS);
+        .clamp(1, hard_max);
     let context = params
         .context
         .map(|n| n as usize)
@@ -51,10 +62,16 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
     } else {
         params.path.as_str()
     };
+    if start_rel.contains('\0') {
+        return Err("Path must not contain NUL".to_string());
+    }
     let (start, root_canonical) = crate::fs::resolve_path(roots, &params.root, start_rel)?;
 
     if !start.is_dir() {
-        return Err(format!("Search path is not a directory: {}{}", params.root, start_rel));
+        return Err(format!(
+            "Search path is not a directory: {}{}",
+            params.root, start_rel
+        ));
     }
 
     let exts: Vec<String> = params
@@ -73,6 +90,7 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
             RegexBuilder::new(&params.query)
                 .case_insensitive(true)
                 .size_limit(1 << 20)
+                .dfa_size_limit(1 << 20)
                 .build()
                 .map_err(|e| format!("Invalid regex: {}", e))?,
         )
@@ -83,7 +101,9 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
     let mut hits = Vec::new();
     let mut scanned: u64 = 0;
     let mut truncated = false;
+    let deadline = Instant::now() + SEARCH_DEADLINE;
 
+    let root_canonical_for_filter = root_canonical.clone();
     let walker = WalkBuilder::new(&start)
         .hidden(false)
         .git_ignore(false)
@@ -91,6 +111,20 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
         .git_exclude(false)
         .follow_links(false)
         .standard_filters(false)
+        .filter_entry(move |entry| {
+            let abs = entry.path();
+            if !abs.starts_with(&root_canonical_for_filter) {
+                return false;
+            }
+            let Ok(rel) = abs.strip_prefix(&root_canonical_for_filter) else {
+                return false;
+            };
+            if rel.as_os_str().is_empty() {
+                return true;
+            }
+            let rel_str = format_rel(rel);
+            !denylist::is_denied(&rel_str)
+        })
         .build();
 
     for entry in walker {
@@ -98,25 +132,22 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
             Ok(e) => e,
             Err(_) => continue,
         };
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let abs = entry.path();
-        if !abs.starts_with(&root_canonical) {
-            continue;
-        }
-        if is_sensitive_virtual_path(abs) {
+        // DirEntry::file_type does not follow symlinks — skip dirs, symlinks,
+        // and unknown types so we never open a link that escapes the root.
+        let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+        if !is_file {
             continue;
         }
 
-        let rel = match abs.strip_prefix(&root_canonical) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        let rel_str = format!("/{}", rel.to_string_lossy().replace('\\', "/"));
-        if denylist::is_denied(&rel_str) {
+        let abs = entry.path();
+        if !abs.starts_with(&root_canonical) || is_sensitive_virtual_path(abs) {
             continue;
         }
+
+        let Ok(rel) = abs.strip_prefix(&root_canonical) else {
+            continue;
+        };
+        let rel_str = format_rel(rel);
 
         if !exts.is_empty() {
             let ext = abs
@@ -129,9 +160,19 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
             }
         }
 
+        if Instant::now() >= deadline {
+            truncated = true;
+            break;
+        }
+
+        scanned += 1;
+        if scanned > MAX_SCANNED_FILES {
+            truncated = true;
+            break;
+        }
+
         match params.mode {
             SearchMode::Find => {
-                scanned += 1;
                 if !name_needle.is_empty() {
                     let name = abs
                         .file_name()
@@ -155,11 +196,9 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
             }
             SearchMode::Content => {
                 let re = content_re.as_ref().unwrap();
-                scanned += 1;
-                let before = hits.len();
                 match_file_content(abs, &params.root, &rel_str, re, context, max_results, &mut hits);
                 if hits.len() >= max_results {
-                    truncated = hits.len() > before || hits.len() >= max_results;
+                    truncated = true;
                     break;
                 }
             }
@@ -173,6 +212,15 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
     })
 }
 
+fn format_rel(rel: &Path) -> String {
+    let s = rel.to_string_lossy().replace('\\', "/");
+    if s.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{s}")
+    }
+}
+
 fn match_file_content(
     abs: &Path,
     root: &str,
@@ -182,15 +230,16 @@ fn match_file_content(
     max_results: usize,
     hits: &mut Vec<SearchHit>,
 ) {
-    let meta = match abs.metadata() {
+    // symlink_metadata does not follow — reject links / non-regular files.
+    let meta = match fs::symlink_metadata(abs) {
         Ok(m) => m,
         Err(_) => return,
     };
-    if !meta.is_file() || meta.len() > MAX_CONTENT_FILE_BYTES {
+    if !meta.file_type().is_file() || meta.len() > MAX_CONTENT_FILE_BYTES {
         return;
     }
 
-    let file = match File::open(abs) {
+    let file = match open_nofollow(abs) {
         Ok(f) => f,
         Err(_) => return,
     };
@@ -198,15 +247,14 @@ fn match_file_content(
 
     // Reject obvious binary: null in the first 8KiB.
     let mut probe = [0u8; 8192];
-    let n = match std::io::Read::read(&mut reader, &mut probe) {
+    let n = match reader.read(&mut probe) {
         Ok(n) => n,
         Err(_) => return,
     };
     if probe[..n].contains(&0) {
         return;
     }
-    // Rewind and scan line-by-line.
-    if std::io::Seek::seek(&mut reader, std::io::SeekFrom::Start(0)).is_err() {
+    if reader.seek(SeekFrom::Start(0)).is_err() {
         return;
     }
 
@@ -224,25 +272,8 @@ fn match_file_content(
         let text = truncate_line(&raw);
         let is_match = re.is_match(&raw);
 
-        if let Some(hit) = current.as_mut() {
-            if pending_after > 0 {
-                hit.context.push(SearchContextLine {
-                    line: line_no,
-                    text: text.clone(),
-                    is_match,
-                });
-                pending_after -= 1;
-                if pending_after == 0 {
-                    hits.push(current.take().unwrap());
-                    if hits.len() >= max_results {
-                        return;
-                    }
-                }
-            }
-        }
-
         if is_match {
-            // Flush any open hit that still wanted more after-context.
+            // Close any open hit (even if after-context was incomplete).
             if let Some(hit) = current.take() {
                 hits.push(hit);
                 if hits.len() >= max_results {
@@ -250,7 +281,7 @@ fn match_file_content(
                 }
             }
             let mut ctx = Vec::with_capacity(context * 2 + 1);
-            for (ln, t) in before.iter() {
+            for (ln, t) in &before {
                 ctx.push(SearchContextLine {
                     line: *ln,
                     text: t.clone(),
@@ -273,6 +304,21 @@ fn match_file_content(
                 hits.push(current.take().unwrap());
                 if hits.len() >= max_results {
                     return;
+                }
+            }
+        } else if let Some(hit) = current.as_mut() {
+            if pending_after > 0 {
+                hit.context.push(SearchContextLine {
+                    line: line_no,
+                    text: text.clone(),
+                    is_match: false,
+                });
+                pending_after -= 1;
+                if pending_after == 0 {
+                    hits.push(current.take().unwrap());
+                    if hits.len() >= max_results {
+                        return;
+                    }
                 }
             }
         }
@@ -303,6 +349,32 @@ fn truncate_line(s: &str) -> String {
     out
 }
 
+/// Open a path without following a final symlink (TOCTOU-hardened vs walk).
+#[cfg(unix)]
+fn open_nofollow(path: &Path) -> Result<File, ()> {
+    use std::ffi::CString;
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|_| ())?;
+    let fd = unsafe {
+        libc::open(
+            c_path.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if fd < 0 {
+        return Err(());
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(not(unix))]
+fn open_nofollow(path: &Path) -> Result<File, ()> {
+    // Best-effort: we already skipped non-files at walk time.
+    File::open(path).map_err(|_| ())
+}
+
 #[cfg(unix)]
 fn is_sensitive_virtual_path(path: &Path) -> bool {
     ["/proc", "/sys", "/dev/fd", "/dev/mapper"]
@@ -320,7 +392,6 @@ fn is_sensitive_virtual_path(_path: &Path) -> bool {
 mod tests {
     use super::*;
     use filebox_protocol::resources::RootConfig;
-    use std::fs;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -392,15 +463,43 @@ mod tests {
         let hit = &result.hits[0];
         assert_eq!(hit.line, Some(15));
         assert_eq!(hit.context.len(), 5); // 2 before + match + 2 after
-        assert!(hit.context.iter().any(|c| c.is_match && c.text.contains("line 15")));
+        assert!(hit
+            .context
+            .iter()
+            .any(|c| c.is_match && c.text.contains("line 15")));
         assert_eq!(hit.context.first().unwrap().line, 13);
         assert_eq!(hit.context.last().unwrap().line, 17);
     }
 
     #[test]
-    fn denylist_skips_env_files() {
+    fn content_adjacent_matches_do_not_duplicate_hits() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "foo\nfoo\nbar\n").unwrap();
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        let result = run_search(
+            &roots,
+            SearchParams {
+                mode: SearchMode::Content,
+                root: "ws".into(),
+                path: "/".into(),
+                query: "foo".into(),
+                extensions: vec!["txt".into()],
+                max_results: Some(20),
+                context: Some(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.hits.len(), 2);
+        assert_eq!(result.hits[0].line, Some(1));
+        assert_eq!(result.hits[1].line, Some(2));
+    }
+
+    #[test]
+    fn denylist_skips_env_files_and_git_dir() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join(".env"), "SECRET=1").unwrap();
+        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        fs::write(dir.path().join(".git/config"), "SECRET=1").unwrap();
         fs::write(dir.path().join("ok.txt"), "SECRET=1").unwrap();
 
         let roots = vec![root("ws", dir.path().to_path_buf())];
@@ -420,5 +519,96 @@ mod tests {
 
         assert_eq!(result.hits.len(), 1);
         assert_eq!(result.hits[0].path, "/ok.txt");
+    }
+
+    #[test]
+    fn find_skips_symlinks() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("real.rs"), "fn r() {}").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                dir.path().join("real.rs"),
+                dir.path().join("link.rs"),
+            )
+            .unwrap();
+        }
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        let result = run_search(
+            &roots,
+            SearchParams {
+                mode: SearchMode::Find,
+                root: "ws".into(),
+                path: "/".into(),
+                query: "".into(),
+                extensions: vec!["rs".into()],
+                max_results: Some(50),
+                context: None,
+            },
+        )
+        .unwrap();
+        let names: Vec<_> = result.hits.iter().map(|h| h.path.as_str()).collect();
+        assert!(names.contains(&"/real.rs"));
+        assert!(
+            !names.iter().any(|p| p.ends_with("link.rs")),
+            "symlinks must not appear as find hits"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn content_does_not_follow_symlink_escape() {
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("secret.txt"), "LEAK_MARKER").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            dir.path().join("trap.txt"),
+        )
+        .unwrap();
+        fs::write(dir.path().join("safe.txt"), "safe").unwrap();
+
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        let result = run_search(
+            &roots,
+            SearchParams {
+                mode: SearchMode::Content,
+                root: "ws".into(),
+                path: "/".into(),
+                query: "LEAK_MARKER".into(),
+                extensions: vec![],
+                max_results: Some(20),
+                context: Some(1),
+            },
+        )
+        .unwrap();
+        assert!(
+            result.hits.is_empty(),
+            "must not read symlink targets outside the root"
+        );
+    }
+
+    #[test]
+    fn max_results_sets_truncated() {
+        let dir = tempdir().unwrap();
+        for i in 0..10 {
+            fs::write(dir.path().join(format!("f{i}.txt")), "needle").unwrap();
+        }
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        let result = run_search(
+            &roots,
+            SearchParams {
+                mode: SearchMode::Content,
+                root: "ws".into(),
+                path: "/".into(),
+                query: "needle".into(),
+                extensions: vec!["txt".into()],
+                max_results: Some(3),
+                context: Some(0),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.hits.len(), 3);
+        assert!(result.truncated);
     }
 }

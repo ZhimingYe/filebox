@@ -27,6 +27,7 @@ export function friendlyMessage(error: any): string {
     invalid_pinned_path: 'Invalid pinned folder path.',
     invalid_collection_name: 'Invalid collection name.',
     unsupported: 'This agent does not support that feature. Upgrade the agent.',
+    invalid_request: 'Invalid search request.',
     invalid_collection_path: 'Invalid collection file path.',
     collection_name_conflict: 'A collection with this name already exists.',
     resource_rejected: 'Agent rejected this change. The folder may be missing or the root changed.',
@@ -205,9 +206,9 @@ export async function workspaceSearch(
     max_results?: number;
     context?: number;
   },
+  signal?: AbortSignal,
 ): Promise<{ result: WorkspaceSearchResult | null; error?: string }> {
   const raw = await request<{
-    type?: string;
     result: WorkspaceSearchResult | null;
     error: string | null;
   }>(`/api/agents/${agentId}/workspace-search`, {
@@ -217,9 +218,20 @@ export async function workspaceSearch(
       extensions: [],
       ...body,
     }),
+    signal,
   });
   if (raw.error) return { result: null, error: raw.error };
-  return { result: raw.result };
+  if (!raw.result) return { result: null };
+  return {
+    result: {
+      hits: (raw.result.hits ?? []).map((h) => ({
+        ...h,
+        context: h.context ?? [],
+      })),
+      truncated: !!raw.result.truncated,
+      scanned: raw.result.scanned ?? 0,
+    },
+  };
 }
 
 function emptyStats(): SysStats {
