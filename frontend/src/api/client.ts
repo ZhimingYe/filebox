@@ -264,10 +264,15 @@ async function throwIfCollectionRejected(res: any) {
   return res;
 }
 
-export async function createCollection(agentId: string, name: string) {
+export async function createCollection(
+  agentId: string,
+  name: string,
+  /** Optional initial item — create+add in one desired-state rewrite. */
+  item?: CollectionItem,
+) {
   const res = await request<any>(`/api/agents/${agentId}/collections`, {
     method: 'POST',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(item ? { name, item } : { name }),
   });
   return throwIfCollectionRejected(res);
 }

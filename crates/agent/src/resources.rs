@@ -110,8 +110,12 @@ impl ResourceManager {
             ));
         }
 
+        let mut seen_names = std::collections::HashSet::new();
         for coll in &collections {
-            validate_collection(&coll, &self.config.roots)?;
+            validate_collection(coll, &self.config.roots)?;
+            if !seen_names.insert(coll.name.clone()) {
+                return Err(format!("Duplicate collection name '{}'", coll.name));
+            }
         }
 
         self.config.collections_revision = desired_revision;

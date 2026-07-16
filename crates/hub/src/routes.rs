@@ -1380,6 +1380,9 @@ async fn delete_root_handler(
 #[derive(serde::Deserialize)]
 struct AddCollectionRequest {
     name: String,
+    /// Optional initial item so create+add is a single atomic desired-state rewrite.
+    #[serde(default)]
+    item: Option<CollectionItem>,
 }
 
 async fn add_collection_handler(
@@ -1398,6 +1401,37 @@ async fn add_collection_handler(
             })),
         )
             .into_response();
+    }
+
+    let mut initial_items = Vec::new();
+    if let Some(ref add) = req.item {
+        if let Err(e) = validate_collection_item_path(&add.path) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_collection_path",
+                    "message": e,
+                    "retryable": false,
+                })),
+            )
+                .into_response();
+        }
+        if add.root.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_collection_path",
+                    "message": "item root name cannot be empty",
+                    "retryable": false,
+                })),
+            )
+                .into_response();
+        }
+        initial_items.push(CollectionItem {
+            root: add.root.clone(),
+            path: normalize_collection_path(&add.path),
+            label: add.label.clone(),
+        });
     }
 
     let inner = state.inner.read().await;
@@ -1424,7 +1458,13 @@ async fn add_collection_handler(
             .into_response();
     }
 
-    if agent.collections.iter().any(|c| c.name == req.name) {
+    // Conflict against the effective desired set (pending rewrite wins over applied).
+    let base_collections = agent
+        .pending_collections_update
+        .as_ref()
+        .map(|p| p.collections.clone())
+        .unwrap_or_else(|| agent.collections.clone());
+    if base_collections.iter().any(|c| c.name == req.name) {
         drop(inner);
         return (
             StatusCode::BAD_REQUEST,
@@ -1437,15 +1477,10 @@ async fn add_collection_handler(
             .into_response();
     }
 
-    let base_collections = agent
-        .pending_collections_update
-        .as_ref()
-        .map(|p| p.collections.clone())
-        .unwrap_or_else(|| agent.collections.clone());
     let mut collections = base_collections;
     collections.push(CollectionConfig {
         name: req.name.clone(),
-        items: vec![],
+        items: initial_items,
     });
     drop(inner);
 

@@ -121,9 +121,11 @@ export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }
     setBusy('__create__');
     setError(null);
     try {
-      await api.createCollection(agent.id, name);
-      await api.patchCollection(agent.id, name, {
-        item_add: { root: target.root, path: target.path },
+      // Single POST with initial item — avoids orphan empty collection if a
+      // follow-up patch would fail after create.
+      await api.createCollection(agent.id, name, {
+        root: target.root,
+        path: target.path,
       });
       onChanged();
       onClose();

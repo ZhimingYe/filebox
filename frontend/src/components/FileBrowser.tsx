@@ -553,7 +553,9 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     rows: layoutRows,
     hasRows: rows.length > 0,
     extraHoverActions: onAddToCollection ? 1 : 0,
-  });
+    // Header is a sibling above containerRef — pass bodyRef so we do not
+    // incorrectly subtract FILE_LIST_COL_HEADER_HEIGHT from the list height.
+  }, containerRef);
 
   const rowItemData = useMemo(
     () => ({
