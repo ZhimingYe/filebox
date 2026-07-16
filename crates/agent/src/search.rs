@@ -34,8 +34,9 @@ const MAX_RESULT_BYTES: usize = 512 * 1024;
 /// Soft wall-clock cap; hub allows longer waits + cancel. Prefer truncated
 /// results over hanging forever.
 const SEARCH_DEADLINE: Duration = Duration::from_secs(9 * 60);
-const PROGRESS_EVERY_FILES: u64 = 64;
-const PROGRESS_EVERY: Duration = Duration::from_millis(400);
+/// Coalesce progress so large trees don't flood the hub SSE fanout / UI.
+const PROGRESS_EVERY_FILES: u64 = 256;
+const PROGRESS_EVERY: Duration = Duration::from_millis(750);
 
 pub struct SearchParams {
     pub mode: SearchMode,
