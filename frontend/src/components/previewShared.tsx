@@ -353,7 +353,19 @@ export const styles: Record<string, React.CSSProperties> = {
   monacoEditorHost: {
     flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden',
   },
-  image: { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block' },
+  // Image viewer owns a flex column that fills the preview pane. Without
+  // display:flex on the root, imageStage's flex:1 is ignored and tall images
+  // overflow/clip instead of fitting (maxHeight:100% needs a definite parent).
+  imageViewer: {
+    display: 'flex', flexDirection: 'column',
+    height: '100%', overflow: 'hidden', padding: 0,
+    background: c.bg, minWidth: 0, position: 'relative',
+    fontFamily: font.sans,
+  },
+  image: {
+    maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto',
+    objectFit: 'contain', display: 'block',
+  },
   htmlFrame: { width: '100%', height: '100%', border: 'none', background: c.surface },
   htmlContainer: {
     display: 'flex', flexDirection: 'column', height: '100%',
@@ -410,13 +422,15 @@ export const styles: Record<string, React.CSSProperties> = {
   },
   imageStage: {
     flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-    overflow: 'hidden', position: 'relative', minHeight: 0,
+    overflow: 'hidden', position: 'relative', minHeight: 0, width: '100%',
+    // Pinch / drag handled via pointer events; avoid browser pan-zoom steal.
+    touchAction: 'none',
   },
   imageToolbar: {
     position: 'absolute', bottom: 12, left: '50%', transform: 'translateX(-50%)',
     display: 'flex', alignItems: 'center', gap: 4,
     padding: '4px 6px', borderRadius: radius.pill,
-    background: 'rgba(255,255,255,0.95)', border: `1px solid ${c.border}`,
+    background: c.surface, border: `1px solid ${c.border}`,
     boxShadow: shadow.md, zIndex: 10,
   },
   imgToolBtn: {

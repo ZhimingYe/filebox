@@ -291,3 +291,33 @@ set `proxy_buffering off` + `proxy_cache off` (SSE). Forward
   `FileChunk` on the same channel but never block control messages
   (agent's read loop is independent of its writer; writes have a 10s
   timeout).
+
+## Cursor Cloud specific instructions
+
+The startup update script runs `rustup default stable` + `npm --prefix
+frontend install`. It intentionally does **not** build — you must build
+before running services.
+
+- **Rust toolchain gotcha:** dependencies (e.g. `bcrypt 0.19`) require
+  `edition2024`, so Rust **≥ 1.85** is mandatory. The base image's default
+  toolchain (1.83) fails with `feature 'edition2024' is required`. The
+  update script pins `rustup default stable`; if you ever hit that error,
+  run `rustup default stable` yourself.
+- **Build before run:** the Hub serves `frontend/dist` from disk (not
+  embedded), so build the frontend first: `cd frontend && npm run build`.
+  Then `cargo build` (debug binaries land at `target/debug/{hub,agent}`).
+- **Dev bring-up** is documented in `docs/local-debugging.md` §1/§8. In
+  short, with no config files: start the Hub with `FILEBOX_DEV_MODE=1`
+  `FILEBOX_FRONTEND_DIR="$(pwd)/frontend/dist"`, then an Agent with
+  `FILEBOX_AGENT_HUB=ws://127.0.0.1:3000 FILEBOX_AGENT_TOKEN=dev-token
+  FILEBOX_ALLOW_INSECURE_HUB=1` (give each agent its own
+  `FILEBOX_AGENT_DATA_DIR`). Dev login is `admin` / `dev-password`.
+- **There is no mock backend:** the UI is useless without a live Hub AND a
+  connected Agent. Add a root (Settings → Add Root, or `POST
+  /api/agents/{id}/roots`) or the file list stays empty. Prove the data
+  path with `curl` (see `docs/local-debugging.md` §2) before blaming the UI.
+- **Browser testing gotchas:** the login username field shows `admin` only
+  as *placeholder* text — you must actually type the username or the login
+  hangs. Use `http://localhost:3000` (not `127.0.0.1`) to avoid HSTS
+  upgrade traps, and prefer an Incognito window to sidestep stale
+  cookie/HSTS state.
