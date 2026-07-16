@@ -1,19 +1,51 @@
 # Changelog
 
-All notable changes to Filebox are listed here. Dates are UTC.
+All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
 ### Added
-- **Built-in configuration setup** — `hub --init-config` creates `config/hub.json` with an internally generated agent token and bcrypt hashes; `agent --init-config` creates `agent.toml`. Both support `--output` and explicit `--force`, create private `0600` files, and require no external bcrypt, OpenSSL, Python, or shell helper.
-- **Preview tab bulk close actions** — the tab context menu can close the selected tab, every tab to its left or right, or all preview tabs.
+- **Workspace Search** — sidebar Search view with fd-like Files mode (filename substring) and rg-like Content mode (case-insensitive regex + context). Scoped to one root and optional folder; optional extension filter. In-process on the agent (`ignore` + `regex`); path-safe, no symlink follow, denylist-aware. Progress via SSE, cancelable, one concurrent search per agent, scan/result caps for high-load trees. Gated by `capabilities.workspace_search`.
+- **Monaco code preview** — read-only Monaco Editor replaces Prism / `react-syntax-highlighter` for code files (Find, wrap, syntax highlight). Lazy-loaded; not placed in Vite `manualChunks` so the ~4MB editor is not preloaded on every page.
 
 ### Changed
-- **Shorter installation flow** — README and release-package instructions now use the downloaded Rust binaries directly for configuration.
+- **Image preview** — flex stage fits tall images; wheel / pinch zoom and pointer pan; dimension downscale caps (max edge 8192, ~16M pixels); `ImagePreview` is now lazy-loaded like other heavy viewers.
+- **Login** — removed the misleading `admin` username placeholder; credentials must still be typed explicitly.
+
+---
+
+## v0.9.0 — 2026-07-16
+
+### Added
+- **Virtual collections** — per-agent named lists of file references that may span multiple roots. Create / delete collections, add or remove items, and browse them in a dedicated Collections workspace. Files can be added from the file browser via the CollectionPicker (including atomic create+add). Collections persist on the agent in `agent_state.json` with an independent `collections_revision`; offline edits coalesce into a pending update and apply on reconnect. Legacy agents without the capability receive `400 unsupported_feature`.
+- **Shared file-list workspace** — Files and Collections share `FileEntryList` / `WorkspaceSplit`, with adaptive CSS-grid columns that protect name / date / size widths in narrow split panels.
+
+### Changed
+- **Lowercase brand** — UI copy uses "filebox" consistently.
 
 ### Fixed
-- **Preview failure isolation** — missing or inaccessible files now stop at a local, retryable preview error, and unexpected viewer render failures are contained by a preview error boundary instead of taking down the application.
-- **Preview keyboard navigation regression** — Left/Right once again moves through files in the current directory and replaces the active preview; it no longer cycles the open tab strip.
+- CollectionPicker floating popup positioning and styling.
+- Collections reject / pending state, metadata refresh loop, and narrow-layout crushing of the filename column.
+- File-list header/row column alignment, including cross-year and pre-2000 date widths.
+
+---
+
+## v0.8.9 — 2026-07-15
+
+### Added
+- **Built-in configuration setup** — `hub --init-config` creates `config/hub.json` with an internally generated agent token and bcrypt hashes; `agent --init-config` creates `agent.toml`. Both support `--output` and `--force`, create private `0600` files, and require no external bcrypt, OpenSSL, Python, or shell helper. The old `scripts/gen_config.sh` path is retired.
+- **Home-path roots** — root paths may be `~` or `~/…`; the agent expands them against its own `$HOME` and rejects escapes such as `~/../…`.
+- **Modification-date filter** — presets (today, yesterday, 7d / 30d / 90d / 365d) plus custom after/before dates in the file browser.
+- **Preview tab polish** — tab-jump dropdown among open tabs; context-menu bulk close (this tab / left / right / all); `PreviewErrorBoundary` isolates viewer crashes; missing files surface as local retryable preview errors.
+- **Recently modified highlight** — file rows accent the modified date when mtime is within the last 15 minutes.
+
+### Changed
+- **Shorter installation flow** — README and release-package instructions use the downloaded Rust binaries directly for configuration.
+- Agent settings UI polish; denser mobile folder tree; sidebar collapse animation without main-column jank.
+
+### Fixed
+- Home-path traversal / expansion edge cases, hub–agent apply race, and file-list layout bugs.
+- **Preview keyboard navigation** — Left/Right moves through files in the current directory (or collection) and replaces the active preview; it no longer cycles only the open tab strip.
 
 ---
 

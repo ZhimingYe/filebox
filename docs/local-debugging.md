@@ -123,8 +123,10 @@ touch README.md a.md data.csv   # mix in short names too
 ```
 
 Then add `/tmp/fbx_demo` as a root via the UI (Settings), or via the API
-(see §3). Files dropped into an existing root are visible immediately —
-the agent does not cache directory listings.
+(see §3). Files dropped into an existing root are usually visible on the
+next list; the agent has an mtime-keyed `DirCache` (cleared on root apply),
+so if a listing looks stale after an in-place overwrite that keeps the
+same mtime, refresh or wait for cache invalidation.
 
 ---
 
@@ -185,30 +187,75 @@ curl -s -N -b /tmp/fb.cookie --noproxy '*' \
 | POST | `/api/session/exchange` | no | Login → sets cookie |
 | POST | `/api/session/logout` | yes | Logout → clears cookie |
 | GET | `/api/agents` | yes | List agents (the "No agents connected" source) |
-| GET | `/api/agents/{id}` | yes | One agent + roots |
+| GET | `/api/agents/{id}` | yes | One agent + roots + collections |
+| GET / PUT | `/api/agents/{id}/resources` | yes | Resource snapshot / full replace |
+| POST | `/api/agents/{id}/roots` | yes | Add root |
+| PATCH / DELETE | `/api/agents/{id}/roots/{name}` | yes | Update / remove root |
+| POST | `/api/agents/{id}/collections` | yes | Create collection (optional initial item) |
+| PATCH / DELETE | `/api/agents/{id}/collections/{name}` | yes | Mutate / delete collection |
+| POST | `/api/agents/{id}/workspace-search` | yes | Workspace Search (find / content modes) |
 | GET | `/api/fs/list` | yes | Directory listing (proxied to agent) |
 | GET | `/api/fs/stat` | yes | File metadata |
+| GET | `/api/file/raw` | yes | File bytes |
+| POST | `/api/preview/sessions` | yes | HTML preview session token |
+| GET | `/api/preview/{token}/{*path}` | token | HTML relative asset |
 | GET | `/api/agents/{id}/sys-stats` | yes | CPU/mem/etc |
+| POST | `/api/cancel` | yes | Cancel in-flight request |
 | GET | `/api/events` | yes | SSE stream of agent events |
 | WS | `/ws/agent` | token | Agent → Hub (agents only) |
 
 ---
 
-## 3. Adding roots via API
+## 3. Adding roots and collections via API
 
-Roots are normally managed from the UI. For automation/scripts:
+Roots and collections are normally managed from the UI. For automation:
 
 ```bash
+# Add a root (absolute path, or ~/… under the agent's home)
 curl -s -b /tmp/fb.cookie --noproxy '*' \
   -X POST "http://127.0.0.1:3000/api/agents/$AGENT_ID/roots" \
   -H 'Content-Type: application/json' \
   -d '{"name":"demo","path":"/tmp/fbx_demo"}'
+
+# Create a collection, optionally with an initial item (atomic create+add)
+curl -s -b /tmp/fb.cookie --noproxy '*' \
+  -X POST "http://127.0.0.1:3000/api/agents/$AGENT_ID/collections" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"watchlist","item":{"root":"demo","path":"/reports/README.md"}}'
+
+# Add / remove an item (PATCH deltas)
+curl -s -b /tmp/fb.cookie --noproxy '*' \
+  -X PATCH "http://127.0.0.1:3000/api/agents/$AGENT_ID/collections/watchlist" \
+  -H 'Content-Type: application/json' \
+  -d '{"item_add":{"root":"demo","path":"/reports/a.md"}}'
 ```
 
 If the agent is offline, the Hub stores the update as pending and applies
 it on reconnect (`state: "pending_agent_reconnect"`). A rejected update
-(e.g. missing path) becomes `config_error` and **never destroys the last
-known good state.**
+(e.g. missing root path) becomes `config_error` / clears pending and
+**never destroys the last known good state.** Collection mutations against
+a legacy agent return `400 unsupported_feature`.
+
+### Workspace Search via API
+
+```bash
+# Filename search (fd-like). Empty query lists names under the folder.
+curl -s -b /tmp/fb.cookie --noproxy '*' \
+  -X POST "http://127.0.0.1:3000/api/agents/$AGENT_ID/workspace-search" \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"find","root":"demo","path":"/","query":"REWIND","max_results":50}'
+
+# Content search (rg-like regex). Optional extensions filter.
+curl -s -b /tmp/fb.cookie --noproxy '*' \
+  -X POST "http://127.0.0.1:3000/api/agents/$AGENT_ID/workspace-search" \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"content","root":"demo","path":"/reports","query":"TODO|FIXME","extensions":["md","rs"],"context":2}'
+```
+
+Progress events use SSE `phase: "search"`. Cancel with `POST /api/cancel`
+(and the same `client_nonce` if you sent one). Only one search runs per
+agent at a time; long trees are truncated by scan/result caps. Legacy
+agents without `capabilities.workspace_search` return unsupported.
 
 ---
 
@@ -388,7 +435,22 @@ FILEBOX_AGENT_HUB="ws://127.0.0.1:3000" FILEBOX_AGENT_TOKEN="dev-token" \
 # Open http://localhost:3000  →  admin / dev-password
 ```
 
-Env vars (verified): `FILEBOX_DEV_MODE`, `FILEBOX_LISTEN_ADDR`,
-`FILEBOX_FRONTEND_DIR`, `FILEBOX_CONFIG_PATH`, `FILEBOX_AGENT_HUB`,
-`FILEBOX_AGENT_TOKEN`, `FILEBOX_AGENT_NAME`, `FILEBOX_AGENT_DATA_DIR`,
-`FILEBOX_ALLOW_INSECURE_HUB`.
+Env vars (verified):
+
+| Var | Role |
+|---|---|
+| `FILEBOX_DEV_MODE` | Insecure local hub defaults |
+| `FILEBOX_LISTEN_ADDR` | Hub bind address |
+| `FILEBOX_FRONTEND_DIR` | Absolute path to `frontend/dist` |
+| `FILEBOX_CONFIG_PATH` | Hub `hub.json` path |
+| `FILEBOX_TRUST_XFF` | Trust `X-Forwarded-For` for login rate-limit IP |
+| `FILEBOX_AGENT_HUB` | Agent hub URL (`ws://` needs insecure flag) |
+| `FILEBOX_AGENT_TOKEN` | Agent auth token |
+| `FILEBOX_AGENT_NAME` | Agent display name |
+| `FILEBOX_AGENT_DATA_DIR` | Persisted `agent_state.json` directory |
+| `FILEBOX_AGENT_CONFIG` | Agent toml path |
+| `FILEBOX_ALLOW_INSECURE_HUB` | Allow plaintext `ws://` / `http://` hub |
+| `FILEBOX_AGENT_STATS_TTL_SECS` | Sysinfo cache TTL (default 60) |
+| `FILEBOX_UPDATE_BASE_URL` | `--update` mirror base URL |
+| `FILEBOX_ALLOW_INSECURE_UPDATE` | Allow `http://` update source |
+| `FILEBOX_ALLOW_DOWNGRADE` | Allow updater downgrade |

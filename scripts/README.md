@@ -15,13 +15,13 @@ developer-facing tools.
 ## Releasing a new version
 
 ```bash
-./scripts/release.sh v0.3.0
+./scripts/release.sh v0.9.0
 ```
 
 The script:
 1. Bumps `version = "..."` under `[workspace.package]` in `Cargo.toml` (awk-tracked so it doesn't touch `[workspace.dependencies]`)
 2. Refreshes `Cargo.lock` via `cargo check`
-3. Commits "Release v0.3.0", tags `v0.3.0`, pushes both
+3. Commits "Release v0.9.0", tags `v0.9.0`, pushes both
 
 GitHub Actions then builds `x86_64-unknown-linux-musl` binaries for hub and
 agent, bundles the frontend into the hub tarball, generates `SHA256SUMS.txt`,
