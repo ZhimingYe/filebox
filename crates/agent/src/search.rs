@@ -675,6 +675,31 @@ mod tests {
     }
 
     #[test]
+    fn extensions_are_case_insensitive() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Main.RS"), "fn main() { TODO }").unwrap();
+        fs::write(dir.path().join("notes.TXT"), "TODO here").unwrap();
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        let result = run_search(
+            &roots,
+            SearchParams {
+                mode: SearchMode::Content,
+                root: "ws".into(),
+                path: "/".into(),
+                query: "TODO".into(),
+                extensions: vec!["Rs".into(), "tXt".into()],
+                max_results: Some(20),
+                context: Some(0),
+                cancel: None,
+            },
+        )
+        .unwrap();
+        let paths: Vec<_> = result.hits.iter().map(|h| h.path.as_str()).collect();
+        assert!(paths.iter().any(|p| p.eq_ignore_ascii_case("/Main.RS") || p.ends_with(".RS") || p.ends_with(".rs")));
+        assert_eq!(result.hits.len(), 2, "both .RS and .TXT should match case-insensitively: {paths:?}");
+    }
+
+    #[test]
     fn cancel_flag_stops_search() {
         let dir = tempdir().unwrap();
         for i in 0..200 {

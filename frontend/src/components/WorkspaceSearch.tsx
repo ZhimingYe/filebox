@@ -5,11 +5,13 @@ import { c, radius, font } from '../theme';
 
 interface Props {
   agent: AgentInfo;
-  /** Prefer the Files browser folder so rg/fd scopes to "here". */
+  /** Prefer the currently selected Files root when present. */
   initialRoot?: string | null;
-  initialPath?: string;
   onOpenFile?: (root: string, path: string) => void;
 }
+
+const DEFAULT_CONTEXT = 10;
+const MAX_CONTEXT = 20;
 
 function searchErrorMessage(err: unknown): string {
   const mapped = friendlyMessage(err);
@@ -20,20 +22,29 @@ function searchErrorMessage(err: unknown): string {
   return mapped;
 }
 
+/** Normalize folder input; `./` and `.` mean root. */
 function normalizeFolderPath(path: string): string {
-  let p = path.trim() || '/';
+  let p = path.trim();
+  if (!p || p === '.' || p === './') return '/';
+  if (p.startsWith('./')) p = p.slice(1);
   if (!p.startsWith('/')) p = `/${p}`;
   if (p.length > 1 && p.endsWith('/')) p = p.replace(/\/+$/, '');
   return p || '/';
 }
 
-export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }: Props) {
+function clampContext(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_CONTEXT;
+  return Math.max(0, Math.min(MAX_CONTEXT, Math.floor(n)));
+}
+
+export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
   const enabledRoots = (agent.roots ?? []).filter((r) => r.enabled);
   const [mode, setMode] = useState<SearchMode>('content');
   const [root, setRoot] = useState(initialRoot || enabledRoots[0]?.name || '');
-  const [folder, setFolder] = useState(normalizeFolderPath(initialPath || '/'));
+  const [folder, setFolder] = useState('/');
   const [query, setQuery] = useState('');
   const [extensions, setExtensions] = useState('');
+  const [contextLines, setContextLines] = useState(DEFAULT_CONTEXT);
   const [result, setResult] = useState<WorkspaceSearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -51,15 +62,11 @@ export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }:
     }
   }, [agent.id, agent.roots, root, initialRoot]);
 
-  // When entering from Files, adopt that folder as the rg/fd scope.
   useEffect(() => {
     if (initialRoot && enabledRoots.some((r) => r.name === initialRoot)) {
       setRoot(initialRoot);
     }
-    if (initialPath) {
-      setFolder(normalizeFolderPath(initialPath));
-    }
-  }, [agent.id, initialRoot, initialPath]);
+  }, [agent.id, initialRoot]);
 
   useEffect(() => {
     abortRef.current?.abort();
@@ -71,6 +78,7 @@ export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }:
     setLoading(false);
     setSlow(false);
     setQuery('');
+    setFolder('/');
   }, [agent.id]);
 
   useEffect(() => {
@@ -85,7 +93,7 @@ export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }:
       return;
     }
     if (mode === 'content' && !query.trim()) {
-      setError('Enter a pattern to grep for');
+      setError('Enter a search pattern');
       return;
     }
 
@@ -103,10 +111,13 @@ export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }:
       if (reqGen.current === gen) setSlow(true);
     }, 8000);
 
+    const ctx = clampContext(contextLines);
+
     try {
+      // Extensions are matched case-insensitively on the agent; normalize here too.
       const exts = extensions
         .split(/[,\s]+/)
-        .map((e) => e.trim().replace(/^\./, ''))
+        .map((e) => e.trim().replace(/^\./, '').toLowerCase())
         .filter(Boolean);
       const data = await workspaceSearch(
         agent.id,
@@ -117,7 +128,7 @@ export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }:
           query: query.trim(),
           extensions: exts,
           max_results: mode === 'find' ? 200 : 60,
-          context: 10,
+          context: mode === 'content' ? ctx : 0,
         },
         ac.signal,
       );
@@ -144,8 +155,6 @@ export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }:
   }
 
   async function handleCancel() {
-    // Aborting the HTTP wait drops the hub handler, which CancelOnDrop's the
-    // agent worker. Also best-effort /api/cancel if we already know req_id.
     const reqId = reqIdRef.current;
     abortRef.current?.abort();
     reqGen.current += 1;
@@ -156,7 +165,7 @@ export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }:
       try {
         await cancelRequest(agent.id, reqId);
       } catch {
-        /* best-effort — abort path is enough */
+        /* best-effort */
       }
     }
   }
@@ -164,17 +173,24 @@ export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }:
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <h2 style={styles.title}>rg / fd</h2>
+        <h2 style={styles.title}>Search</h2>
         <p style={styles.subtitle}>
-          Grep file contents (<code style={styles.code}>rg</code>) or find filenames (
-          <code style={styles.code}>fd</code>) inside a folder under a root. Runs on the agent —
-          no system binaries needed.
+          Search file contents or find files by name under a root. Runs on the agent —
+          no extra tools required on the remote machine.
         </p>
       </div>
 
       <div style={styles.modeRow}>
-        <ModeButton active={mode === 'content'} onClick={() => setMode('content')} label="rg" hint="grep in folder" />
-        <ModeButton active={mode === 'find'} onClick={() => setMode('find')} label="fd" hint="find by name" />
+        <ModeButton
+          active={mode === 'content'}
+          onClick={() => setMode('content')}
+          label="Content"
+        />
+        <ModeButton
+          active={mode === 'find'}
+          onClick={() => setMode('find')}
+          label="Files"
+        />
       </div>
 
       <div style={styles.form}>
@@ -193,13 +209,13 @@ export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }:
           </select>
         </label>
 
-        <label style={{ ...styles.label, flex: '1.4 1 180px' }}>
+        <label style={{ ...styles.label, flex: '1.2 1 140px' }}>
           Folder
           <input
             value={folder}
             onChange={(e) => setFolder(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-            placeholder="/ or /src"
+            placeholder="/ or ./src"
             style={styles.input}
             disabled={loading}
             autoCapitalize="off"
@@ -208,7 +224,7 @@ export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }:
           />
         </label>
 
-        <label style={{ ...styles.label, flex: '2 1 220px' }}>
+        <label style={{ ...styles.label, flex: '2 1 200px' }}>
           {mode === 'find' ? 'Name contains' : 'Pattern (regex)'}
           <input
             value={query}
@@ -229,14 +245,32 @@ export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }:
             value={extensions}
             onChange={(e) => setExtensions(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-            placeholder="rs, ts, py"
+            placeholder="rs, TS, py"
             style={styles.input}
             disabled={loading}
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
+            title="Case-insensitive; commas or spaces"
           />
         </label>
+
+        {mode === 'content' && (
+          <label style={{ ...styles.label, flex: '0 0 88px', minWidth: 88 }}>
+            Context
+            <input
+              type="number"
+              min={0}
+              max={MAX_CONTEXT}
+              value={contextLines}
+              onChange={(e) => setContextLines(clampContext(Number(e.target.value)))}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+              style={styles.input}
+              disabled={loading}
+              title={`Lines of context around each match (0–${MAX_CONTEXT})`}
+            />
+          </label>
+        )}
 
         {loading ? (
           <button type="button" onClick={() => void handleCancel()} style={styles.cancelBtn}>
@@ -253,18 +287,20 @@ export function WorkspaceSearch({ agent, initialRoot, initialPath, onOpenFile }:
               cursor: !root ? 'default' : 'pointer',
             }}
           >
-            Run
+            Search
           </button>
         )}
       </div>
 
       <div style={styles.scopeHint}>
         Scope: <code style={styles.code}>{root || '?'}:{normalizeFolderPath(folder)}</code>
-        {mode === 'content' ? ' · content grep' : ' · filename find'}
+        {mode === 'content'
+          ? ` · content · ±${clampContext(contextLines)} lines`
+          : ' · by filename'}
       </div>
 
       {slow && loading && (
-        <div style={styles.slow}>Still running — large folders can take a while. You can Cancel.</div>
+        <div style={styles.slow}>Still searching — large folders can take a while. You can Cancel.</div>
       )}
 
       {error && <div style={styles.error}>{error}</div>}
@@ -299,18 +335,15 @@ function ModeButton({
   active,
   onClick,
   label,
-  hint,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
-  hint: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      title={hint}
       style={{
         ...styles.modeBtn,
         background: active ? c.accentBg : c.bgSubtle,
@@ -318,9 +351,7 @@ function ModeButton({
         borderColor: active ? c.accent : c.border,
       }}
     >
-      <span style={styles.modeLabel}>{label}</span>
-      {' '}
-      <span style={styles.modeHint}>{hint}</span>
+      {label}
     </button>
   );
 }
@@ -389,7 +420,6 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 18,
     fontWeight: 600,
     color: c.text,
-    fontFamily: font.mono,
   },
   subtitle: {
     margin: '6px 0 0',
@@ -410,20 +440,9 @@ const styles: Record<string, CSSProperties> = {
     border: `1px solid ${c.border}`,
     borderRadius: radius.sm,
     padding: '6px 12px',
+    fontSize: 13,
     fontFamily: font.sans,
     background: c.bgSubtle,
-    display: 'flex',
-    alignItems: 'baseline',
-    gap: 8,
-  },
-  modeLabel: {
-    fontFamily: font.mono,
-    fontSize: 13,
-    fontWeight: 600,
-  },
-  modeHint: {
-    fontSize: 12,
-    opacity: 0.75,
   },
   form: {
     display: 'flex',

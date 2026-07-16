@@ -242,9 +242,10 @@ pub async fn workspace_search_handler(
 
 fn normalize_search_path(path: &str) -> String {
     let trimmed = path.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || trimmed == "." || trimmed == "./" {
         return "/".to_string();
     }
+    let trimmed = trimmed.strip_prefix("./").unwrap_or(trimmed);
     if trimmed.starts_with('/') {
         trimmed.to_string()
     } else {
@@ -291,6 +292,9 @@ mod tests {
     #[test]
     fn normalizes_folder_path() {
         assert_eq!(normalize_search_path(""), "/");
+        assert_eq!(normalize_search_path("."), "/");
+        assert_eq!(normalize_search_path("./"), "/");
+        assert_eq!(normalize_search_path("./src"), "/src");
         assert_eq!(normalize_search_path("src"), "/src");
         assert_eq!(normalize_search_path("/src/lib"), "/src/lib");
     }
