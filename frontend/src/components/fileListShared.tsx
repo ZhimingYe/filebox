@@ -1,4 +1,4 @@
-import type { CSSProperties, HTMLAttributes } from 'react';
+import type { CSSProperties, HTMLAttributes, RefObject } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FsEntry } from '../api/client';
 import { c, radius, font, fileType } from '../theme';
@@ -199,14 +199,18 @@ export function sortFileListRows<T extends { entry: FsEntry; rootLabel?: string 
 }
 
 /** Size the date column to the longest rendered date string in `rows`. */
-export function dateColWidthForRows(rows: { modified?: string | null; entry?: FsEntry }[]): string {
+export function dateColWidthForRows(
+  rows: { modified?: string | null; entry?: FsEntry }[],
+  isMobile = false,
+): string {
   let maxChars = 0;
   for (const row of rows) {
     const modified = row.modified ?? row.entry?.modified;
     if (!modified) continue;
     const d = new Date(modified);
     if (Number.isNaN(d.getTime())) continue;
-    maxChars = Math.max(maxChars, formatDate(modified).length);
+    const label = isMobile ? formatDateShort(modified) : formatDate(modified);
+    maxChars = Math.max(maxChars, label.length);
   }
   return `${Math.max(11, maxChars)}ch`;
 }
@@ -224,19 +228,146 @@ export function rootColWidthForRows(rows: { rootLabel?: string }[]): string {
 export function fileListGridColumns(opts: {
   showRootColumn: boolean;
   isMobile: boolean;
+  rootColWidth: string;
+  dateColWidth: string;
+  /** Measured list container width; 0 before first layout. */
+  listWidth: number;
 }): string {
-  // Name absorbs free space but never collapses below a readable minimum.
-  // Root / date / size shrink with ellipsis before name is crushed.
-  const name = 'minmax(64px, 1fr)';
-  const meta = 'minmax(0, max-content)';
-  const parts = ['20px', name];
-  if (opts.showRootColumn) parts.push(meta);
-  parts.push(meta); // modified
-  if (!opts.isMobile) parts.push(meta); // size
+  const { showRootColumn, isMobile, rootColWidth, dateColWidth, listWidth: w } = opts;
+
+  // Name owns leftover space; floor scales with panel width so narrow splits stay readable.
+  const nameMin = w > 0 ? Math.max(56, Math.floor(w * 0.36)) : 96;
+  const parts: string[] = ['20px', `minmax(${nameMin}px, 1fr)`];
+
+  const tight = w > 0 && w < 300;
+  const compact = w > 0 && w < 400;
+
+  if (showRootColumn) {
+    parts.push(tight
+      ? 'minmax(0, 4ch)'
+      : `minmax(0, min(${rootColWidth}, 20%))`);
+  }
+
+  parts.push(tight
+    ? `minmax(0, ${dateColWidth})`
+    : `minmax(0, min(${dateColWidth}, 28%))`);
+
+  if (!isMobile) {
+    parts.push(compact
+      ? 'minmax(0, 5ch)'
+      : 'minmax(0, min(8ch, 16%))');
+  }
+
   return parts.join(' ');
 }
 
-/** Keep column header aligned with react-window body when a vertical scrollbar appears. */
+/** Padding for filename when hover action overlay is visible (24px per icon button). */
+export function fileListHoverNamePad(extraActionCount: number): number {
+  return 24 * (1 + extraActionCount);
+}
+
+export interface FileListLayoutRow {
+  rootLabel?: string;
+  modified?: string | null;
+  entry?: FsEntry;
+}
+
+/** Measure list size, scrollbar gutter, and adaptive column template together. */
+export function useFileListLayout(
+  containerRef: RefObject<HTMLDivElement | null>,
+  opts: {
+    showRootColumn: boolean;
+    isMobile: boolean;
+    rows: FileListLayoutRow[];
+    hasRows: boolean;
+    /** Extra hover icon buttons besides copy (Collections: 2). */
+    extraHoverActions: number;
+  },
+) {
+  const [listWidth, setListWidth] = useState(0);
+  const [listHeight, setListHeight] = useState(400);
+  const outerRef = useRef<HTMLDivElement>(null);
+  const [scrollPad, setScrollPad] = useState(0);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let raf = 0;
+    const obs = new ResizeObserver(([entry]) => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const { width, height } = entry.contentRect;
+        setListWidth((prev) => (Math.abs(prev - width) < 1 ? prev : width));
+        setListHeight((prev) => (Math.abs(prev - height) < 1 ? prev : height));
+      });
+    });
+    obs.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      obs.disconnect();
+    };
+  }, [containerRef]);
+
+  useEffect(() => {
+    if (!opts.hasRows) {
+      setScrollPad(0);
+      return;
+    }
+    const el = outerRef.current;
+    if (!el) return;
+    const update = () => {
+      setScrollPad(Math.max(0, el.offsetWidth - el.clientWidth));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [opts.hasRows, opts.rows.length, listHeight]);
+
+  const rootColWidth = useMemo(
+    () => (opts.showRootColumn ? rootColWidthForRows(opts.rows) : '0px'),
+    [opts.rows, opts.showRootColumn],
+  );
+  const dateColWidth = useMemo(
+    () => dateColWidthForRows(opts.rows, opts.isMobile),
+    [opts.rows, opts.isMobile],
+  );
+  const gridTemplateColumns = useMemo(
+    () => fileListGridColumns({
+      showRootColumn: opts.showRootColumn,
+      isMobile: opts.isMobile,
+      rootColWidth,
+      dateColWidth,
+      listWidth,
+    }),
+    [opts.showRootColumn, opts.isMobile, rootColWidth, dateColWidth, listWidth],
+  );
+
+  const outerElementType = useMemo(() => {
+    const Outer = ({ style, ...rest }: HTMLAttributes<HTMLDivElement>) => (
+      <div
+        {...rest}
+        ref={outerRef}
+        style={{ ...style, scrollbarGutter: 'stable' }}
+      />
+    );
+    return Outer;
+  }, []);
+
+  const bodyHeight = Math.max(0, listHeight - FILE_LIST_COL_HEADER_HEIGHT);
+  const hoverNamePad = fileListHoverNamePad(opts.extraHoverActions);
+
+  return {
+    gridTemplateColumns,
+    bodyHeight,
+    padRight: scrollPad,
+    outerElementType,
+    hoverNamePad,
+    listWidth,
+  };
+}
+
+/** @deprecated Use useFileListLayout */
 export function useListScrollGutter(active: boolean) {
   const outerRef = useRef<HTMLDivElement>(null);
   const [padRight, setPadRight] = useState(0);
@@ -278,6 +409,7 @@ export const fileListStyles: Record<string, CSSProperties> = {
     padding: '6px 12px', borderBottom: `1px solid ${c.border}`,
     fontSize: 11, color: c.textMuted, textTransform: 'uppercase', letterSpacing: 0.5,
     userSelect: 'none', flexShrink: 0, fontWeight: 500, background: c.bgSubtle,
+    width: '100%', boxSizing: 'border-box',
   },
   colIcon: { minWidth: 0 },
   colName: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
@@ -288,7 +420,7 @@ export const fileListStyles: Record<string, CSSProperties> = {
   entry: {
     display: 'grid', alignItems: 'center', columnGap: 8,
     padding: '0 12px', boxSizing: 'border-box',
-    minHeight: 32, borderRadius: radius.sm,
+    minHeight: 32, minWidth: 0, borderRadius: radius.sm,
     transition: 'background 0.1s',
   },
   entryHover: {

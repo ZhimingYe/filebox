@@ -12,17 +12,15 @@ import type { FsEntry } from '../api/client';
 import { font } from '../theme';
 import { useIsMobile } from '../state/useIsMobile';
 import {
-  FILE_LIST_COL_HEADER_HEIGHT,
   FILE_LIST_ROW_HEIGHT_DESKTOP,
   FILE_LIST_ROW_HEIGHT_MOBILE,
-  fileListGridColumns,
   fileListStyles,
   formatDate,
   formatDateShort,
   formatSize,
   getEntryIcon,
   isRecentlyModified,
-  useListScrollGutter,
+  useFileListLayout,
   type FileListSortKey,
 } from './fileListShared';
 
@@ -68,28 +66,6 @@ function useCopyToClipboard() {
     }
   }, []);
   return { copiedPath, copyToClipboard };
-}
-
-function useVirtualListHeight(containerRef: React.RefObject<HTMLDivElement | null>) {
-  const [listHeight, setListHeight] = useState(400);
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    let raf = 0;
-    const obs = new ResizeObserver(([entry]) => {
-      const h = entry.contentRect.height;
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        setListHeight((prev) => (Math.abs(prev - h) < 1 ? prev : h));
-      });
-    });
-    obs.observe(el);
-    return () => {
-      cancelAnimationFrame(raf);
-      obs.disconnect();
-    };
-  }, [containerRef]);
-  return listHeight;
 }
 
 function useRecentEntryClock(entries: FsEntry[]) {
@@ -150,6 +126,7 @@ export interface FileEntryListRowProps {
   onMouseLeave: () => void;
   onClick: () => void;
   gridTemplateColumns: string;
+  hoverNamePad: number;
   isMobile: boolean;
   nowMs: number;
   showRootColumn: boolean;
@@ -170,6 +147,7 @@ export function FileEntryListRow({
   onMouseLeave,
   onClick,
   gridTemplateColumns,
+  hoverNamePad,
   isMobile,
   nowMs,
   showRootColumn,
@@ -184,7 +162,7 @@ export function FileEntryListRow({
   const isRecent = !blocked && isRecentlyModified(entry.modified, nowMs);
   const copyLabel = `path-${index}`;
   const showHoverActions = isHovered && !blocked;
-  const nameHoverPad = showHoverActions ? (renderNameHoverActions ? 76 : 28) : 0;
+  const nameHoverPad = showHoverActions ? hoverNamePad : 0;
 
   return (
     <div
@@ -254,6 +232,7 @@ interface RowItemData {
   hoveredIdx: number | null;
   setHoveredIdx: (idx: number | null) => void;
   gridTemplateColumns: string;
+  hoverNamePad: number;
   isMobile: boolean;
   nowMs: number;
   showRootColumn: boolean;
@@ -269,6 +248,7 @@ const VirtualRow = ({ index, style, data }: ListChildComponentProps<RowItemData>
     hoveredIdx,
     setHoveredIdx,
     gridTemplateColumns,
+    hoverNamePad,
     isMobile,
     nowMs,
     showRootColumn,
@@ -292,6 +272,7 @@ const VirtualRow = ({ index, style, data }: ListChildComponentProps<RowItemData>
         if (!blocked) onRowClick(row, index);
       }}
       gridTemplateColumns={gridTemplateColumns}
+      hoverNamePad={hoverNamePad}
       isMobile={isMobile}
       nowMs={nowMs}
       showRootColumn={showRootColumn}
@@ -315,16 +296,24 @@ export function FileEntryList({
   const isMobile = useIsMobile();
   const rowHeight = isMobile ? FILE_LIST_ROW_HEIGHT_MOBILE : FILE_LIST_ROW_HEIGHT_DESKTOP;
   const containerRef = useRef<HTMLDivElement>(null);
-  const listHeight = useVirtualListHeight(containerRef);
   const { copiedPath, copyToClipboard } = useCopyToClipboard();
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const entries = useMemo(() => rows.map((r) => r.entry), [rows]);
   const nowMs = useRecentEntryClock(entries);
-  const gridTemplateColumns = useMemo(
-    () => fileListGridColumns({ showRootColumn, isMobile }),
-    [showRootColumn, isMobile],
-  );
-  const { padRight, outerElementType } = useListScrollGutter(rows.length > 0);
+  const extraHoverActions = renderNameHoverActions ? 2 : 0;
+  const {
+    gridTemplateColumns,
+    bodyHeight,
+    padRight,
+    outerElementType,
+    hoverNamePad,
+  } = useFileListLayout(containerRef, {
+    showRootColumn,
+    isMobile,
+    rows,
+    hasRows: rows.length > 0,
+    extraHoverActions,
+  });
 
   const sortIndicator = (key: FileListSortKey) => {
     if (sortBy !== key) return '';
@@ -337,6 +326,7 @@ export function FileEntryList({
       hoveredIdx,
       setHoveredIdx,
       gridTemplateColumns,
+      hoverNamePad,
       isMobile,
       nowMs,
       showRootColumn,
@@ -346,12 +336,10 @@ export function FileEntryList({
       renderNameHoverActions,
     }),
     [
-      rows, hoveredIdx, gridTemplateColumns, isMobile, nowMs, showRootColumn,
+      rows, hoveredIdx, gridTemplateColumns, hoverNamePad, isMobile, nowMs, showRootColumn,
       copiedPath, copyToClipboard, onRowClick, renderNameHoverActions,
     ],
   );
-
-  const bodyHeight = Math.max(0, listHeight - FILE_LIST_COL_HEADER_HEIGHT);
 
   return (
     <div ref={containerRef} style={{ ...fileListStyles.listContainer, flex: 1, minHeight: 0 }}>

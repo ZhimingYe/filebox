@@ -15,7 +15,7 @@ import {
   matchesDateFilter,
   type DateFilterValue,
 } from './DateFilterControl';
-import { formatDate, formatDateShort, IconUpDir, isRecentlyModified, fileListGridColumns, fileListStyles, useListScrollGutter } from './fileListShared';
+import { IconUpDir, isRecentlyModified, fileListStyles, useFileListLayout } from './fileListShared';
 import { FileEntryListRow } from './FileEntryList';
 
 // ── Directory-tree resize splitter (desktop only) ──────────────────────────
@@ -107,7 +107,6 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   const [rootOpen, setRootOpen] = useState(false);
   const [hoveredRoot, setHoveredRoot] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const [listHeight, setListHeight] = useState(400);
   const [sortBy, setSortBy] = useState<SortKey>('name');
   const [sortAsc, setSortAsc] = useState(true);
   const [filterText, setFilterText] = useState('');
@@ -316,26 +315,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     }
   }, []);
 
-  // Measure container height for virtualized list.
-  // rAF-coalesce: parent width/height changes (sidebar snap, splitter) can
-  // deliver multiple RO callbacks; one setState per frame is enough.
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    let raf = 0;
-    const obs = new ResizeObserver(([entry]) => {
-      const h = entry.contentRect.height;
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        setListHeight((prev) => (Math.abs(prev - h) < 1 ? prev : h));
-      });
-    });
-    obs.observe(el);
-    return () => {
-      cancelAnimationFrame(raf);
-      obs.disconnect();
-    };
-  }, []);
+  // Measure container height for virtualized list — handled by useFileListLayout.
 
   // Close the root dropdown when clicking outside it or pressing Escape.
   // The panel is anchored to the trigger via the shared `rootRef` wrapper.
@@ -556,26 +536,24 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     return sortAsc ? ' ↑' : ' ↓';
   };
 
-  // Date formats vary in length (e.g. "MM-DD HH:MM" vs "YY-MM-DD HH:MM"). Size
-  // the date column to the longest rendered date string actually present, with
-  // a minimum that still fits the "Modified" header.
-  const dateColWidth = useMemo(() => {
-    let maxChars = 0;
-    filteredEntries.forEach((e) => {
-      if (!e.modified) return;
-      const d = new Date(e.modified);
-      if (Number.isNaN(d.getTime())) return;
-      const s = isMobile ? formatDateShort(e.modified) : formatDate(e.modified);
-      maxChars = Math.max(maxChars, s.length);
-    });
-    return `${Math.max(11, maxChars)}ch`;
-  }, [filteredEntries, isMobile]);
-
-  const gridTemplateColumns = useMemo(
-    () => fileListGridColumns({ showRootColumn: false, isMobile }),
-    [isMobile],
+  // Date column width is derived inside useFileListLayout from visible entries.
+  const layoutRows = useMemo(
+    () => filteredEntries.map((e) => ({ entry: e, modified: e.modified })),
+    [filteredEntries],
   );
-  const { padRight, outerElementType } = useListScrollGutter(rows.length > 0);
+  const {
+    gridTemplateColumns,
+    bodyHeight,
+    padRight,
+    outerElementType,
+    hoverNamePad,
+  } = useFileListLayout(containerRef, {
+    showRootColumn: false,
+    isMobile,
+    rows: layoutRows,
+    hasRows: rows.length > 0,
+    extraHoverActions: onAddToCollection ? 1 : 0,
+  });
 
   const rowItemData = useMemo(
     () => ({
@@ -592,8 +570,8 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
       onNavigateUp: navigateUp,
       onNavigateEntry: navigateTo,
       nowMs,
-      dateColWidth,
       gridTemplateColumns,
+      hoverNamePad,
       selectedRoot,
       onAddToCollection,
     }),
@@ -610,8 +588,8 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
       navigateUp,
       navigateTo,
       nowMs,
-      dateColWidth,
       gridTemplateColumns,
+      hoverNamePad,
       selectedRoot,
       onAddToCollection,
     ],
@@ -988,7 +966,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
               <>
                 <VList
                   ref={listRef as any}
-                  height={listHeight - (nextCursor ? 40 : 0)}
+                  height={Math.max(0, bodyHeight - (nextCursor ? 40 : 0))}
                   itemCount={rows.length}
                   itemSize={ROW_HEIGHT}
                   itemData={rowItemData}
@@ -1369,8 +1347,8 @@ interface RowItemData {
   onNavigateUp: () => void;
   onNavigateEntry: (entry: api.FsEntry) => void;
   nowMs: number;
-  dateColWidth: string;
   gridTemplateColumns: string;
+  hoverNamePad: number;
   selectedRoot: string | null;
   onAddToCollection?: (root: string, path: string, anchor: HTMLElement) => void;
 }
@@ -1394,6 +1372,7 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
     onNavigateEntry,
     nowMs,
     gridTemplateColumns,
+    hoverNamePad,
     selectedRoot,
     onAddToCollection,
   } = data;
@@ -1437,6 +1416,7 @@ const Row = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
       onMouseLeave={() => setHoveredIdx(null)}
       onClick={() => onNavigateEntry(displayEntry!)}
       gridTemplateColumns={gridTemplateColumns}
+      hoverNamePad={hoverNamePad}
       isMobile={isMobile}
       nowMs={nowMs}
       showRootColumn={false}
