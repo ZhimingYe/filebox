@@ -165,20 +165,23 @@ a:hover {
 }
 
 /*
- * Monaco find widget vs TextPreview toolbar.
+ * Monaco find widget stacking inside TextPreview.
  *
- * Monaco docks the find widget flush with the editor top (right under our
- * toolbar). Its default omnidirectional box-shadow bleeds upward into the
- * toolbar and makes the matches-count / meta look covered. Fix:
- *  - push the widget a few px into the editor (margin-top)
- *  - cast shadow downward only
- *  - restore a top border (Monaco omits it, assuming a title bar above)
- *  - don't clip the matches-count / action cluster
+ * Monaco's `.overlayWidgets` has no z-index, so the editor's `.view-lines`
+ * (text layer) can paint on top of the find widget and cover the
+ * matches-count / "No results" cluster — that's the "被上层遮住" bug.
+ * Lift the whole overlay layer above the scrollable text (minimap is z=5,
+ * scrollbar thumbs up to z=11).
  */
+.filebox-monaco-preview .monaco-editor .overflow-guard > .overlayWidgets {
+  z-index: 50;
+}
+.filebox-monaco-preview .monaco-editor .overflowingOverlayWidgets {
+  z-index: 50;
+}
 .filebox-monaco-preview .monaco-editor .find-widget {
   margin-top: 6px;
   overflow: visible;
-  z-index: 40;
   box-shadow: 0 4px 10px rgba(15, 23, 42, 0.12);
   border-top: 1px solid var(--vscode-widget-border, #e2e8f0);
 }

@@ -100,12 +100,12 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
 
   return (
     <div style={styles.monacoContainer}>
-      <div style={{ ...styles.codeToolbar, justifyContent: 'flex-start', position: 'relative', zIndex: 1 }}>
+      <div style={{ ...styles.codeToolbar, justifyContent: 'flex-start' }}>
         {/*
           Keep ALL toolbar chrome on the left. Monaco docks its find widget
-          at the editor's top-right; putting meta/actions on the right made
-          the widget look like it was covering the toolbar (edge-to-edge +
-          upward box-shadow). Left cluster + empty right = no 遮挡.
+          at the editor's top-right; leaving the right side empty avoids the
+          widget sitting under meta text. (Do not raise toolbar z-index —
+          that made the toolbar cover the find widget as an "upper layer".)
         */}
         <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0, minWidth: 0 }}>
           <button onClick={openFind} style={styles.toolBtn} title="Find (Ctrl/Cmd+F)">
