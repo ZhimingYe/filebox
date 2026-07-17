@@ -5,18 +5,21 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent,
 } from 'react';
 import { VariableSizeList as VList, type ListChildComponentProps } from 'react-window';
 import type { AgentInfo, SearchHit, SearchMode, WorkspaceSearchResult } from '../api/client';
 import { cancelRequest, friendlyMessage, workspaceSearch } from '../api/client';
+import { IconChevronRight } from './icons';
 import { useSse } from '../state/events';
 import { c, radius, font } from '../theme';
 
 /** Path header + border; context lines are fixed-pitch for VariableSizeList. */
-const HIT_PATH_H = 34;
-const HIT_LINE_H = 17;
-const HIT_CTX_PAD_Y = 16;
-const HIT_GAP = 8;
+const HIT_PATH_H = 32;
+const HIT_LINE_H = 18;
+const HIT_CTX_PAD_Y = 12;
+const HIT_GAP = 6;
+/** Card top + bottom border (1px each). */
 const HIT_BORDER = 2;
 
 function estimateHitHeight(hit: SearchHit): number {
@@ -210,6 +213,8 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
   const [slow, setSlow] = useState(false);
   const [progressText, setProgressText] = useState<string | null>(null);
   const [scannedLive, setScannedLive] = useState<number | null>(null);
+  /** Advanced filters stay collapsed by default — primary query row stays dominant. */
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const reqIdRef = useRef<string | null>(null);
   /** Client-generated nonce for the active search; binds SSE before req_id exists. */
@@ -486,34 +491,64 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     abortRef.current?.abort();
   }
 
+  const parsedExts = useMemo(
+    () =>
+      extensions
+        .split(/[,\s]+/)
+        .map((e) => e.trim().replace(/^\./, '').toLowerCase())
+        .filter(Boolean),
+    [extensions],
+  );
+  const parsedIgnore = useMemo(() => parseIgnoreList(ignoreText), [ignoreText]);
+  const parsedDepth = useMemo(() => parseMaxDepth(maxDepthText), [maxDepthText]);
+  const ctxLines = clampContext(contextLines);
+
+  /** Non-default filters — shown as a quiet count on the Options toggle. */
+  const activeOptionCount = useMemo(() => {
+    let n = 0;
+    if (parsedExts.length > 0) n += 1;
+    if (mode === 'content' && ctxLines !== DEFAULT_CONTEXT) n += 1;
+    if (parsedDepth != null) n += 1;
+    const defaultIgnore = DEFAULT_SEARCH_IGNORE.join(', ');
+    if (ignoreText.trim() !== defaultIgnore) n += 1;
+    return n;
+  }, [parsedExts.length, mode, ctxLines, parsedDepth, ignoreText]);
+
+  const onQueryKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && !loading) void runSearch();
+  };
+
   return (
     <div style={styles.container}>
-      <div style={styles.header}>
-        <h2 style={styles.title}>Search</h2>
-      </div>
+      <div style={styles.toolbar}>
+        <div
+          role="tablist"
+          aria-label="Search mode"
+          style={styles.modeSeg}
+        >
+          <ModeButton
+            active={mode === 'content'}
+            onClick={() => setMode('content')}
+            label="Content"
+            position="start"
+          />
+          <ModeButton
+            active={mode === 'find'}
+            onClick={() => setMode('find')}
+            label="Files"
+            position="end"
+          />
+        </div>
 
-      <div style={styles.modeRow}>
-        <ModeButton
-          active={mode === 'content'}
-          onClick={() => setMode('content')}
-          label="Content"
-        />
-        <ModeButton
-          active={mode === 'find'}
-          onClick={() => setMode('find')}
-          label="Files"
-        />
-      </div>
-
-      <div style={styles.controls}>
-        <div style={styles.form}>
-          <label style={styles.label}>
-            Root
+        <div style={styles.queryRow}>
+          <label style={styles.fieldRoot}>
+            <span style={styles.fieldCaption}>Root</span>
             <select
               value={root}
               onChange={(e) => setRoot(e.target.value)}
               style={styles.select}
               disabled={enabledRoots.length === 0 || loading}
+              aria-label="Search root"
             >
               {enabledRoots.length === 0 && <option value="">No roots</option>}
               {enabledRoots.map((r) => (
@@ -522,83 +557,38 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
             </select>
           </label>
 
-          <label style={{ ...styles.label, flex: '1.2 1 140px' }}>
-            Folder
+          <label style={styles.fieldFolder}>
+            <span style={styles.fieldCaption}>Folder</span>
             <input
               value={folder}
               onChange={(e) => setFolder(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-              placeholder="/ or ./src"
+              onKeyDown={onQueryKeyDown}
+              placeholder="/"
               style={styles.input}
               disabled={loading}
               autoCapitalize="off"
               autoCorrect="off"
               spellCheck={false}
+              aria-label="Folder under root"
+              title="Folder under the selected root (/ = root)"
             />
           </label>
 
-          <label style={{ ...styles.label, flex: '2 1 200px' }}>
-            {mode === 'find' ? 'Name contains' : 'Pattern (regex)'}
+          <label style={styles.fieldQuery}>
+            <span style={styles.fieldCaption}>
+              {mode === 'find' ? 'Name' : 'Pattern'}
+            </span>
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-              placeholder={mode === 'find' ? 'e.g. config' : 'e.g. TODO|FIXME'}
-              style={styles.input}
+              onKeyDown={onQueryKeyDown}
+              placeholder={mode === 'find' ? 'Filename contains…' : 'Regex pattern…'}
+              style={styles.inputQuery}
               disabled={loading}
               autoCapitalize="off"
               autoCorrect="off"
               spellCheck={false}
-            />
-          </label>
-
-          <label style={{ ...styles.label, flex: '1.4 1 160px' }}>
-            File types
-            <input
-              value={extensions}
-              onChange={(e) => setExtensions(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-              placeholder="e.g. rs, ts, py"
-              style={styles.input}
-              disabled={loading}
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-              aria-describedby="search-field-hints"
-            />
-          </label>
-
-          {mode === 'content' && (
-            <label style={{ ...styles.label, flex: '0 0 88px', minWidth: 88 }}>
-              Context
-              <input
-                type="number"
-                min={0}
-                max={MAX_CONTEXT}
-                value={contextLines}
-                onChange={(e) => setContextLines(clampContext(Number(e.target.value)))}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-                style={styles.input}
-                disabled={loading}
-                title={`Lines of context around each match (0–${MAX_CONTEXT})`}
-              />
-            </label>
-          )}
-
-          <label style={{ ...styles.label, flex: '0 0 96px', minWidth: 96 }}>
-            Max depth
-            <input
-              type="number"
-              min={0}
-              max={HARD_MAX_DEPTH}
-              value={maxDepthText}
-              onChange={(e) => setMaxDepthText(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-              placeholder="∞"
-              style={styles.input}
-              disabled={loading}
-              title="Max directory layers under the folder (1 = this folder only). Leave empty for unlimited."
-              aria-describedby="search-field-hints"
+              aria-label={mode === 'find' ? 'Filename contains' : 'Content regex pattern'}
             />
           </label>
 
@@ -616,84 +606,138 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           </button>
         </div>
 
-        <label style={styles.ignoreLabel}>
-          Ignore folders
-          <input
-            value={ignoreText}
-            onChange={(e) => setIgnoreText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-            placeholder="e.g. renv, venv, node_modules"
-            style={styles.input}
-            disabled={loading}
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-            aria-describedby="search-field-hints"
-          />
-        </label>
+        <div style={styles.optionsBar}>
+          <button
+            type="button"
+            onClick={() => setOptionsOpen((v) => !v)}
+            style={styles.optionsToggle}
+            aria-expanded={optionsOpen}
+            aria-controls="search-options-panel"
+          >
+            <IconChevronRight
+              style={{
+                width: 14,
+                height: 14,
+                flexShrink: 0,
+                transition: 'transform 0.15s',
+                transform: optionsOpen ? 'rotate(90deg)' : 'none',
+                color: c.textMuted,
+              }}
+            />
+            <span>Options</span>
+            {activeOptionCount > 0 && (
+              <span style={styles.optionsBadge}>{activeOptionCount}</span>
+            )}
+          </button>
 
-        {(() => {
-          const { dropped, truncated } = parseIgnoreList(ignoreText);
-          if (dropped <= 0 && !truncated) return null;
-          return (
-            <p style={styles.ignoreWarn} role="status">
-              {truncated
-                ? `Ignore text truncated to ${MAX_IGNORE_RAW_LEN.toLocaleString()} characters. `
-                : null}
-              {dropped > 0
-                ? <>
-                    Skipped {dropped} invalid ignore name{dropped === 1 ? '' : 's'}
-                    {' '}(no paths, globs, quotes, or control characters; max {MAX_IGNORE_NAME_LEN} chars,
-                    {' '}{MAX_IGNORE_NAMES} names).
-                  </>
-                : null}
-            </p>
-          );
-        })()}
-
-        <div id="search-field-hints" style={styles.fieldHints}>
-          <p style={styles.fieldHint}>
-            File types: extensions only — <code style={styles.code}>rs, ts, py</code>
-            {' '}(comma/space; case-insensitive). Not globs or full names.
-          </p>
-          <p style={styles.fieldHint}>
-            Ignore: single folder names only (exact match, pruned while walking).
-            No <code style={styles.code}>/</code>, globs, or quotes. Defaults cover common
-            package/venv trees. Clear to search everything. Saved per backend in this browser.
-          </p>
-          <p style={styles.fieldHint}>
-            Max depth: <code style={styles.code}>1</code> = this folder only,{' '}
-            <code style={styles.code}>2</code> = one level of subfolders, empty = unlimited.
-          </p>
+          {!optionsOpen && (
+            <div style={styles.scopeInline} title="Current search scope">
+              <code style={styles.code}>{root || '?'}:{normalizeFolderPath(folder)}</code>
+              <span style={styles.scopeDot}>·</span>
+              <span>{mode === 'content' ? `±${ctxLines}` : 'by name'}</span>
+              {parsedExts.length > 0 && (
+                <>
+                  <span style={styles.scopeDot}>·</span>
+                  <span>{parsedExts.map((e) => `.${e}`).join(' ')}</span>
+                </>
+              )}
+              {parsedDepth != null && (
+                <>
+                  <span style={styles.scopeDot}>·</span>
+                  <span>depth ≤ {parsedDepth}</span>
+                </>
+              )}
+              {parsedIgnore.names.length > 0 && (
+                <>
+                  <span style={styles.scopeDot}>·</span>
+                  <span>ignore {parsedIgnore.names.length}</span>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
-        <div style={styles.scopeHint}>
-          Scope: <code style={styles.code}>{root || '?'}:{normalizeFolderPath(folder)}</code>
-          {mode === 'content'
-            ? ` · content · ±${clampContext(contextLines)} lines`
-            : ' · by filename'}
-          {(() => {
-            const exts = extensions
-              .split(/[,\s]+/)
-              .map((e) => e.trim().replace(/^\./, '').toLowerCase())
-              .filter(Boolean);
-            return exts.length
-              ? <> · types <code style={styles.code}>{exts.map((e) => `.${e}`).join(' ')}</code></>
-              : ' · all types';
-          })()}
-          {(() => {
-            const { names } = parseIgnoreList(ignoreText);
-            return names.length
-              ? <> · ignore <code style={styles.code}>{names.slice(0, 6).join(', ')}{names.length > 6 ? '…' : ''}</code></>
-              : ' · no ignore';
-          })()}
-          {(() => {
-            const d = parseMaxDepth(maxDepthText);
-            return d != null
-              ? <> · depth ≤ <code style={styles.code}>{d}</code></>
-              : ' · unlimited depth';
-          })()}
-        </div>
+        {optionsOpen && (
+          <div id="search-options-panel" style={styles.optionsPanel}>
+            <div style={styles.optionsGrid}>
+              <label style={styles.optFieldGrow}>
+                <span style={styles.fieldCaption}>File types</span>
+                <input
+                  value={extensions}
+                  onChange={(e) => setExtensions(e.target.value)}
+                  onKeyDown={onQueryKeyDown}
+                  placeholder="rs, ts, py"
+                  style={styles.input}
+                  disabled={loading}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  title="Extensions only (comma/space). Not globs."
+                />
+              </label>
+
+              {mode === 'content' && (
+                <label style={styles.optFieldNarrow}>
+                  <span style={styles.fieldCaption}>Context</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={MAX_CONTEXT}
+                    value={contextLines}
+                    onChange={(e) => setContextLines(clampContext(Number(e.target.value)))}
+                    onKeyDown={onQueryKeyDown}
+                    style={styles.input}
+                    disabled={loading}
+                    title={`Lines of context around each match (0–${MAX_CONTEXT})`}
+                  />
+                </label>
+              )}
+
+              <label style={styles.optFieldNarrow}>
+                <span style={styles.fieldCaption}>Max depth</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={HARD_MAX_DEPTH}
+                  value={maxDepthText}
+                  onChange={(e) => setMaxDepthText(e.target.value)}
+                  onKeyDown={onQueryKeyDown}
+                  placeholder="∞"
+                  style={styles.input}
+                  disabled={loading}
+                  title="Directory layers under the folder (1 = this folder only). Empty = unlimited."
+                />
+              </label>
+            </div>
+
+            <label style={styles.ignoreLabel}>
+              <span style={styles.fieldCaption}>Ignore folders</span>
+              <input
+                value={ignoreText}
+                onChange={(e) => setIgnoreText(e.target.value)}
+                onKeyDown={onQueryKeyDown}
+                placeholder="renv, venv, node_modules"
+                style={styles.input}
+                disabled={loading}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                title="Exact folder names only (no paths or globs). Saved per backend."
+              />
+            </label>
+
+            {(parsedIgnore.dropped > 0 || parsedIgnore.truncated) && (
+              <p style={styles.ignoreWarn} role="status">
+                {parsedIgnore.truncated
+                  ? `Ignore text truncated to ${MAX_IGNORE_RAW_LEN.toLocaleString()} characters. `
+                  : null}
+                {parsedIgnore.dropped > 0
+                  ? `Skipped ${parsedIgnore.dropped} invalid ignore name${parsedIgnore.dropped === 1 ? '' : 's'}.`
+                  : null}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {loading && (
@@ -702,7 +746,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
             <span style={styles.progressSpin} aria-hidden />
             <span style={styles.progressLabel}>
               {progressText || 'Searching…'}
-              {scannedLive != null ? ` (${scannedLive.toLocaleString()} files)` : ''}
+              {scannedLive != null ? ` · ${scannedLive.toLocaleString()} files` : ''}
             </span>
             <button type="button" onClick={() => void handleCancel()} style={styles.cancelInline}>
               Cancel
@@ -710,7 +754,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           </div>
           {slow && (
             <div style={styles.slowNote}>
-              Still running. Switch views anytime; Cancel to stop.
+              Still running — switch views anytime, or Cancel to stop.
             </div>
           )}
         </div>
@@ -722,12 +766,15 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
         {result && !loading && (
           <div style={styles.resultsToolbar}>
             <div style={styles.meta}>
-              {filteredHits.length === result.hits.length
-                ? `${result.hits.length} hit${result.hits.length === 1 ? '' : 's'}`
-                : `${filteredHits.length} of ${result.hits.length} hits`}
-              {result.truncated ? ' (truncated)' : ''}
-              {' · '}
-              scanned {result.scanned}
+              <span style={styles.metaStrong}>
+                {filteredHits.length === result.hits.length
+                  ? `${result.hits.length} hit${result.hits.length === 1 ? '' : 's'}`
+                  : `${filteredHits.length} of ${result.hits.length}`}
+              </span>
+              {result.truncated ? <span style={styles.metaBadge}>truncated</span> : null}
+              <span style={styles.metaMuted}>
+                · scanned {result.scanned.toLocaleString()}
+              </span>
             </div>
             <input
               value={resultFilter}
@@ -738,26 +785,42 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
               autoCorrect="off"
               spellCheck={false}
               aria-label="Filter search results"
-              title="Static filter over path and context lines (does not re-run search)"
+              title="Filters the current result set (does not re-run search)"
             />
           </div>
         )}
 
         {result && result.hits.length === 0 && !error && !loading && (
-          <p style={styles.empty}>No matches in this folder.</p>
+          <div style={styles.emptyWrap}>
+            <p style={styles.emptyTitle}>No matches</p>
+            <p style={styles.emptyHint}>
+              {root || '?'}:{normalizeFolderPath(folder)}
+            </p>
+          </div>
         )}
 
         {!result && !loading && !error && (
-          <p style={styles.empty}>
-            Enter a pattern and click Search. Ignored folders are skipped during the walk,
-            so package trees do not inflate scanned counts.
-          </p>
+          <div style={styles.emptyWrap}>
+            <p style={styles.emptyTitle}>
+              {mode === 'find' ? 'Find files' : 'Search content'}
+            </p>
+            <p style={styles.emptyHint}>
+              {enabledRoots.length === 0
+                ? 'Add an enabled root before searching.'
+                : mode === 'find'
+                  ? 'Enter a name fragment and press Search.'
+                  : 'Enter a regex pattern and press Search.'}
+            </p>
+          </div>
         )}
 
         {showHitList && (
           <div ref={listBoxRef} style={styles.listBox}>
             {filteredHits.length === 0 ? (
-              <p style={styles.empty}>No hits match this filter.</p>
+              <div style={styles.emptyWrap}>
+                <p style={styles.emptyTitle}>No hits match this filter</p>
+                <p style={styles.emptyHint}>Clear the filter to see all results.</p>
+              </div>
             ) : (
               <VList
                 ref={listRef}
@@ -802,20 +865,30 @@ function ModeButton({
   active,
   onClick,
   label,
+  position,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
+  position: 'start' | 'end';
 }) {
+  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
       onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         ...styles.modeBtn,
-        background: active ? c.accentBg : c.bgSubtle,
-        color: active ? c.accent : c.textSecondary,
-        borderColor: active ? c.accent : c.border,
+        ...(position === 'start' ? styles.modeBtnStart : styles.modeBtnEnd),
+        ...(active
+          ? styles.modeBtnActive
+          : hovered
+            ? styles.modeBtnHover
+            : null),
       }}
     >
       {label}
@@ -837,17 +910,24 @@ function HitCardBody({
   hit: SearchHit;
   onOpen?: (root: string, path: string) => void;
 }) {
+  const [hovered, setHovered] = useState(false);
   const context = hit.context ?? [];
   return (
     <>
       <button
         type="button"
-        style={styles.hitPath}
+        style={{
+          ...styles.hitPath,
+          ...(hovered ? styles.hitPathHover : null),
+        }}
         onClick={() => onOpen?.(hit.root, parentDir(hit.path))}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         title="Open folder in Files"
       >
         <span style={styles.hitRoot}>{hit.root}</span>
-        <span style={styles.hitPathText}>{hit.path}</span>
+        <span style={styles.hitSep}>/</span>
+        <span style={styles.hitPathText}>{hit.path.replace(/^\//, '')}</span>
         {hit.line != null && <span style={styles.hitLine}>:{hit.line}</span>}
       </button>
       {context.length > 0 && (
@@ -857,13 +937,12 @@ function HitCardBody({
               key={`${line.line}:${idx}`}
               style={{
                 ...styles.contextLine,
-                background: line.is_match ? c.accentBg : 'transparent',
-                color: line.is_match ? c.text : c.textSecondary,
+                ...(line.is_match ? styles.contextMatch : null),
                 height: HIT_LINE_H,
               }}
             >
               <span style={styles.lineNo}>{line.line}</span>
-              <span style={styles.hitPathText}>{line.text}</span>
+              <span style={styles.contextText}>{line.text}</span>
             </div>
           ))}
         </pre>
@@ -879,77 +958,104 @@ const styles: Record<string, CSSProperties> = {
     height: '100%',
     minHeight: 0,
     overflow: 'hidden',
-    padding: '16px 24px 20px',
     boxSizing: 'border-box',
     fontFamily: font.sans,
+    background: c.bg,
   },
-  header: { marginBottom: 10, flexShrink: 0 },
-  title: {
-    margin: 0,
-    fontSize: 18,
-    fontWeight: 600,
-    color: c.text,
-  },
-  code: {
-    fontFamily: font.mono,
-    fontSize: 12,
-    background: c.bgMuted,
-    padding: '1px 5px',
-    borderRadius: 4,
-  },
-  modeRow: { display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', flexShrink: 0 },
-  modeBtn: {
-    border: `1px solid ${c.border}`,
-    borderRadius: radius.sm,
-    padding: '6px 12px',
-    fontSize: 13,
-    fontFamily: font.sans,
-    background: c.bgSubtle,
-  },
-  // Form + hints + scope stay content-sized at the top (never flex-grow).
-  controls: {
+  toolbar: {
     flexShrink: 0,
     display: 'flex',
     flexDirection: 'column',
-    gap: 8,
-    marginBottom: 12,
+    gap: 10,
+    padding: '10px 12px 12px',
+    borderBottom: `1px solid ${c.border}`,
+    background: c.bg,
   },
-  form: {
+  modeSeg: {
+    display: 'inline-flex',
+    alignSelf: 'flex-start',
+    borderRadius: radius.md,
+    border: `1px solid ${c.border}`,
+    overflow: 'hidden',
+    background: c.bgSubtle,
+  },
+  modeBtn: {
+    border: 'none',
+    borderRadius: 0,
+    padding: '5px 14px',
+    fontSize: 12,
+    fontWeight: 500,
+    fontFamily: font.sans,
+    background: 'transparent',
+    color: c.textSecondary,
+    cursor: 'pointer',
+    transition: 'background 0.12s, color 0.12s',
+    lineHeight: 1.2,
+  },
+  modeBtnStart: {
+    borderRight: `1px solid ${c.border}`,
+  },
+  modeBtnEnd: {},
+  modeBtnActive: {
+    background: c.accentBg,
+    color: c.accent,
+  },
+  modeBtnHover: {
+    background: c.bgMuted,
+    color: c.text,
+  },
+  queryRow: {
     display: 'flex',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 8,
     alignItems: 'end',
   },
-  label: {
+  fieldCaption: {
+    fontSize: 11,
+    fontWeight: 500,
+    color: c.textMuted,
+    letterSpacing: '0.02em',
+    textTransform: 'uppercase' as const,
+    lineHeight: 1,
+    marginBottom: 4,
+    display: 'block',
+  },
+  fieldRoot: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 4,
-    fontSize: 12,
-    color: c.textSecondary,
+    flex: '0 1 140px',
+    minWidth: 110,
+  },
+  fieldFolder: {
+    display: 'flex',
+    flexDirection: 'column',
+    flex: '0 1 160px',
     minWidth: 120,
-    flex: '1 1 120px',
   },
-  // Own row under the toolbar — width 100%, height content-only (no flex grow).
-  ignoreLabel: {
+  fieldQuery: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 4,
-    fontSize: 12,
-    color: c.textSecondary,
-    width: '100%',
-    maxWidth: 720,
-  },
-  ignoreWarn: {
-    margin: 0,
-    fontSize: 12,
-    color: c.warning,
-    lineHeight: 1.4,
-    maxWidth: 720,
+    flex: '1 1 220px',
+    minWidth: 160,
   },
   input: {
-    height: 34,
+    height: 32,
     border: `1px solid ${c.border}`,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
+    padding: '0 10px',
+    fontSize: 13,
+    fontFamily: font.mono,
+    color: c.text,
+    background: c.surface,
+    outline: 'none',
+    minWidth: 0,
+    width: '100%',
+    boxSizing: 'border-box',
+  },
+  inputQuery: {
+    height: 32,
+    border: `1px solid ${c.border}`,
+    borderRadius: radius.md,
     padding: '0 10px',
     fontSize: 13,
     fontFamily: font.mono,
@@ -961,62 +1067,141 @@ const styles: Record<string, CSSProperties> = {
     boxSizing: 'border-box',
   },
   select: {
-    height: 34,
+    height: 32,
     border: `1px solid ${c.border}`,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     padding: '0 8px',
     fontSize: 13,
     fontFamily: font.sans,
     color: c.text,
     background: c.surface,
+    width: '100%',
+    boxSizing: 'border-box',
   },
   searchBtn: {
-    height: 34,
+    height: 32,
     padding: '0 16px',
     border: 'none',
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     background: c.accent,
     color: c.onAccent,
     fontSize: 13,
-    fontWeight: 500,
+    fontWeight: 600,
     fontFamily: font.sans,
     flex: '0 0 auto',
+    alignSelf: 'end',
   },
   cancelBtn: {
-    height: 34,
+    height: 32,
     padding: '0 16px',
     border: `1px solid ${c.border}`,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     background: c.dangerBg,
     color: c.danger,
     fontSize: 13,
-    fontWeight: 500,
+    fontWeight: 600,
     fontFamily: font.sans,
     flex: '0 0 auto',
+    alignSelf: 'end',
     cursor: 'pointer',
   },
-  fieldHints: {
+  optionsBar: {
     display: 'flex',
-    flexDirection: 'column',
-    gap: 2,
-    maxWidth: 720,
+    alignItems: 'center',
+    gap: 10,
+    minWidth: 0,
+    flexWrap: 'wrap',
   },
-  fieldHint: {
-    margin: 0,
+  optionsToggle: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    border: 'none',
+    background: 'transparent',
+    color: c.textSecondary,
     fontSize: 12,
+    fontWeight: 500,
+    fontFamily: font.sans,
+    padding: '2px 0',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  optionsBadge: {
+    fontSize: 10,
+    fontWeight: 600,
+    color: c.accent,
+    background: c.accentBg,
+    borderRadius: radius.pill,
+    padding: '1px 6px',
+    lineHeight: '14px',
+    minWidth: 16,
+    textAlign: 'center',
+  },
+  scopeInline: {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 0,
+    fontSize: 11,
     color: c.textMuted,
     lineHeight: 1.4,
+    minWidth: 0,
+    overflow: 'hidden',
   },
-  scopeHint: {
-    fontSize: 12,
-    color: c.textMuted,
+  scopeDot: {
+    margin: '0 6px',
+    color: c.textFaint,
+  },
+  code: {
+    fontFamily: font.mono,
+    fontSize: 11,
+    background: c.bgMuted,
+    padding: '1px 5px',
+    borderRadius: 4,
+    color: c.textSecondary,
+  },
+  optionsPanel: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    padding: '10px 10px 8px',
+    borderRadius: radius.md,
+    background: c.bgSubtle,
+    border: `1px solid ${c.borderSubtle}`,
+  },
+  optionsGrid: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 8,
+    alignItems: 'end',
+  },
+  optFieldGrow: {
+    display: 'flex',
+    flexDirection: 'column',
+    flex: '1 1 180px',
+    minWidth: 140,
+  },
+  optFieldNarrow: {
+    display: 'flex',
+    flexDirection: 'column',
+    flex: '0 0 96px',
+    minWidth: 88,
+  },
+  ignoreLabel: {
+    display: 'flex',
+    flexDirection: 'column',
+    width: '100%',
+  },
+  ignoreWarn: {
+    margin: 0,
+    fontSize: 11,
+    color: c.warning,
     lineHeight: 1.4,
   },
   progressBox: {
     padding: '10px 12px',
-    borderRadius: radius.sm,
+    borderBottom: `1px solid ${c.border}`,
     background: c.accentBg,
-    marginBottom: 12,
     flexShrink: 0,
   },
   progressRow: {
@@ -1043,36 +1228,34 @@ const styles: Record<string, CSSProperties> = {
     border: `1px solid ${c.border}`,
     background: c.surface,
     color: c.danger,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     padding: '4px 10px',
     fontSize: 12,
     fontFamily: font.sans,
+    fontWeight: 500,
     cursor: 'pointer',
     flexShrink: 0,
   },
   slowNote: {
-    marginTop: 8,
+    marginTop: 6,
     fontSize: 12,
     color: c.textSecondary,
     lineHeight: 1.4,
   },
   error: {
     padding: '8px 12px',
-    borderRadius: radius.sm,
     background: c.dangerBg,
     color: c.danger,
     fontSize: 13,
-    marginBottom: 12,
+    borderBottom: `1px solid ${c.border}`,
     flexShrink: 0,
   },
-  // Results: toolbar stays put; listBox fills remaining height for virtualization.
   resultsPanel: {
     flex: 1,
     minHeight: 0,
     overflow: 'hidden',
     display: 'flex',
     flexDirection: 'column',
-    gap: 8,
   },
   resultsToolbar: {
     display: 'flex',
@@ -1080,38 +1263,80 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'center',
     gap: 10,
     flexShrink: 0,
+    padding: '8px 12px',
+    borderBottom: `1px solid ${c.borderSubtle}`,
+    background: c.bg,
   },
   meta: {
     fontSize: 12,
     color: c.textMuted,
     flex: '1 1 auto',
     minWidth: 140,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  metaStrong: {
+    color: c.textSecondary,
+    fontWeight: 600,
+  },
+  metaMuted: {
+    color: c.textMuted,
+  },
+  metaBadge: {
+    fontSize: 10,
+    fontWeight: 600,
+    color: c.warning,
+    background: c.warningBg,
+    borderRadius: radius.pill,
+    padding: '1px 6px',
+    lineHeight: '14px',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.03em',
   },
   filterInput: {
-    height: 30,
+    height: 28,
     border: `1px solid ${c.border}`,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     padding: '0 10px',
     fontSize: 12,
-    fontFamily: font.mono,
+    fontFamily: font.sans,
     color: c.text,
     background: c.surface,
     outline: 'none',
-    flex: '0 1 220px',
+    flex: '0 1 200px',
     minWidth: 140,
     boxSizing: 'border-box',
   },
-  empty: {
+  emptyWrap: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+    textAlign: 'center',
+  },
+  emptyTitle: {
     margin: 0,
+    fontSize: 14,
+    fontWeight: 600,
+    color: c.text,
+  },
+  emptyHint: {
+    margin: '6px 0 0',
     fontSize: 13,
     color: c.textMuted,
-    lineHeight: 1.45,
-    maxWidth: 520,
+    lineHeight: 1.4,
+    maxWidth: 360,
   },
   listBox: {
     flex: 1,
     minHeight: 0,
     overflow: 'hidden',
+    padding: '8px 12px 12px',
+    boxSizing: 'border-box',
   },
   hit: {
     border: `1px solid ${c.border}`,
@@ -1128,14 +1353,19 @@ const styles: Record<string, CSSProperties> = {
     boxSizing: 'border-box',
     textAlign: 'left',
     border: 'none',
-    background: c.bgSubtle,
+    borderBottom: `1px solid ${c.borderSubtle}`,
+    background: c.bg,
     padding: '0 12px',
-    fontSize: 13,
+    fontSize: 12,
     fontFamily: font.mono,
     color: c.text,
     cursor: 'pointer',
     gap: 0,
     minWidth: 0,
+    transition: 'background 0.1s',
+  },
+  hitPathHover: {
+    background: c.bgMuted,
   },
   hitPathText: {
     overflow: 'hidden',
@@ -1145,13 +1375,18 @@ const styles: Record<string, CSSProperties> = {
   },
   hitRoot: {
     color: c.accent,
-    marginRight: 6,
     fontWeight: 600,
+    flexShrink: 0,
+  },
+  hitSep: {
+    color: c.textFaint,
+    margin: '0 4px',
     flexShrink: 0,
   },
   hitLine: {
     color: c.textMuted,
     flexShrink: 0,
+    marginLeft: 2,
   },
   context: {
     margin: 0,
@@ -1160,21 +1395,35 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: font.mono,
     color: c.textSecondary,
     overflow: 'hidden',
+    background: c.bgSubtle,
   },
   contextLine: {
     display: 'flex',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
     padding: '0 12px',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     boxSizing: 'border-box',
+    borderLeft: '2px solid transparent',
+  },
+  contextMatch: {
+    background: c.accentBg,
+    color: c.text,
+    borderLeftColor: c.accent,
+  },
+  contextText: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    minWidth: 0,
   },
   lineNo: {
-    width: 40,
+    width: 36,
     flexShrink: 0,
     textAlign: 'right',
     color: c.textFaint,
     userSelect: 'none',
+    fontVariantNumeric: 'tabular-nums',
   },
 };
