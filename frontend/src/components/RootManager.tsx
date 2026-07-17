@@ -262,11 +262,8 @@ export function RootManager({ agentId, roots, onUpdate }: Props) {
       {/* ── Existing roots ──────────────────────────────────────────────── */}
       {roots.length === 0 ? (
         <div style={styles.empty}>
-          <p style={styles.emptyTitle}>No workspace roots yet</p>
-          <p style={styles.emptyBody}>
-            Add a named directory below. Only paths inside these roots can be
-            browsed — keep them as specific as practical.
-          </p>
+          <p style={styles.emptyTitle}>No roots</p>
+          <p style={styles.emptyBody}>Add a directory below.</p>
         </div>
       ) : (
         <ul style={styles.list} aria-label="Configured roots">
@@ -367,9 +364,7 @@ export function RootManager({ agentId, roots, onUpdate }: Props) {
         <div style={styles.addSectionHeader}>
           <h4 style={styles.addSectionTitle}>Add root</h4>
           <p style={styles.addSectionHint}>
-            Name is a short label shown in the browser. Path is on the agent
-            host — use <span style={styles.code}>~/…</span> for home-relative
-            paths or an absolute path.
+            Path: <span style={styles.code}>~/…</span> or absolute.
           </p>
         </div>
 

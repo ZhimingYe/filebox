@@ -952,7 +952,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
             {!selectedRoot && enabledRoots.length === 0 ? (
               <div style={styles.emptyState}>
                 <p style={styles.emptyText}>No roots configured.</p>
-                <p style={styles.emptyHint}>Go to Settings to add a root directory.</p>
+                <p style={styles.emptyHint}>Add a root in Settings.</p>
               </div>
             ) : error ? (
               <div style={styles.errorContainer}>

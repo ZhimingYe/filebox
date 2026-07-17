@@ -61,9 +61,6 @@ function IconAgentHero() {
 
 /**
  * Main-area empty state when no agent is selected.
- * Commercial products never leave a blank pane with a single muted line —
- * they explain context, show next steps, and (when possible) let the user
- * act without hunting the sidebar.
  */
 export function NoAgentSelected({
   agents,
@@ -88,8 +85,8 @@ export function NoAgentSelected({
             <h2 style={styles.title}>Select an agent</h2>
             <p style={styles.subtitle}>
               {onlineCount > 0
-                ? `${agents.length} machine${agents.length === 1 ? '' : 's'} available — pick one to browse files and system stats.`
-                : `${agents.length} agent${agents.length === 1 ? '' : 's'} registered, but none are online right now. You can still open Settings when one reconnects.`}
+                ? `${agents.length} available`
+                : `${agents.length} registered · none online`}
             </p>
 
             <ul style={styles.agentList} aria-label="Available agents">
@@ -128,7 +125,7 @@ export function NoAgentSelected({
                 onClick={onOpenSidebar}
                 style={styles.secondaryBtn}
               >
-                Or open the sidebar
+                Open sidebar
               </button>
             )}
           </>
@@ -136,34 +133,8 @@ export function NoAgentSelected({
           <>
             <h2 style={styles.title}>No agents connected</h2>
             <p style={styles.subtitle}>
-              Start an agent on the machine you want to browse. It will appear
-              here and in the sidebar.
+              Point an agent at this hub with a valid token.
             </p>
-
-            <ol style={styles.steps}>
-              <li style={styles.step}>
-                <span style={styles.stepNum}>1</span>
-                <span style={styles.stepBody}>
-                  <strong style={styles.stepStrong}>Start an agent</strong>
-                  {' '}on the machine you want to browse, pointed at this hub
-                  with a valid agent token.
-                </span>
-              </li>
-              <li style={styles.step}>
-                <span style={styles.stepNum}>2</span>
-                <span style={styles.stepBody}>
-                  <strong style={styles.stepStrong}>Wait for connect</strong>
-                  {' '}until it shows up in the list.
-                </span>
-              </li>
-              <li style={styles.step}>
-                <span style={styles.stepNum}>3</span>
-                <span style={styles.stepBody}>
-                  <strong style={styles.stepStrong}>Select it</strong>
-                  {' '}to open files, roots, and system stats.
-                </span>
-              </li>
-            </ol>
 
             {isMobile && onOpenSidebar && (
               <button
@@ -292,44 +263,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: c.textFaint,
     fontSize: 13,
     flexShrink: 0,
-  },
-
-  steps: {
-    listStyle: 'none',
-    margin: '20px 0 0',
-    padding: 0,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12,
-  },
-  step: {
-    display: 'flex',
-    alignItems: 'flex-start',
-    gap: 12,
-  },
-  stepNum: {
-    flexShrink: 0,
-    width: 22,
-    height: 22,
-    borderRadius: radius.pill,
-    background: c.bgMuted,
-    color: c.textSecondary,
-    fontSize: 11.5,
-    fontWeight: 600,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 1,
-  },
-  stepBody: {
-    fontSize: 13,
-    lineHeight: 1.45,
-    color: c.textSecondary,
-    minWidth: 0,
-  },
-  stepStrong: {
-    color: c.text,
-    fontWeight: 600,
   },
 
   primaryBtn: {
