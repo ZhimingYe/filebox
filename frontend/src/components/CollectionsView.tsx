@@ -480,7 +480,7 @@ const styles: Record<string, React.CSSProperties> = {
   btnPrimary: {
     padding: '6px 14px', borderRadius: radius.sm, border: 'none',
     background: c.accent, color: c.onAccent, cursor: 'pointer', fontSize: 13,
-    fontFamily: font.sans, fontWeight: 600,
+    fontFamily: font.sans, fontWeight: 600, marginTop: 28,
   },
   btnDanger: {
     padding: '4px 10px', borderRadius: radius.sm, border: `1px solid ${c.border}`,
@@ -494,14 +494,14 @@ const styles: Record<string, React.CSSProperties> = {
   newBar: {
     display: 'flex', gap: 8, padding: '6px 12px', borderBottom: `1px solid ${c.border}`,
   },
-  newRow: { display: 'flex', gap: 8, marginTop: 12 },
+  newRow: { display: 'flex', gap: 8, marginTop: 28 },
   input: {
     flex: 1, fontSize: 13, padding: '6px 8px', borderRadius: radius.sm,
     border: `1px solid ${c.border}`, background: c.bgSubtle, color: c.text,
     fontFamily: font.sans,
   },
   errorBar: { fontSize: 12, color: c.danger, padding: '6px 12px' },
-  errorText: { fontSize: 12, color: c.danger, marginTop: 8 },
+  errorText: { fontSize: 12, color: c.danger, marginTop: 12 },
   emptyWrap: {
     flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
     justifyContent: 'center', padding: 24, textAlign: 'center',
