@@ -139,14 +139,6 @@ pub async fn workspace_search_handler(
             );
         }
     }
-    if body.ignore.len() > MAX_IGNORE_NAMES {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "too many ignore names (max 128)",
-            false,
-        );
-    }
     let ignore = match normalize_ignore_names(&body.ignore) {
         Ok(list) => list,
         Err(msg) => {
@@ -324,29 +316,56 @@ fn path_has_dotdot(path: &str) -> bool {
     path.split(['/', '\\']).any(|part| part == "..")
 }
 
-fn normalize_ignore_names(names: &[String]) -> Result<Vec<String>, &'static str> {
-    let mut out = Vec::with_capacity(names.len());
-    for raw in names {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.len() > MAX_IGNORE_NAME_LEN {
-            return Err("ignore name too long (max 128)");
-        }
-        if trimmed.contains('\0') || trimmed.contains('/') || trimmed.contains('\\') {
+/// Validate one path-component ignore name (exact match, not a glob).
+fn validate_ignore_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err("invalid ignore name");
+    }
+    if name.len() > MAX_IGNORE_NAME_LEN {
+        return Err("ignore name too long (max 128)");
+    }
+    for ch in name.chars() {
+        if ch == '/' || ch == '\\' {
             return Err("ignore names must be single path components (no slashes)");
         }
-        let cleaned = trimmed.trim_matches(['/', '\\']);
-        if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
-            return Err("invalid ignore name");
+        if ch == '\0' || ch.is_control() {
+            return Err("ignore names must not contain control characters");
         }
-        if !out
+        // Matching is exact component equality — reject glob/shell metacharacters
+        // so users are not surprised that `*.o` does nothing useful.
+        if matches!(
+            ch,
+            '*' | '?' | '[' | ']' | '{' | '}' | '"' | '\'' | '`' | '<' | '>' | '|'
+        ) {
+            return Err(
+                "ignore names must not contain glob or shell metacharacters (* ? [ ] { } quotes | < >)",
+            );
+        }
+    }
+    Ok(())
+}
+
+fn normalize_ignore_names(names: &[String]) -> Result<Vec<String>, &'static str> {
+    if names.len() > MAX_IGNORE_NAMES {
+        return Err("too many ignore names (max 128)");
+    }
+    let mut out = Vec::with_capacity(names.len().min(MAX_IGNORE_NAMES));
+    for raw in names {
+        let cleaned = raw.trim().trim_matches(['/', '\\']);
+        if cleaned.is_empty() {
+            continue;
+        }
+        validate_ignore_name(cleaned)?;
+        if out
             .iter()
             .any(|existing: &String| existing.eq_ignore_ascii_case(cleaned))
         {
-            out.push(cleaned.to_string());
+            continue;
         }
+        if out.len() >= MAX_IGNORE_NAMES {
+            return Err("too many ignore names (max 128)");
+        }
+        out.push(cleaned.to_string());
     }
     Ok(out)
 }
@@ -394,14 +413,56 @@ mod tests {
             "venv".into(),
             "renv".into(),
             "".into(),
+            "venv/".into(),
         ])
         .unwrap();
         assert_eq!(list, vec!["venv".to_string(), "renv".to_string()]);
     }
 
     #[test]
-    fn normalize_ignore_names_rejects_paths() {
+    fn normalize_ignore_names_rejects_paths_and_dotdot() {
         assert!(normalize_ignore_names(&["a/b".into()]).is_err());
         assert!(normalize_ignore_names(&["..".into()]).is_err());
+        assert!(normalize_ignore_names(&[".".into()]).is_err());
+        assert!(normalize_ignore_names(&[r"a\b".into()]).is_err());
+    }
+
+    #[test]
+    fn normalize_ignore_names_rejects_controls_and_metacharacters() {
+        assert!(normalize_ignore_names(&["venv\0x".into()]).is_err());
+        assert!(normalize_ignore_names(&["foo\nbar".into()]).is_err());
+        assert!(normalize_ignore_names(&["*.o".into()]).is_err());
+        assert!(normalize_ignore_names(&["foo?".into()]).is_err());
+        assert!(normalize_ignore_names(&["{dist,build}".into()]).is_err());
+        assert!(normalize_ignore_names(&["a\"b".into()]).is_err());
+        assert!(normalize_ignore_names(&["a|b".into()]).is_err());
+    }
+
+    #[test]
+    fn normalize_ignore_names_allows_common_dir_names() {
+        let list = normalize_ignore_names(&[
+            ".venv".into(),
+            "node_modules".into(),
+            "__pycache__".into(),
+            ".cache".into(),
+            "目标".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            list,
+            vec![
+                ".venv".to_string(),
+                "node_modules".to_string(),
+                "__pycache__".to_string(),
+                ".cache".to_string(),
+                "目标".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_ignore_names_rejects_too_many() {
+        let names: Vec<String> = (0..129).map(|i| format!("d{i}")).collect();
+        assert!(normalize_ignore_names(&names).is_err());
     }
 }

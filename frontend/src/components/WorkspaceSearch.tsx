@@ -73,6 +73,12 @@ const IGNORE_STORAGE_KEY = 'filebox.search.ignore';
 const DEPTH_STORAGE_KEY = 'filebox.search.maxDepth';
 /** Soft UI cap; hub clamps to 256. Empty / 0 = unlimited. */
 const HARD_MAX_DEPTH = 256;
+/** Keep in sync with hub `search_proxy` caps. */
+const MAX_IGNORE_NAMES = 128;
+const MAX_IGNORE_NAME_LEN = 128;
+/** Exact-name ignore — reject path/glob/shell/control edge characters. */
+const IGNORE_META_RE = /[/*?\[\]{}\\"'`<>|\0]/;
+const IGNORE_CONTROL_RE = /\p{Cc}/u;
 
 function loadStoredIgnore(): string {
   try {
@@ -94,15 +100,33 @@ function loadStoredMaxDepth(): string {
   return '';
 }
 
-function parseIgnoreList(raw: string): string[] {
+function isValidIgnoreName(name: string): boolean {
+  if (!name || name === '.' || name === '..') return false;
+  if (name.length > MAX_IGNORE_NAME_LEN) return false;
+  if (IGNORE_META_RE.test(name)) return false;
+  if (IGNORE_CONTROL_RE.test(name)) return false;
+  return true;
+}
+
+/** Parse ignore text into names; invalid tokens are dropped (not sent to hub). */
+function parseIgnoreList(raw: string): { names: string[]; dropped: number } {
   const out: string[] = [];
+  let dropped = 0;
   for (const part of raw.split(/[,\s]+/)) {
     const name = part.trim().replace(/^\/+|\/+$/g, '');
-    if (!name || name === '.' || name === '..') continue;
-    if (name.includes('/') || name.includes('\\')) continue;
-    if (!out.some((x) => x.toLowerCase() === name.toLowerCase())) out.push(name);
+    if (!name) continue;
+    if (!isValidIgnoreName(name)) {
+      dropped += 1;
+      continue;
+    }
+    if (out.some((x) => x.toLowerCase() === name.toLowerCase())) continue;
+    if (out.length >= MAX_IGNORE_NAMES) {
+      dropped += 1;
+      continue;
+    }
+    out.push(name);
   }
-  return out;
+  return { names: out, dropped };
 }
 
 function parseMaxDepth(raw: string): number | null {
@@ -344,7 +368,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     }, 8000);
 
     const ctx = clampContext(contextLines);
-    const ignore = parseIgnoreList(ignoreText);
+    const { names: ignore } = parseIgnoreList(ignoreText);
     const maxDepth = parseMaxDepth(maxDepthText);
     try {
       localStorage.setItem(IGNORE_STORAGE_KEY, ignoreText);
@@ -578,15 +602,27 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           />
         </label>
 
+        {(() => {
+          const { dropped } = parseIgnoreList(ignoreText);
+          if (dropped <= 0) return null;
+          return (
+            <p style={styles.ignoreWarn} role="status">
+              Skipped {dropped} invalid ignore name{dropped === 1 ? '' : 's'}
+              {' '}(no paths, globs, quotes, or control characters; max {MAX_IGNORE_NAME_LEN} chars,
+              {' '}{MAX_IGNORE_NAMES} names).
+            </p>
+          );
+        })()}
+
         <div id="search-field-hints" style={styles.fieldHints}>
           <p style={styles.fieldHint}>
             File types: extensions only — <code style={styles.code}>rs, ts, py</code>
             {' '}(comma/space; case-insensitive). Not globs or full names.
           </p>
           <p style={styles.fieldHint}>
-            Ignore: folder names pruned while walking (subtrees are never scanned).
-            Defaults cover common package/venv trees. Clear to search everything.
-            Saved in this browser.
+            Ignore: single folder names only (exact match, pruned while walking).
+            No <code style={styles.code}>/</code>, globs, or quotes. Defaults cover common
+            package/venv trees. Clear to search everything. Saved in this browser.
           </p>
           <p style={styles.fieldHint}>
             Max depth: <code style={styles.code}>1</code> = this folder only,{' '}
@@ -609,7 +645,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
               : ' · all types';
           })()}
           {(() => {
-            const names = parseIgnoreList(ignoreText);
+            const { names } = parseIgnoreList(ignoreText);
             return names.length
               ? <> · ignore <code style={styles.code}>{names.slice(0, 6).join(', ')}{names.length > 6 ? '…' : ''}</code></>
               : ' · no ignore';
@@ -871,6 +907,13 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 12,
     color: c.textSecondary,
     width: '100%',
+    maxWidth: 720,
+  },
+  ignoreWarn: {
+    margin: 0,
+    fontSize: 12,
+    color: c.warning,
+    lineHeight: 1.4,
     maxWidth: 720,
   },
   input: {
