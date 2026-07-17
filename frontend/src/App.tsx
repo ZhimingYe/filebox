@@ -821,17 +821,18 @@ export default function App() {
               <div
                 style={{
                   ...(isMobile ? styles.mobileFilesLayout : styles.splitViewShell),
-                  ...(view !== 'files' ? styles.filesViewHidden : {}),
+                  // Hide the Files shell when another view is active, and on
+                  // mobile while the full-screen preview is open. Keeping the
+                  // shell as a flex:1 sibling of mobilePreviewWrap would leave
+                  // the preview stuck in the right half of contentArea.
+                  ...(view !== 'files' || (isMobile && showMobilePreview)
+                    ? styles.filesViewHidden
+                    : {}),
                 }}
               >
                 {isMobile ? (
                   <>
-                    <div
-                      style={{
-                        ...styles.mobileFileWrap,
-                        display: showMobilePreview ? 'none' : 'flex',
-                      }}
-                    >
+                    <div style={styles.mobileFileWrap}>
                       <FileBrowser
                         agentId={selectedAgent.id}
                         roots={selectedAgent.roots}
@@ -1383,8 +1384,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   previewPath: { color: c.textMuted, fontSize: 12, fontFamily: font.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 },
   // ── Mobile file/preview ──
-  mobileFileWrap: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
-  mobilePreviewWrap: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+  mobileFileWrap: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, minHeight: 0 },
+  // Full-bleed sibling of the Files shell inside contentArea (row flex).
+  // When open, the Files shell is display:none so this expands to 100% width.
+  mobilePreviewWrap: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, minHeight: 0 },
   // ── Progress toasts ──
   progressToast: {
     position: 'fixed', bottom: 16, right: 16, zIndex: 1000,
