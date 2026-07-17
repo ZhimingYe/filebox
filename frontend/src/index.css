@@ -163,3 +163,11 @@ a:hover {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* TextPreview (Monaco) is read-only; the floating find widget is disabled
+   (see TextPreview.tsx) but keep this as a belt-and-suspenders visual hide
+   in case it's ever triggered through a path we didn't intercept (e.g. the
+   right-click context menu), since it can render on top of our toolbar. */
+.filebox-monaco-preview .find-widget {
+  display: none !important;
+}

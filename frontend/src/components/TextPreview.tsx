@@ -89,13 +89,14 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
   const totalLines = raw.split('\n').length;
   const lang = extToLang[ext] || 'plaintext';
 
-  const handleMount: OnMount = (ed) => {
+  const handleMount: OnMount = (ed, monacoInstance) => {
     editorRef.current = ed;
     ed.updateOptions({ wordWrap: wrap ? 'on' : 'off' });
-  };
-
-  const openFind = () => {
-    void editorRef.current?.getAction('actions.find')?.run();
+    // The floating find widget adds little value in a read-only viewer and
+    // visually collides with our own toolbar, so keep it from ever opening
+    // (Ctrl/Cmd+F, right-click menu) — see the `.find-widget` CSS override
+    // below for the belt-and-suspenders visual hide.
+    ed.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyF, () => {});
   };
 
   return (
@@ -105,16 +106,13 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
           {totalLines.toLocaleString()} lines · {raw.length.toLocaleString()} chars · {lang}
         </span>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <button onClick={openFind} style={styles.toolBtn} title="Find (Ctrl/Cmd+F)">
-            Find
-          </button>
           <button onClick={toggleWrap} style={styles.toolBtn}>
             {wrap ? 'Wrap: On' : 'Wrap: Off'}
           </button>
           <CopyButton text={raw} />
         </div>
       </div>
-      <div style={styles.monacoEditorHost}>
+      <div style={styles.monacoEditorHost} className="filebox-monaco-preview">
         <Editor
           height="100%"
           language={lang}
@@ -139,15 +137,10 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
             quickSuggestions: false,
             suggestOnTriggerCharacters: false,
             parameterHints: { enabled: false },
-            // Read-only viewer: hover tooltips add little value and can sit
-            // under the Find widget / toolbar, so keep them off.
+            // Read-only viewer: hover tooltips add little value here, so
+            // keep them off (see also the disabled find widget below).
             hover: { enabled: false },
             links: true,
-            find: {
-              addExtraSpaceOnTop: false,
-              autoFindInSelection: 'never',
-              seedSearchStringFromSelection: 'selection',
-            },
             // Read-only: hide the cursor caret blink noise; selection still works.
             cursorStyle: 'line-thin',
             overviewRulerLanes: 0,
