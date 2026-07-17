@@ -69,31 +69,44 @@ const DEFAULT_SEARCH_IGNORE = [
   '.gradle',
   '.pixi',
 ];
-const IGNORE_STORAGE_KEY = 'filebox.search.ignore';
-const DEPTH_STORAGE_KEY = 'filebox.search.maxDepth';
 /** Soft UI cap; hub clamps to 256. Empty / 0 = unlimited. */
 const HARD_MAX_DEPTH = 256;
 /** Keep in sync with hub `search_proxy` caps. */
 const MAX_IGNORE_NAMES = 128;
 const MAX_IGNORE_NAME_LEN = 128;
+/** Cap raw ignore field / localStorage size before parse. */
+const MAX_IGNORE_RAW_LEN = 8192;
 /** Exact-name ignore — reject path/glob/shell/control edge characters. */
 const IGNORE_META_RE = /[/*?\[\]{}\\"'`<>|\0]/;
 const IGNORE_CONTROL_RE = /\p{Cc}/u;
 
-function loadStoredIgnore(): string {
+function ignoreStorageKey(agentId: string): string {
+  return `filebox.search.ignore.${agentId}`;
+}
+
+function depthStorageKey(agentId: string): string {
+  return `filebox.search.maxDepth.${agentId}`;
+}
+
+function loadStoredIgnore(agentId: string): string {
   try {
-    const raw = localStorage.getItem(IGNORE_STORAGE_KEY);
-    if (raw != null) return raw;
+    const specific = localStorage.getItem(ignoreStorageKey(agentId));
+    if (specific != null) return specific;
+    // Migrate once from the pre-per-agent key.
+    const legacy = localStorage.getItem('filebox.search.ignore');
+    if (legacy != null) return legacy;
   } catch {
     /* private mode / blocked storage */
   }
   return DEFAULT_SEARCH_IGNORE.join(', ');
 }
 
-function loadStoredMaxDepth(): string {
+function loadStoredMaxDepth(agentId: string): string {
   try {
-    const raw = localStorage.getItem(DEPTH_STORAGE_KEY);
-    if (raw != null) return raw;
+    const specific = localStorage.getItem(depthStorageKey(agentId));
+    if (specific != null) return specific;
+    const legacy = localStorage.getItem('filebox.search.maxDepth');
+    if (legacy != null) return legacy;
   } catch {
     /* ignore */
   }
@@ -109,10 +122,16 @@ function isValidIgnoreName(name: string): boolean {
 }
 
 /** Parse ignore text into names; invalid tokens are dropped (not sent to hub). */
-function parseIgnoreList(raw: string): { names: string[]; dropped: number } {
+function parseIgnoreList(raw: string): {
+  names: string[];
+  dropped: number;
+  truncated: boolean;
+} {
+  const truncated = raw.length > MAX_IGNORE_RAW_LEN;
+  const text = truncated ? raw.slice(0, MAX_IGNORE_RAW_LEN) : raw;
   const out: string[] = [];
   let dropped = 0;
-  for (const part of raw.split(/[,\s]+/)) {
+  for (const part of text.split(/[,\s]+/)) {
     const name = part.trim().replace(/^\/+|\/+$/g, '');
     if (!name) continue;
     if (!isValidIgnoreName(name)) {
@@ -126,7 +145,7 @@ function parseIgnoreList(raw: string): { names: string[]; dropped: number } {
     }
     out.push(name);
   }
-  return { names: out, dropped };
+  return { names: out, dropped, truncated };
 }
 
 function parseMaxDepth(raw: string): number | null {
@@ -178,8 +197,8 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
   const [query, setQuery] = useState('');
   const [extensions, setExtensions] = useState('');
   const [contextLines, setContextLines] = useState(DEFAULT_CONTEXT);
-  const [ignoreText, setIgnoreText] = useState(loadStoredIgnore);
-  const [maxDepthText, setMaxDepthText] = useState(loadStoredMaxDepth);
+  const [ignoreText, setIgnoreText] = useState(() => loadStoredIgnore(agent.id));
+  const [maxDepthText, setMaxDepthText] = useState(() => loadStoredMaxDepth(agent.id));
   const [result, setResult] = useState<WorkspaceSearchResult | null>(null);
   /** Client-side filter over the last result set (does not re-query the agent). */
   const [resultFilter, setResultFilter] = useState('');
@@ -238,6 +257,8 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     setScannedLive(null);
     setQuery('');
     setFolder('/');
+    setIgnoreText(loadStoredIgnore(agent.id));
+    setMaxDepthText(loadStoredMaxDepth(agent.id));
     if (prevReq && prevAgent && prevAgent !== agent.id) {
       void cancelRequest(prevAgent, prevReq).catch(() => {});
     }
@@ -250,6 +271,8 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     return hits.filter((h) => hitMatchesFilter(h, resultFilter));
   }, [result, resultFilter]);
 
+  const showHitList = Boolean(result && result.hits.length > 0 && !loading);
+
   const getHitSize = useCallback(
     (index: number) => estimateHitHeight(filteredHits[index]!),
     [filteredHits],
@@ -259,7 +282,9 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     listRef.current?.resetAfterIndex(0, true);
   }, [filteredHits]);
 
+  // Re-attach when the list box mounts (including after filter-to-zero → back).
   useEffect(() => {
+    if (!showHitList) return;
     const el = listBoxRef.current;
     if (!el) return;
     let raf = 0;
@@ -271,11 +296,16 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
       });
     });
     obs.observe(el);
+    // Immediate measure in case ResizeObserver is slow on remount.
+    const rect = el.getBoundingClientRect();
+    if (rect.height > 0) {
+      setListHeight((prev) => (Math.abs(prev - rect.height) < 1 ? prev : Math.max(120, rect.height)));
+    }
     return () => {
       cancelAnimationFrame(raf);
       obs.disconnect();
     };
-  }, [result]);
+  }, [showHitList]);
 
   // True unmount (logout / deselect agent): stop the worker.
   useEffect(() => () => {
@@ -371,8 +401,12 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     const { names: ignore } = parseIgnoreList(ignoreText);
     const maxDepth = parseMaxDepth(maxDepthText);
     try {
-      localStorage.setItem(IGNORE_STORAGE_KEY, ignoreText);
-      localStorage.setItem(DEPTH_STORAGE_KEY, maxDepthText);
+      const ignoreToStore =
+        ignoreText.length > MAX_IGNORE_RAW_LEN
+          ? ignoreText.slice(0, MAX_IGNORE_RAW_LEN)
+          : ignoreText;
+      localStorage.setItem(ignoreStorageKey(agent.id), ignoreToStore);
+      localStorage.setItem(depthStorageKey(agent.id), maxDepthText);
     } catch {
       /* ignore */
     }
@@ -603,13 +637,20 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
         </label>
 
         {(() => {
-          const { dropped } = parseIgnoreList(ignoreText);
-          if (dropped <= 0) return null;
+          const { dropped, truncated } = parseIgnoreList(ignoreText);
+          if (dropped <= 0 && !truncated) return null;
           return (
             <p style={styles.ignoreWarn} role="status">
-              Skipped {dropped} invalid ignore name{dropped === 1 ? '' : 's'}
-              {' '}(no paths, globs, quotes, or control characters; max {MAX_IGNORE_NAME_LEN} chars,
-              {' '}{MAX_IGNORE_NAMES} names).
+              {truncated
+                ? `Ignore text truncated to ${MAX_IGNORE_RAW_LEN.toLocaleString()} characters. `
+                : null}
+              {dropped > 0
+                ? <>
+                    Skipped {dropped} invalid ignore name{dropped === 1 ? '' : 's'}
+                    {' '}(no paths, globs, quotes, or control characters; max {MAX_IGNORE_NAME_LEN} chars,
+                    {' '}{MAX_IGNORE_NAMES} names).
+                  </>
+                : null}
             </p>
           );
         })()}
@@ -622,7 +663,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           <p style={styles.fieldHint}>
             Ignore: single folder names only (exact match, pruned while walking).
             No <code style={styles.code}>/</code>, globs, or quotes. Defaults cover common
-            package/venv trees. Clear to search everything. Saved in this browser.
+            package/venv trees. Clear to search everything. Saved per backend in this browser.
           </p>
           <p style={styles.fieldHint}>
             Max depth: <code style={styles.code}>1</code> = this folder only,{' '}
@@ -710,10 +751,6 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           <p style={styles.empty}>No matches in this folder.</p>
         )}
 
-        {result && result.hits.length > 0 && filteredHits.length === 0 && !loading && (
-          <p style={styles.empty}>No hits match this filter.</p>
-        )}
-
         {!result && !loading && !error && (
           <p style={styles.empty}>
             Enter a pattern and click Search. Ignored folders are skipped during the walk,
@@ -721,22 +758,26 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           </p>
         )}
 
-        {result && filteredHits.length > 0 && !loading && (
+        {showHitList && (
           <div ref={listBoxRef} style={styles.listBox}>
-            <VList
-              ref={listRef}
-              height={listHeight}
-              width="100%"
-              itemCount={filteredHits.length}
-              itemSize={getHitSize}
-              itemKey={(index) => {
-                const h = filteredHits[index]!;
-                return `${h.root}:${h.path}:${h.line ?? 0}:${index}`;
-              }}
-              itemData={{ hits: filteredHits, onOpen: onOpenFile }}
-            >
-              {VirtualHitRow}
-            </VList>
+            {filteredHits.length === 0 ? (
+              <p style={styles.empty}>No hits match this filter.</p>
+            ) : (
+              <VList
+                ref={listRef}
+                height={listHeight}
+                width="100%"
+                itemCount={filteredHits.length}
+                itemSize={getHitSize}
+                itemKey={(index) => {
+                  const h = filteredHits[index]!;
+                  return `${h.root}:${h.path}:${h.line ?? 0}:${index}`;
+                }}
+                itemData={{ hits: filteredHits, onOpen: onOpenFile }}
+              >
+                {VirtualHitRow}
+              </VList>
+            )}
           </div>
         )}
       </div>

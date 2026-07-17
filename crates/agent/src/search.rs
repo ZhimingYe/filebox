@@ -976,6 +976,39 @@ mod tests {
         assert!(!deeper_paths.iter().any(|p| p.ends_with("deep.txt")));
     }
 
+
+    #[test]
+    fn ignore_still_applies_when_folder_is_ignored_name() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("node_modules/pkg")).unwrap();
+        fs::write(dir.path().join("node_modules/pkg/lib.js"), "NEEDLE").unwrap();
+        fs::write(dir.path().join("app.js"), "NEEDLE").unwrap();
+
+        let roots = vec![root("ws", dir.path().to_path_buf())];
+        let result = run_search(
+            &roots,
+            SearchParams {
+                mode: SearchMode::Content,
+                root: "ws".into(),
+                path: "/node_modules".into(),
+                query: "NEEDLE".into(),
+                extensions: vec![],
+                max_results: Some(20),
+                context: Some(0),
+                ignore: vec!["node_modules".into()],
+                max_depth: None,
+                cancel: None,
+                on_progress: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            result.hits.is_empty(),
+            "explicit folder under an ignored name must still be pruned, got {:?}",
+            result.hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn cancel_flag_stops_inside_large_file() {
         let dir = tempdir().unwrap();

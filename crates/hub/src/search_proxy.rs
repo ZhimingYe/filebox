@@ -113,11 +113,20 @@ pub async fn workspace_search_handler(
             false,
         );
     }
-    if body.query.len() > 512 {
+    let query = body.query.trim().to_string();
+    if query.len() > 512 {
         return error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             "query exceeds 512 characters",
+            false,
+        );
+    }
+    if body.mode == SearchMode::Content && query.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "content search requires a non-empty query",
             false,
         );
     }
@@ -197,7 +206,7 @@ pub async fn workspace_search_handler(
         mode: body.mode,
         root: body.root.trim().to_string(),
         path,
-        query: body.query,
+        query,
         extensions: body.extensions,
         max_results: body.max_results,
         context: body.context,
