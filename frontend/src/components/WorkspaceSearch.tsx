@@ -490,10 +490,6 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     <div style={styles.container}>
       <div style={styles.header}>
         <h2 style={styles.title}>Search</h2>
-        <p style={styles.subtitle}>
-          Search file contents or find files by name under a root. Runs on the agent —
-          no extra tools required on the remote machine.
-        </p>
       </div>
 
       <div style={styles.modeRow}>
@@ -714,7 +710,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           </div>
           {slow && (
             <div style={styles.slowNote}>
-              Still running — you can switch to Files or other views; this search keeps going until it finishes or you Cancel.
+              Still running. Switch views anytime; Cancel to stop.
             </div>
           )}
         </div>
@@ -893,13 +889,6 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 18,
     fontWeight: 600,
     color: c.text,
-  },
-  subtitle: {
-    margin: '4px 0 0',
-    fontSize: 13,
-    color: c.textMuted,
-    maxWidth: 560,
-    lineHeight: 1.4,
   },
   code: {
     fontFamily: font.mono,

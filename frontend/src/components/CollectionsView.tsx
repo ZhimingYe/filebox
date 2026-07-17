@@ -355,10 +355,8 @@ export function CollectionsView({
   if (collections.length === 0) {
     return (
       <div style={styles.emptyWrap}>
-        <p style={styles.emptyTitle}>No collections on this agent</p>
-        <p style={styles.emptyHint}>
-          Create a collection to group files from different roots for preview.
-        </p>
+        <p style={styles.emptyTitle}>No collections</p>
+        <p style={styles.emptyHint}>Group files across roots.</p>
         {error && <p style={styles.errorText}>{error}</p>}
         {newOpen ? (
           <div style={styles.newRow}>
@@ -437,7 +435,7 @@ export function CollectionsView({
               sortAsc={sortAsc}
               onToggleSort={toggleSort}
               showRootColumn
-              emptyMessage="Empty collection — add files from the Files browser."
+              emptyMessage="Empty — add from Files."
               onRowClick={(row) => handleSelectRow(row)}
               renderNameHoverActions={renderNameHoverActions}
             />

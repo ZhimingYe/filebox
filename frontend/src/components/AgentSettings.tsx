@@ -37,9 +37,7 @@ function formatLastSeen(epochSec: number, nowMs: number): string {
 }
 
 /**
- * Agent settings surface: connection overview + workspace root management.
- * Layout follows commercial product settings (page chrome → section cards →
- * property grid + managed list) rather than a bare form stack.
+ * Agent settings: connection overview + workspace roots.
  */
 export function AgentSettings({ agent, onRefresh }: Props) {
   const status = statusPresentation(agent.status);
@@ -58,10 +56,6 @@ export function AgentSettings({ agent, onRefresh }: Props) {
         <div style={styles.pageHeaderText}>
           <p style={styles.eyebrow}>Agent</p>
           <h2 style={styles.pageTitle}>{agent.name}</h2>
-          <p style={styles.pageSubtitle}>
-            Manage connection status and the read-only workspace roots this
-            machine exposes to the hub.
-          </p>
         </div>
         <div style={styles.headerBadge} title={`Status: ${status.label}`}>
           <span style={{ ...styles.statusDot, background: status.color }} />
@@ -74,15 +68,9 @@ export function AgentSettings({ agent, onRefresh }: Props) {
           {/* ── Connection ─────────────────────────────────────────────── */}
           <section style={styles.card} aria-labelledby="settings-connection-title">
             <div style={styles.cardHeader}>
-              <div>
-                <h3 id="settings-connection-title" style={styles.cardTitle}>
-                  Connection
-                </h3>
-                <p style={styles.cardDesc}>
-                  Live link between this agent and the hub. Values update as
-                  the agent heartbeats.
-                </p>
-              </div>
+              <h3 id="settings-connection-title" style={styles.cardTitle}>
+                Connection
+              </h3>
             </div>
 
             {/* Status lives only in the page header badge — grid holds metrics. */}
@@ -118,9 +106,7 @@ export function AgentSettings({ agent, onRefresh }: Props) {
               <div style={styles.bannerWarn} role="status">
                 <span style={styles.bannerTitle}>Pending apply</span>
                 <span style={styles.bannerBody}>
-                  A root change is waiting for the agent to reconnect or finish
-                  applying. The last known good configuration remains active
-                  until it succeeds.
+                  Waiting for the agent to apply.
                 </span>
               </div>
             )}
@@ -136,16 +122,9 @@ export function AgentSettings({ agent, onRefresh }: Props) {
           {/* ── Workspace roots ────────────────────────────────────────── */}
           <section style={styles.card} aria-labelledby="settings-roots-title">
             <div style={styles.cardHeader}>
-              <div>
-                <h3 id="settings-roots-title" style={styles.cardTitle}>
-                  Workspace roots
-                </h3>
-                <p style={styles.cardDesc}>
-                  Allowlisted directories the agent may read. Paths are validated
-                  on the agent; broad mounts (home or filesystem root) require
-                  an extra confirmation.
-                </p>
-              </div>
+              <h3 id="settings-roots-title" style={styles.cardTitle}>
+                Workspace roots
+              </h3>
             </div>
             <div style={styles.cardBody}>
               <RootManager
@@ -203,13 +182,6 @@ const styles: Record<string, React.CSSProperties> = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
-  pageSubtitle: {
-    margin: '6px 0 0',
-    maxWidth: 520,
-    fontSize: 13,
-    lineHeight: 1.45,
-    color: c.textSecondary,
-  },
   headerBadge: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -263,13 +235,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     color: c.text,
     letterSpacing: '-0.01em',
-  },
-  cardDesc: {
-    margin: '5px 0 0',
-    fontSize: 12.5,
-    lineHeight: 1.45,
-    color: c.textMuted,
-    maxWidth: 560,
   },
   cardBody: {
     padding: '16px 20px 20px',

@@ -55,7 +55,6 @@ export function Login({ onLogin }: Props) {
             </div>
             <div style={styles.headerCopy}>
               <h1 style={styles.heading}>Sign in</h1>
-              <p style={styles.subheading}>Access your remote agents and files</p>
             </div>
           </header>
 
@@ -245,12 +244,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: c.text,
     letterSpacing: '-0.03em',
     lineHeight: 1.15,
-  },
-  subheading: {
-    margin: 0,
-    fontSize: 13.5,
-    color: c.textMuted,
-    lineHeight: 1.4,
   },
   fields: {
     display: 'flex',
