@@ -136,8 +136,8 @@ export function NoAgentSelected({
           <>
             <h2 style={styles.title}>No agents connected</h2>
             <p style={styles.subtitle}>
-              filebox shows remote machines that have dialed out to this hub.
-              Once an agent is running, it appears here and in the sidebar.
+              Start an agent on the machine you want to browse. It will appear
+              here and in the sidebar.
             </p>
 
             <ol style={styles.steps}>
@@ -153,7 +153,7 @@ export function NoAgentSelected({
                 <span style={styles.stepNum}>2</span>
                 <span style={styles.stepBody}>
                   <strong style={styles.stepStrong}>Wait for connect</strong>
-                  {' '}— agents reconnect automatically; the list updates live.
+                  {' '}until it shows up in the list.
                 </span>
               </li>
               <li style={styles.step}>
@@ -174,11 +174,6 @@ export function NoAgentSelected({
                 Open sidebar
               </button>
             )}
-
-            <p style={styles.footnote}>
-              Agents connect outbound over WebSocket — no inbound ports or VPN
-              required on the remote host.
-            </p>
           </>
         )}
       </div>
@@ -362,12 +357,5 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: font.sans,
     cursor: 'pointer',
     width: '100%',
-  },
-  footnote: {
-    margin: '18px 0 0',
-    fontSize: 12,
-    lineHeight: 1.45,
-    color: c.textMuted,
-    textAlign: 'center',
   },
 };

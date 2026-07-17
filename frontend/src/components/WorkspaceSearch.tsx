@@ -491,8 +491,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
       <div style={styles.header}>
         <h2 style={styles.title}>Search</h2>
         <p style={styles.subtitle}>
-          Search file contents or find files by name under a root. Runs on the agent —
-          no extra tools required on the remote machine.
+          Search file contents or find files by name under a root.
         </p>
       </div>
 

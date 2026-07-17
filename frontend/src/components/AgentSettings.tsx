@@ -59,8 +59,7 @@ export function AgentSettings({ agent, onRefresh }: Props) {
           <p style={styles.eyebrow}>Agent</p>
           <h2 style={styles.pageTitle}>{agent.name}</h2>
           <p style={styles.pageSubtitle}>
-            Manage connection status and the read-only workspace roots this
-            machine exposes to the hub.
+            Connection status and workspace roots for this machine.
           </p>
         </div>
         <div style={styles.headerBadge} title={`Status: ${status.label}`}>
@@ -79,8 +78,7 @@ export function AgentSettings({ agent, onRefresh }: Props) {
                   Connection
                 </h3>
                 <p style={styles.cardDesc}>
-                  Live link between this agent and the hub. Values update as
-                  the agent heartbeats.
+                  Latency, last contact, and current load.
                 </p>
               </div>
             </div>
@@ -141,9 +139,8 @@ export function AgentSettings({ agent, onRefresh }: Props) {
                   Workspace roots
                 </h3>
                 <p style={styles.cardDesc}>
-                  Allowlisted directories the agent may read. Paths are validated
-                  on the agent; broad mounts (home or filesystem root) require
-                  an extra confirmation.
+                  Directories this agent can browse. Broad mounts (home or
+                  filesystem root) need an extra confirmation.
                 </p>
               </div>
             </div>
