@@ -378,101 +378,118 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
         />
       </div>
 
-      <div style={styles.form}>
-        <label style={styles.label}>
-          Root
-          <select
-            value={root}
-            onChange={(e) => setRoot(e.target.value)}
-            style={styles.select}
-            disabled={enabledRoots.length === 0 || loading}
-          >
-            {enabledRoots.length === 0 && <option value="">No roots</option>}
-            {enabledRoots.map((r) => (
-              <option key={r.name} value={r.name}>{r.name}</option>
-            ))}
-          </select>
-        </label>
+      <div style={styles.controls}>
+        <div style={styles.form}>
+          <label style={styles.label}>
+            Root
+            <select
+              value={root}
+              onChange={(e) => setRoot(e.target.value)}
+              style={styles.select}
+              disabled={enabledRoots.length === 0 || loading}
+            >
+              {enabledRoots.length === 0 && <option value="">No roots</option>}
+              {enabledRoots.map((r) => (
+                <option key={r.name} value={r.name}>{r.name}</option>
+              ))}
+            </select>
+          </label>
 
-        <label style={{ ...styles.label, flex: '1.2 1 140px' }}>
-          Folder
-          <input
-            value={folder}
-            onChange={(e) => setFolder(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-            placeholder="/ or ./src"
-            style={styles.input}
-            disabled={loading}
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-        </label>
+          <label style={{ ...styles.label, flex: '1.2 1 140px' }}>
+            Folder
+            <input
+              value={folder}
+              onChange={(e) => setFolder(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+              placeholder="/ or ./src"
+              style={styles.input}
+              disabled={loading}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </label>
 
-        <label style={{ ...styles.label, flex: '2 1 200px' }}>
-          {mode === 'find' ? 'Name contains' : 'Pattern (regex)'}
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-            placeholder={mode === 'find' ? 'e.g. config' : 'e.g. TODO|FIXME'}
-            style={styles.input}
-            disabled={loading}
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-        </label>
+          <label style={{ ...styles.label, flex: '2 1 200px' }}>
+            {mode === 'find' ? 'Name contains' : 'Pattern (regex)'}
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+              placeholder={mode === 'find' ? 'e.g. config' : 'e.g. TODO|FIXME'}
+              style={styles.input}
+              disabled={loading}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </label>
 
-        <label style={{ ...styles.label, flex: '1.4 1 160px' }}>
-          File types
-          <input
-            value={extensions}
-            onChange={(e) => setExtensions(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-            placeholder="e.g. rs, ts, py"
-            style={styles.input}
-            disabled={loading}
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-        </label>
+          <label style={{ ...styles.label, flex: '1.4 1 160px' }}>
+            File types
+            <input
+              value={extensions}
+              onChange={(e) => setExtensions(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+              placeholder="e.g. rs, ts, py"
+              style={styles.input}
+              disabled={loading}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              aria-describedby="search-field-hints"
+            />
+          </label>
 
-        {mode === 'content' && (
-          <label style={{ ...styles.label, flex: '0 0 88px', minWidth: 88 }}>
-            Context
+          {mode === 'content' && (
+            <label style={{ ...styles.label, flex: '0 0 88px', minWidth: 88 }}>
+              Context
+              <input
+                type="number"
+                min={0}
+                max={MAX_CONTEXT}
+                value={contextLines}
+                onChange={(e) => setContextLines(clampContext(Number(e.target.value)))}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+                style={styles.input}
+                disabled={loading}
+                title={`Lines of context around each match (0–${MAX_CONTEXT})`}
+              />
+            </label>
+          )}
+
+          <label style={{ ...styles.label, flex: '0 0 96px', minWidth: 96 }}>
+            Max depth
             <input
               type="number"
               min={0}
-              max={MAX_CONTEXT}
-              value={contextLines}
-              onChange={(e) => setContextLines(clampContext(Number(e.target.value)))}
+              max={HARD_MAX_DEPTH}
+              value={maxDepthText}
+              onChange={(e) => setMaxDepthText(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+              placeholder="∞"
               style={styles.input}
               disabled={loading}
-              title={`Lines of context around each match (0–${MAX_CONTEXT})`}
+              title="Max directory layers under the folder (1 = this folder only). Leave empty for unlimited."
+              aria-describedby="search-field-hints"
             />
           </label>
-        )}
 
-        <label style={{ ...styles.label, flex: '0 0 96px', minWidth: 96 }}>
-          Max depth
-          <input
-            type="number"
-            min={0}
-            max={HARD_MAX_DEPTH}
-            value={maxDepthText}
-            onChange={(e) => setMaxDepthText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-            placeholder="∞"
-            style={styles.input}
-            disabled={loading}
-            title="Max directory layers under the folder (1 = this folder only). Leave empty for unlimited."
-          />
-        </label>
+          <button
+            type="button"
+            onClick={() => void (loading ? handleCancel() : runSearch())}
+            disabled={!root && !loading}
+            style={{
+              ...(loading ? styles.cancelBtn : styles.searchBtn),
+              opacity: !root && !loading ? 0.55 : 1,
+              cursor: !root && !loading ? 'default' : 'pointer',
+            }}
+          >
+            {loading ? 'Cancel' : 'Search'}
+          </button>
+        </div>
 
-        <label style={{ ...styles.label, flex: '2 1 220px' }}>
+        <label style={styles.ignoreLabel}>
           Ignore folders
           <input
             value={ignoreText}
@@ -484,52 +501,53 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            title="Folder names pruned while walking (not filtered after). Saved in this browser."
+            aria-describedby="search-field-hints"
           />
         </label>
 
-        <button
-          type="button"
-          onClick={() => void (loading ? handleCancel() : runSearch())}
-          disabled={!root && !loading}
-          style={{
-            ...(loading ? styles.cancelBtn : styles.searchBtn),
-            opacity: !root && !loading ? 0.55 : 1,
-            cursor: !root && !loading ? 'default' : 'pointer',
-          }}
-        >
-          {loading ? 'Cancel' : 'Search'}
-        </button>
-      </div>
+        <div id="search-field-hints" style={styles.fieldHints}>
+          <p style={styles.fieldHint}>
+            File types: extensions only — <code style={styles.code}>rs, ts, py</code>
+            {' '}(comma/space; case-insensitive). Not globs or full names.
+          </p>
+          <p style={styles.fieldHint}>
+            Ignore: folder names pruned while walking (subtrees are never scanned).
+            Defaults cover common package/venv trees. Clear to search everything.
+            Saved in this browser.
+          </p>
+          <p style={styles.fieldHint}>
+            Max depth: <code style={styles.code}>1</code> = this folder only,{' '}
+            <code style={styles.code}>2</code> = one level of subfolders, empty = unlimited.
+          </p>
+        </div>
 
-      <div style={styles.scopeHint}>
-        Scope: <code style={styles.code}>{root || '?'}:{normalizeFolderPath(folder)}</code>
-        {mode === 'content'
-          ? ` · content · ±${clampContext(contextLines)} lines`
-          : ' · by filename'}
-        {(() => {
-          const exts = extensions
-            .split(/[,\s]+/)
-            .map((e) => e.trim().replace(/^\./, '').toLowerCase())
-            .filter(Boolean);
-          return exts.length
-            ? <> · types <code style={styles.code}>{exts.map((e) => `.${e}`).join(' ')}</code></>
-            : ' · all types';
-        })()}
-        {(() => {
-          const names = parseIgnoreList(ignoreText);
-          return names.length
-            ? <> · ignore <code style={styles.code}>{names.slice(0, 6).join(', ')}{names.length > 6 ? '…' : ''}</code></>
-            : ' · no ignore';
-        })()}
-        {(() => {
-          const d = parseMaxDepth(maxDepthText);
-          return d != null
-            ? <> · depth ≤ <code style={styles.code}>{d}</code></>
-            : ' · unlimited depth';
-        })()}
-        {' · '}types = extensions only
-        {' · '}depth <code style={styles.code}>1</code> = this folder
+        <div style={styles.scopeHint}>
+          Scope: <code style={styles.code}>{root || '?'}:{normalizeFolderPath(folder)}</code>
+          {mode === 'content'
+            ? ` · content · ±${clampContext(contextLines)} lines`
+            : ' · by filename'}
+          {(() => {
+            const exts = extensions
+              .split(/[,\s]+/)
+              .map((e) => e.trim().replace(/^\./, '').toLowerCase())
+              .filter(Boolean);
+            return exts.length
+              ? <> · types <code style={styles.code}>{exts.map((e) => `.${e}`).join(' ')}</code></>
+              : ' · all types';
+          })()}
+          {(() => {
+            const names = parseIgnoreList(ignoreText);
+            return names.length
+              ? <> · ignore <code style={styles.code}>{names.slice(0, 6).join(', ')}{names.length > 6 ? '…' : ''}</code></>
+              : ' · no ignore';
+          })()}
+          {(() => {
+            const d = parseMaxDepth(maxDepthText);
+            return d != null
+              ? <> · depth ≤ <code style={styles.code}>{d}</code></>
+              : ' · unlimited depth';
+          })()}
+        </div>
       </div>
 
       {loading && (
@@ -554,27 +572,36 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
 
       {error && <div style={styles.error}>{error}</div>}
 
-      {result && !loading && (
-        <div style={styles.meta}>
-          {result.hits.length} hit{result.hits.length === 1 ? '' : 's'}
-          {result.truncated ? ' (truncated)' : ''}
-          {' · '}
-          scanned {result.scanned}
+      <div style={styles.resultsPanel}>
+        {result && !loading && (
+          <div style={styles.meta}>
+            {result.hits.length} hit{result.hits.length === 1 ? '' : 's'}
+            {result.truncated ? ' (truncated)' : ''}
+            {' · '}
+            scanned {result.scanned}
+          </div>
+        )}
+
+        {result && result.hits.length === 0 && !error && !loading && (
+          <p style={styles.empty}>No matches in this folder.</p>
+        )}
+
+        {!result && !loading && !error && (
+          <p style={styles.empty}>
+            Enter a pattern and click Search. Ignored folders are skipped during the walk,
+            so package trees do not inflate scanned counts.
+          </p>
+        )}
+
+        <div style={styles.results}>
+          {result?.hits.map((hit, i) => (
+            <HitCard
+              key={`${hit.root}:${hit.path}:${hit.line ?? 0}:${i}`}
+              hit={hit}
+              onOpen={onOpenFile}
+            />
+          ))}
         </div>
-      )}
-
-      {result && result.hits.length === 0 && !error && (
-        <p style={styles.empty}>No matches in this folder.</p>
-      )}
-
-      <div style={styles.results}>
-        {result?.hits.map((hit, i) => (
-          <HitCard
-            key={`${hit.root}:${hit.path}:${hit.line ?? 0}:${i}`}
-            hit={hit}
-            onOpen={onOpenFile}
-          />
-        ))}
       </div>
     </div>
   );
@@ -658,12 +685,13 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
-    overflow: 'auto',
-    padding: '20px 24px 32px',
+    minHeight: 0,
+    overflow: 'hidden',
+    padding: '16px 24px 20px',
     boxSizing: 'border-box',
     fontFamily: font.sans,
   },
-  header: { marginBottom: 16 },
+  header: { marginBottom: 10, flexShrink: 0 },
   title: {
     margin: 0,
     fontSize: 18,
@@ -671,11 +699,11 @@ const styles: Record<string, CSSProperties> = {
     color: c.text,
   },
   subtitle: {
-    margin: '6px 0 0',
+    margin: '4px 0 0',
     fontSize: 13,
     color: c.textMuted,
     maxWidth: 560,
-    lineHeight: 1.45,
+    lineHeight: 1.4,
   },
   code: {
     fontFamily: font.mono,
@@ -684,7 +712,7 @@ const styles: Record<string, CSSProperties> = {
     padding: '1px 5px',
     borderRadius: 4,
   },
-  modeRow: { display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' },
+  modeRow: { display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', flexShrink: 0 },
   modeBtn: {
     border: `1px solid ${c.border}`,
     borderRadius: radius.sm,
@@ -693,13 +721,19 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: font.sans,
     background: c.bgSubtle,
   },
+  // Form + hints + scope stay content-sized at the top (never flex-grow).
+  controls: {
+    flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    marginBottom: 12,
+  },
   form: {
     display: 'flex',
     flexWrap: 'wrap',
     gap: 10,
     alignItems: 'end',
-    marginBottom: 6,
-    flexShrink: 0,
   },
   label: {
     display: 'flex',
@@ -709,6 +743,16 @@ const styles: Record<string, CSSProperties> = {
     color: c.textSecondary,
     minWidth: 120,
     flex: '1 1 120px',
+  },
+  // Own row under the toolbar — width 100%, height content-only (no flex grow).
+  ignoreLabel: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    fontSize: 12,
+    color: c.textSecondary,
+    width: '100%',
+    maxWidth: 720,
   },
   input: {
     height: 34,
@@ -721,6 +765,8 @@ const styles: Record<string, CSSProperties> = {
     background: c.surface,
     outline: 'none',
     minWidth: 0,
+    width: '100%',
+    boxSizing: 'border-box',
   },
   select: {
     height: 34,
@@ -757,18 +803,29 @@ const styles: Record<string, CSSProperties> = {
     flex: '0 0 auto',
     cursor: 'pointer',
   },
+  fieldHints: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+    maxWidth: 720,
+  },
+  fieldHint: {
+    margin: 0,
+    fontSize: 12,
+    color: c.textMuted,
+    lineHeight: 1.4,
+  },
   scopeHint: {
     fontSize: 12,
     color: c.textMuted,
-    marginBottom: 10,
-    lineHeight: 1.45,
-    flexShrink: 0,
+    lineHeight: 1.4,
   },
   progressBox: {
     padding: '10px 12px',
     borderRadius: radius.sm,
     background: c.accentBg,
     marginBottom: 12,
+    flexShrink: 0,
   },
   progressRow: {
     display: 'flex',
@@ -814,15 +871,29 @@ const styles: Record<string, CSSProperties> = {
     color: c.danger,
     fontSize: 13,
     marginBottom: 12,
+    flexShrink: 0,
+  },
+  // Results scroll in the remaining viewport; content stays top-aligned
+  // (no spacer that invents a blank band between form and hits).
+  resultsPanel: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
   },
   meta: {
     fontSize: 12,
     color: c.textMuted,
-    marginBottom: 10,
+    flexShrink: 0,
   },
   empty: {
+    margin: 0,
     fontSize: 13,
     color: c.textMuted,
+    lineHeight: 1.45,
+    maxWidth: 520,
   },
   results: {
     display: 'flex',
