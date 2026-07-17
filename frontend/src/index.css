@@ -165,16 +165,22 @@ a:hover {
 }
 
 /*
- * Monaco find widget inside TextPreview.
+ * Monaco find widget vs TextPreview toolbar.
  *
- * Monaco's default `.find-widget { overflow: hidden }` can clip the
- * matches-count / action cluster on the right ("No results", arrows, close).
- * Keep those controls fully visible. The host still uses overflow:hidden so
- * the slide-in animation cannot paint over our sibling toolbar above.
+ * Monaco docks the find widget flush with the editor top (right under our
+ * toolbar). Its default omnidirectional box-shadow bleeds upward into the
+ * toolbar and makes the matches-count / meta look covered. Fix:
+ *  - push the widget a few px into the editor (margin-top)
+ *  - cast shadow downward only
+ *  - restore a top border (Monaco omits it, assuming a title bar above)
+ *  - don't clip the matches-count / action cluster
  */
 .filebox-monaco-preview .monaco-editor .find-widget {
+  margin-top: 6px;
   overflow: visible;
   z-index: 40;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.12);
+  border-top: 1px solid var(--vscode-widget-border, #e2e8f0);
 }
 .filebox-monaco-preview .monaco-editor .find-widget .matchesCount {
   overflow: visible;

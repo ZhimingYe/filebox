@@ -100,13 +100,14 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
 
   return (
     <div style={styles.monacoContainer}>
-      <div style={styles.codeToolbar}>
+      <div style={{ ...styles.codeToolbar, justifyContent: 'flex-start', position: 'relative', zIndex: 1 }}>
         {/*
-          Actions on the left so they don't sit directly above Monaco's
-          top-right find widget (which docks under the former right-side
-          button cluster and looked like it was covered by the toolbar).
+          Keep ALL toolbar chrome on the left. Monaco docks its find widget
+          at the editor's top-right; putting meta/actions on the right made
+          the widget look like it was covering the toolbar (edge-to-edge +
+          upward box-shadow). Left cluster + empty right = no 遮挡.
         */}
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0, minWidth: 0 }}>
           <button onClick={openFind} style={styles.toolBtn} title="Find (Ctrl/Cmd+F)">
             Find
           </button>
@@ -114,10 +115,10 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
             {wrap ? 'Wrap: On' : 'Wrap: Off'}
           </button>
           <CopyButton text={raw} />
+          <span style={{ ...styles.metaInfo, flex: '0 1 auto', marginLeft: 8 }}>
+            {totalLines.toLocaleString()} lines · {raw.length.toLocaleString()} chars · {lang}
+          </span>
         </div>
-        <span style={{ ...styles.metaInfo, textAlign: 'right' }}>
-          {totalLines.toLocaleString()} lines · {raw.length.toLocaleString()} chars · {lang}
-        </span>
       </div>
       <div style={styles.monacoEditorHost} className="filebox-monaco-preview">
         <Editor
