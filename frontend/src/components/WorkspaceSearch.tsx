@@ -1,8 +1,41 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
+import { VariableSizeList as VList, type ListChildComponentProps } from 'react-window';
 import type { AgentInfo, SearchHit, SearchMode, WorkspaceSearchResult } from '../api/client';
 import { cancelRequest, friendlyMessage, workspaceSearch } from '../api/client';
 import { useSse } from '../state/events';
 import { c, radius, font } from '../theme';
+
+/** Path header + border; context lines are fixed-pitch for VariableSizeList. */
+const HIT_PATH_H = 34;
+const HIT_LINE_H = 17;
+const HIT_CTX_PAD_Y = 16;
+const HIT_GAP = 8;
+const HIT_BORDER = 2;
+
+function estimateHitHeight(hit: SearchHit): number {
+  const n = hit.context?.length ?? 0;
+  const body = n === 0 ? 0 : HIT_CTX_PAD_Y + n * HIT_LINE_H;
+  return HIT_PATH_H + body + HIT_BORDER + HIT_GAP;
+}
+
+/** Case-insensitive substring over path/root/context (client-side only). */
+function hitMatchesFilter(hit: SearchHit, needle: string): boolean {
+  const q = needle.trim().toLowerCase();
+  if (!q) return true;
+  if (hit.path.toLowerCase().includes(q)) return true;
+  if (hit.root.toLowerCase().includes(q)) return true;
+  for (const line of hit.context ?? []) {
+    if (line.text.toLowerCase().includes(q)) return true;
+  }
+  return false;
+}
 
 interface Props {
   agent: AgentInfo;
@@ -13,6 +46,115 @@ interface Props {
 
 const DEFAULT_CONTEXT = 10;
 const MAX_CONTEXT = 20;
+/** Default dirs to skip so package / venv trees do not flood hits. */
+const DEFAULT_SEARCH_IGNORE = [
+  'renv',
+  'packrat',
+  'venv',
+  '.venv',
+  'node_modules',
+  '__pycache__',
+  'site-packages',
+  '.tox',
+  '.nox',
+  'target',
+  '.mypy_cache',
+  '.pytest_cache',
+  '.ruff_cache',
+  '.cache',
+  'bower_components',
+  '.parcel-cache',
+  '.turbo',
+  '.bundle',
+  '.gradle',
+  '.pixi',
+];
+/** Soft UI cap; hub clamps to 256. Empty / 0 = unlimited. */
+const HARD_MAX_DEPTH = 256;
+/** Keep in sync with hub `search_proxy` caps. */
+const MAX_IGNORE_NAMES = 128;
+const MAX_IGNORE_NAME_LEN = 128;
+/** Cap raw ignore field / localStorage size before parse. */
+const MAX_IGNORE_RAW_LEN = 8192;
+/** Exact-name ignore — reject path/glob/shell/control edge characters. */
+const IGNORE_META_RE = /[/*?\[\]{}\\"'`<>|\0]/;
+const IGNORE_CONTROL_RE = /\p{Cc}/u;
+
+function ignoreStorageKey(agentId: string): string {
+  return `filebox.search.ignore.${agentId}`;
+}
+
+function depthStorageKey(agentId: string): string {
+  return `filebox.search.maxDepth.${agentId}`;
+}
+
+function loadStoredIgnore(agentId: string): string {
+  try {
+    const specific = localStorage.getItem(ignoreStorageKey(agentId));
+    if (specific != null) return specific;
+    // Migrate once from the pre-per-agent key.
+    const legacy = localStorage.getItem('filebox.search.ignore');
+    if (legacy != null) return legacy;
+  } catch {
+    /* private mode / blocked storage */
+  }
+  return DEFAULT_SEARCH_IGNORE.join(', ');
+}
+
+function loadStoredMaxDepth(agentId: string): string {
+  try {
+    const specific = localStorage.getItem(depthStorageKey(agentId));
+    if (specific != null) return specific;
+    const legacy = localStorage.getItem('filebox.search.maxDepth');
+    if (legacy != null) return legacy;
+  } catch {
+    /* ignore */
+  }
+  return '';
+}
+
+function isValidIgnoreName(name: string): boolean {
+  if (!name || name === '.' || name === '..') return false;
+  if (name.length > MAX_IGNORE_NAME_LEN) return false;
+  if (IGNORE_META_RE.test(name)) return false;
+  if (IGNORE_CONTROL_RE.test(name)) return false;
+  return true;
+}
+
+/** Parse ignore text into names; invalid tokens are dropped (not sent to hub). */
+function parseIgnoreList(raw: string): {
+  names: string[];
+  dropped: number;
+  truncated: boolean;
+} {
+  const truncated = raw.length > MAX_IGNORE_RAW_LEN;
+  const text = truncated ? raw.slice(0, MAX_IGNORE_RAW_LEN) : raw;
+  const out: string[] = [];
+  let dropped = 0;
+  for (const part of text.split(/[,\s]+/)) {
+    const name = part.trim().replace(/^\/+|\/+$/g, '');
+    if (!name) continue;
+    if (!isValidIgnoreName(name)) {
+      dropped += 1;
+      continue;
+    }
+    if (out.some((x) => x.toLowerCase() === name.toLowerCase())) continue;
+    if (out.length >= MAX_IGNORE_NAMES) {
+      dropped += 1;
+      continue;
+    }
+    out.push(name);
+  }
+  return { names: out, dropped, truncated };
+}
+
+function parseMaxDepth(raw: string): number | null {
+  const t = raw.trim();
+  if (!t) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(HARD_MAX_DEPTH, Math.floor(n));
+}
 
 function searchErrorMessage(err: unknown): string {
   const mapped = friendlyMessage(err);
@@ -55,9 +197,16 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
   const [query, setQuery] = useState('');
   const [extensions, setExtensions] = useState('');
   const [contextLines, setContextLines] = useState(DEFAULT_CONTEXT);
+  const [ignoreText, setIgnoreText] = useState(() => loadStoredIgnore(agent.id));
+  const [maxDepthText, setMaxDepthText] = useState(() => loadStoredMaxDepth(agent.id));
   const [result, setResult] = useState<WorkspaceSearchResult | null>(null);
+  /** Client-side filter over the last result set (does not re-query the agent). */
+  const [resultFilter, setResultFilter] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const listRef = useRef<VList>(null);
+  const listBoxRef = useRef<HTMLDivElement>(null);
+  const [listHeight, setListHeight] = useState(240);
   const [slow, setSlow] = useState(false);
   const [progressText, setProgressText] = useState<string | null>(null);
   const [scannedLive, setScannedLive] = useState<number | null>(null);
@@ -100,6 +249,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     searchingRef.current = false;
     reqGen.current += 1;
     setResult(null);
+    setResultFilter('');
     setError(null);
     setLoading(false);
     setSlow(false);
@@ -107,11 +257,55 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     setScannedLive(null);
     setQuery('');
     setFolder('/');
+    setIgnoreText(loadStoredIgnore(agent.id));
+    setMaxDepthText(loadStoredMaxDepth(agent.id));
     if (prevReq && prevAgent && prevAgent !== agent.id) {
       void cancelRequest(prevAgent, prevReq).catch(() => {});
     }
     agentIdRef.current = agent.id;
   }, [agent.id]);
+
+  const filteredHits = useMemo(() => {
+    const hits = result?.hits ?? [];
+    if (!resultFilter.trim()) return hits;
+    return hits.filter((h) => hitMatchesFilter(h, resultFilter));
+  }, [result, resultFilter]);
+
+  const showHitList = Boolean(result && result.hits.length > 0 && !loading);
+
+  const getHitSize = useCallback(
+    (index: number) => estimateHitHeight(filteredHits[index]!),
+    [filteredHits],
+  );
+
+  useEffect(() => {
+    listRef.current?.resetAfterIndex(0, true);
+  }, [filteredHits]);
+
+  // Re-attach when the list box mounts (including after filter-to-zero → back).
+  useEffect(() => {
+    if (!showHitList) return;
+    const el = listBoxRef.current;
+    if (!el) return;
+    let raf = 0;
+    const obs = new ResizeObserver(([entry]) => {
+      const h = entry.contentRect.height;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        setListHeight((prev) => (Math.abs(prev - h) < 1 ? prev : Math.max(120, h)));
+      });
+    });
+    obs.observe(el);
+    // Immediate measure in case ResizeObserver is slow on remount.
+    const rect = el.getBoundingClientRect();
+    if (rect.height > 0) {
+      setListHeight((prev) => (Math.abs(prev - rect.height) < 1 ? prev : Math.max(120, rect.height)));
+    }
+    return () => {
+      cancelAnimationFrame(raf);
+      obs.disconnect();
+    };
+  }, [showHitList]);
 
   // True unmount (logout / deselect agent): stop the worker.
   useEffect(() => () => {
@@ -195,6 +389,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     setSlow(false);
     setError(null);
     setResult(null);
+    setResultFilter('');
     setProgressText('Starting search…');
     setScannedLive(0);
 
@@ -203,6 +398,18 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     }, 8000);
 
     const ctx = clampContext(contextLines);
+    const { names: ignore } = parseIgnoreList(ignoreText);
+    const maxDepth = parseMaxDepth(maxDepthText);
+    try {
+      const ignoreToStore =
+        ignoreText.length > MAX_IGNORE_RAW_LEN
+          ? ignoreText.slice(0, MAX_IGNORE_RAW_LEN)
+          : ignoreText;
+      localStorage.setItem(ignoreStorageKey(agent.id), ignoreToStore);
+      localStorage.setItem(depthStorageKey(agent.id), maxDepthText);
+    } catch {
+      /* ignore */
+    }
 
     try {
       const exts = extensions
@@ -219,6 +426,8 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           extensions: exts,
           max_results: mode === 'find' ? 200 : 60,
           context: mode === 'content' ? ctx : 0,
+          ignore,
+          max_depth: maxDepth,
           client_nonce: clientNonce,
         },
         ac.signal,
@@ -300,122 +509,195 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
         />
       </div>
 
-      <div style={styles.form}>
-        <label style={styles.label}>
-          Root
-          <select
-            value={root}
-            onChange={(e) => setRoot(e.target.value)}
-            style={styles.select}
-            disabled={enabledRoots.length === 0 || loading}
-          >
-            {enabledRoots.length === 0 && <option value="">No roots</option>}
-            {enabledRoots.map((r) => (
-              <option key={r.name} value={r.name}>{r.name}</option>
-            ))}
-          </select>
-        </label>
+      <div style={styles.controls}>
+        <div style={styles.form}>
+          <label style={styles.label}>
+            Root
+            <select
+              value={root}
+              onChange={(e) => setRoot(e.target.value)}
+              style={styles.select}
+              disabled={enabledRoots.length === 0 || loading}
+            >
+              {enabledRoots.length === 0 && <option value="">No roots</option>}
+              {enabledRoots.map((r) => (
+                <option key={r.name} value={r.name}>{r.name}</option>
+              ))}
+            </select>
+          </label>
 
-        <label style={{ ...styles.label, flex: '1.2 1 140px' }}>
-          Folder
-          <input
-            value={folder}
-            onChange={(e) => setFolder(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-            placeholder="/ or ./src"
-            style={styles.input}
-            disabled={loading}
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-        </label>
+          <label style={{ ...styles.label, flex: '1.2 1 140px' }}>
+            Folder
+            <input
+              value={folder}
+              onChange={(e) => setFolder(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+              placeholder="/ or ./src"
+              style={styles.input}
+              disabled={loading}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </label>
 
-        <label style={{ ...styles.label, flex: '2 1 200px' }}>
-          {mode === 'find' ? 'Name contains' : 'Pattern (regex)'}
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-            placeholder={mode === 'find' ? 'e.g. config' : 'e.g. TODO|FIXME'}
-            style={styles.input}
-            disabled={loading}
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-        </label>
+          <label style={{ ...styles.label, flex: '2 1 200px' }}>
+            {mode === 'find' ? 'Name contains' : 'Pattern (regex)'}
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+              placeholder={mode === 'find' ? 'e.g. config' : 'e.g. TODO|FIXME'}
+              style={styles.input}
+              disabled={loading}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </label>
 
-        <label style={{ ...styles.label, flex: '1.4 1 160px' }}>
-          File types
-          <input
-            value={extensions}
-            onChange={(e) => setExtensions(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-            placeholder="e.g. rs, ts, py"
-            style={styles.input}
-            disabled={loading}
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-            aria-describedby="search-ext-hint"
-          />
-        </label>
+          <label style={{ ...styles.label, flex: '1.4 1 160px' }}>
+            File types
+            <input
+              value={extensions}
+              onChange={(e) => setExtensions(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+              placeholder="e.g. rs, ts, py"
+              style={styles.input}
+              disabled={loading}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              aria-describedby="search-field-hints"
+            />
+          </label>
 
-        {mode === 'content' && (
-          <label style={{ ...styles.label, flex: '0 0 88px', minWidth: 88 }}>
-            Context
+          {mode === 'content' && (
+            <label style={{ ...styles.label, flex: '0 0 88px', minWidth: 88 }}>
+              Context
+              <input
+                type="number"
+                min={0}
+                max={MAX_CONTEXT}
+                value={contextLines}
+                onChange={(e) => setContextLines(clampContext(Number(e.target.value)))}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+                style={styles.input}
+                disabled={loading}
+                title={`Lines of context around each match (0–${MAX_CONTEXT})`}
+              />
+            </label>
+          )}
+
+          <label style={{ ...styles.label, flex: '0 0 96px', minWidth: 96 }}>
+            Max depth
             <input
               type="number"
               min={0}
-              max={MAX_CONTEXT}
-              value={contextLines}
-              onChange={(e) => setContextLines(clampContext(Number(e.target.value)))}
+              max={HARD_MAX_DEPTH}
+              value={maxDepthText}
+              onChange={(e) => setMaxDepthText(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+              placeholder="∞"
               style={styles.input}
               disabled={loading}
-              title={`Lines of context around each match (0–${MAX_CONTEXT})`}
+              title="Max directory layers under the folder (1 = this folder only). Leave empty for unlimited."
+              aria-describedby="search-field-hints"
             />
           </label>
-        )}
 
-        <button
-          type="button"
-          onClick={() => void (loading ? handleCancel() : runSearch())}
-          disabled={!root && !loading}
-          style={{
-            ...(loading ? styles.cancelBtn : styles.searchBtn),
-            opacity: !root && !loading ? 0.55 : 1,
-            cursor: !root && !loading ? 'default' : 'pointer',
-          }}
-        >
-          {loading ? 'Cancel' : 'Search'}
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={() => void (loading ? handleCancel() : runSearch())}
+            disabled={!root && !loading}
+            style={{
+              ...(loading ? styles.cancelBtn : styles.searchBtn),
+              opacity: !root && !loading ? 0.55 : 1,
+              cursor: !root && !loading ? 'default' : 'pointer',
+            }}
+          >
+            {loading ? 'Cancel' : 'Search'}
+          </button>
+        </div>
 
-      <p id="search-ext-hint" style={styles.fieldHint}>
-        File types: leave empty for all files. Use extensions only —{' '}
-        <code style={styles.code}>rs, ts, py</code> or{' '}
-        <code style={styles.code}>.rs .ts</code>
-        . Comma or space separated; case does not matter (
-        <code style={styles.code}>RS</code> = <code style={styles.code}>rs</code>
-        ). Not full filenames or globs.
-      </p>
+        <label style={styles.ignoreLabel}>
+          Ignore folders
+          <input
+            value={ignoreText}
+            onChange={(e) => setIgnoreText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+            placeholder="e.g. renv, venv, node_modules"
+            style={styles.input}
+            disabled={loading}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            aria-describedby="search-field-hints"
+          />
+        </label>
 
-      <div style={styles.scopeHint}>
-        Scope: <code style={styles.code}>{root || '?'}:{normalizeFolderPath(folder)}</code>
-        {mode === 'content'
-          ? ` · content · ±${clampContext(contextLines)} lines`
-          : ' · by filename'}
         {(() => {
-          const exts = extensions
-            .split(/[,\s]+/)
-            .map((e) => e.trim().replace(/^\./, '').toLowerCase())
-            .filter(Boolean);
-          return exts.length
-            ? <> · types <code style={styles.code}>{exts.map((e) => `.${e}`).join(' ')}</code></>
-            : ' · all types';
+          const { dropped, truncated } = parseIgnoreList(ignoreText);
+          if (dropped <= 0 && !truncated) return null;
+          return (
+            <p style={styles.ignoreWarn} role="status">
+              {truncated
+                ? `Ignore text truncated to ${MAX_IGNORE_RAW_LEN.toLocaleString()} characters. `
+                : null}
+              {dropped > 0
+                ? <>
+                    Skipped {dropped} invalid ignore name{dropped === 1 ? '' : 's'}
+                    {' '}(no paths, globs, quotes, or control characters; max {MAX_IGNORE_NAME_LEN} chars,
+                    {' '}{MAX_IGNORE_NAMES} names).
+                  </>
+                : null}
+            </p>
+          );
         })()}
+
+        <div id="search-field-hints" style={styles.fieldHints}>
+          <p style={styles.fieldHint}>
+            File types: extensions only — <code style={styles.code}>rs, ts, py</code>
+            {' '}(comma/space; case-insensitive). Not globs or full names.
+          </p>
+          <p style={styles.fieldHint}>
+            Ignore: single folder names only (exact match, pruned while walking).
+            No <code style={styles.code}>/</code>, globs, or quotes. Defaults cover common
+            package/venv trees. Clear to search everything. Saved per backend in this browser.
+          </p>
+          <p style={styles.fieldHint}>
+            Max depth: <code style={styles.code}>1</code> = this folder only,{' '}
+            <code style={styles.code}>2</code> = one level of subfolders, empty = unlimited.
+          </p>
+        </div>
+
+        <div style={styles.scopeHint}>
+          Scope: <code style={styles.code}>{root || '?'}:{normalizeFolderPath(folder)}</code>
+          {mode === 'content'
+            ? ` · content · ±${clampContext(contextLines)} lines`
+            : ' · by filename'}
+          {(() => {
+            const exts = extensions
+              .split(/[,\s]+/)
+              .map((e) => e.trim().replace(/^\./, '').toLowerCase())
+              .filter(Boolean);
+            return exts.length
+              ? <> · types <code style={styles.code}>{exts.map((e) => `.${e}`).join(' ')}</code></>
+              : ' · all types';
+          })()}
+          {(() => {
+            const { names } = parseIgnoreList(ignoreText);
+            return names.length
+              ? <> · ignore <code style={styles.code}>{names.slice(0, 6).join(', ')}{names.length > 6 ? '…' : ''}</code></>
+              : ' · no ignore';
+          })()}
+          {(() => {
+            const d = parseMaxDepth(maxDepthText);
+            return d != null
+              ? <> · depth ≤ <code style={styles.code}>{d}</code></>
+              : ' · unlimited depth';
+          })()}
+        </div>
       </div>
 
       {loading && (
@@ -440,27 +722,81 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
 
       {error && <div style={styles.error}>{error}</div>}
 
-      {result && !loading && (
-        <div style={styles.meta}>
-          {result.hits.length} hit{result.hits.length === 1 ? '' : 's'}
-          {result.truncated ? ' (truncated)' : ''}
-          {' · '}
-          scanned {result.scanned}
-        </div>
-      )}
+      <div style={styles.resultsPanel}>
+        {result && !loading && (
+          <div style={styles.resultsToolbar}>
+            <div style={styles.meta}>
+              {filteredHits.length === result.hits.length
+                ? `${result.hits.length} hit${result.hits.length === 1 ? '' : 's'}`
+                : `${filteredHits.length} of ${result.hits.length} hits`}
+              {result.truncated ? ' (truncated)' : ''}
+              {' · '}
+              scanned {result.scanned}
+            </div>
+            <input
+              value={resultFilter}
+              onChange={(e) => setResultFilter(e.target.value)}
+              placeholder="Filter results…"
+              style={styles.filterInput}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              aria-label="Filter search results"
+              title="Static filter over path and context lines (does not re-run search)"
+            />
+          </div>
+        )}
 
-      {result && result.hits.length === 0 && !error && (
-        <p style={styles.empty}>No matches in this folder.</p>
-      )}
+        {result && result.hits.length === 0 && !error && !loading && (
+          <p style={styles.empty}>No matches in this folder.</p>
+        )}
 
-      <div style={styles.results}>
-        {result?.hits.map((hit, i) => (
-          <HitCard
-            key={`${hit.root}:${hit.path}:${hit.line ?? 0}:${i}`}
-            hit={hit}
-            onOpen={onOpenFile}
-          />
-        ))}
+        {!result && !loading && !error && (
+          <p style={styles.empty}>
+            Enter a pattern and click Search. Ignored folders are skipped during the walk,
+            so package trees do not inflate scanned counts.
+          </p>
+        )}
+
+        {showHitList && (
+          <div ref={listBoxRef} style={styles.listBox}>
+            {filteredHits.length === 0 ? (
+              <p style={styles.empty}>No hits match this filter.</p>
+            ) : (
+              <VList
+                ref={listRef}
+                height={listHeight}
+                width="100%"
+                itemCount={filteredHits.length}
+                itemSize={getHitSize}
+                itemKey={(index) => {
+                  const h = filteredHits[index]!;
+                  return `${h.root}:${h.path}:${h.line ?? 0}:${index}`;
+                }}
+                itemData={{ hits: filteredHits, onOpen: onOpenFile }}
+              >
+                {VirtualHitRow}
+              </VList>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+type HitRowData = {
+  hits: SearchHit[];
+  onOpen?: (root: string, path: string) => void;
+};
+
+/** Module-level so VariableSizeList does not remount rows every parent render. */
+function VirtualHitRow({ index, style, data }: ListChildComponentProps<HitRowData>) {
+  const hit = data.hits[index]!;
+  return (
+    <div style={style}>
+      <div style={{ ...styles.hit, marginBottom: HIT_GAP }}>
+        <HitCardBody hit={hit} onOpen={data.onOpen} />
       </div>
     </div>
   );
@@ -498,7 +834,7 @@ function parentDir(path: string): string {
   return trimmed.slice(0, idx) || '/';
 }
 
-function HitCard({
+function HitCardBody({
   hit,
   onOpen,
 }: {
@@ -507,7 +843,7 @@ function HitCard({
 }) {
   const context = hit.context ?? [];
   return (
-    <div style={styles.hit}>
+    <>
       <button
         type="button"
         style={styles.hitPath}
@@ -515,7 +851,7 @@ function HitCard({
         title="Open folder in Files"
       >
         <span style={styles.hitRoot}>{hit.root}</span>
-        <span>{hit.path}</span>
+        <span style={styles.hitPathText}>{hit.path}</span>
         {hit.line != null && <span style={styles.hitLine}>:{hit.line}</span>}
       </button>
       {context.length > 0 && (
@@ -527,15 +863,16 @@ function HitCard({
                 ...styles.contextLine,
                 background: line.is_match ? c.accentBg : 'transparent',
                 color: line.is_match ? c.text : c.textSecondary,
+                height: HIT_LINE_H,
               }}
             >
               <span style={styles.lineNo}>{line.line}</span>
-              <span>{line.text}</span>
+              <span style={styles.hitPathText}>{line.text}</span>
             </div>
           ))}
         </pre>
       )}
-    </div>
+    </>
   );
 }
 
@@ -544,12 +881,13 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
-    overflow: 'auto',
-    padding: '20px 24px 32px',
+    minHeight: 0,
+    overflow: 'hidden',
+    padding: '16px 24px 20px',
     boxSizing: 'border-box',
     fontFamily: font.sans,
   },
-  header: { marginBottom: 16 },
+  header: { marginBottom: 10, flexShrink: 0 },
   title: {
     margin: 0,
     fontSize: 18,
@@ -557,11 +895,11 @@ const styles: Record<string, CSSProperties> = {
     color: c.text,
   },
   subtitle: {
-    margin: '6px 0 0',
+    margin: '4px 0 0',
     fontSize: 13,
     color: c.textMuted,
     maxWidth: 560,
-    lineHeight: 1.45,
+    lineHeight: 1.4,
   },
   code: {
     fontFamily: font.mono,
@@ -570,7 +908,7 @@ const styles: Record<string, CSSProperties> = {
     padding: '1px 5px',
     borderRadius: 4,
   },
-  modeRow: { display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' },
+  modeRow: { display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', flexShrink: 0 },
   modeBtn: {
     border: `1px solid ${c.border}`,
     borderRadius: radius.sm,
@@ -579,12 +917,19 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: font.sans,
     background: c.bgSubtle,
   },
+  // Form + hints + scope stay content-sized at the top (never flex-grow).
+  controls: {
+    flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    marginBottom: 12,
+  },
   form: {
     display: 'flex',
     flexWrap: 'wrap',
     gap: 10,
     alignItems: 'end',
-    marginBottom: 8,
   },
   label: {
     display: 'flex',
@@ -594,6 +939,23 @@ const styles: Record<string, CSSProperties> = {
     color: c.textSecondary,
     minWidth: 120,
     flex: '1 1 120px',
+  },
+  // Own row under the toolbar — width 100%, height content-only (no flex grow).
+  ignoreLabel: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    fontSize: 12,
+    color: c.textSecondary,
+    width: '100%',
+    maxWidth: 720,
+  },
+  ignoreWarn: {
+    margin: 0,
+    fontSize: 12,
+    color: c.warning,
+    lineHeight: 1.4,
+    maxWidth: 720,
   },
   input: {
     height: 34,
@@ -606,6 +968,8 @@ const styles: Record<string, CSSProperties> = {
     background: c.surface,
     outline: 'none',
     minWidth: 0,
+    width: '100%',
+    boxSizing: 'border-box',
   },
   select: {
     height: 34,
@@ -642,23 +1006,29 @@ const styles: Record<string, CSSProperties> = {
     flex: '0 0 auto',
     cursor: 'pointer',
   },
+  fieldHints: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+    maxWidth: 720,
+  },
   fieldHint: {
-    margin: '0 0 10px',
+    margin: 0,
     fontSize: 12,
     color: c.textMuted,
-    lineHeight: 1.45,
-    maxWidth: 720,
+    lineHeight: 1.4,
   },
   scopeHint: {
     fontSize: 12,
     color: c.textMuted,
-    marginBottom: 12,
+    lineHeight: 1.4,
   },
   progressBox: {
     padding: '10px 12px',
     borderRadius: radius.sm,
     background: c.accentBg,
     marginBottom: 12,
+    flexShrink: 0,
   },
   progressRow: {
     display: 'flex',
@@ -704,60 +1074,112 @@ const styles: Record<string, CSSProperties> = {
     color: c.danger,
     fontSize: 13,
     marginBottom: 12,
+    flexShrink: 0,
+  },
+  // Results: toolbar stays put; listBox fills remaining height for virtualization.
+  resultsPanel: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  resultsToolbar: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 10,
+    flexShrink: 0,
   },
   meta: {
     fontSize: 12,
     color: c.textMuted,
-    marginBottom: 10,
+    flex: '1 1 auto',
+    minWidth: 140,
+  },
+  filterInput: {
+    height: 30,
+    border: `1px solid ${c.border}`,
+    borderRadius: radius.sm,
+    padding: '0 10px',
+    fontSize: 12,
+    fontFamily: font.mono,
+    color: c.text,
+    background: c.surface,
+    outline: 'none',
+    flex: '0 1 220px',
+    minWidth: 140,
+    boxSizing: 'border-box',
   },
   empty: {
+    margin: 0,
     fontSize: 13,
     color: c.textMuted,
+    lineHeight: 1.45,
+    maxWidth: 520,
   },
-  results: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 10,
+  listBox: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
   },
   hit: {
     border: `1px solid ${c.border}`,
     borderRadius: radius.md,
     background: c.surface,
     overflow: 'hidden',
+    boxSizing: 'border-box',
   },
   hitPath: {
-    display: 'block',
+    display: 'flex',
+    alignItems: 'center',
     width: '100%',
+    height: HIT_PATH_H,
+    boxSizing: 'border-box',
     textAlign: 'left',
     border: 'none',
     background: c.bgSubtle,
-    padding: '8px 12px',
+    padding: '0 12px',
     fontSize: 13,
     fontFamily: font.mono,
     color: c.text,
     cursor: 'pointer',
+    gap: 0,
+    minWidth: 0,
+  },
+  hitPathText: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    minWidth: 0,
   },
   hitRoot: {
     color: c.accent,
     marginRight: 6,
     fontWeight: 600,
+    flexShrink: 0,
   },
   hitLine: {
     color: c.textMuted,
+    flexShrink: 0,
   },
   context: {
     margin: 0,
-    padding: '8px 0',
+    padding: `${HIT_CTX_PAD_Y / 2}px 0`,
     fontSize: 12,
     fontFamily: font.mono,
     color: c.textSecondary,
-    overflowX: 'auto',
+    overflow: 'hidden',
   },
   contextLine: {
     display: 'flex',
+    alignItems: 'center',
     gap: 12,
-    padding: '1px 12px',
-    whiteSpace: 'pre',
+    padding: '0 12px',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    boxSizing: 'border-box',
   },
   lineNo: {
     width: 40,

@@ -265,11 +265,13 @@ or copy files on disk — they are virtual references only.
 1. Select an Agent
 2. Open Search
 3. Choose Files (filename) or Content (regex in file bodies)
-4. Pick a root and optional folder; optionally filter by extensions
+4. Pick a root and optional folder; optionally filter by extensions,
+   ignore folder names, and max directory depth
 5. Click a hit to open its parent folder in Files
 
-Search runs on the agent with progress and cancel. Legacy agents without
-the capability show an unsupported message.
+Search runs on the agent with progress and cancel. Ignore / depth are
+set in the UI and sent with each request (browser-local defaults).
+Legacy agents without the capability show an unsupported message.
 
 ### System Monitoring
 

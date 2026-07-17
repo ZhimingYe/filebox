@@ -223,6 +223,14 @@ pub enum HubMessage {
         /// Content-mode ±context lines (default 10; ignored for find).
         #[serde(default)]
         context: Option<u32>,
+        /// Path-component names to prune (e.g. `venv`, `renv`). From the UI
+        /// per request — empty means do not skip by name.
+        #[serde(default)]
+        ignore: Vec<String>,
+        /// Max directory depth under the search start (1 = that folder only).
+        /// `None` / `0` = unlimited.
+        #[serde(default)]
+        max_depth: Option<u32>,
     },
 }
 
@@ -463,6 +471,8 @@ mod tests {
             extensions: vec!["rs".into()],
             max_results: Some(50),
             context: Some(10),
+            ignore: vec!["venv".into(), "renv".into()],
+            max_depth: Some(4),
         };
         let back = round_trip_hub(&req);
         match back {
@@ -471,12 +481,37 @@ mod tests {
                 query,
                 extensions,
                 context,
+                ignore,
+                max_depth,
                 ..
             } => {
                 assert_eq!(mode, crate::search::SearchMode::Content);
                 assert_eq!(query, "TODO");
                 assert_eq!(extensions, vec!["rs"]);
                 assert_eq!(context, Some(10));
+                assert_eq!(ignore, vec!["venv", "renv"]);
+                assert_eq!(max_depth, Some(4));
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        // Older clients omit ignore/max_depth — defaults apply.
+        let legacy = serde_json::json!({
+            "type": "workspace_search_request",
+            "req_id": "s2",
+            "mode": "find",
+            "root": "data",
+            "query": "x",
+        });
+        let legacy_back: HubMessage = serde_json::from_value(legacy).unwrap();
+        match legacy_back {
+            HubMessage::WorkspaceSearchRequest {
+                ignore,
+                max_depth,
+                ..
+            } => {
+                assert!(ignore.is_empty());
+                assert_eq!(max_depth, None);
             }
             _ => panic!("wrong variant"),
         }

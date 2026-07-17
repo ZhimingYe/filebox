@@ -218,9 +218,11 @@ agent (`ignore` + `regex`) — no system `fd`/`rg` binaries.
 | `content` (Content) | Case-insensitive regex over file lines (rg-like), with ±context |
 
 Scoped to one enabled root + optional folder under that root. Optional
-extension filter (extensions only, not globs). Same path safety /
-denylist / no-symlink-follow as `fs.rs`. Content mode skips binaries
-(NUL in first 8 KiB) and files > 1 MiB.
+extension filter (extensions only, not globs). Per-request `ignore`
+(path-component names; UI defaults cover `renv`/`venv`/…) and
+`max_depth` (directory layers under the search folder). Same path
+safety / denylist / no-symlink-follow as `fs.rs`. Content mode skips
+binaries (NUL in first 8 KiB) and files > 1 MiB.
 
 ```text
 Frontend POST /api/agents/{id}/workspace-search

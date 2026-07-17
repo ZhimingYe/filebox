@@ -211,6 +211,10 @@ export async function workspaceSearch(
     extensions?: string[];
     max_results?: number;
     context?: number;
+    /** Directory/file names to skip at any depth (e.g. venv, renv). */
+    ignore?: string[];
+    /** Max directory layers under the search folder; omit/0 = unlimited. */
+    max_depth?: number | null;
     /** Echoed on the hub's initial SSE progress so Cancel binds to this search. */
     client_nonce?: string;
   },
@@ -225,6 +229,7 @@ export async function workspaceSearch(
     body: JSON.stringify({
       path: '/',
       extensions: [],
+      ignore: [],
       ...body,
     }),
     signal,
