@@ -397,6 +397,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     setResultFilter('');
     setProgressText('Starting search…');
     setScannedLive(0);
+    setOptionsOpen(false);
 
     const slowTimer = window.setTimeout(() => {
       if (reqGen.current === gen) setSlow(true);
@@ -578,32 +579,33 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
             <span style={styles.fieldCaption}>
               {mode === 'find' ? 'Name' : 'Pattern'}
             </span>
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={onQueryKeyDown}
-              placeholder={mode === 'find' ? 'Filename contains…' : 'Regex pattern…'}
-              style={styles.inputQuery}
-              disabled={loading}
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-              aria-label={mode === 'find' ? 'Filename contains' : 'Content regex pattern'}
-            />
+            <div style={styles.queryGroup}>
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={onQueryKeyDown}
+                placeholder={mode === 'find' ? 'Filename contains…' : 'Regex pattern…'}
+                style={styles.inputQuery}
+                disabled={loading}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                aria-label={mode === 'find' ? 'Filename contains' : 'Content regex pattern'}
+              />
+              <button
+                type="button"
+                onClick={() => void (loading ? handleCancel() : runSearch())}
+                disabled={!root && !loading}
+                style={{
+                  ...(loading ? styles.cancelBtn : styles.searchBtn),
+                  opacity: !root && !loading ? 0.55 : 1,
+                  cursor: !root && !loading ? 'default' : 'pointer',
+                }}
+              >
+                {loading ? 'Cancel' : 'Search'}
+              </button>
+            </div>
           </label>
-
-          <button
-            type="button"
-            onClick={() => void (loading ? handleCancel() : runSearch())}
-            disabled={!root && !loading}
-            style={{
-              ...(loading ? styles.cancelBtn : styles.searchBtn),
-              opacity: !root && !loading ? 0.55 : 1,
-              cursor: !root && !loading ? 'default' : 'pointer',
-            }}
-          >
-            {loading ? 'Cancel' : 'Search'}
-          </button>
         </div>
 
         <div style={styles.optionsBar}>
@@ -1011,32 +1013,36 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'end',
   },
   fieldCaption: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: 500,
-    color: c.textMuted,
-    letterSpacing: '0.02em',
-    textTransform: 'uppercase' as const,
+    color: c.textSecondary,
     lineHeight: 1,
-    marginBottom: 4,
+    marginBottom: 5,
     display: 'block',
   },
   fieldRoot: {
     display: 'flex',
     flexDirection: 'column',
-    flex: '0 1 140px',
-    minWidth: 110,
+    flex: '0 1 130px',
+    minWidth: 100,
   },
   fieldFolder: {
     display: 'flex',
     flexDirection: 'column',
-    flex: '0 1 160px',
-    minWidth: 120,
+    flex: '0 1 140px',
+    minWidth: 110,
   },
   fieldQuery: {
     display: 'flex',
     flexDirection: 'column',
-    flex: '1 1 220px',
-    minWidth: 160,
+    flex: '1 1 280px',
+    minWidth: 200,
+  },
+  queryGroup: {
+    display: 'flex',
+    alignItems: 'stretch',
+    gap: 8,
+    minWidth: 0,
   },
   input: {
     height: 32,
@@ -1063,7 +1069,7 @@ const styles: Record<string, CSSProperties> = {
     background: c.surface,
     outline: 'none',
     minWidth: 0,
-    width: '100%',
+    flex: 1,
     boxSizing: 'border-box',
   },
   select: {
@@ -1089,7 +1095,6 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 600,
     fontFamily: font.sans,
     flex: '0 0 auto',
-    alignSelf: 'end',
   },
   cancelBtn: {
     height: 32,
@@ -1102,7 +1107,6 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 600,
     fontFamily: font.sans,
     flex: '0 0 auto',
-    alignSelf: 'end',
     cursor: 'pointer',
   },
   optionsBar: {
@@ -1167,7 +1171,7 @@ const styles: Record<string, CSSProperties> = {
     padding: '10px 10px 8px',
     borderRadius: radius.md,
     background: c.bgSubtle,
-    border: `1px solid ${c.borderSubtle}`,
+    border: `1px solid ${c.border}`,
   },
   optionsGrid: {
     display: 'flex',
