@@ -164,10 +164,20 @@ a:hover {
   to { transform: rotate(360deg); }
 }
 
-/* TextPreview (Monaco) is read-only; the floating find widget is disabled
-   (see TextPreview.tsx) but keep this as a belt-and-suspenders visual hide
-   in case it's ever triggered through a path we didn't intercept (e.g. the
-   right-click context menu), since it can render on top of our toolbar. */
-.filebox-monaco-preview .find-widget {
-  display: none !important;
+/*
+ * Monaco find widget inside TextPreview.
+ *
+ * Monaco's default `.find-widget { overflow: hidden }` can clip the
+ * matches-count / action cluster on the right ("No results", arrows, close).
+ * Keep those controls fully visible. The host still uses overflow:hidden so
+ * the slide-in animation cannot paint over our sibling toolbar above.
+ */
+.filebox-monaco-preview .monaco-editor .find-widget {
+  overflow: visible;
+  z-index: 40;
 }
+.filebox-monaco-preview .monaco-editor .find-widget .matchesCount {
+  overflow: visible;
+  white-space: nowrap;
+}
+

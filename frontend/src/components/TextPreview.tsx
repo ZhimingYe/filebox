@@ -89,28 +89,35 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
   const totalLines = raw.split('\n').length;
   const lang = extToLang[ext] || 'plaintext';
 
-  const handleMount: OnMount = (ed, monacoInstance) => {
+  const handleMount: OnMount = (ed) => {
     editorRef.current = ed;
     ed.updateOptions({ wordWrap: wrap ? 'on' : 'off' });
-    // The floating find widget adds little value in a read-only viewer and
-    // visually collides with our own toolbar, so keep it from ever opening
-    // (Ctrl/Cmd+F, right-click menu) — see the `.find-widget` CSS override
-    // below for the belt-and-suspenders visual hide.
-    ed.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyF, () => {});
+  };
+
+  const openFind = () => {
+    void editorRef.current?.getAction('actions.find')?.run();
   };
 
   return (
     <div style={styles.monacoContainer}>
       <div style={styles.codeToolbar}>
-        <span style={styles.metaInfo}>
-          {totalLines.toLocaleString()} lines · {raw.length.toLocaleString()} chars · {lang}
-        </span>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        {/*
+          Actions on the left so they don't sit directly above Monaco's
+          top-right find widget (which docks under the former right-side
+          button cluster and looked like it was covered by the toolbar).
+        */}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+          <button onClick={openFind} style={styles.toolBtn} title="Find (Ctrl/Cmd+F)">
+            Find
+          </button>
           <button onClick={toggleWrap} style={styles.toolBtn}>
             {wrap ? 'Wrap: On' : 'Wrap: Off'}
           </button>
           <CopyButton text={raw} />
         </div>
+        <span style={{ ...styles.metaInfo, textAlign: 'right' }}>
+          {totalLines.toLocaleString()} lines · {raw.length.toLocaleString()} chars · {lang}
+        </span>
       </div>
       <div style={styles.monacoEditorHost} className="filebox-monaco-preview">
         <Editor
@@ -137,10 +144,17 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
             quickSuggestions: false,
             suggestOnTriggerCharacters: false,
             parameterHints: { enabled: false },
-            // Read-only viewer: hover tooltips add little value here, so
-            // keep them off (see also the disabled find widget below).
+            // Hover tooltips aren't useful in this read-only viewer and can
+            // render under the find widget; keep them off.
             hover: { enabled: false },
             links: true,
+            find: {
+              // Reserve a top view-zone while find is open so the widget
+              // doesn't cover the first lines of code under our toolbar.
+              addExtraSpaceOnTop: true,
+              autoFindInSelection: 'never',
+              seedSearchStringFromSelection: 'selection',
+            },
             // Read-only: hide the cursor caret blink noise; selection still works.
             cursorStyle: 'line-thin',
             overviewRulerLanes: 0,
