@@ -143,6 +143,9 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
         // Threads help on large trees without starving the async runtime
         // (this runs inside spawn_blocking).
         .threads(2)
+        // Prune during the walk (do not descend). Returning false here skips
+        // the whole subtree so ignored dirs never burn scan budget or get
+        // post-filtered out of hits.
         .filter_entry(move |entry| {
             let abs = entry.path();
             if !abs.starts_with(&root_canonical_for_filter) {

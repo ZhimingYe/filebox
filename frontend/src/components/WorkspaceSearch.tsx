@@ -436,7 +436,6 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            aria-describedby="search-ext-hint"
           />
         </label>
 
@@ -470,7 +469,22 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
             style={styles.input}
             disabled={loading}
             title="Max directory layers under the folder (1 = this folder only). Leave empty for unlimited."
-            aria-describedby="search-depth-hint"
+          />
+        </label>
+
+        <label style={{ ...styles.label, flex: '2 1 220px' }}>
+          Ignore folders
+          <input
+            value={ignoreText}
+            onChange={(e) => setIgnoreText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
+            placeholder="e.g. renv, venv, node_modules"
+            style={styles.input}
+            disabled={loading}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            title="Folder names pruned while walking (not filtered after). Saved in this browser."
           />
         </label>
 
@@ -487,40 +501,6 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           {loading ? 'Cancel' : 'Search'}
         </button>
       </div>
-
-      <label style={{ ...styles.label, flex: '1 1 100%', maxWidth: 720, marginBottom: 8 }}>
-        Ignore folders
-        <input
-          value={ignoreText}
-          onChange={(e) => setIgnoreText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !loading) void runSearch(); }}
-          placeholder="e.g. renv, venv, node_modules"
-          style={styles.input}
-          disabled={loading}
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-          aria-describedby="search-ignore-hint"
-        />
-      </label>
-
-      <p id="search-ext-hint" style={styles.fieldHint}>
-        File types: leave empty for all files. Use extensions only —{' '}
-        <code style={styles.code}>rs, ts, py</code> or{' '}
-        <code style={styles.code}>.rs .ts</code>
-        . Comma or space separated; case does not matter (
-        <code style={styles.code}>RS</code> = <code style={styles.code}>rs</code>
-        ). Not full filenames or globs.
-      </p>
-      <p id="search-ignore-hint" style={styles.fieldHint}>
-        Ignore: folder names skipped at any depth (defaults cover common package /
-        venv trees). Comma or space separated. Clear the field to search everything.
-        Saved in this browser.
-      </p>
-      <p id="search-depth-hint" style={styles.fieldHint}>
-        Max depth: <code style={styles.code}>1</code> = this folder only,{' '}
-        <code style={styles.code}>2</code> = one level of subfolders, empty = unlimited.
-      </p>
 
       <div style={styles.scopeHint}>
         Scope: <code style={styles.code}>{root || '?'}:{normalizeFolderPath(folder)}</code>
@@ -548,6 +528,8 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
             ? <> · depth ≤ <code style={styles.code}>{d}</code></>
             : ' · unlimited depth';
         })()}
+        {' · '}types = extensions only
+        {' · '}depth <code style={styles.code}>1</code> = this folder
       </div>
 
       {loading && (
@@ -716,7 +698,8 @@ const styles: Record<string, CSSProperties> = {
     flexWrap: 'wrap',
     gap: 10,
     alignItems: 'end',
-    marginBottom: 8,
+    marginBottom: 6,
+    flexShrink: 0,
   },
   label: {
     display: 'flex',
@@ -774,17 +757,12 @@ const styles: Record<string, CSSProperties> = {
     flex: '0 0 auto',
     cursor: 'pointer',
   },
-  fieldHint: {
-    margin: '0 0 10px',
-    fontSize: 12,
-    color: c.textMuted,
-    lineHeight: 1.45,
-    maxWidth: 720,
-  },
   scopeHint: {
     fontSize: 12,
     color: c.textMuted,
-    marginBottom: 12,
+    marginBottom: 10,
+    lineHeight: 1.45,
+    flexShrink: 0,
   },
   progressBox: {
     padding: '10px 12px',
