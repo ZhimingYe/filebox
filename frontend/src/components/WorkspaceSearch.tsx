@@ -1,8 +1,41 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
+import { VariableSizeList as VList, type ListChildComponentProps } from 'react-window';
 import type { AgentInfo, SearchHit, SearchMode, WorkspaceSearchResult } from '../api/client';
 import { cancelRequest, friendlyMessage, workspaceSearch } from '../api/client';
 import { useSse } from '../state/events';
 import { c, radius, font } from '../theme';
+
+/** Path header + border; context lines are fixed-pitch for VariableSizeList. */
+const HIT_PATH_H = 34;
+const HIT_LINE_H = 17;
+const HIT_CTX_PAD_Y = 16;
+const HIT_GAP = 8;
+const HIT_BORDER = 2;
+
+function estimateHitHeight(hit: SearchHit): number {
+  const n = hit.context?.length ?? 0;
+  const body = n === 0 ? 0 : HIT_CTX_PAD_Y + n * HIT_LINE_H;
+  return HIT_PATH_H + body + HIT_BORDER + HIT_GAP;
+}
+
+/** Case-insensitive substring over path/root/context (client-side only). */
+function hitMatchesFilter(hit: SearchHit, needle: string): boolean {
+  const q = needle.trim().toLowerCase();
+  if (!q) return true;
+  if (hit.path.toLowerCase().includes(q)) return true;
+  if (hit.root.toLowerCase().includes(q)) return true;
+  for (const line of hit.context ?? []) {
+    if (line.text.toLowerCase().includes(q)) return true;
+  }
+  return false;
+}
 
 interface Props {
   agent: AgentInfo;
@@ -124,8 +157,13 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
   const [ignoreText, setIgnoreText] = useState(loadStoredIgnore);
   const [maxDepthText, setMaxDepthText] = useState(loadStoredMaxDepth);
   const [result, setResult] = useState<WorkspaceSearchResult | null>(null);
+  /** Client-side filter over the last result set (does not re-query the agent). */
+  const [resultFilter, setResultFilter] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const listRef = useRef<VList>(null);
+  const listBoxRef = useRef<HTMLDivElement>(null);
+  const [listHeight, setListHeight] = useState(240);
   const [slow, setSlow] = useState(false);
   const [progressText, setProgressText] = useState<string | null>(null);
   const [scannedLive, setScannedLive] = useState<number | null>(null);
@@ -168,6 +206,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     searchingRef.current = false;
     reqGen.current += 1;
     setResult(null);
+    setResultFilter('');
     setError(null);
     setLoading(false);
     setSlow(false);
@@ -180,6 +219,39 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     }
     agentIdRef.current = agent.id;
   }, [agent.id]);
+
+  const filteredHits = useMemo(() => {
+    const hits = result?.hits ?? [];
+    if (!resultFilter.trim()) return hits;
+    return hits.filter((h) => hitMatchesFilter(h, resultFilter));
+  }, [result, resultFilter]);
+
+  const getHitSize = useCallback(
+    (index: number) => estimateHitHeight(filteredHits[index]!),
+    [filteredHits],
+  );
+
+  useEffect(() => {
+    listRef.current?.resetAfterIndex(0, true);
+  }, [filteredHits]);
+
+  useEffect(() => {
+    const el = listBoxRef.current;
+    if (!el) return;
+    let raf = 0;
+    const obs = new ResizeObserver(([entry]) => {
+      const h = entry.contentRect.height;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        setListHeight((prev) => (Math.abs(prev - h) < 1 ? prev : Math.max(120, h)));
+      });
+    });
+    obs.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      obs.disconnect();
+    };
+  }, [result]);
 
   // True unmount (logout / deselect agent): stop the worker.
   useEffect(() => () => {
@@ -263,6 +335,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     setSlow(false);
     setError(null);
     setResult(null);
+    setResultFilter('');
     setProgressText('Starting search…');
     setScannedLive(0);
 
@@ -574,16 +647,35 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
 
       <div style={styles.resultsPanel}>
         {result && !loading && (
-          <div style={styles.meta}>
-            {result.hits.length} hit{result.hits.length === 1 ? '' : 's'}
-            {result.truncated ? ' (truncated)' : ''}
-            {' · '}
-            scanned {result.scanned}
+          <div style={styles.resultsToolbar}>
+            <div style={styles.meta}>
+              {filteredHits.length === result.hits.length
+                ? `${result.hits.length} hit${result.hits.length === 1 ? '' : 's'}`
+                : `${filteredHits.length} of ${result.hits.length} hits`}
+              {result.truncated ? ' (truncated)' : ''}
+              {' · '}
+              scanned {result.scanned}
+            </div>
+            <input
+              value={resultFilter}
+              onChange={(e) => setResultFilter(e.target.value)}
+              placeholder="Filter results…"
+              style={styles.filterInput}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              aria-label="Filter search results"
+              title="Static filter over path and context lines (does not re-run search)"
+            />
           </div>
         )}
 
         {result && result.hits.length === 0 && !error && !loading && (
           <p style={styles.empty}>No matches in this folder.</p>
+        )}
+
+        {result && result.hits.length > 0 && filteredHits.length === 0 && !loading && (
+          <p style={styles.empty}>No hits match this filter.</p>
         )}
 
         {!result && !loading && !error && (
@@ -593,15 +685,41 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
           </p>
         )}
 
-        <div style={styles.results}>
-          {result?.hits.map((hit, i) => (
-            <HitCard
-              key={`${hit.root}:${hit.path}:${hit.line ?? 0}:${i}`}
-              hit={hit}
-              onOpen={onOpenFile}
-            />
-          ))}
-        </div>
+        {result && filteredHits.length > 0 && !loading && (
+          <div ref={listBoxRef} style={styles.listBox}>
+            <VList
+              ref={listRef}
+              height={listHeight}
+              width="100%"
+              itemCount={filteredHits.length}
+              itemSize={getHitSize}
+              itemKey={(index) => {
+                const h = filteredHits[index]!;
+                return `${h.root}:${h.path}:${h.line ?? 0}:${index}`;
+              }}
+              itemData={{ hits: filteredHits, onOpen: onOpenFile }}
+            >
+              {VirtualHitRow}
+            </VList>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+type HitRowData = {
+  hits: SearchHit[];
+  onOpen?: (root: string, path: string) => void;
+};
+
+/** Module-level so VariableSizeList does not remount rows every parent render. */
+function VirtualHitRow({ index, style, data }: ListChildComponentProps<HitRowData>) {
+  const hit = data.hits[index]!;
+  return (
+    <div style={style}>
+      <div style={{ ...styles.hit, marginBottom: HIT_GAP }}>
+        <HitCardBody hit={hit} onOpen={data.onOpen} />
       </div>
     </div>
   );
@@ -639,7 +757,7 @@ function parentDir(path: string): string {
   return trimmed.slice(0, idx) || '/';
 }
 
-function HitCard({
+function HitCardBody({
   hit,
   onOpen,
 }: {
@@ -648,7 +766,7 @@ function HitCard({
 }) {
   const context = hit.context ?? [];
   return (
-    <div style={styles.hit}>
+    <>
       <button
         type="button"
         style={styles.hitPath}
@@ -656,7 +774,7 @@ function HitCard({
         title="Open folder in Files"
       >
         <span style={styles.hitRoot}>{hit.root}</span>
-        <span>{hit.path}</span>
+        <span style={styles.hitPathText}>{hit.path}</span>
         {hit.line != null && <span style={styles.hitLine}>:{hit.line}</span>}
       </button>
       {context.length > 0 && (
@@ -668,15 +786,16 @@ function HitCard({
                 ...styles.contextLine,
                 background: line.is_match ? c.accentBg : 'transparent',
                 color: line.is_match ? c.text : c.textSecondary,
+                height: HIT_LINE_H,
               }}
             >
               <span style={styles.lineNo}>{line.line}</span>
-              <span>{line.text}</span>
+              <span style={styles.hitPathText}>{line.text}</span>
             </div>
           ))}
         </pre>
       )}
-    </div>
+    </>
   );
 }
 
@@ -873,20 +992,41 @@ const styles: Record<string, CSSProperties> = {
     marginBottom: 12,
     flexShrink: 0,
   },
-  // Results scroll in the remaining viewport; content stays top-aligned
-  // (no spacer that invents a blank band between form and hits).
+  // Results: toolbar stays put; listBox fills remaining height for virtualization.
   resultsPanel: {
     flex: 1,
     minHeight: 0,
-    overflow: 'auto',
+    overflow: 'hidden',
     display: 'flex',
     flexDirection: 'column',
+    gap: 8,
+  },
+  resultsToolbar: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
     gap: 10,
+    flexShrink: 0,
   },
   meta: {
     fontSize: 12,
     color: c.textMuted,
-    flexShrink: 0,
+    flex: '1 1 auto',
+    minWidth: 140,
+  },
+  filterInput: {
+    height: 30,
+    border: `1px solid ${c.border}`,
+    borderRadius: radius.sm,
+    padding: '0 10px',
+    fontSize: 12,
+    fontFamily: font.mono,
+    color: c.text,
+    background: c.surface,
+    outline: 'none',
+    flex: '0 1 220px',
+    minWidth: 140,
+    boxSizing: 'border-box',
   },
   empty: {
     margin: 0,
@@ -895,50 +1035,67 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.45,
     maxWidth: 520,
   },
-  results: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 10,
+  listBox: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
   },
   hit: {
     border: `1px solid ${c.border}`,
     borderRadius: radius.md,
     background: c.surface,
     overflow: 'hidden',
+    boxSizing: 'border-box',
   },
   hitPath: {
-    display: 'block',
+    display: 'flex',
+    alignItems: 'center',
     width: '100%',
+    height: HIT_PATH_H,
+    boxSizing: 'border-box',
     textAlign: 'left',
     border: 'none',
     background: c.bgSubtle,
-    padding: '8px 12px',
+    padding: '0 12px',
     fontSize: 13,
     fontFamily: font.mono,
     color: c.text,
     cursor: 'pointer',
+    gap: 0,
+    minWidth: 0,
+  },
+  hitPathText: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    minWidth: 0,
   },
   hitRoot: {
     color: c.accent,
     marginRight: 6,
     fontWeight: 600,
+    flexShrink: 0,
   },
   hitLine: {
     color: c.textMuted,
+    flexShrink: 0,
   },
   context: {
     margin: 0,
-    padding: '8px 0',
+    padding: `${HIT_CTX_PAD_Y / 2}px 0`,
     fontSize: 12,
     fontFamily: font.mono,
     color: c.textSecondary,
-    overflowX: 'auto',
+    overflow: 'hidden',
   },
   contextLine: {
     display: 'flex',
+    alignItems: 'center',
     gap: 12,
-    padding: '1px 12px',
-    whiteSpace: 'pre',
+    padding: '0 12px',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    boxSizing: 'border-box',
   },
   lineNo: {
     width: 40,
