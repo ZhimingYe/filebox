@@ -519,6 +519,40 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     if (e.key === 'Enter' && !loading) void runSearch();
   };
 
+  const folderNorm = normalizeFolderPath(folder);
+  const queryTrim = query.trim();
+  const planReady =
+    Boolean(root) && (mode === 'find' || queryTrim.length > 0);
+
+  /** Live restatement of what Search will run — helps catch mistyped intent. */
+  const planExpression = useMemo(() => {
+    const scope = `${root || '?'}:${folderNorm}`;
+    const typePart = parsedExts.length
+      ? parsedExts.map((e) => `.${e}`).join(' ')
+      : 'all types';
+    const depthPart = parsedDepth != null ? `depth ≤ ${parsedDepth}` : 'unlimited depth';
+    const ignorePart = parsedIgnore.names.length
+      ? `ignore ${parsedIgnore.names.slice(0, 5).join(', ')}${parsedIgnore.names.length > 5 ? '…' : ''}`
+      : 'no ignore';
+    const modePart = mode === 'content'
+      ? (queryTrim
+        ? <>Content matching <code style={styles.planCode}>{queryTrim}</code></>
+        : <>Content matching <span style={styles.planPlaceholder}>pattern…</span></>)
+      : (queryTrim
+        ? <>Files named like <code style={styles.planCode}>{queryTrim}</code></>
+        : <>Files · <span style={styles.planPlaceholder}>any name</span></>);
+    const constraintParts = [
+      mode === 'content' ? `±${ctxLines} lines` : null,
+      typePart,
+      depthPart,
+      ignorePart,
+    ].filter(Boolean) as string[];
+    return { modePart, scope, constraintParts, ready: planReady };
+  }, [
+    root, folderNorm, mode, queryTrim, parsedExts, parsedDepth,
+    parsedIgnore.names, ctxLines, planReady,
+  ]);
+
   return (
     <div style={styles.container}>
       <div style={styles.toolbar}>
@@ -631,32 +665,6 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
               <span style={styles.optionsBadge}>{activeOptionCount}</span>
             )}
           </button>
-
-          {!optionsOpen && (
-            <div style={styles.scopeInline} title="Current search scope">
-              <code style={styles.code}>{root || '?'}:{normalizeFolderPath(folder)}</code>
-              <span style={styles.scopeDot}>·</span>
-              <span>{mode === 'content' ? `±${ctxLines}` : 'by name'}</span>
-              {parsedExts.length > 0 && (
-                <>
-                  <span style={styles.scopeDot}>·</span>
-                  <span>{parsedExts.map((e) => `.${e}`).join(' ')}</span>
-                </>
-              )}
-              {parsedDepth != null && (
-                <>
-                  <span style={styles.scopeDot}>·</span>
-                  <span>depth ≤ {parsedDepth}</span>
-                </>
-              )}
-              {parsedIgnore.names.length > 0 && (
-                <>
-                  <span style={styles.scopeDot}>·</span>
-                  <span>ignore {parsedIgnore.names.length}</span>
-                </>
-              )}
-            </div>
-          )}
         </div>
 
         {optionsOpen && (
@@ -740,6 +748,29 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
             )}
           </div>
         )}
+
+        <div
+          style={{
+            ...styles.planPreview,
+            ...(planExpression.ready ? null : styles.planPreviewIncomplete),
+          }}
+          aria-live="polite"
+          title="Live preview of the search that will run"
+        >
+          <span style={styles.planLabel}>Plan</span>
+          <div style={styles.planBody}>
+            <div style={styles.planPrimary}>{planExpression.modePart}</div>
+            <div style={styles.planSecondary}>
+              <code style={styles.planCode}>{planExpression.scope}</code>
+              {planExpression.constraintParts.map((part) => (
+                <span key={part}>
+                  <span style={styles.planSep}>·</span>
+                  {part}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
 
       {loading && (
@@ -1141,28 +1172,70 @@ const styles: Record<string, CSSProperties> = {
     minWidth: 16,
     textAlign: 'center',
   },
-  scopeInline: {
+  planPreview: {
     display: 'flex',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 0,
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: '8px 10px',
+    borderRadius: radius.md,
+    background: c.bgSubtle,
+    border: `1px solid ${c.border}`,
+    minWidth: 0,
+  },
+  planPreviewIncomplete: {
+    borderStyle: 'dashed',
+    background: c.bg,
+  },
+  planLabel: {
+    flexShrink: 0,
     fontSize: 11,
+    fontWeight: 600,
+    color: c.textMuted,
+    letterSpacing: '0.04em',
+    textTransform: 'uppercase' as const,
+    lineHeight: '18px',
+    paddingTop: 1,
+  },
+  planBody: {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+  },
+  planPrimary: {
+    fontSize: 13,
+    fontWeight: 500,
+    color: c.text,
+    lineHeight: 1.35,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
+  planSecondary: {
+    fontSize: 12,
     color: c.textMuted,
     lineHeight: 1.4,
-    minWidth: 0,
     overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
   },
-  scopeDot: {
-    margin: '0 6px',
-    color: c.textFaint,
-  },
-  code: {
+  planCode: {
     fontFamily: font.mono,
-    fontSize: 11,
+    fontSize: 12,
     background: c.bgMuted,
     padding: '1px 5px',
     borderRadius: 4,
     color: c.textSecondary,
+  },
+  planPlaceholder: {
+    color: c.textMuted,
+    fontWeight: 400,
+    fontStyle: 'italic' as const,
+  },
+  planSep: {
+    margin: '0 6px',
+    color: c.textFaint,
   },
   optionsPanel: {
     display: 'flex',
