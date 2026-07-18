@@ -400,18 +400,17 @@ fn access_token_from_query(query: &str) -> Option<String> {
     query_param(query, "access_token")
 }
 
+/// Parse a query param with the same decoder axum's `Query` extractor uses
+/// (`form_urlencoded` / `serde_urlencoded`), so access-token scope checks
+/// cannot diverge from the values the handler later extracts.
 fn query_param(query: &str, name: &str) -> Option<String> {
-    for pair in query.split('&') {
-        let mut parts = pair.splitn(2, '=');
-        let key = parts.next()?;
-        if key != name {
+    for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+        if key.as_ref() != name {
             continue;
         }
-        let value = parts.next().unwrap_or("");
-        let decoded = percent_decode_query(value);
-        let trimmed = decoded.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
+        let owned = value.into_owned();
+        if !owned.is_empty() {
+            return Some(owned);
         }
     }
     None
@@ -509,45 +508,6 @@ async fn claim_get_access_token(
         }
     }
     Ok(())
-}
-
-fn percent_decode_query(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b'%' if i + 2 < bytes.len() => {
-                let h1 = from_hex(bytes[i + 1]);
-                let h2 = from_hex(bytes[i + 2]);
-                if let (Some(a), Some(b)) = (h1, h2) {
-                    out.push((a << 4) | b);
-                    i += 3;
-                } else {
-                    out.push(bytes[i]);
-                    i += 1;
-                }
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn from_hex(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
 }
 
 fn csrf_tokens_equal(provided: Option<&str>, expected: Option<&str>) -> bool {
@@ -2608,6 +2568,26 @@ mod tests {
             Some("ab/cd")
         );
         assert_eq!(access_token_from_query("csrf=nope&foo=bar"), None);
+    }
+
+    #[test]
+    fn query_param_matches_axum_form_urlencoded_decoding() {
+        // `+` → space (www-form-urlencoded), same as serde_urlencoded / axum Query.
+        assert_eq!(
+            query_param("path=%2Ffoo%2Bbar%2Fbaz", "path").as_deref(),
+            Some("/foo+bar/baz")
+        );
+        assert_eq!(
+            query_param("path=/a+b/c", "path").as_deref(),
+            Some("/a b/c")
+        );
+        // Malformed % sequences: form_urlencoded leaves them as literal text.
+        assert_eq!(
+            query_param("path=%ZZ/x", "path").as_deref(),
+            Some("%ZZ/x")
+        );
+        // Empty values are skipped (no token / no scope field).
+        assert_eq!(query_param("access_token=&root=r", "access_token"), None);
     }
 
     #[test]

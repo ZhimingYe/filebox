@@ -544,11 +544,22 @@ export async function fileRawAccessUrl(
   path: string,
   signal?: AbortSignal,
 ) {
-  const { token } = await createAccessToken(
+  const { url } = await mintFileRawAccess(agentId, root, path, signal);
+  return url;
+}
+
+/** Mint a file_raw access URL and return its TTL so long-lived viewers can refresh. */
+export async function mintFileRawAccess(
+  agentId: string,
+  root: string,
+  path: string,
+  signal?: AbortSignal,
+) {
+  const { token, expires_in_sec } = await createAccessToken(
     { purpose: 'file_raw', agent_id: agentId, root, path },
     signal,
   );
-  return fileRawUrl(agentId, root, path, token);
+  return { url: fileRawUrl(agentId, root, path, token), expiresInSec: expires_in_sec };
 }
 
 export async function eventsAccessUrl(signal?: AbortSignal) {

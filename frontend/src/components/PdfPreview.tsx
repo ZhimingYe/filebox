@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 
-import { fileRawAccessUrl } from '../api/client';
+import { mintFileRawAccess } from '../api/client';
 import { c, radius, shadow, font } from '../theme';
 import { FileDownloadLink } from './FileDownloadLink';
 import {
@@ -38,6 +38,21 @@ interface Props {
 
 const ESTIMATED_ASPECT = 1.414; // A4 portrait, common default before we know real height
 
+/** pdf.js surfaces HTTP auth failures as "Unexpected server response (403)" etc. */
+function isPdfAuthFailure(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes('403')
+    || m.includes('401')
+    || m.includes('429')
+    || m.includes('unexpected server response')
+    || m.includes('access_token')
+    || m.includes('csrf')
+    || m.includes('unauthorized')
+    || m.includes('forbidden')
+  );
+}
+
 export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   // Same large-file gate every other preview uses: ask the agent for the file
   // size up-front via fsStat, and if it exceeds the threshold render a
@@ -51,12 +66,17 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   // temporal dead zone when the effect dependency arrays evaluate at render.
   const mayLoad = !gate.sizeUnknown && !gate.error && !(gate.isLarge && !gate.bypassed);
   // pdf.js cannot send X-CSRF-Token; use a short-lived access_token URL instead.
+  // mintNonce bumps to remint after auth failures or before TTL expiry.
   const [accessUrl, setAccessUrl] = useState<string | null>(null);
+  const [mintNonce, setMintNonce] = useState(0);
   const [numPages, setNumPages] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [containerWidth, setContainerWidth] = useState<number>(0);
   const [slowLoad, setSlowLoad] = useState(false);
   const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set());
+  // One automatic remint per minted URL — avoids a tight remint loop if the
+  // server keeps rejecting (e.g. session actually expired).
+  const authRemintUsed = useRef(false);
 
   useEffect(() => {
     if (!mayLoad) {
@@ -65,9 +85,10 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
     }
     const controller = new AbortController();
     setAccessUrl(null);
-    fileRawAccessUrl(agentId, root, path, controller.signal)
-      .then((u) => {
-        if (!controller.signal.aborted) setAccessUrl(u);
+    authRemintUsed.current = false;
+    mintFileRawAccess(agentId, root, path, controller.signal)
+      .then(({ url }) => {
+        if (!controller.signal.aborted) setAccessUrl(url);
       })
       .catch((err: { name?: string; message?: string }) => {
         if (!controller.signal.aborted && err?.name !== 'AbortError') {
@@ -75,7 +96,16 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
         }
       });
     return () => controller.abort();
-  }, [mayLoad, agentId, root, path]);
+  }, [mayLoad, agentId, root, path, mintNonce]);
+
+  const remintAfterAuthFailure = useCallback((message: string): boolean => {
+    if (!isPdfAuthFailure(message) || authRemintUsed.current) return false;
+    authRemintUsed.current = true;
+    setError(null);
+    setNumPages(0);
+    setMintNonce((n) => n + 1);
+    return true;
+  }, []);
   // Store per-page aspect ratio (height / width) instead of absolute height
   // so placeholders stay correct when the container resizes (pageWidth
   // changes) — no need to invalidate the cache on resize.
@@ -181,7 +211,9 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   };
 
   const onLoadError = (err: Error) => {
-    setError(err.message || 'Failed to load PDF');
+    const message = err.message || 'Failed to load PDF';
+    if (remintAfterAuthFailure(message)) return;
+    setError(message);
     setNumPages(0);
   };
 
@@ -192,6 +224,11 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
       if (prev[page.pageNumber] === aspect) return prev;
       return { ...prev, [page.pageNumber]: aspect };
     });
+  };
+
+  const onPageLoadError = (err: Error) => {
+    // Mid-scroll Range requests can 403 after token expiry / budget exhaustion.
+    remintAfterAuthFailure(err.message || '');
   };
 
   // Document is mounted only when mayLoad (declared above the effects) is
@@ -243,6 +280,7 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
 
       {mayLoad && accessUrl && (
         <Document
+          key={accessUrl}
           file={accessUrl}
           onLoadSuccess={onLoadSuccess}
           onLoadError={onLoadError}
@@ -288,6 +326,7 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
                   renderTextLayer={false}
                   loading={<PageSpinner />}
                   onLoadSuccess={onPageLoadSuccess}
+                  onLoadError={onPageLoadError}
                 />
               ) : (
                 // Placeholder: a centered spinner tells the user the page is

@@ -54,10 +54,11 @@ pub struct GetAccessToken {
     pub requests_served: u32,
 }
 
-pub const GET_ACCESS_TOKEN_TTL_FILE: Duration = Duration::from_secs(15 * 60);
+/// Long enough for an extended PDF viewing session without mid-scroll expiry.
+pub const GET_ACCESS_TOKEN_TTL_FILE: Duration = Duration::from_secs(60 * 60);
 pub const GET_ACCESS_TOKEN_TTL_EVENTS: Duration = Duration::from_secs(30 * 60);
 /// PDF.js issues many Range requests against the same URL.
-pub const GET_ACCESS_TOKEN_MAX_FILE_REQUESTS: u32 = 2_000;
+pub const GET_ACCESS_TOKEN_MAX_FILE_REQUESTS: u32 = 10_000;
 pub const GET_ACCESS_TOKEN_MAX_TOTAL: usize = 4_096;
 pub const GET_ACCESS_TOKEN_MAX_PER_SESSION: usize = 64;
 
