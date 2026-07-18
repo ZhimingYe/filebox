@@ -264,6 +264,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     setFolder('/');
     setIgnoreText(loadStoredIgnore(agent.id));
     setMaxDepthText(loadStoredMaxDepth(agent.id));
+    setOptionsOpen(false);
     if (prevReq && prevAgent && prevAgent !== agent.id) {
       void cancelRequest(prevAgent, prevReq).catch(() => {});
     }
@@ -557,7 +558,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     <div style={styles.container}>
       <div style={styles.toolbar}>
         <div
-          role="tablist"
+          role="group"
           aria-label="Search mode"
           style={styles.modeSeg}
         >
@@ -609,11 +610,11 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
             />
           </label>
 
-          <label style={styles.fieldQuery}>
-            <span style={styles.fieldCaption}>
-              {mode === 'find' ? 'Name' : 'Pattern'}
-            </span>
-            <div style={styles.queryGroup}>
+          <div style={styles.fieldQuery}>
+            <label style={styles.fieldQueryLabel}>
+              <span style={styles.fieldCaption}>
+                {mode === 'find' ? 'Name' : 'Pattern'}
+              </span>
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -626,20 +627,20 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
                 spellCheck={false}
                 aria-label={mode === 'find' ? 'Filename contains' : 'Content regex pattern'}
               />
-              <button
-                type="button"
-                onClick={() => void (loading ? handleCancel() : runSearch())}
-                disabled={!root && !loading}
-                style={{
-                  ...(loading ? styles.cancelBtn : styles.searchBtn),
-                  opacity: !root && !loading ? 0.55 : 1,
-                  cursor: !root && !loading ? 'default' : 'pointer',
-                }}
-              >
-                {loading ? 'Cancel' : 'Search'}
-              </button>
-            </div>
-          </label>
+            </label>
+            <button
+              type="button"
+              onClick={() => void (loading ? handleCancel() : runSearch())}
+              disabled={!root && !loading}
+              style={{
+                ...(loading ? styles.cancelBtn : styles.searchBtn),
+                opacity: !root && !loading ? 0.55 : 1,
+                cursor: !root && !loading ? 'default' : 'pointer',
+              }}
+            >
+              {loading ? 'Cancel' : 'Search'}
+            </button>
+          </div>
         </div>
 
         <div style={styles.optionsBar}>
@@ -648,7 +649,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
             onClick={() => setOptionsOpen((v) => !v)}
             style={styles.optionsToggle}
             aria-expanded={optionsOpen}
-            aria-controls="search-options-panel"
+            aria-controls={optionsOpen ? 'search-options-panel' : undefined}
           >
             <IconChevronRight
               style={{
@@ -735,17 +736,6 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
                 title="Exact folder names only (no paths or globs). Saved per backend."
               />
             </label>
-
-            {(parsedIgnore.dropped > 0 || parsedIgnore.truncated) && (
-              <p style={styles.ignoreWarn} role="status">
-                {parsedIgnore.truncated
-                  ? `Ignore text truncated to ${MAX_IGNORE_RAW_LEN.toLocaleString()} characters. `
-                  : null}
-                {parsedIgnore.dropped > 0
-                  ? `Skipped ${parsedIgnore.dropped} invalid ignore name${parsedIgnore.dropped === 1 ? '' : 's'}.`
-                  : null}
-              </p>
-            )}
           </div>
         )}
 
@@ -771,6 +761,17 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
             </div>
           </div>
         </div>
+
+        {(parsedIgnore.dropped > 0 || parsedIgnore.truncated) && (
+          <p style={styles.ignoreWarn} role="status">
+            {parsedIgnore.truncated
+              ? `Ignore text truncated to ${MAX_IGNORE_RAW_LEN.toLocaleString()} characters. `
+              : null}
+            {parsedIgnore.dropped > 0
+              ? `Skipped ${parsedIgnore.dropped} invalid ignore name${parsedIgnore.dropped === 1 ? '' : 's'} (not sent).`
+              : null}
+          </p>
+        )}
       </div>
 
       {loading && (
@@ -909,8 +910,7 @@ function ModeButton({
   return (
     <button
       type="button"
-      role="tab"
-      aria-selected={active}
+      aria-pressed={active}
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -1065,14 +1065,15 @@ const styles: Record<string, CSSProperties> = {
   },
   fieldQuery: {
     display: 'flex',
-    flexDirection: 'column',
+    alignItems: 'end',
+    gap: 8,
     flex: '1 1 280px',
     minWidth: 200,
   },
-  queryGroup: {
+  fieldQueryLabel: {
     display: 'flex',
-    alignItems: 'stretch',
-    gap: 8,
+    flexDirection: 'column',
+    flex: 1,
     minWidth: 0,
   },
   input: {
@@ -1126,6 +1127,7 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 600,
     fontFamily: font.sans,
     flex: '0 0 auto',
+    alignSelf: 'end',
   },
   cancelBtn: {
     height: 32,
@@ -1138,6 +1140,7 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 600,
     fontFamily: font.sans,
     flex: '0 0 auto',
+    alignSelf: 'end',
     cursor: 'pointer',
   },
   optionsBar: {
