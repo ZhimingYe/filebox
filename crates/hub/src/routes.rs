@@ -2426,6 +2426,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protected_route_rejects_wrong_csrf_even_with_valid_session() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        let app = create_router(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/agents")
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .header("x-csrf-token", "0".repeat(session.csrf_token.len()))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn file_raw_accepts_csrf_query_like_download_links() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        // No agent registered → past CSRF we expect backend_offline / not found,
+        // not csrf_denied. That proves download-style `?csrf=` clears the gate.
+        let app = create_router(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!(
+                        "/api/file/raw?agent_id=missing&root=r&path=/a.txt&csrf={}",
+                        session.csrf_token
+                    ))
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            !text.contains("csrf_denied"),
+            "file/raw with csrf query should not be CSRF-rejected: {text}"
+        );
+    }
+
+    #[test]
+    fn csrf_cookie_header_sets_secure_host_prefix_in_prod() {
+        let header = csrf_cookie_header("abc123", 60, true);
+        let value = header.to_str().unwrap();
+        assert!(value.starts_with("__Host-filebox_csrf=abc123"));
+        assert!(value.contains("Secure"));
+        assert!(value.contains("SameSite=Strict"));
+        assert!(value.contains("Path=/"));
+        assert!(!value.contains("HttpOnly"));
+    }
+
+    #[test]
+    fn csrf_cookie_header_omits_secure_in_dev() {
+        let header = csrf_cookie_header("abc123", 60, false);
+        let value = header.to_str().unwrap();
+        assert!(value.starts_with("filebox_csrf=abc123"));
+        assert!(!value.contains("Secure"));
+        assert!(!value.contains("HttpOnly"));
+    }
+
+    #[tokio::test]
     async fn patch_root_rejects_pin_against_legacy_agent() {
         // P1 capability gate: a legacy agent (no pinned_folders capability)
         // would silently drop pin data and reply "applied", fooling the hub +

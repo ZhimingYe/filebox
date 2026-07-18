@@ -1,25 +1,38 @@
 const BASE = '';
 
-/** In-memory CSRF synchronizer; cookie is the refresh fallback. */
+/**
+ * In-memory CSRF after login (JSON body) before `document.cookie` reflects
+ * Set-Cookie. Cookie is authoritative whenever present so another tab's
+ * re-login cannot leave this tab sending a stale synchronizer forever.
+ */
 let csrfToken: string | null = null;
 
-function readCsrfFromCookie(): string | null {
+function readCookieValue(name: string): string | null {
   if (typeof document === 'undefined') return null;
-  const match = document.cookie.match(/(?:^|;\s*)(?:__Host-)?filebox_csrf=([^;]*)/);
-  if (!match) return null;
-  try {
-    const value = decodeURIComponent(match[1]).trim();
-    return value || null;
-  } catch {
-    return null;
+  const prefix = `${name}=`;
+  for (const part of document.cookie.split(';')) {
+    const trimmed = part.trim();
+    if (!trimmed.startsWith(prefix)) continue;
+    try {
+      const value = decodeURIComponent(trimmed.slice(prefix.length)).trim();
+      return value || null;
+    } catch {
+      return null;
+    }
   }
+  return null;
+}
+
+function readCsrfFromCookie(): string | null {
+  // Prefer the Secure/__Host- name when both somehow exist.
+  return readCookieValue('__Host-filebox_csrf') || readCookieValue('filebox_csrf');
 }
 
 export function getCsrfToken(): string | null {
-  if (csrfToken) return csrfToken;
   const fromCookie = readCsrfFromCookie();
   if (fromCookie) {
     csrfToken = fromCookie;
+    return fromCookie;
   }
   return csrfToken;
 }
@@ -82,7 +95,7 @@ export function friendlyMessage(error: any): string {
   return 'An unexpected error occurred.';
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, retried = false): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
@@ -98,6 +111,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
+    // Another tab may have rotated the CSRF cookie while this tab still had
+    // a stale in-memory value. Drop memory, re-read cookie, retry once.
+    if (
+      !retried
+      && res.status === 403
+      && (body as { error?: string }).error === 'csrf_denied'
+    ) {
+      setCsrfToken(null);
+      const refreshed = getCsrfToken();
+      if (refreshed && refreshed !== csrf) {
+        return request<T>(path, init, true);
+      }
+    }
     throw { status: res.status, ...body };
   }
   return res.json();
