@@ -96,8 +96,12 @@ fn relative_path(root_path: &Path, abs_path: &Path) -> String {
         .to_string()
 }
 
+/// Open a leaf file under `root_canonical` without following any symlink
+/// component (openat + O_NOFOLLOW on Unix). Shared by fs reads and workspace
+/// content search so TOCTOU races cannot redirect an intermediate directory
+/// outside the root after canonicalize.
 #[cfg(unix)]
-fn open_resolved_leaf(
+pub(crate) fn open_resolved_leaf(
     root_canonical: &Path,
     rel_path: &Path,
     _abs_path: &Path,
@@ -173,7 +177,7 @@ fn open_resolved_leaf(
 }
 
 #[cfg(not(unix))]
-fn open_resolved_leaf(
+pub(crate) fn open_resolved_leaf(
     _root_canonical: &Path,
     _rel_path: &Path,
     abs_path: &Path,

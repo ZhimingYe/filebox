@@ -14,6 +14,12 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **Image preview** — flex stage fits tall images; wheel / pinch zoom and pointer pan; dimension downscale caps (max edge 8192, ~16M pixels); `ImagePreview` is now lazy-loaded like other heavy viewers.
 - **Login** — removed the misleading `admin` username placeholder; credentials must still be typed explicitly.
 
+### Security
+- **Dependency CVEs** — bcrypt 0.19.1 → 0.19.2 (RUSTSEC-2026-0199 panic-DoS); crossbeam-epoch 0.9.18 → 0.9.20 (RUSTSEC-2026-0204); npm `dompurify` overridden to 3.4.12 (Monaco transitive XSS advisories).
+- **Workspace Search content open** — content mode now uses the same openat + `O_NOFOLLOW` chain as file reads, closing an intermediate-symlink TOCTOU gap.
+- **Denylist expanded** — `shadow`/`gshadow`/`sudoers`, `.pgpass`/`.htpasswd`, `credentials.csv`/`credentials.txt`, `secrets.y{a,}ml`/`secrets.toml`, `*.tfstate`, `*.kdbx`, and related cloud credential filenames.
+- **Path validators** — pin/collection paths reject `\`; Hub WS debug logs no longer print raw post-auth frames (avoids token leakage).
+
 ---
 
 ## v0.9.0 — 2026-07-16

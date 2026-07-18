@@ -24,6 +24,9 @@
     "remark-gfm": "^4.0.1",
     "utif": "^3.1.0"
   },
+  "overrides": {
+    "dompurify": "3.4.12"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.12.3",

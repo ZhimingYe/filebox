@@ -32,7 +32,7 @@ hex = "0.4"
 tokio-stream = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 async-stream = "0.3"
-bcrypt = "0.19"
+bcrypt = "0.19.2"
 rpassword = "7"
 toml = "0.8"
 sysinfo = { version = "0.35", features = ["multithread"] }
