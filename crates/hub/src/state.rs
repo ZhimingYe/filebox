@@ -35,6 +35,32 @@ pub const PREVIEW_SESSION_MAX_BYTES: u64 = 512 * 1024 * 1024;
 pub const PREVIEW_SESSION_MAX_TOTAL: usize = 1024;
 pub const PREVIEW_SESSION_MAX_PER_SESSION: usize = 32;
 
+/// Short-lived bearer for headerless GETs (downloads, PDF range fetches, SSE).
+/// Minted under CSRF; consumed via `access_token` query — never the CSRF secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GetAccessPurpose {
+    FileRaw,
+    Events,
+}
+
+#[derive(Clone, Debug)]
+pub struct GetAccessToken {
+    pub session_id: String,
+    pub purpose: GetAccessPurpose,
+    pub agent_id: Option<String>,
+    pub root: Option<String>,
+    pub path: Option<String>,
+    pub expires_at: Instant,
+    pub requests_served: u32,
+}
+
+pub const GET_ACCESS_TOKEN_TTL_FILE: Duration = Duration::from_secs(15 * 60);
+pub const GET_ACCESS_TOKEN_TTL_EVENTS: Duration = Duration::from_secs(30 * 60);
+/// PDF.js issues many Range requests against the same URL.
+pub const GET_ACCESS_TOKEN_MAX_FILE_REQUESTS: u32 = 2_000;
+pub const GET_ACCESS_TOKEN_MAX_TOTAL: usize = 4_096;
+pub const GET_ACCESS_TOKEN_MAX_PER_SESSION: usize = 64;
+
 #[derive(Clone)]
 pub struct AuthenticatedSession {
     pub id: String,
@@ -111,6 +137,8 @@ pub struct AppStateInner {
     pub pending_responses: Arc<RwLock<std::collections::HashMap<String, PendingResponse>>>,
     /// Short-lived, directory-scoped bearer tokens for sandboxed HTML previews.
     pub preview_sessions: Arc<RwLock<std::collections::HashMap<String, PreviewSession>>>,
+    /// Short-lived GET bearers for `/api/file/raw` and `/api/events` (no CSRF in URLs).
+    pub get_access_tokens: Arc<RwLock<std::collections::HashMap<String, GetAccessToken>>>,
     /// Broadcast channel for SSE events
     pub sse_tx: broadcast::Sender<SseEvent>,
 }
@@ -133,6 +161,7 @@ impl AppState {
                 start_time: Instant::now(),
                 pending_responses: Arc::new(RwLock::new(std::collections::HashMap::new())),
                 preview_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+                get_access_tokens: Arc::new(RwLock::new(std::collections::HashMap::new())),
                 sse_tx,
             })),
             rate_limiter: Arc::new(LoginRateLimiter::new(5, std::time::Duration::from_secs(30))),

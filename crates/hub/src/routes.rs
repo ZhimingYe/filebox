@@ -17,7 +17,9 @@ use tower_http::services::ServeDir;
 use crate::agent_registry::AgentStatus;
 use crate::net::client_ip;
 use crate::state::{
-    AppState, AuthenticatedSession, PendingResponse, PreviewSession,
+    AppState, AuthenticatedSession, GetAccessPurpose, GetAccessToken, PendingResponse,
+    PreviewSession, GET_ACCESS_TOKEN_MAX_FILE_REQUESTS, GET_ACCESS_TOKEN_MAX_PER_SESSION,
+    GET_ACCESS_TOKEN_MAX_TOTAL, GET_ACCESS_TOKEN_TTL_EVENTS, GET_ACCESS_TOKEN_TTL_FILE,
     PREVIEW_SESSION_MAX_PER_SESSION, PREVIEW_SESSION_MAX_TOTAL, PREVIEW_SESSION_TTL,
 };
 use crate::{events, fs_proxy, health, ws};
@@ -73,6 +75,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/fs/stat", get(fs_proxy::fs_stat_handler))
         .route("/api/file/raw", get(fs_proxy::file_raw_handler))
         .route("/api/preview/sessions", post(preview_session_create_handler))
+        .route("/api/access-tokens", post(access_token_create_handler))
         .route("/api/agents/{agent_id}/sys-stats", get(fs_proxy::sys_stats_handler))
         .route(
             "/api/agents/{agent_id}/workspace-search",
@@ -238,6 +241,8 @@ async fn require_session(
     next: axum::middleware::Next,
 ) -> Response {
     let is_logout = req.uri().path() == "/api/session/logout";
+    let path = req.uri().path().to_string();
+    let query = req.uri().query().map(|q| q.to_string());
     if req
         .headers()
         .get(header::ORIGIN)
@@ -269,9 +274,15 @@ async fn require_session(
             .into_response();
     };
 
-    let provided_csrf = csrf_from_request(req.headers(), req.uri().query());
+    // Header-only CSRF. Headerless GETs (download / PDF / EventSource) use a
+    // short-lived `access_token` instead of putting the synchronizer in the URL.
+    let provided_csrf = csrf_from_header(req.headers());
+    let access_token = query.as_deref().and_then(access_token_from_query);
 
-    let rotated_cookie = {
+    // Resolve the session under the inner write lock, then drop it before
+    // touching get_access_tokens — never nest those locks (mint path takes
+    // tokens write after a brief inner read).
+    let (auth_session_id, rotated_cookie, csrf_ok, tokens_arc, rotate_from_to) = {
         let mut inner = state.inner.write().await;
         let session_result = if is_logout {
             inner.sessions.get_session(&sid).cloned().map(|s| (s, None))
@@ -280,21 +291,23 @@ async fn require_session(
         };
         match session_result {
             Some((session, rotated)) => {
-                if !csrf_tokens_equal(provided_csrf.as_deref(), Some(session.csrf_token.as_str())) {
-                    return (
-                        StatusCode::FORBIDDEN,
-                        Json(serde_json::json!({
-                            "error": "csrf_denied",
-                            "message": "Missing or invalid CSRF token. Reload the page and try again.",
-                            "retryable": false,
-                        })),
-                    )
-                        .into_response();
-                }
-                req.extensions_mut().insert(AuthenticatedSession {
-                    id: session.session_id.clone(),
+                let rotate_from_to = rotated
+                    .as_ref()
+                    .map(|(new_id, _)| (sid.clone(), new_id.clone()));
+                let csrf_ok = csrf_tokens_equal(
+                    provided_csrf.as_deref(),
+                    Some(session.csrf_token.as_str()),
+                );
+                let cookie = rotated.map(|(new_id, max_age)| {
+                    session_cookie_header(&new_id, max_age, state.secure_cookies)
                 });
-                rotated.map(|(new_id, max_age)| session_cookie_header(&new_id, max_age, state.secure_cookies))
+                (
+                    session.session_id.clone(),
+                    cookie,
+                    csrf_ok,
+                    inner.get_access_tokens.clone(),
+                    rotate_from_to,
+                )
             }
             None => {
                 return (
@@ -309,6 +322,44 @@ async fn require_session(
             }
         }
     };
+
+    if let Some((old_id, new_id)) = rotate_from_to {
+        let mut map = tokens_arc.write().await;
+        for tok in map.values_mut() {
+            if tok.session_id == old_id {
+                tok.session_id = new_id.clone();
+            }
+        }
+    }
+
+    if !csrf_ok {
+        if let Some(token) = access_token.as_deref() {
+            if let Err(resp) = claim_get_access_token(
+                &tokens_arc,
+                token,
+                &auth_session_id,
+                &path,
+                query.as_deref(),
+            )
+            .await
+            {
+                return resp;
+            }
+        } else {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "csrf_denied",
+                    "message": "Missing or invalid CSRF / access token. Reload the page and try again.",
+                    "retryable": false,
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    req.extensions_mut()
+        .insert(AuthenticatedSession { id: auth_session_id });
 
     let mut resp = next.run(req).await;
     if let Some(cookie) = rotated_cookie {
@@ -336,24 +387,24 @@ fn cookie_value(cookies: &str, name: &str) -> Option<String> {
     })
 }
 
-/// CSRF from `X-CSRF-Token` header, or `csrf` query (EventSource / <a download>).
-fn csrf_from_request(headers: &HeaderMap, query: Option<&str>) -> Option<String> {
-    if let Some(token) = headers
+fn csrf_from_header(headers: &HeaderMap) -> Option<String> {
+    headers
         .get("x-csrf-token")
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-    {
-        return Some(token.to_string());
-    }
-    query.and_then(csrf_from_query)
+        .map(|s| s.to_string())
 }
 
-fn csrf_from_query(query: &str) -> Option<String> {
+fn access_token_from_query(query: &str) -> Option<String> {
+    query_param(query, "access_token")
+}
+
+fn query_param(query: &str, name: &str) -> Option<String> {
     for pair in query.split('&') {
         let mut parts = pair.splitn(2, '=');
         let key = parts.next()?;
-        if key != "csrf" {
+        if key != name {
             continue;
         }
         let value = parts.next().unwrap_or("");
@@ -364,6 +415,100 @@ fn csrf_from_query(query: &str) -> Option<String> {
         }
     }
     None
+}
+
+async fn claim_get_access_token(
+    tokens: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, GetAccessToken>>>,
+    token: &str,
+    session_id: &str,
+    path: &str,
+    query: Option<&str>,
+) -> Result<(), Response> {
+    let now = std::time::Instant::now();
+    let mut map = tokens.write().await;
+    map.retain(|_, t| t.expires_at > now);
+    let Some(record) = map.get_mut(token) else {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "access_token_invalid",
+                "message": "Access token missing or expired. Retry the download.",
+                "retryable": true,
+            })),
+        )
+            .into_response());
+    };
+    if record.session_id != session_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "access_token_invalid",
+                "message": "Access token does not belong to this session",
+                "retryable": false,
+            })),
+        )
+            .into_response());
+    }
+
+    match record.purpose {
+        GetAccessPurpose::Events => {
+            if path != "/api/events" {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "error": "access_token_invalid",
+                        "message": "Access token is not valid for this endpoint",
+                        "retryable": false,
+                    })),
+                )
+                    .into_response());
+            }
+        }
+        GetAccessPurpose::FileRaw => {
+            if path != "/api/file/raw" {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "error": "access_token_invalid",
+                        "message": "Access token is not valid for this endpoint",
+                        "retryable": false,
+                    })),
+                )
+                    .into_response());
+            }
+            let q = query.unwrap_or("");
+            let agent_id = query_param(q, "agent_id").unwrap_or_default();
+            let root = query_param(q, "root").unwrap_or_default();
+            let file_path = query_param(q, "path").unwrap_or_default();
+            if record.agent_id.as_deref() != Some(agent_id.as_str())
+                || record.root.as_deref() != Some(root.as_str())
+                || record.path.as_deref() != Some(file_path.as_str())
+            {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "error": "access_token_invalid",
+                        "message": "Access token is not valid for this file",
+                        "retryable": false,
+                    })),
+                )
+                    .into_response());
+            }
+            if record.requests_served >= GET_ACCESS_TOKEN_MAX_FILE_REQUESTS {
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(serde_json::json!({
+                        "error": "access_token_exhausted",
+                        "message": "Access token request budget exceeded",
+                        "retryable": true,
+                    })),
+                )
+                    .into_response());
+            }
+            record.requests_served = record.requests_served.saturating_add(1);
+        }
+    }
+    Ok(())
 }
 
 fn percent_decode_query(value: &str) -> String {
@@ -544,10 +689,15 @@ async fn session_logout_handler(
     let mut inner = state.inner.write().await;
     inner.sessions.remove(&session.id);
     let preview_sessions = inner.preview_sessions.clone();
+    let get_access_tokens = inner.get_access_tokens.clone();
     drop(inner);
     {
         let mut previews = preview_sessions.write().await;
         previews.retain(|_, preview| preview.session_id != session.id);
+    }
+    {
+        let mut tokens = get_access_tokens.write().await;
+        tokens.retain(|_, tok| tok.session_id != session.id);
     }
 
     tracing::info!(target: "audit", ip = %ip, "logout");
@@ -561,6 +711,129 @@ async fn session_logout_handler(
         resp.headers_mut().append(header::SET_COOKIE, cookie);
     }
     resp
+}
+
+// ── Short-lived GET access tokens (downloads / SSE / PDF ranges) ────────────
+
+#[derive(serde::Deserialize)]
+struct AccessTokenCreateRequest {
+    purpose: String,
+    agent_id: Option<String>,
+    root: Option<String>,
+    path: Option<String>,
+}
+
+async fn access_token_create_handler(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
+    Json(req): Json<AccessTokenCreateRequest>,
+) -> Response {
+    let purpose = match req.purpose.as_str() {
+        "file_raw" => GetAccessPurpose::FileRaw,
+        "events" => GetAccessPurpose::Events,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_request",
+                    "message": "purpose must be file_raw or events",
+                    "retryable": false,
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let (agent_id, root, path, ttl) = match purpose {
+        GetAccessPurpose::FileRaw => {
+            let agent_id = req.agent_id.unwrap_or_default();
+            let root = req.root.unwrap_or_default();
+            let path = req.path.unwrap_or_default();
+            if agent_id.is_empty() || root.is_empty() || path.is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_request",
+                        "message": "file_raw tokens require agent_id, root, and path",
+                        "retryable": false,
+                    })),
+                )
+                    .into_response();
+            }
+            if path.contains('\0') || path.contains('\\') || path_has_dotdot(&path) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_request",
+                        "message": "invalid path",
+                        "retryable": false,
+                    })),
+                )
+                    .into_response();
+            }
+            (
+                Some(agent_id),
+                Some(root),
+                Some(path),
+                GET_ACCESS_TOKEN_TTL_FILE,
+            )
+        }
+        GetAccessPurpose::Events => (None, None, None, GET_ACCESS_TOKEN_TTL_EVENTS),
+    };
+
+    let token = generate_access_token();
+    let now = std::time::Instant::now();
+    let record = GetAccessToken {
+        session_id: session.id.clone(),
+        purpose,
+        agent_id,
+        root,
+        path,
+        expires_at: now + ttl,
+        requests_served: 0,
+    };
+
+    let tokens = {
+        let inner = state.inner.read().await;
+        inner.get_access_tokens.clone()
+    };
+    {
+        let mut map = tokens.write().await;
+        map.retain(|_, t| t.expires_at > now);
+        let mine = map
+            .values()
+            .filter(|t| t.session_id == session.id)
+            .count();
+        if map.len() >= GET_ACCESS_TOKEN_MAX_TOTAL || mine >= GET_ACCESS_TOKEN_MAX_PER_SESSION {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({
+                    "error": "too_many_requests",
+                    "message": "Too many access tokens; retry later",
+                    "retryable": true,
+                })),
+            )
+                .into_response();
+        }
+        map.insert(token.clone(), record);
+    }
+
+    Json(serde_json::json!({
+        "token": token,
+        "expires_in_sec": ttl.as_secs(),
+    }))
+    .into_response()
+}
+
+fn generate_access_token() -> String {
+    let mut rng = rand::rng();
+    let mut bytes = [0u8; 32];
+    rng.fill(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn path_has_dotdot(path: &str) -> bool {
+    path.split('/').any(|seg| seg == "..")
 }
 
 // ── Sandboxed HTML Preview Sessions ─────────────────────────────────────────
@@ -2329,12 +2602,12 @@ mod tests {
     }
 
     #[test]
-    fn csrf_from_query_decodes_and_ignores_other_params() {
+    fn access_token_from_query_decodes_and_ignores_other_params() {
         assert_eq!(
-            csrf_from_query("agent_id=a&csrf=ab%2Fcd&root=r").as_deref(),
+            access_token_from_query("agent_id=a&access_token=ab%2Fcd&root=r").as_deref(),
             Some("ab/cd")
         );
-        assert_eq!(csrf_from_query("foo=bar"), None);
+        assert_eq!(access_token_from_query("csrf=nope&foo=bar"), None);
     }
 
     #[test]
@@ -2401,7 +2674,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn protected_route_accepts_csrf_query_param() {
+    async fn protected_route_rejects_csrf_in_query_without_header() {
         let state = AppState::new(&test_config(), false);
         let (session, _) = {
             let mut inner = state.inner.write().await;
@@ -2411,7 +2684,7 @@ mod tests {
         let response = app
             .oneshot(
                 axum::http::Request::builder()
-                    .uri(format!("/api/events?csrf={}", session.csrf_token))
+                    .uri(format!("/api/agents?csrf={}", session.csrf_token))
                     .header(
                         header::COOKIE,
                         format!("filebox_session={}", session.session_id),
@@ -2421,7 +2694,48 @@ mod tests {
             )
             .await
             .unwrap();
-        // SSE handler returns 200 OK streaming body when session+csrf are valid.
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn events_accepts_scoped_access_token_without_csrf_header() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        let token = "a".repeat(64);
+        {
+            let now = std::time::Instant::now();
+            let tokens = state.inner.read().await.get_access_tokens.clone();
+            let mut map = tokens.write().await;
+            map.insert(
+                token.clone(),
+                GetAccessToken {
+                    session_id: session.session_id.clone(),
+                    purpose: GetAccessPurpose::Events,
+                    agent_id: None,
+                    root: None,
+                    path: None,
+                    expires_at: now + GET_ACCESS_TOKEN_TTL_EVENTS,
+                    requests_served: 0,
+                },
+            );
+        }
+        let app = create_router(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/api/events?access_token={token}"))
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -2451,21 +2765,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_raw_accepts_csrf_query_like_download_links() {
+    async fn file_raw_accepts_scoped_access_token_without_csrf_header() {
         let state = AppState::new(&test_config(), false);
         let (session, _) = {
             let mut inner = state.inner.write().await;
             inner.sessions.create_session("admin", false)
         };
-        // No agent registered → past CSRF we expect backend_offline / not found,
-        // not csrf_denied. That proves download-style `?csrf=` clears the gate.
+        let token = "b".repeat(64);
+        {
+            let now = std::time::Instant::now();
+            let tokens = state.inner.read().await.get_access_tokens.clone();
+            let mut map = tokens.write().await;
+            map.insert(
+                token.clone(),
+                GetAccessToken {
+                    session_id: session.session_id.clone(),
+                    purpose: GetAccessPurpose::FileRaw,
+                    agent_id: Some("missing".to_string()),
+                    root: Some("r".to_string()),
+                    path: Some("/a.txt".to_string()),
+                    expires_at: now + GET_ACCESS_TOKEN_TTL_FILE,
+                    requests_served: 0,
+                },
+            );
+        }
+        // No agent → past access-token gate we expect backend_offline, not csrf_denied.
         let app = create_router(state);
         let response = app
             .oneshot(
                 axum::http::Request::builder()
                     .uri(format!(
-                        "/api/file/raw?agent_id=missing&root=r&path=/a.txt&csrf={}",
-                        session.csrf_token
+                        "/api/file/raw?agent_id=missing&root=r&path=/a.txt&access_token={token}"
                     ))
                     .header(
                         header::COOKIE,
@@ -2482,9 +2812,107 @@ mod tests {
             .unwrap();
         let text = String::from_utf8_lossy(&body);
         assert!(
-            !text.contains("csrf_denied"),
-            "file/raw with csrf query should not be CSRF-rejected: {text}"
+            !text.contains("csrf_denied") && !text.contains("access_token_invalid"),
+            "file/raw with access_token should pass auth gate: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn access_token_mint_and_use_for_events() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        let app = create_router(state);
+        let mint = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/access-tokens")
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .header("x-csrf-token", session.csrf_token.clone())
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(r#"{"purpose":"events"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mint.status(), StatusCode::OK);
+        let mint_body = axum::body::to_bytes(mint.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let mint_json: serde_json::Value = serde_json::from_slice(&mint_body).unwrap();
+        let token = mint_json["token"].as_str().expect("token");
+        assert_eq!(token.len(), 64);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/api/events?access_token={token}"))
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn file_raw_access_token_rejects_wrong_path_scope() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        let token = "c".repeat(64);
+        {
+            let now = std::time::Instant::now();
+            let tokens = state.inner.read().await.get_access_tokens.clone();
+            let mut map = tokens.write().await;
+            map.insert(
+                token.clone(),
+                GetAccessToken {
+                    session_id: session.session_id.clone(),
+                    purpose: GetAccessPurpose::FileRaw,
+                    agent_id: Some("a".to_string()),
+                    root: Some("r".to_string()),
+                    path: Some("/allowed.txt".to_string()),
+                    expires_at: now + GET_ACCESS_TOKEN_TTL_FILE,
+                    requests_served: 0,
+                },
+            );
+        }
+        let app = create_router(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!(
+                        "/api/file/raw?agent_id=a&root=r&path=/other.txt&access_token={token}"
+                    ))
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "access_token_invalid");
     }
 
     #[test]

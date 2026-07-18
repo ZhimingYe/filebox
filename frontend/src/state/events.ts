@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { eventsUrl } from '../api/client';
+import { eventsAccessUrl } from '../api/client';
 
 export interface SseEvent {
   event: string;
@@ -12,11 +12,12 @@ class SseManager {
   private source: EventSource | null = null;
   private listeners = new Set<Listener>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectGeneration = 0;
 
   subscribe(listener: Listener) {
     this.listeners.add(listener);
     if (!this.source) {
-      this.connect();
+      void this.connect();
     }
     return () => {
       this.listeners.delete(listener);
@@ -26,10 +27,25 @@ class SseManager {
     };
   }
 
-  private connect() {
+  private async connect() {
     if (this.source) return;
 
-    const es = new EventSource(eventsUrl());
+    const generation = ++this.connectGeneration;
+    let url: string;
+    try {
+      // EventSource cannot set X-CSRF-Token; mint a short-lived GET bearer.
+      url = await eventsAccessUrl();
+    } catch {
+      this.reconnectTimer = setTimeout(() => {
+        void this.connect();
+      }, 3000);
+      return;
+    }
+    if (generation !== this.connectGeneration || this.listeners.size === 0) {
+      return;
+    }
+
+    const es = new EventSource(url);
     this.source = es;
 
     es.onmessage = (e) => {
@@ -66,8 +82,10 @@ class SseManager {
     es.onerror = () => {
       es.close();
       this.source = null;
-      // Reconnect after 3 seconds
-      this.reconnectTimer = setTimeout(() => this.connect(), 3000);
+      // Remint access token on reconnect (old one may be expired).
+      this.reconnectTimer = setTimeout(() => {
+        void this.connect();
+      }, 3000);
     };
   }
 
@@ -84,6 +102,7 @@ class SseManager {
   }
 
   private disconnect() {
+    this.connectGeneration += 1;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

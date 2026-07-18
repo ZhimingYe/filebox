@@ -105,8 +105,9 @@ impl SessionStore {
 
         if total > 0 && remaining > 0 && remaining.saturating_mul(2) < total {
             let new_id = generate_session_id();
-            // Keep the CSRF token across session-id rotation so open tabs and
-            // EventSource URLs that already embedded `csrf=` keep working.
+            // Keep the CSRF token across session-id rotation so open tabs that
+            // already hold the synchronizer (header / readable cookie) keep
+            // working. GET access tokens are rebound separately in middleware.
             let new_session = Session {
                 session_id: new_id.clone(),
                 csrf_token: current.csrf_token.clone(),

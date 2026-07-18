@@ -9,6 +9,7 @@ import {
   PREVIEW_SIZE_THRESHOLDS,
   styles,
 } from './previewShared';
+import { FileDownloadLink } from './FileDownloadLink';
 
 // Extracted from PreviewPane so the TIFF decoder (UTIF, ~50KB) can be lazy-
 // loaded only when a TIFF is actually opened. Native image formats
@@ -497,7 +498,9 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
         size={fileSize!}
         flavor="image"
         onForceLoad={gate.forceLoad}
-        url={url}
+        agentId={agentId}
+        root={root}
+        path={path}
       />
     );
   }
@@ -524,7 +527,7 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
           <p style={styles.errorText}>{imgError}</p>
           <div style={{ display: 'flex', gap: 12 }}>
             <button onClick={handleRetry} style={styles.retryBtn}>Retry</button>
-            <a href={url} download style={styles.downloadLink}>Download</a>
+            <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
           </div>
         </div>
       ) : (

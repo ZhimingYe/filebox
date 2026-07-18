@@ -18,6 +18,7 @@ import { PinnedFolders } from './components/PinnedFolders';
 import { CollectionsView } from './components/CollectionsView';
 import { WorkspaceSplit } from './components/WorkspaceSplit';
 import { CollectionPicker } from './components/CollectionPicker';
+import { FileDownloadLink } from './components/FileDownloadLink';
 import { NoAgentSelected } from './components/NoAgentSelected';
 import {
   IconChevronLeft,
@@ -32,7 +33,6 @@ import {
   IconBrandMark,
 } from './components/icons';
 import type { FsEntry } from './api/client';
-import { fileRawUrl } from './api/client';
 import * as api from './api/client';
 import { c, radius, shadow, font } from './theme';
 
@@ -891,14 +891,12 @@ export default function App() {
                   <div style={styles.previewHeader}>
                     <span style={styles.previewPath}>{activeTab.path}</span>
                     <div style={styles.previewActions}>
-                      <a
-                        href={fileRawUrl(selectedAgent.id, activeTab.root, activeTab.path)}
-                        download
+                      <FileDownloadLink
+                        agentId={selectedAgent.id}
+                        root={activeTab.root}
+                        path={activeTab.path}
                         style={styles.headerLink}
-                        title="Download"
-                      >
-                        Download
-                      </a>
+                      />
                     </div>
                   </div>
                   <PreviewErrorBoundary key={activeTab.id}>

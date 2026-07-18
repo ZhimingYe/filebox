@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { c, radius, font, shadow } from '../theme';
 import { fsStat, withCsrf } from '../api/client';
+import { FileDownloadLink } from './FileDownloadLink';
 
 // ── useMounted ────────────────────────────────────────────────────────────
 // Prevents state updates after a component unmounts. Reset on each setup so
@@ -266,11 +267,13 @@ export function FileGateError({ message, onRetry }: { message: string; onRetry: 
   );
 }
 
-export function LargeFileWarning({ size, flavor, onForceLoad, url }: {
+export function LargeFileWarning({ size, flavor, onForceLoad, agentId, root, path }: {
   size: number;
   flavor: string;
   onForceLoad: () => void;
-  url: string;
+  agentId: string;
+  root: string;
+  path: string;
 }) {
   const sizeMB = (size / (1024 * 1024)).toFixed(1);
   return (
@@ -279,7 +282,14 @@ export function LargeFileWarning({ size, flavor, onForceLoad, url }: {
         <p style={styles.largeImageTitle}>Large {flavor} ({sizeMB} MB)</p>
         <p style={styles.largeImageText}>Loading may use significant memory or freeze the tab.</p>
         <button onClick={onForceLoad} style={styles.loadImageBtn}>Load anyway</button>
-        <a href={url} download style={styles.downloadLink}>Download instead</a>
+        <FileDownloadLink
+          agentId={agentId}
+          root={root}
+          path={path}
+          style={styles.downloadLink}
+        >
+          Download instead
+        </FileDownloadLink>
       </div>
     </div>
   );

@@ -65,6 +65,8 @@ export function friendlyMessage(error: any): string {
     unauthorized: 'Session expired. Please log in again.',
     session_expired: 'Session expired. Please log in again.',
     csrf_denied: 'Security check failed. Reload the page and try again.',
+    access_token_invalid: 'Download authorization expired. Retry the download.',
+    access_token_exhausted: 'Download authorization exhausted. Retry the download.',
     invalid_credentials: 'Invalid username or password.',
     not_found: 'Resource not found.',
     backend_slow: 'Agent is responding slowly.',
@@ -511,19 +513,47 @@ export async function fsStat(agentId: string, root: string, path: string, signal
   return request<{ stat: FileStat | null; error?: string }>(`/api/fs/stat?${params}`, { signal });
 }
 
-export function fileRawUrl(agentId: string, root: string, path: string) {
+/** Bare raw-file URL (session cookie + CSRF header, or `access_token` query). */
+export function fileRawUrl(agentId: string, root: string, path: string, accessToken?: string) {
   const params = new URLSearchParams({ agent_id: agentId, root, path });
-  const csrf = getCsrfToken();
-  if (csrf) {
-    params.set('csrf', csrf);
+  if (accessToken) {
+    params.set('access_token', accessToken);
   }
   return `/api/file/raw?${params}`;
 }
 
-/** SSE cannot set headers; pass the synchronizer token as a query param. */
-export function eventsUrl() {
-  const csrf = getCsrfToken();
-  return csrf ? `/api/events?csrf=${encodeURIComponent(csrf)}` : '/api/events';
+export type AccessTokenPurpose = 'file_raw' | 'events';
+
+/** Mint a short-lived GET bearer (CSRF-gated). Never put the CSRF secret in URLs. */
+export async function createAccessToken(body: {
+  purpose: AccessTokenPurpose;
+  agent_id?: string;
+  root?: string;
+  path?: string;
+}, signal?: AbortSignal) {
+  return request<{ token: string; expires_in_sec: number }>('/api/access-tokens', {
+    method: 'POST',
+    signal,
+    body: JSON.stringify(body),
+  });
+}
+
+export async function fileRawAccessUrl(
+  agentId: string,
+  root: string,
+  path: string,
+  signal?: AbortSignal,
+) {
+  const { token } = await createAccessToken(
+    { purpose: 'file_raw', agent_id: agentId, root, path },
+    signal,
+  );
+  return fileRawUrl(agentId, root, path, token);
+}
+
+export async function eventsAccessUrl(signal?: AbortSignal) {
+  const { token } = await createAccessToken({ purpose: 'events' }, signal);
+  return `/api/events?access_token=${encodeURIComponent(token)}`;
 }
 
 export async function createPreviewSession(agentId: string, root: string, path: string, signal?: AbortSignal) {

@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 
+import { fileRawAccessUrl } from '../api/client';
 import { c, radius, shadow, font } from '../theme';
+import { FileDownloadLink } from './FileDownloadLink';
 import {
   LoadingOverlay,
   LargeFileWarning,
@@ -36,7 +38,7 @@ interface Props {
 
 const ESTIMATED_ASPECT = 1.414; // A4 portrait, common default before we know real height
 
-export function PdfPreview({ agentId, root, path, url }: Props) {
+export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   // Same large-file gate every other preview uses: ask the agent for the file
   // size up-front via fsStat, and if it exceeds the threshold render a
   // "Load anyway?" warning instead of handing the URL straight to react-pdf.
@@ -48,11 +50,32 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
   // render guard below) depend on it. Declaring it lower would hit the
   // temporal dead zone when the effect dependency arrays evaluate at render.
   const mayLoad = !gate.sizeUnknown && !gate.error && !(gate.isLarge && !gate.bypassed);
+  // pdf.js cannot send X-CSRF-Token; use a short-lived access_token URL instead.
+  const [accessUrl, setAccessUrl] = useState<string | null>(null);
   const [numPages, setNumPages] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [containerWidth, setContainerWidth] = useState<number>(0);
   const [slowLoad, setSlowLoad] = useState(false);
   const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    if (!mayLoad) {
+      setAccessUrl(null);
+      return;
+    }
+    const controller = new AbortController();
+    setAccessUrl(null);
+    fileRawAccessUrl(agentId, root, path, controller.signal)
+      .then((u) => {
+        if (!controller.signal.aborted) setAccessUrl(u);
+      })
+      .catch((err: { name?: string; message?: string }) => {
+        if (!controller.signal.aborted && err?.name !== 'AbortError') {
+          setError(err?.message || 'Failed to authorize PDF download');
+        }
+      });
+    return () => controller.abort();
+  }, [mayLoad, agentId, root, path]);
   // Store per-page aspect ratio (height / width) instead of absolute height
   // so placeholders stay correct when the container resizes (pageWidth
   // changes) — no need to invalidate the cache on resize.
@@ -191,13 +214,21 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
           size={gate.size!}
           flavor="PDF"
           onForceLoad={gate.forceLoad}
-          url={url}
+          agentId={agentId}
+          root={root}
+          path={path}
         />
       )}
 
-      {mayLoad && numPages === 0 && !error && (
+      {mayLoad && !error && (!accessUrl || numPages === 0) && (
         <LoadingOverlay
-          message={slowLoad ? 'PDF is large, still loading...' : 'Loading PDF...'}
+          message={
+            !accessUrl
+              ? 'Authorizing PDF...'
+              : slowLoad
+                ? 'PDF is large, still loading...'
+                : 'Loading PDF...'
+          }
         />
       )}
 
@@ -205,14 +236,14 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
         <div style={styles.errorBox}>
           <p style={styles.errorText}>{error}</p>
           <div style={{ display: 'flex', gap: 12 }}>
-            <a href={url} download style={styles.downloadLink}>Download</a>
+            <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
           </div>
         </div>
       )}
 
-      {mayLoad && (
+      {mayLoad && accessUrl && (
         <Document
-          file={url}
+          file={accessUrl}
           onLoadSuccess={onLoadSuccess}
           onLoadError={onLoadError}
           loading=""

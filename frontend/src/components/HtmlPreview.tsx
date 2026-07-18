@@ -13,6 +13,7 @@ import {
   LoadingOverlay,
   styles,
 } from './previewShared';
+import { FileDownloadLink } from './FileDownloadLink';
 
 interface Props {
   agentId: string;
@@ -326,7 +327,9 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
         size={gate.size!}
         flavor="HTML"
         onForceLoad={gate.forceLoad}
-        url={url}
+        agentId={agentId}
+        root={root}
+        path={path}
       />
     );
   }
@@ -345,7 +348,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
           <p style={styles.errorText}>{error}</p>
           <div style={{ display: 'flex', gap: 12 }}>
             <button onClick={retry} style={styles.retryBtn}>Retry</button>
-            <a href={url} download style={styles.downloadLink}>Download</a>
+            <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
           </div>
         </div>
       </div>
@@ -368,7 +371,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
           <p style={styles.errorText}>{previewError}</p>
           <div style={{ display: 'flex', gap: 12 }}>
             <button onClick={() => setPreviewRetryToken((n) => n + 1)} style={styles.retryBtn}>Retry</button>
-            <a href={url} download style={styles.downloadLink}>Download</a>
+            <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
           </div>
         </div>
       </div>
@@ -418,7 +421,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
             <div style={docWarningTitle}>Non-standard HTML structure</div>
             <div style={docWarningBody}>
               The file is missing an <code>{'<html>'}</code> element. Browsers handle this gracefully, but you can{' '}
-              <a href={url} download style={styles.downloadLink}>download</a> the original file if needed.
+              <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink}>download</FileDownloadLink> the original file if needed.
             </div>
           </div>
           <button

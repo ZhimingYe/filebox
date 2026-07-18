@@ -54,7 +54,7 @@ exactly what local debugging wants.
 | Login | `admin` / `dev-password` |
 | Agent token | `dev-token` |
 | Session cookie | `filebox_session`, **no `Secure` flag** (so HTTP works) |
-| CSRF cookie | `filebox_csrf` (readable by JS; send as `X-CSRF-Token` or `csrf=` query) |
+| CSRF cookie | `filebox_csrf` (readable by JS; send as `X-CSRF-Token` header only) |
 
 ### Step 1 — Build the frontend
 
@@ -184,10 +184,16 @@ curl -s -b /tmp/fb.cookie --noproxy '*' \
   -H "X-CSRF-Token: $CSRF" \
   "http://127.0.0.1:3000/api/fs/list?agent_id=$AGENT_ID&root=<ROOT>&path=/&limit=200"
 
-# SSE stream (auth required) — CSRF via query (EventSource cannot set headers)
+# SSE stream — mint a short-lived GET access token (EventSource cannot set headers)
+ACCESS=$(curl -s -b /tmp/fb.cookie --noproxy '*' \
+  -H "X-CSRF-Token: $CSRF" \
+  -H 'Content-Type: application/json' \
+  -d '{"purpose":"events"}' \
+  http://127.0.0.1:3000/api/access-tokens \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
 curl -s -N -b /tmp/fb.cookie --noproxy '*' \
   -H 'Accept: text/event-stream' \
-  "http://127.0.0.1:3000/api/events?csrf=$CSRF"
+  "http://127.0.0.1:3000/api/events?access_token=$ACCESS"
 ```
 
 ### Key endpoints (verified against `routes.rs`)
@@ -207,12 +213,13 @@ curl -s -N -b /tmp/fb.cookie --noproxy '*' \
 | POST | `/api/agents/{id}/workspace-search` | yes | Workspace Search (find / content modes) |
 | GET | `/api/fs/list` | yes | Directory listing (proxied to agent) |
 | GET | `/api/fs/stat` | yes | File metadata |
-| GET | `/api/file/raw` | yes | File bytes |
+| GET | `/api/file/raw` | yes + CSRF header, or `access_token` | File bytes |
+| POST | `/api/access-tokens` | yes + CSRF | Mint short-lived GET bearer (`file_raw` / `events`) |
 | POST | `/api/preview/sessions` | yes | HTML preview session token |
 | GET | `/api/preview/{token}/{*path}` | token | HTML relative asset |
 | GET | `/api/agents/{id}/sys-stats` | yes | CPU/mem/etc |
 | POST | `/api/cancel` | yes | Cancel in-flight request |
-| GET | `/api/events` | yes | SSE stream of agent events |
+| GET | `/api/events` | yes + CSRF header, or `access_token` | SSE stream of agent events |
 | WS | `/ws/agent` | token | Agent → Hub (agents only) |
 
 ---

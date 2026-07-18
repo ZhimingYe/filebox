@@ -11,6 +11,7 @@ import {
   LoadingOverlay,
   styles,
 } from './previewShared';
+import { FileDownloadLink } from './FileDownloadLink';
 
 interface Props {
   url: string;
@@ -38,7 +39,9 @@ export function MarkdownPreview({ url, agentId, root, path }: Props) {
         size={gate.size!}
         flavor="markdown"
         onForceLoad={gate.forceLoad}
-        url={url}
+        agentId={agentId}
+        root={root}
+        path={path}
       />
     );
   }
@@ -57,7 +60,7 @@ export function MarkdownPreview({ url, agentId, root, path }: Props) {
           <p style={styles.errorText}>{error}</p>
           <div style={{ display: 'flex', gap: 12 }}>
             <button onClick={retry} style={styles.retryBtn}>Retry</button>
-            <a href={url} download style={styles.downloadLink}>Download</a>
+            <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
           </div>
         </div>
       </div>

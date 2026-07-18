@@ -1,5 +1,6 @@
 import { memo, lazy, Suspense } from 'react';
 import { fileRawUrl } from '../api/client';
+import { FileDownloadLink } from './FileDownloadLink';
 import { c } from '../theme';
 
 import {
@@ -125,7 +126,7 @@ export const PreviewPane = memo(function PreviewPane({ agentId, root, path, entr
     <div style={styles.container}>
       <div style={styles.download}>
         <p style={styles.downloadText}>No preview available for .{ext} files</p>
-        <a href={url} download style={styles.downloadLink}>Download</a>
+        <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
       </div>
     </div>
   );
