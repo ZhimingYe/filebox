@@ -19,6 +19,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **Workspace Search content open** — content mode now uses the same openat + `O_NOFOLLOW` chain as file reads, closing an intermediate-symlink TOCTOU gap.
 - **Denylist expanded** — `shadow`/`gshadow`/`sudoers`, `.pgpass`/`.htpasswd`, `credentials.csv`/`credentials.txt`, `secrets.y{a,}ml`/`secrets.toml`, `*.tfstate`, `*.kdbx`, and related cloud credential filenames.
 - **Path validators** — pin/collection paths reject `\`; Hub WS debug logs no longer print raw post-auth frames (avoids token leakage).
+- **CSRF synchronizer token** — login issues a per-session CSRF token (JSON + non-HttpOnly `filebox_csrf` / `__Host-filebox_csrf` cookie). Protected API calls must send `X-CSRF-Token` (or `csrf` query for EventSource / download links). Blocks same-site sibling pages that can send the session cookie but cannot read the CSRF cookie.
 
 ---
 

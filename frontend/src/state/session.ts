@@ -31,7 +31,8 @@ export function useSession() {
     try {
       await api.logout();
     } catch {
-      // Ignore errors
+      // Ignore errors — still clear local CSRF so a later login cannot reuse it
+      api.setCsrfToken(null);
     }
     setLoggedIn(false);
   }, []);

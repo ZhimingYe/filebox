@@ -1,5 +1,56 @@
 const BASE = '';
 
+/**
+ * In-memory CSRF after login (JSON body) before `document.cookie` reflects
+ * Set-Cookie. Cookie is authoritative whenever present so another tab's
+ * re-login cannot leave this tab sending a stale synchronizer forever.
+ */
+let csrfToken: string | null = null;
+
+function readCookieValue(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const prefix = `${name}=`;
+  for (const part of document.cookie.split(';')) {
+    const trimmed = part.trim();
+    if (!trimmed.startsWith(prefix)) continue;
+    try {
+      const value = decodeURIComponent(trimmed.slice(prefix.length)).trim();
+      return value || null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function readCsrfFromCookie(): string | null {
+  // Prefer the Secure/__Host- name when both somehow exist.
+  return readCookieValue('__Host-filebox_csrf') || readCookieValue('filebox_csrf');
+}
+
+export function getCsrfToken(): string | null {
+  const fromCookie = readCsrfFromCookie();
+  if (fromCookie) {
+    csrfToken = fromCookie;
+    return fromCookie;
+  }
+  return csrfToken;
+}
+
+export function setCsrfToken(token: string | null) {
+  csrfToken = token && token.trim() ? token.trim() : null;
+}
+
+/** Merge CSRF header into fetch init for credentialed API / raw-file calls. */
+export function withCsrf(init?: RequestInit): RequestInit {
+  const headers = new Headers(init?.headers);
+  const csrf = getCsrfToken();
+  if (csrf) {
+    headers.set('X-CSRF-Token', csrf);
+  }
+  return { ...init, credentials: 'include', headers };
+}
+
 export function friendlyMessage(error: any): string {
   const raw = error?.error || error?.message || '';
   // Agent may return "agent_busy: ..." — match on prefix.
@@ -13,6 +64,7 @@ export function friendlyMessage(error: any): string {
     resource_name_conflict: 'A resource with this name already exists.',
     unauthorized: 'Session expired. Please log in again.',
     session_expired: 'Session expired. Please log in again.',
+    csrf_denied: 'Security check failed. Reload the page and try again.',
     invalid_credentials: 'Invalid username or password.',
     not_found: 'Resource not found.',
     backend_slow: 'Agent is responding slowly.',
@@ -43,14 +95,35 @@ export function friendlyMessage(error: any): string {
   return 'An unexpected error occurred.';
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, retried = false): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (!headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+  const csrf = getCsrfToken();
+  if (csrf) {
+    headers.set('X-CSRF-Token', csrf);
+  }
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers,
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
+    // Another tab may have rotated the CSRF cookie while this tab still had
+    // a stale in-memory value. Drop memory, re-read cookie, retry once.
+    if (
+      !retried
+      && res.status === 403
+      && (body as { error?: string }).error === 'csrf_denied'
+    ) {
+      setCsrfToken(null);
+      const refreshed = getCsrfToken();
+      if (refreshed && refreshed !== csrf) {
+        return request<T>(path, init, true);
+      }
+    }
     throw { status: res.status, ...body };
   }
   return res.json();
@@ -59,14 +132,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // ── Session ──────────────────────────────────────────────────────────────────
 
 export async function exchangeSession(username: string, password: string, remember: boolean) {
-  return request<{ ok: boolean; permissions: string[] }>(
+  const result = await request<{ ok: boolean; permissions: string[]; csrf_token?: string }>(
     '/api/session/exchange',
     { method: 'POST', body: JSON.stringify({ username, password, remember }) },
   );
+  if (result.ok && result.csrf_token) {
+    setCsrfToken(result.csrf_token);
+  }
+  return result;
 }
 
 export async function logout() {
-  return request<{ ok: boolean }>('/api/session/logout', { method: 'POST' });
+  try {
+    return await request<{ ok: boolean }>('/api/session/logout', { method: 'POST' });
+  } finally {
+    setCsrfToken(null);
+  }
 }
 
 // ── Health ───────────────────────────────────────────────────────────────────
@@ -432,7 +513,17 @@ export async function fsStat(agentId: string, root: string, path: string, signal
 
 export function fileRawUrl(agentId: string, root: string, path: string) {
   const params = new URLSearchParams({ agent_id: agentId, root, path });
+  const csrf = getCsrfToken();
+  if (csrf) {
+    params.set('csrf', csrf);
+  }
   return `/api/file/raw?${params}`;
+}
+
+/** SSE cannot set headers; pass the synchronizer token as a query param. */
+export function eventsUrl() {
+  const csrf = getCsrfToken();
+  return csrf ? `/api/events?csrf=${encodeURIComponent(csrf)}` : '/api/events';
 }
 
 export async function createPreviewSession(agentId: string, root: string, path: string, signal?: AbortSignal) {

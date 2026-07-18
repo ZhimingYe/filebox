@@ -133,7 +133,12 @@ pub fn create_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::mirror_request())
         .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::PUT, Method::DELETE])
-        .allow_headers([header::CONTENT_TYPE, header::COOKIE, header::RANGE])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::COOKIE,
+            header::RANGE,
+            HeaderName::from_static("x-csrf-token"),
+        ])
         .allow_credentials(true);
 
     let cors_app = Router::new()
@@ -264,6 +269,8 @@ async fn require_session(
             .into_response();
     };
 
+    let provided_csrf = csrf_from_request(req.headers(), req.uri().query());
+
     let rotated_cookie = {
         let mut inner = state.inner.write().await;
         let session_result = if is_logout {
@@ -273,6 +280,17 @@ async fn require_session(
         };
         match session_result {
             Some((session, rotated)) => {
+                if !csrf_tokens_equal(provided_csrf.as_deref(), Some(session.csrf_token.as_str())) {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(serde_json::json!({
+                            "error": "csrf_denied",
+                            "message": "Missing or invalid CSRF token. Reload the page and try again.",
+                            "retryable": false,
+                        })),
+                    )
+                        .into_response();
+                }
                 req.extensions_mut().insert(AuthenticatedSession {
                     id: session.session_id.clone(),
                 });
@@ -318,6 +336,87 @@ fn cookie_value(cookies: &str, name: &str) -> Option<String> {
     })
 }
 
+/// CSRF from `X-CSRF-Token` header, or `csrf` query (EventSource / <a download>).
+fn csrf_from_request(headers: &HeaderMap, query: Option<&str>) -> Option<String> {
+    if let Some(token) = headers
+        .get("x-csrf-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(token.to_string());
+    }
+    query.and_then(csrf_from_query)
+}
+
+fn csrf_from_query(query: &str) -> Option<String> {
+    for pair in query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        let key = parts.next()?;
+        if key != "csrf" {
+            continue;
+        }
+        let value = parts.next().unwrap_or("");
+        let decoded = percent_decode_query(value);
+        let trimmed = decoded.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+fn percent_decode_query(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let h1 = from_hex(bytes[i + 1]);
+                let h2 = from_hex(bytes[i + 2]);
+                if let (Some(a), Some(b)) = (h1, h2) {
+                    out.push((a << 4) | b);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn from_hex(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn csrf_tokens_equal(provided: Option<&str>, expected: Option<&str>) -> bool {
+    match (provided, expected) {
+        (Some(a), Some(b)) if a.len() == b.len() && !a.is_empty() => a
+            .as_bytes()
+            .iter()
+            .zip(b.as_bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0,
+        _ => false,
+    }
+}
+
 fn session_cookie_header(session_id: &str, max_age: u64, secure: bool) -> HeaderValue {
     let name = if secure { "__Host-filebox_session" } else { "filebox_session" };
     let secure_flag = if secure { "; Secure" } else { "" };
@@ -328,17 +427,37 @@ fn session_cookie_header(session_id: &str, max_age: u64, secure: bool) -> Header
     .unwrap()
 }
 
-fn clear_session_cookie_headers(secure: bool) -> [HeaderValue; 2] {
+/// Readable by same-origin JS so a refreshed tab can recover the synchronizer
+/// token without a round-trip. Sibling hosts cannot read this cookie.
+fn csrf_cookie_header(csrf_token: &str, max_age: u64, secure: bool) -> HeaderValue {
+    let name = if secure { "__Host-filebox_csrf" } else { "filebox_csrf" };
     let secure_flag = if secure { "; Secure" } else { "" };
-    let host_header = HeaderValue::from_str(&format!(
+    HeaderValue::from_str(&format!(
+        "{}={}{}; SameSite=Strict; Path=/; Max-Age={}",
+        name, csrf_token, secure_flag, max_age
+    ))
+    .unwrap()
+}
+
+fn clear_session_cookie_headers(secure: bool) -> [HeaderValue; 4] {
+    let secure_flag = if secure { "; Secure" } else { "" };
+    let host_session = HeaderValue::from_str(&format!(
         "__Host-filebox_session=; HttpOnly{}; SameSite=Strict; Path=/; Max-Age=0",
         secure_flag
     )).unwrap();
-    let plain_header = HeaderValue::from_str(&format!(
+    let plain_session = HeaderValue::from_str(&format!(
         "filebox_session=; HttpOnly{}; SameSite=Strict; Path=/; Max-Age=0",
         secure_flag
     )).unwrap();
-    [host_header, plain_header]
+    let host_csrf = HeaderValue::from_str(&format!(
+        "__Host-filebox_csrf=; SameSite=Strict; Path=/; Max-Age=0{}",
+        secure_flag
+    )).unwrap();
+    let plain_csrf = HeaderValue::from_str(&format!(
+        "filebox_csrf=; SameSite=Strict; Path=/; Max-Age=0{}",
+        secure_flag
+    )).unwrap();
+    [host_session, plain_session, host_csrf, plain_csrf]
 }
 
 // ── Session ──────────────────────────────────────────────────────────────────
@@ -391,6 +510,7 @@ async fn session_exchange_handler(
     let remember = req.remember.unwrap_or(false);
     let (session, ttl) = inner.sessions.create_session(&req.username, remember);
     let session_id = session.session_id.clone();
+    let csrf_token = session.csrf_token.clone();
     drop(inner);
 
     // Clear rate limit on successful login
@@ -403,11 +523,14 @@ async fn session_exchange_handler(
         Json(serde_json::json!({
             "ok": true,
             "permissions": session.permissions,
+            "csrf_token": csrf_token,
         })),
     )
         .into_response();
     resp.headers_mut()
         .append(header::SET_COOKIE, session_cookie_header(&session_id, ttl, state.secure_cookies));
+    resp.headers_mut()
+        .append(header::SET_COOKIE, csrf_cookie_header(&csrf_token, ttl, state.secure_cookies));
     resp
 }
 
@@ -2203,6 +2326,185 @@ mod tests {
             response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
             Some(&origin)
         );
+    }
+
+    #[test]
+    fn csrf_from_query_decodes_and_ignores_other_params() {
+        assert_eq!(
+            csrf_from_query("agent_id=a&csrf=ab%2Fcd&root=r").as_deref(),
+            Some("ab/cd")
+        );
+        assert_eq!(csrf_from_query("foo=bar"), None);
+    }
+
+    #[test]
+    fn csrf_tokens_equal_rejects_mismatch_and_empty() {
+        assert!(csrf_tokens_equal(Some("abcd"), Some("abcd")));
+        assert!(!csrf_tokens_equal(Some("abcd"), Some("abce")));
+        assert!(!csrf_tokens_equal(Some("abc"), Some("abcd")));
+        assert!(!csrf_tokens_equal(None, Some("abcd")));
+        assert!(!csrf_tokens_equal(Some(""), Some("")));
+    }
+
+    #[tokio::test]
+    async fn protected_route_rejects_session_without_csrf() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        let app = create_router(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/agents")
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "csrf_denied");
+    }
+
+    #[tokio::test]
+    async fn protected_route_accepts_csrf_header() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        let app = create_router(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/agents")
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .header("x-csrf-token", session.csrf_token.clone())
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn protected_route_accepts_csrf_query_param() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        let app = create_router(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/api/events?csrf={}", session.csrf_token))
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // SSE handler returns 200 OK streaming body when session+csrf are valid.
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn protected_route_rejects_wrong_csrf_even_with_valid_session() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        let app = create_router(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/agents")
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .header("x-csrf-token", "0".repeat(session.csrf_token.len()))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn file_raw_accepts_csrf_query_like_download_links() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        // No agent registered → past CSRF we expect backend_offline / not found,
+        // not csrf_denied. That proves download-style `?csrf=` clears the gate.
+        let app = create_router(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!(
+                        "/api/file/raw?agent_id=missing&root=r&path=/a.txt&csrf={}",
+                        session.csrf_token
+                    ))
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            !text.contains("csrf_denied"),
+            "file/raw with csrf query should not be CSRF-rejected: {text}"
+        );
+    }
+
+    #[test]
+    fn csrf_cookie_header_sets_secure_host_prefix_in_prod() {
+        let header = csrf_cookie_header("abc123", 60, true);
+        let value = header.to_str().unwrap();
+        assert!(value.starts_with("__Host-filebox_csrf=abc123"));
+        assert!(value.contains("Secure"));
+        assert!(value.contains("SameSite=Strict"));
+        assert!(value.contains("Path=/"));
+        assert!(!value.contains("HttpOnly"));
+    }
+
+    #[test]
+    fn csrf_cookie_header_omits_secure_in_dev() {
+        let header = csrf_cookie_header("abc123", 60, false);
+        let value = header.to_str().unwrap();
+        assert!(value.starts_with("filebox_csrf=abc123"));
+        assert!(!value.contains("Secure"));
+        assert!(!value.contains("HttpOnly"));
     }
 
     #[tokio::test]

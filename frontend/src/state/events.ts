@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { eventsUrl } from '../api/client';
 
 export interface SseEvent {
   event: string;
@@ -28,7 +29,7 @@ class SseManager {
   private connect() {
     if (this.source) return;
 
-    const es = new EventSource('/api/events');
+    const es = new EventSource(eventsUrl());
     this.source = es;
 
     es.onmessage = (e) => {
