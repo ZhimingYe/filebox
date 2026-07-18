@@ -54,6 +54,7 @@ exactly what local debugging wants.
 | Login | `admin` / `dev-password` |
 | Agent token | `dev-token` |
 | Session cookie | `filebox_session`, **no `Secure` flag** (so HTTP works) |
+| CSRF cookie | `filebox_csrf` (readable by JS; send as `X-CSRF-Token` or `csrf=` query) |
 
 ### Step 1 — Build the frontend
 
@@ -140,13 +141,17 @@ discipline localizes ~90% of issues.
 ### Authenticate and keep the cookie
 
 ```bash
-# Login, store session cookie in a jar (mimics a browser)
+# Login, store session + CSRF cookies in a jar (mimics a browser)
 curl -s -c /tmp/fb.cookie --noproxy '*' \
   -X POST http://127.0.0.1:3000/api/session/exchange \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"dev-password"}' -o /dev/null
+  -d '{"username":"admin","password":"dev-password"}' \
+  -o /tmp/fb.login.json
 
-# Confirm exactly one Set-Cookie was returned, without Secure
+# CSRF token from login JSON (also present as filebox_csrf cookie)
+CSRF=$(python3 -c "import json;print(json.load(open('/tmp/fb.login.json'))['csrf_token'])")
+
+# Confirm Set-Cookie includes session + csrf, without Secure in dev mode
 curl -s -D - -o /dev/null --noproxy '*' \
   -X POST http://127.0.0.1:3000/api/session/exchange \
   -H 'Content-Type: application/json' \
@@ -165,18 +170,24 @@ Always bypass the proxy for localhost probes. The appearance of
 # Health (no auth)
 curl -s --noproxy '*' http://127.0.0.1:3000/api/health
 
-# Agents (auth required) — the key signal for "No agents connected"
-curl -s -b /tmp/fb.cookie --noproxy '*' http://127.0.0.1:3000/api/agents
+# Agents (auth + CSRF required) — the key signal for "No agents connected"
+curl -s -b /tmp/fb.cookie --noproxy '*' \
+  -H "X-CSRF-Token: $CSRF" \
+  http://127.0.0.1:3000/api/agents
 
 # List a directory: agent_id + root + path
-AGENT_ID=$(curl -s -b /tmp/fb.cookie --noproxy '*' http://127.0.0.1:3000/api/agents \
+AGENT_ID=$(curl -s -b /tmp/fb.cookie --noproxy '*' \
+  -H "X-CSRF-Token: $CSRF" \
+  http://127.0.0.1:3000/api/agents \
   | python3 -c "import sys,json;print(json.load(sys.stdin)[0]['id'])")
 curl -s -b /tmp/fb.cookie --noproxy '*' \
+  -H "X-CSRF-Token: $CSRF" \
   "http://127.0.0.1:3000/api/fs/list?agent_id=$AGENT_ID&root=<ROOT>&path=/&limit=200"
 
-# SSE stream (auth required) — blocks; Ctrl-C after a few seconds
+# SSE stream (auth required) — CSRF via query (EventSource cannot set headers)
 curl -s -N -b /tmp/fb.cookie --noproxy '*' \
-  -H 'Accept: text/event-stream' http://127.0.0.1:3000/api/events
+  -H 'Accept: text/event-stream' \
+  "http://127.0.0.1:3000/api/events?csrf=$CSRF"
 ```
 
 ### Key endpoints (verified against `routes.rs`)
@@ -184,9 +195,9 @@ curl -s -N -b /tmp/fb.cookie --noproxy '*' \
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/api/health` | no | Liveness + version |
-| POST | `/api/session/exchange` | no | Login → sets cookie |
-| POST | `/api/session/logout` | yes | Logout → clears cookie |
-| GET | `/api/agents` | yes | List agents (the "No agents connected" source) |
+| POST | `/api/session/exchange` | no | Login → sets session + CSRF cookies |
+| POST | `/api/session/logout` | yes + CSRF | Logout → clears cookies |
+| GET | `/api/agents` | yes + CSRF | List agents (the "No agents connected" source) |
 | GET | `/api/agents/{id}` | yes | One agent + roots + collections |
 | GET / PUT | `/api/agents/{id}/resources` | yes | Resource snapshot / full replace |
 | POST | `/api/agents/{id}/roots` | yes | Add root |
@@ -338,9 +349,9 @@ subsequent `/api/*` is 401; UI shows empty data ("No agents connected").
 The login handler once appended **two** `Set-Cookie` headers: the valid
 session, followed by `filebox_session=; Max-Age=0` which immediately
 erased it. Per RFC 6265 the second same-named cookie wins. This is fixed,
-but the diagnostic holds: **after login, count the `Set-Cookie` headers and
-inspect DevTools cookies.** A single login must produce exactly one
-`Set-Cookie` that survives.
+but the diagnostic holds: **after login, inspect DevTools cookies.** A
+single login must set a surviving `filebox_session` (HttpOnly) and a
+`filebox_csrf` (readable; required as `X-CSRF-Token` on API calls).
 
 ### Proxy intercepting localhost
 

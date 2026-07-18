@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { c, radius, font, shadow } from '../theme';
-import { fsStat } from '../api/client';
+import { fsStat, withCsrf } from '../api/client';
 
 // ── useMounted ────────────────────────────────────────────────────────────
 // Prevents state updates after a component unmounts. Reset on each setup so
@@ -43,7 +43,7 @@ export function useFetchText(url: string, enabled = true) {
     setLoading(true);
     setError(null);
     setText(null);
-    fetch(url, { credentials: 'include', signal: controller.signal })
+    fetch(url, withCsrf({ signal: controller.signal }))
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.text();

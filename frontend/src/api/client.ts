@@ -1,5 +1,43 @@
 const BASE = '';
 
+/** In-memory CSRF synchronizer; cookie is the refresh fallback. */
+let csrfToken: string | null = null;
+
+function readCsrfFromCookie(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(/(?:^|;\s*)(?:__Host-)?filebox_csrf=([^;]*)/);
+  if (!match) return null;
+  try {
+    const value = decodeURIComponent(match[1]).trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+export function getCsrfToken(): string | null {
+  if (csrfToken) return csrfToken;
+  const fromCookie = readCsrfFromCookie();
+  if (fromCookie) {
+    csrfToken = fromCookie;
+  }
+  return csrfToken;
+}
+
+export function setCsrfToken(token: string | null) {
+  csrfToken = token && token.trim() ? token.trim() : null;
+}
+
+/** Merge CSRF header into fetch init for credentialed API / raw-file calls. */
+export function withCsrf(init?: RequestInit): RequestInit {
+  const headers = new Headers(init?.headers);
+  const csrf = getCsrfToken();
+  if (csrf) {
+    headers.set('X-CSRF-Token', csrf);
+  }
+  return { ...init, credentials: 'include', headers };
+}
+
 export function friendlyMessage(error: any): string {
   const raw = error?.error || error?.message || '';
   // Agent may return "agent_busy: ..." — match on prefix.
@@ -13,6 +51,7 @@ export function friendlyMessage(error: any): string {
     resource_name_conflict: 'A resource with this name already exists.',
     unauthorized: 'Session expired. Please log in again.',
     session_expired: 'Session expired. Please log in again.',
+    csrf_denied: 'Security check failed. Reload the page and try again.',
     invalid_credentials: 'Invalid username or password.',
     not_found: 'Resource not found.',
     backend_slow: 'Agent is responding slowly.',
@@ -44,10 +83,18 @@ export function friendlyMessage(error: any): string {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (!headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+  const csrf = getCsrfToken();
+  if (csrf) {
+    headers.set('X-CSRF-Token', csrf);
+  }
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers,
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -59,14 +106,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // ── Session ──────────────────────────────────────────────────────────────────
 
 export async function exchangeSession(username: string, password: string, remember: boolean) {
-  return request<{ ok: boolean; permissions: string[] }>(
+  const result = await request<{ ok: boolean; permissions: string[]; csrf_token?: string }>(
     '/api/session/exchange',
     { method: 'POST', body: JSON.stringify({ username, password, remember }) },
   );
+  if (result.ok && result.csrf_token) {
+    setCsrfToken(result.csrf_token);
+  }
+  return result;
 }
 
 export async function logout() {
-  return request<{ ok: boolean }>('/api/session/logout', { method: 'POST' });
+  try {
+    return await request<{ ok: boolean }>('/api/session/logout', { method: 'POST' });
+  } finally {
+    setCsrfToken(null);
+  }
 }
 
 // ── Health ───────────────────────────────────────────────────────────────────
@@ -432,7 +487,17 @@ export async function fsStat(agentId: string, root: string, path: string, signal
 
 export function fileRawUrl(agentId: string, root: string, path: string) {
   const params = new URLSearchParams({ agent_id: agentId, root, path });
+  const csrf = getCsrfToken();
+  if (csrf) {
+    params.set('csrf', csrf);
+  }
   return `/api/file/raw?${params}`;
+}
+
+/** SSE cannot set headers; pass the synchronizer token as a query param. */
+export function eventsUrl() {
+  const csrf = getCsrfToken();
+  return csrf ? `/api/events?csrf=${encodeURIComponent(csrf)}` : '/api/events';
 }
 
 export async function createPreviewSession(agentId: string, root: string, path: string, signal?: AbortSignal) {

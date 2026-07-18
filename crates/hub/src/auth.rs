@@ -11,6 +11,10 @@ const DUMMY_PASSWORD_HASH: &str =
 #[derive(Debug, Clone)]
 pub struct Session {
     pub session_id: String,
+    /// Synchronizer token for CSRF defense. Sent to the browser as a
+    /// non-HttpOnly cookie + login JSON; must be echoed on API requests via
+    /// `X-CSRF-Token` (or `csrf` query for EventSource / download links).
+    pub csrf_token: String,
     pub permissions: Vec<String>,
     pub created_at: u64,
     pub expires_at: u64,
@@ -60,6 +64,7 @@ impl SessionStore {
 
     pub fn create_session(&mut self, _username: &str, remember: bool) -> (Session, u64) {
         let session_id = generate_session_id();
+        let csrf_token = generate_session_id();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -69,6 +74,7 @@ impl SessionStore {
 
         let session = Session {
             session_id: session_id.clone(),
+            csrf_token,
             permissions: vec![
                 "view_files".to_string(),
                 "preview_files".to_string(),
@@ -99,8 +105,11 @@ impl SessionStore {
 
         if total > 0 && remaining > 0 && remaining.saturating_mul(2) < total {
             let new_id = generate_session_id();
+            // Keep the CSRF token across session-id rotation so open tabs and
+            // EventSource URLs that already embedded `csrf=` keep working.
             let new_session = Session {
                 session_id: new_id.clone(),
+                csrf_token: current.csrf_token.clone(),
                 permissions: current.permissions.clone(),
                 created_at: now,
                 expires_at: current.expires_at,
@@ -274,6 +283,7 @@ mod tests {
             session_id.clone(),
             Session {
                 session_id: session_id.clone(),
+                csrf_token: "csrf-old".to_string(),
                 permissions: vec!["view_files".to_string()],
                 created_at: now.saturating_sub(80),
                 expires_at: now + 20,
@@ -286,6 +296,15 @@ mod tests {
         assert!(store.get_session(&session_id).is_none());
         assert!(store.get_session(&rotated.session_id).is_some());
         assert_eq!(new_cookie.unwrap().0, rotated.session_id);
+        assert_eq!(rotated.csrf_token, "csrf-old");
+    }
+
+    #[test]
+    fn create_session_issues_csrf_token_distinct_from_session_id() {
+        let mut store = make_store_with_real_password("admin", "pw", "tok");
+        let (session, _) = store.create_session("admin", false);
+        assert_eq!(session.csrf_token.len(), 64);
+        assert_ne!(session.csrf_token, session.session_id);
     }
 
     #[test]
@@ -298,6 +317,7 @@ mod tests {
             session_id.clone(),
             Session {
                 session_id: session_id.clone(),
+                csrf_token: "csrf-test".to_string(),
                 permissions: vec![],
                 created_at: 0,
                 expires_at: past,
@@ -310,6 +330,7 @@ mod tests {
     fn session_is_expired_when_expires_at_in_past() {
         let s = Session {
             session_id: "x".to_string(),
+            csrf_token: "csrf-test".to_string(),
             permissions: vec![],
             created_at: 0,
             expires_at: 1, // epoch + 1s = past
@@ -326,6 +347,7 @@ mod tests {
             + 3600;
         let s = Session {
             session_id: "x".to_string(),
+            csrf_token: "csrf-test".to_string(),
             permissions: vec![],
             created_at: 0,
             expires_at: future,
@@ -362,6 +384,7 @@ mod tests {
             expired_id.clone(),
             Session {
                 session_id: expired_id.clone(),
+                csrf_token: "csrf-test".to_string(),
                 permissions: vec![],
                 created_at: 0,
                 expires_at: 1,

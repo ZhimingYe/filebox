@@ -66,6 +66,7 @@ Current release: **v0.9.0**. See [NEWS.md](NEWS.md) for the full changelog.
 ### Security
 - Username/password authentication (bcrypt)
 - Agent token authentication (bcrypt)
+- CSRF synchronizer token (`X-CSRF-Token` / `csrf` query) on session APIs
 - Sensitive files denied by default
 - Read-only access
 - Path safety checks (canonicalize, symlink escape, denylist)

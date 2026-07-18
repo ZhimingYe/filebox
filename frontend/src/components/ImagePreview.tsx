@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { withCsrf } from '../api/client';
 import {
   useMounted,
   useFileGate,
@@ -218,12 +219,12 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
     // TIFF: arrayBuffer → UTIF decode → canvas → PNG blob. Everything else:
     // straight blob (browser decodes natively), then optional dimension cap.
     const blobPromise = (isTiff
-      ? fetch(url, { credentials: 'include', signal: controller.signal })
+      ? fetch(url, withCsrf({ signal: controller.signal }))
           .then(async (r) => {
             if (!r.ok) throw new Error(httpErrorMessage(r.status));
             return decodeTiff(await r.arrayBuffer());
           })
-      : fetch(url, { credentials: 'include', signal: controller.signal })
+      : fetch(url, withCsrf({ signal: controller.signal }))
           .then(async (r) => {
             if (!r.ok) throw new Error(httpErrorMessage(r.status));
             return r.blob();

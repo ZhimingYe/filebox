@@ -99,8 +99,8 @@ no Hub restart required for UI-only changes).
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/session/exchange` | POST | Login |
-| `/api/session/logout` | POST | Logout |
+| `/api/session/exchange` | POST | Login (returns `csrf_token`; sets session + CSRF cookies) |
+| `/api/session/logout` | POST | Logout (requires `X-CSRF-Token`) |
 | `/api/health` | GET | Public hub health |
 | `/api/agents` | GET | List agents |
 | `/api/agents/:id` | GET | Agent detail (roots, collections, …) |
