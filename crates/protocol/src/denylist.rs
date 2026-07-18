@@ -3,6 +3,7 @@ use std::path::Path;
 const DENIED_EXTENSIONS: &[&str] = &[
     ".env", ".pem", ".key", ".crt", ".p12", ".pfx", ".jks",
     ".sqlite", ".sqlite3", ".db", ".keychain",
+    ".tfstate", ".kdbx",
 ];
 
 const DENIED_EXACT: &[&str] = &[
@@ -17,8 +18,12 @@ const DENIED_EXACT: &[&str] = &[
     ".npmrc", ".yarnrc", ".pnpmrc", ".pypirc",
     ".Renviron", ".Rprofile",
     ".envrc", ".condarc", ".vault-token",
+    ".pgpass", ".htpasswd", ".s3cfg", ".boto",
     "known_hosts", "authorized_keys",
-    "credentials", "credentials.json", "token.json", "secrets.json",
+    "credentials", "credentials.json", "credentials.csv", "credentials.txt",
+    "token.json", "secrets.json", "secrets.yaml", "secrets.yml", "secrets.toml",
+    "auth.json", "htpasswd",
+    "shadow", "gshadow", "sudoers",
     "kubeconfig",
     "environ", "cmdline", "maps", "mem",
     "machine-id",
@@ -276,8 +281,29 @@ mod tests {
     fn credential_filenames_are_denied() {
         assert!(is_denied("credentials"));
         assert!(is_denied("credentials.json"));
+        assert!(is_denied("credentials.csv"));
+        assert!(is_denied("credentials.txt"));
         assert!(is_denied("token.json"));
         assert!(is_denied("secrets.json"));
+        assert!(is_denied("secrets.yaml"));
+        assert!(is_denied("secrets.yml"));
+        assert!(is_denied("secrets.toml"));
+        assert!(is_denied("auth.json"));
+        assert!(is_denied(".pgpass"));
+        assert!(is_denied(".htpasswd"));
+        assert!(is_denied("htpasswd"));
+        assert!(is_denied(".s3cfg"));
+        assert!(is_denied(".boto"));
+    }
+
+    #[test]
+    fn os_and_iac_secret_filenames_are_denied() {
+        assert!(is_denied("etc/shadow"));
+        assert!(is_denied("etc/gshadow"));
+        assert!(is_denied("etc/sudoers"));
+        assert!(is_denied("terraform.tfstate"));
+        assert!(is_denied("prod.tfstate"));
+        assert!(is_denied("vault.kdbx"));
     }
 
     #[test]

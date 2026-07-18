@@ -5,7 +5,7 @@
 //! canonicalize + starts_with, denylist, no symlink follow.
 
 use std::collections::VecDeque;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -258,7 +258,9 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
                 let re = content_re.as_ref().unwrap();
                 let before = hits.len();
                 match match_file_content(
+                    &root_canonical,
                     abs,
+                    &rel,
                     &params.root,
                     &rel_str,
                     re,
@@ -333,7 +335,9 @@ enum MatchFileError {
 const CANCEL_CHECK_EVERY_LINES: u64 = 256;
 
 fn match_file_content(
+    root_canonical: &Path,
     abs: &Path,
+    rel: &Path,
     root: &str,
     rel_str: &str,
     re: &regex::Regex,
@@ -351,7 +355,9 @@ fn match_file_content(
         return Ok(());
     }
 
-    let file = match open_nofollow(abs) {
+    // Same openat + O_NOFOLLOW chain as fs reads: refuse intermediate symlink
+    // swaps that could redirect past the root after the walker's canonicalize.
+    let file = match crate::fs::open_resolved_leaf(root_canonical, rel, abs) {
         Ok(f) => f,
         Err(_) => return Ok(()),
     };
@@ -466,32 +472,6 @@ fn truncate_line(s: &str) -> String {
         }
     }
     out
-}
-
-/// Open a path without following a final symlink (TOCTOU-hardened vs walk).
-#[cfg(unix)]
-fn open_nofollow(path: &Path) -> Result<File, ()> {
-    use std::ffi::CString;
-    use std::os::fd::FromRawFd;
-    use std::os::unix::ffi::OsStrExt;
-
-    let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|_| ())?;
-    let fd = unsafe {
-        libc::open(
-            c_path.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-        )
-    };
-    if fd < 0 {
-        return Err(());
-    }
-    Ok(unsafe { File::from_raw_fd(fd) })
-}
-
-#[cfg(not(unix))]
-fn open_nofollow(path: &Path) -> Result<File, ()> {
-    // Best-effort: we already skipped non-files at walk time.
-    File::open(path).map_err(|_| ())
 }
 
 #[cfg(unix)]
@@ -1026,8 +1006,12 @@ mod tests {
             .build()
             .unwrap();
         let mut hits = Vec::new();
+        let root_canonical = dir.path();
+        let rel = Path::new("big.txt");
         let err = match_file_content(
+            root_canonical,
             &abs,
+            rel,
             "ws",
             "/big.txt",
             &re,

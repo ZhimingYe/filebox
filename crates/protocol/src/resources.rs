@@ -55,6 +55,14 @@ pub fn validate_pinned_path(p: &str) -> Result<(), String> {
     if p.contains('\0') {
         return Err("Pinned folder path contains NUL".to_string());
     }
+    // Reject backslash so Windows-style separators cannot hide `..` from the
+    // `/`-only split below (and so Linux agents never store ambiguous paths).
+    if p.contains('\\') {
+        return Err(format!(
+            "Pinned folder path '{}' must not contain backslash",
+            p
+        ));
+    }
     if !p.starts_with('/') {
         return Err(format!(
             "Pinned folder path '{}' must start with '/' (root-relative)",
@@ -455,6 +463,12 @@ mod tests {
     #[test]
     fn validate_pinned_path_rejects_nul() {
         assert!(validate_pinned_path("/a\0b").is_err());
+    }
+
+    #[test]
+    fn validate_pinned_path_rejects_backslash() {
+        assert!(validate_pinned_path("/foo\\..\\bar").is_err());
+        assert!(validate_pinned_path("/a\\b").is_err());
     }
 
     #[test]

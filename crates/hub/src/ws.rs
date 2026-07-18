@@ -638,8 +638,21 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                     "message": message,
                                 })).await;
                             }
+                            // Never log raw WS text — a post-auth Auth replay
+                            // would embed the agent token in debug logs.
+                            Ok(AgentMessage::Auth { .. })
+                            | Ok(AgentMessage::Register { .. }) => {
+                                tracing::debug!(
+                                    "Ignoring unexpected Auth/Register after handshake from {}",
+                                    agent_id_for_msgs
+                                );
+                            }
                             _ => {
-                                tracing::debug!("Unknown agent message: {}", text);
+                                tracing::debug!(
+                                    "Unknown agent message type from {} ({} bytes)",
+                                    agent_id_for_msgs,
+                                    text.len()
+                                );
                             }
                         }
                     }
