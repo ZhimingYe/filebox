@@ -2508,6 +2508,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workspace_search_requires_session_cookie() {
+        // Unauthenticated callers must not reach the search proxy — even with a
+        // well-formed body and a known-looking agent id.
+        let app = create_router(AppState::new(&test_config(), true));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/agents/any-agent/workspace-search")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"mode":"content","root":"r","path":"/","query":"x"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn workspace_search_rejects_invalid_session_cookie() {
+        let app = create_router(AppState::new(&test_config(), true));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/agents/any-agent/workspace-search")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::COOKIE, "filebox_session=forged-session-id")
+                    .body(axum::body::Body::from(
+                        r#"{"mode":"find","root":"r","path":"/","query":""}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "session_expired");
+    }
+
+    #[tokio::test]
+    async fn cancel_requires_session_cookie() {
+        let app = create_router(AppState::new(&test_config(), true));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/cancel")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"agent_id":"any-agent","req_id":"req_1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "unauthorized");
+    }
+
+    #[tokio::test]
     async fn patch_root_rejects_pin_against_legacy_agent() {
         // P1 capability gate: a legacy agent (no pinned_folders capability)
         // would silently drop pin data and reply "applied", fooling the hub +
