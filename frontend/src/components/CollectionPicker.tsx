@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AgentInfo, CollectionInfo } from '../api/client';
 import * as api from '../api/client';
 import { c, font, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
+import { IconClose } from './icons';
 
 interface TargetFile {
   root: string;
@@ -131,8 +132,9 @@ export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }
       await api.patchCollection(agent.id, coll.name, {
         item_add: { root: target.root, path: target.path },
       });
+      // Keep the panel open so the user can add the same file to more
+      // collections, and so the list can flip to "(added)" in place.
       onChanged();
-      onClose();
     } catch (e: any) {
       setError(api.friendlyMessage(e));
     } finally {
@@ -152,8 +154,9 @@ export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }
         root: target.root,
         path: target.path,
       });
+      setCreating(false);
+      setNewName('');
       onChanged();
-      onClose();
     } catch (e: any) {
       setError(api.friendlyMessage(e));
     } finally {
@@ -181,6 +184,15 @@ export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }
     >
       <div style={styles.header}>
         <span>Add to collection</span>
+        <button
+          type="button"
+          onClick={onClose}
+          style={styles.closeBtn}
+          aria-label="Close"
+          title="Close"
+        >
+          <IconClose />
+        </button>
       </div>
       <div style={styles.targetPath} title={targetLabel}>
         {targetLabel}
@@ -280,13 +292,29 @@ const styles: Record<string, React.CSSProperties> = {
   header: {
     display: 'flex',
     alignItems: 'center',
-    padding: '8px 12px 4px',
+    justifyContent: 'space-between',
+    gap: 8,
+    padding: '8px 8px 4px 12px',
     flexShrink: 0,
     fontSize: 11,
     fontWeight: 600,
     color: c.textMuted,
     letterSpacing: '0.02em',
     textTransform: 'uppercase',
+  },
+  closeBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 22,
+    height: 22,
+    padding: 0,
+    border: 'none',
+    borderRadius: 4,
+    background: 'transparent',
+    color: c.textMuted,
+    cursor: 'pointer',
+    flexShrink: 0,
   },
   targetPath: {
     padding: '0 12px 8px',
