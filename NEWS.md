@@ -24,6 +24,13 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ---
 
+## v0.9.14 — 2026-07-19
+
+### Fixed
+- **Forced re-login / half-hour dropouts** — session cookie rotation no longer races with parallel API/SSE traffic; CSRF and GET access-token checks run before any cookie-id mutation; stable `principal_id` for ownership; sliding session TTL; EventSource remints the 30m events access token before expiry.
+
+---
+
 ## v0.9.0 — 2026-07-16
 
 ### Added
