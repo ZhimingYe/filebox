@@ -150,7 +150,7 @@ pub async fn fs_list_handler(
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
             agent_id: params.agent_id.clone(),
-            session_id: Some(session.id.clone()),
+            session_id: Some(session.principal_id.clone()),
             desired_roots: None,
             desired_collections: None,
         });
@@ -223,7 +223,7 @@ pub async fn fs_stat_handler(
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
             agent_id: params.agent_id.clone(),
-            session_id: Some(session.id.clone()),
+            session_id: Some(session.principal_id.clone()),
             desired_roots: None,
             desired_collections: None,
         });
@@ -280,7 +280,7 @@ pub async fn file_raw_handler(
             agent_id: params.agent_id,
             root: params.root,
             path: params.path,
-            session_id: Some(session.id),
+            session_id: Some(session.principal_id),
             preview_token: None,
         },
         req,
@@ -663,7 +663,11 @@ async fn claim_preview_request(state: &AppState, token: &str) -> Result<PreviewS
 
 async fn owner_session_is_active(state: &AppState, preview: &PreviewSession) -> bool {
     let inner = state.inner.read().await;
-    inner.sessions.get_session(&preview.session_id).is_some()
+    // PreviewSession.session_id stores the stable principal id.
+    inner
+        .sessions
+        .get_session_by_principal(&preview.session_id)
+        .is_some()
 }
 
 async fn remove_preview_session(state: &AppState, token: &str) {
@@ -765,7 +769,7 @@ pub async fn sys_stats_handler(
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
             agent_id: agent_id.clone(),
-            session_id: Some(session.id.clone()),
+            session_id: Some(session.principal_id.clone()),
             desired_roots: None,
             desired_collections: None,
         });
@@ -1310,6 +1314,7 @@ mod tests {
     fn test_session() -> Extension<AuthenticatedSession> {
         Extension(AuthenticatedSession {
             id: "test-session".to_string(),
+            principal_id: "test-principal".to_string(),
         })
     }
 

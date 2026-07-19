@@ -45,7 +45,10 @@ pub enum GetAccessPurpose {
 
 #[derive(Clone, Debug)]
 pub struct GetAccessToken {
+    /// Cookie id observed at mint time (diagnostics). Ownership uses `principal_id`.
+    #[allow(dead_code)]
     pub session_id: String,
+    pub principal_id: String,
     pub purpose: GetAccessPurpose,
     pub agent_id: Option<String>,
     pub root: Option<String>,
@@ -55,6 +58,9 @@ pub struct GetAccessToken {
 }
 
 pub const GET_ACCESS_TOKEN_TTL_FILE: Duration = Duration::from_secs(15 * 60);
+/// EventSource reconnects remint before expiry; keep this long enough that a
+/// healthy tab is not forced through mint storms, but short enough that a
+/// leaked URL dies reasonably fast.
 pub const GET_ACCESS_TOKEN_TTL_EVENTS: Duration = Duration::from_secs(30 * 60);
 /// PDF.js issues many Range requests against the same URL.
 pub const GET_ACCESS_TOKEN_MAX_FILE_REQUESTS: u32 = 2_000;
@@ -63,7 +69,10 @@ pub const GET_ACCESS_TOKEN_MAX_PER_SESSION: usize = 64;
 
 #[derive(Clone)]
 pub struct AuthenticatedSession {
+    /// Live cookie session id (logout remove / Set-Cookie tracking).
     pub id: String,
+    /// Stable across cookie-id rotations (cancel, preview, SSE, access tokens).
+    pub principal_id: String,
 }
 
 /// Simple in-memory rate limiter for login attempts.

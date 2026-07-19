@@ -126,6 +126,14 @@ async function request<T>(path: string, init?: RequestInit, retried = false): Pr
         return request<T>(path, init, true);
       }
     }
+    const errCode = (body as { error?: string }).error;
+    if (
+      res.status === 401
+      && (errCode === 'session_expired' || errCode === 'unauthorized')
+      && typeof window !== 'undefined'
+    ) {
+      window.dispatchEvent(new CustomEvent('filebox:session-expired'));
+    }
     throw { status: res.status, ...body };
   }
   return res.json();
@@ -563,8 +571,11 @@ export async function mintFileRawAccess(
 }
 
 export async function eventsAccessUrl(signal?: AbortSignal) {
-  const { token } = await createAccessToken({ purpose: 'events' }, signal);
-  return `/api/events?access_token=${encodeURIComponent(token)}`;
+  const { token, expires_in_sec } = await createAccessToken({ purpose: 'events' }, signal);
+  return {
+    url: `/api/events?access_token=${encodeURIComponent(token)}`,
+    expiresInSec: expires_in_sec,
+  };
 }
 
 export async function createPreviewSession(agentId: string, root: string, path: string, signal?: AbortSignal) {
