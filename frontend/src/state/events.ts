@@ -27,8 +27,26 @@ class SseManager {
     };
   }
 
+  private clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  private scheduleReconnect(generation: number) {
+    if (generation !== this.connectGeneration || this.listeners.size === 0) {
+      return;
+    }
+    this.clearReconnectTimer();
+    this.reconnectTimer = setTimeout(() => {
+      void this.connect();
+    }, 3000);
+  }
+
   private async connect() {
     if (this.source) return;
+    this.clearReconnectTimer();
 
     const generation = ++this.connectGeneration;
     let url: string;
@@ -36,9 +54,9 @@ class SseManager {
       // EventSource cannot set X-CSRF-Token; mint a short-lived GET bearer.
       url = await eventsAccessUrl();
     } catch {
-      this.reconnectTimer = setTimeout(() => {
-        void this.connect();
-      }, 3000);
+      // Same generation/listener gates as the success path — otherwise a mint
+      // that fails after logout / last-subscriber-gone keeps hammering forever.
+      this.scheduleReconnect(generation);
       return;
     }
     if (generation !== this.connectGeneration || this.listeners.size === 0) {
@@ -83,9 +101,7 @@ class SseManager {
       es.close();
       this.source = null;
       // Remint access token on reconnect (old one may be expired).
-      this.reconnectTimer = setTimeout(() => {
-        void this.connect();
-      }, 3000);
+      this.scheduleReconnect(generation);
     };
   }
 
@@ -103,10 +119,7 @@ class SseManager {
 
   private disconnect() {
     this.connectGeneration += 1;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    this.clearReconnectTimer();
     if (this.source) {
       this.source.close();
       this.source = null;

@@ -13,7 +13,8 @@ pub struct Session {
     pub session_id: String,
     /// Synchronizer token for CSRF defense. Sent to the browser as a
     /// non-HttpOnly cookie + login JSON; must be echoed on API requests via
-    /// `X-CSRF-Token` (or `csrf` query for EventSource / download links).
+    /// the `X-CSRF-Token` header. Headerless GETs use short-lived access tokens
+    /// instead — never put this value in a URL query string.
     pub csrf_token: String,
     pub permissions: Vec<String>,
     pub created_at: u64,

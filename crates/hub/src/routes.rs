@@ -2895,6 +2895,151 @@ mod tests {
         assert_eq!(v["error"], "access_token_invalid");
     }
 
+    #[tokio::test]
+    async fn events_access_token_rejected_on_file_raw() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        let token = "d".repeat(64);
+        {
+            let now = std::time::Instant::now();
+            let tokens = state.inner.read().await.get_access_tokens.clone();
+            let mut map = tokens.write().await;
+            map.insert(
+                token.clone(),
+                GetAccessToken {
+                    session_id: session.session_id.clone(),
+                    purpose: GetAccessPurpose::Events,
+                    agent_id: None,
+                    root: None,
+                    path: None,
+                    expires_at: now + GET_ACCESS_TOKEN_TTL_EVENTS,
+                    requests_served: 0,
+                },
+            );
+        }
+        let app = create_router(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!(
+                        "/api/file/raw?agent_id=a&root=r&path=/a.txt&access_token={token}"
+                    ))
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "access_token_invalid");
+    }
+
+    #[tokio::test]
+    async fn file_raw_access_token_exhausted_after_budget() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        let token = "e".repeat(64);
+        {
+            let now = std::time::Instant::now();
+            let tokens = state.inner.read().await.get_access_tokens.clone();
+            let mut map = tokens.write().await;
+            map.insert(
+                token.clone(),
+                GetAccessToken {
+                    session_id: session.session_id.clone(),
+                    purpose: GetAccessPurpose::FileRaw,
+                    agent_id: Some("a".to_string()),
+                    root: Some("r".to_string()),
+                    path: Some("/a.txt".to_string()),
+                    expires_at: now + GET_ACCESS_TOKEN_TTL_FILE,
+                    requests_served: GET_ACCESS_TOKEN_MAX_FILE_REQUESTS,
+                },
+            );
+        }
+        let app = create_router(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!(
+                        "/api/file/raw?agent_id=a&root=r&path=/a.txt&access_token={token}"
+                    ))
+                    .header(
+                        header::COOKIE,
+                        format!("filebox_session={}", session.session_id),
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"], "access_token_exhausted");
+    }
+
+    #[tokio::test]
+    async fn logout_clears_get_access_tokens_for_session() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        let token = "f".repeat(64);
+        {
+            let now = std::time::Instant::now();
+            let tokens = state.inner.read().await.get_access_tokens.clone();
+            let mut map = tokens.write().await;
+            map.insert(
+                token.clone(),
+                GetAccessToken {
+                    session_id: session.session_id.clone(),
+                    purpose: GetAccessPurpose::Events,
+                    agent_id: None,
+                    root: None,
+                    path: None,
+                    expires_at: now + GET_ACCESS_TOKEN_TTL_EVENTS,
+                    requests_served: 0,
+                },
+            );
+        }
+        let app = create_router(state.clone());
+        let mut req = axum::http::Request::builder()
+            .method(Method::POST)
+            .uri("/api/session/logout")
+            .header(
+                header::COOKIE,
+                format!("filebox_session={}", session.session_id),
+            )
+            .header("x-csrf-token", session.csrf_token.clone())
+            .body(axum::body::Body::empty())
+            .unwrap();
+        // logout handler extracts ConnectInfo for audit logging.
+        req.extensions_mut().insert(axum::extract::ConnectInfo(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
+        ));
+        let logout = app.oneshot(req).await.unwrap();
+        assert_eq!(logout.status(), StatusCode::OK);
+        let tokens = state.inner.read().await.get_access_tokens.clone();
+        let map = tokens.read().await;
+        assert!(!map.contains_key(&token));
+    }
+
     #[test]
     fn csrf_cookie_header_sets_secure_host_prefix_in_prod() {
         let header = csrf_cookie_header("abc123", 60, true);

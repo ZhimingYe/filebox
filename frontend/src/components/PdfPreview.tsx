@@ -41,15 +41,13 @@ const ESTIMATED_ASPECT = 1.414; // A4 portrait, common default before we know re
 /** pdf.js surfaces HTTP auth failures as "Unexpected server response (403)" etc. */
 function isPdfAuthFailure(message: string): boolean {
   const m = message.toLowerCase();
+  // Match status codes / known hub errors only — NOT bare "Unexpected server
+  // response", which also fires for 5xx and would remint-loop on agent outages.
   return (
-    m.includes('403')
-    || m.includes('401')
-    || m.includes('429')
-    || m.includes('unexpected server response')
-    || m.includes('access_token')
-    || m.includes('csrf')
-    || m.includes('unauthorized')
-    || m.includes('forbidden')
+    /\b(401|403|429)\b/.test(m)
+    || m.includes('access_token_invalid')
+    || m.includes('access_token_exhausted')
+    || m.includes('csrf_denied')
   );
 }
 
@@ -66,7 +64,7 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   // temporal dead zone when the effect dependency arrays evaluate at render.
   const mayLoad = !gate.sizeUnknown && !gate.error && !(gate.isLarge && !gate.bypassed);
   // pdf.js cannot send X-CSRF-Token; use a short-lived access_token URL instead.
-  // mintNonce bumps to remint after auth failures or before TTL expiry.
+  // mintNonce bumps to remint after a single auth failure.
   const [accessUrl, setAccessUrl] = useState<string | null>(null);
   const [mintNonce, setMintNonce] = useState(0);
   const [numPages, setNumPages] = useState<number>(0);
@@ -74,9 +72,14 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   const [containerWidth, setContainerWidth] = useState<number>(0);
   const [slowLoad, setSlowLoad] = useState(false);
   const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set());
-  // One automatic remint per minted URL — avoids a tight remint loop if the
-  // server keeps rejecting (e.g. session actually expired).
+  // At most one automatic remint until the next successful Document load (or
+  // a new file). Must NOT reset on every mintNonce bump — that caused an
+  // unbounded remint loop when the server kept returning 403.
   const authRemintUsed = useRef(false);
+
+  useEffect(() => {
+    authRemintUsed.current = false;
+  }, [agentId, root, path]);
 
   useEffect(() => {
     if (!mayLoad) {
@@ -85,7 +88,6 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
     }
     const controller = new AbortController();
     setAccessUrl(null);
-    authRemintUsed.current = false;
     mintFileRawAccess(agentId, root, path, controller.signal)
       .then(({ url }) => {
         if (!controller.signal.aborted) setAccessUrl(url);
@@ -204,6 +206,9 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   const onLoadSuccess = ({ numPages: n }: { numPages: number }) => {
     setNumPages(n);
     setError(null);
+    // Successful load restores the one-shot remint budget so a later mid-
+    // scroll token expiry can recover once without looping forever.
+    authRemintUsed.current = false;
     // First page always rendered initially (covers the "open at top" case).
     // The observer will add more as the user scrolls.
     setVisiblePages(new Set([1]));
