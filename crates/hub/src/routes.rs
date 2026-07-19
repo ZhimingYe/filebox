@@ -283,7 +283,7 @@ async fn require_session(
     // before any cookie-id mutation — otherwise a deny response would retire
     // the browser's cookie without Set-Cookie.
     let (existing, tokens_arc) = {
-        let inner = state.inner.write().await;
+        let inner = state.inner.read().await;
         let Some(session) = inner.sessions.get_session(&sid).cloned() else {
             return (
                 StatusCode::UNAUTHORIZED,
@@ -303,22 +303,36 @@ async fn require_session(
         Some(existing.csrf_token.as_str()),
     );
 
-    // 2) Authorize before refresh. Access-token claim runs after refresh so
-    // request-budget accounting sees the final principal; we only gate here
-    // on "has a bearer if CSRF is missing".
-    if !csrf_ok && access_token.is_none() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "error": "csrf_denied",
-                "message": "Missing or invalid CSRF / access token. Reload the page and try again.",
-                "retryable": false,
-            })),
+    // 2) Fully authorize BEFORE refresh/rotate.
+    // Claim access tokens against the stable principal first: if claim fails
+    // (expired/wrong scope/exhausted), we must not mutate the session store or
+    // the browser would keep a retired cookie without receiving Set-Cookie.
+    if !csrf_ok {
+        let Some(token) = access_token.as_deref() else {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "csrf_denied",
+                    "message": "Missing or invalid CSRF / access token. Reload the page and try again.",
+                    "retryable": false,
+                })),
+            )
+                .into_response();
+        };
+        if let Err(resp) = claim_get_access_token(
+            &tokens_arc,
+            token,
+            &existing.principal_id,
+            &path,
+            query.as_deref(),
         )
-            .into_response();
+        .await
+        {
+            return resp;
+        }
     }
 
-    // 3) Refresh / rotate only after auth gate passed.
+    // 3) Refresh / rotate only after auth (CSRF or access token) succeeded.
     let (session, cookie_refresh) = {
         let mut inner = state.inner.write().await;
         if is_logout {
@@ -353,22 +367,6 @@ async fn require_session(
             }
         }
     };
-
-    // 4) Claim access token against stable principal (survives cookie rotation).
-    if !csrf_ok {
-        let token = access_token.as_deref().expect("gated above");
-        if let Err(resp) = claim_get_access_token(
-            &tokens_arc,
-            token,
-            &session.principal_id,
-            &path,
-            query.as_deref(),
-        )
-        .await
-        {
-            return resp;
-        }
-    }
 
     req.extensions_mut().insert(AuthenticatedSession {
         id: session.session_id.clone(),
@@ -2767,6 +2765,61 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn expired_access_token_does_not_rotate_past_half_life_session() {
+        // Regression: claim used to run AFTER refresh. A failed access-token
+        // claim on a half-life session retired the cookie id without Set-Cookie.
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let state = AppState::new(&test_config(), false);
+        let session_id = "half-life-sid".to_string();
+        let principal_id = "half-life-principal".to_string();
+        let csrf = "c".repeat(64);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        {
+            let mut inner = state.inner.write().await;
+            inner.sessions.sessions_insert_for_test(crate::auth::Session {
+                session_id: session_id.clone(),
+                principal_id: principal_id.clone(),
+                csrf_token: csrf,
+                permissions: vec!["view_files".to_string()],
+                created_at: now.saturating_sub(80),
+                expires_at: now + 20,
+                ttl_secs: 100,
+            });
+        }
+        let app = create_router(state.clone());
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/events?access_token=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+                    .header(header::COOKIE, format!("filebox_session={session_id}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let set_cookie = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .any(|v| v.contains("filebox_session="));
+        assert!(
+            !set_cookie,
+            "failed access-token claim must not emit a rotated session cookie"
+        );
+        let inner = state.inner.read().await;
+        assert!(
+            inner.sessions.get_session(&session_id).is_some(),
+            "original cookie id must still be live (no rotation on failed claim)"
+        );
+        assert!(inner.sessions.rotation_grace_is_empty_for_test());
     }
 
     #[tokio::test]

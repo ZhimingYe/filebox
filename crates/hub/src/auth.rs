@@ -258,6 +258,17 @@ impl SessionStore {
     fn purge_expired_grace(&mut self, now: u64) {
         self.rotation_grace.retain(|_, g| g.expires_at > now);
     }
+
+    #[cfg(test)]
+    pub fn sessions_insert_for_test(&mut self, session: Session) {
+        self.sessions
+            .insert(session.session_id.clone(), session);
+    }
+
+    #[cfg(test)]
+    pub fn rotation_grace_is_empty_for_test(&self) -> bool {
+        self.rotation_grace.is_empty()
+    }
 }
 
 fn now_secs() -> u64 {
