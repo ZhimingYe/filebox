@@ -279,73 +279,36 @@ async fn require_session(
     let provided_csrf = csrf_from_header(req.headers());
     let access_token = query.as_deref().and_then(access_token_from_query);
 
-    // Resolve the session under the inner write lock, then drop it before
-    // touching get_access_tokens — never nest those locks (mint path takes
-    // tokens write after a brief inner read).
-    let (auth_session_id, rotated_cookie, csrf_ok, tokens_arc, rotate_from_to) = {
-        let mut inner = state.inner.write().await;
-        let session_result = if is_logout {
-            inner.sessions.get_session(&sid).cloned().map(|s| (s, None))
-        } else {
-            inner.sessions.get_session_rotating(&sid)
+    // 1) Look up (grace-aware) WITHOUT rotating. CSRF/access-token must pass
+    // before any cookie-id mutation — otherwise a deny response would retire
+    // the browser's cookie without Set-Cookie.
+    let (existing, tokens_arc) = {
+        let inner = state.inner.read().await;
+        let Some(session) = inner.sessions.get_session(&sid).cloned() else {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": "session_expired",
+                    "message": "Session expired or invalid. Please login again.",
+                    "retryable": false,
+                })),
+            )
+                .into_response();
         };
-        match session_result {
-            Some((session, rotated)) => {
-                let rotate_from_to = rotated
-                    .as_ref()
-                    .map(|(new_id, _)| (sid.clone(), new_id.clone()));
-                let csrf_ok = csrf_tokens_equal(
-                    provided_csrf.as_deref(),
-                    Some(session.csrf_token.as_str()),
-                );
-                let cookie = rotated.map(|(new_id, max_age)| {
-                    session_cookie_header(&new_id, max_age, state.secure_cookies)
-                });
-                (
-                    session.session_id.clone(),
-                    cookie,
-                    csrf_ok,
-                    inner.get_access_tokens.clone(),
-                    rotate_from_to,
-                )
-            }
-            None => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({
-                        "error": "session_expired",
-                        "message": "Session expired or invalid. Please login again.",
-                        "retryable": false,
-                    })),
-                )
-                    .into_response();
-            }
-        }
+        (session, inner.get_access_tokens.clone())
     };
 
-    if let Some((old_id, new_id)) = rotate_from_to {
-        let mut map = tokens_arc.write().await;
-        for tok in map.values_mut() {
-            if tok.session_id == old_id {
-                tok.session_id = new_id.clone();
-            }
-        }
-    }
+    let csrf_ok = csrf_tokens_equal(
+        provided_csrf.as_deref(),
+        Some(existing.csrf_token.as_str()),
+    );
 
+    // 2) Fully authorize BEFORE refresh/rotate.
+    // Claim access tokens against the stable principal first: if claim fails
+    // (expired/wrong scope/exhausted), we must not mutate the session store or
+    // the browser would keep a retired cookie without receiving Set-Cookie.
     if !csrf_ok {
-        if let Some(token) = access_token.as_deref() {
-            if let Err(resp) = claim_get_access_token(
-                &tokens_arc,
-                token,
-                &auth_session_id,
-                &path,
-                query.as_deref(),
-            )
-            .await
-            {
-                return resp;
-            }
-        } else {
+        let Some(token) = access_token.as_deref() else {
             return (
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({
@@ -355,15 +318,71 @@ async fn require_session(
                 })),
             )
                 .into_response();
+        };
+        if let Err(resp) = claim_get_access_token(
+            &tokens_arc,
+            token,
+            &existing.principal_id,
+            &path,
+            query.as_deref(),
+        )
+        .await
+        {
+            return resp;
         }
     }
 
-    req.extensions_mut()
-        .insert(AuthenticatedSession { id: auth_session_id });
+    // 3) Refresh / rotate only after auth (CSRF or access token) succeeded.
+    let (session, cookie_refresh) = {
+        let mut inner = state.inner.write().await;
+        if is_logout {
+            match inner.sessions.get_session(&sid).cloned() {
+                Some(s) => (s, None),
+                None => {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({
+                            "error": "session_expired",
+                            "message": "Session expired or invalid. Please login again.",
+                            "retryable": false,
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        } else {
+            match inner.sessions.refresh_session_after_auth(&sid) {
+                Some(pair) => pair,
+                None => {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({
+                            "error": "session_expired",
+                            "message": "Session expired or invalid. Please login again.",
+                            "retryable": false,
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    };
+
+    req.extensions_mut().insert(AuthenticatedSession {
+        id: session.session_id.clone(),
+        principal_id: session.principal_id.clone(),
+    });
 
     let mut resp = next.run(req).await;
-    if let Some(cookie) = rotated_cookie {
-        resp.headers_mut().append(header::SET_COOKIE, cookie);
+    if let Some(refresh) = cookie_refresh {
+        resp.headers_mut().append(
+            header::SET_COOKIE,
+            session_cookie_header(&refresh.session_id, refresh.max_age, state.secure_cookies),
+        );
+        resp.headers_mut().append(
+            header::SET_COOKIE,
+            csrf_cookie_header(&refresh.csrf_token, refresh.max_age, state.secure_cookies),
+        );
     }
     resp
 }
@@ -419,7 +438,7 @@ fn query_param(query: &str, name: &str) -> Option<String> {
 async fn claim_get_access_token(
     tokens: &std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, GetAccessToken>>>,
     token: &str,
-    session_id: &str,
+    principal_id: &str,
     path: &str,
     query: Option<&str>,
 ) -> Result<(), Response> {
@@ -437,7 +456,7 @@ async fn claim_get_access_token(
         )
             .into_response());
     };
-    if record.session_id != session_id {
+    if record.principal_id != principal_id {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
@@ -653,11 +672,11 @@ async fn session_logout_handler(
     drop(inner);
     {
         let mut previews = preview_sessions.write().await;
-        previews.retain(|_, preview| preview.session_id != session.id);
+        previews.retain(|_, preview| preview.session_id != session.principal_id);
     }
     {
         let mut tokens = get_access_tokens.write().await;
-        tokens.retain(|_, tok| tok.session_id != session.id);
+        tokens.retain(|_, tok| tok.principal_id != session.principal_id);
     }
 
     tracing::info!(target: "audit", ip = %ip, "logout");
@@ -745,6 +764,7 @@ async fn access_token_create_handler(
     let now = std::time::Instant::now();
     let record = GetAccessToken {
         session_id: session.id.clone(),
+        principal_id: session.principal_id.clone(),
         purpose,
         agent_id,
         root,
@@ -762,7 +782,7 @@ async fn access_token_create_handler(
         map.retain(|_, t| t.expires_at > now);
         let mine = map
             .values()
-            .filter(|t| t.session_id == session.id)
+            .filter(|t| t.principal_id == session.principal_id)
             .count();
         if map.len() >= GET_ACCESS_TOKEN_MAX_TOTAL || mine >= GET_ACCESS_TOKEN_MAX_PER_SESSION {
             return (
@@ -881,7 +901,7 @@ async fn preview_session_create_handler(
 
     let stat = match request_preview_stat(
         &state,
-        &session.id,
+        &session.principal_id,
         &req.agent_id,
         &req.root,
         &file_path,
@@ -904,7 +924,7 @@ async fn preview_session_create_handler(
     }
     if let Err(resp) = request_preview_read_probe(
         &state,
-        &session.id,
+        &session.principal_id,
         &req.agent_id,
         &req.root,
         &file_path,
@@ -918,7 +938,8 @@ async fn preview_session_create_handler(
     let token = generate_preview_token();
     let expires_at = now + PREVIEW_SESSION_TTL;
     let preview = PreviewSession {
-        session_id: session.id.clone(),
+        // Stable principal — cookie-id rotation must not orphan the 1h preview TTL.
+        session_id: session.principal_id.clone(),
         agent_id: req.agent_id.clone(),
         root: req.root.clone(),
         base_path: base_path.clone(),
@@ -932,7 +953,7 @@ async fn preview_session_create_handler(
         let now = std::time::Instant::now();
         let mut previews = preview_sessions.write().await;
         previews.retain(|_, preview| preview.expires_at > now);
-        prune_preview_sessions_for_insert(&mut previews, &session.id);
+        prune_preview_sessions_for_insert(&mut previews, &session.principal_id);
         previews.insert(token.clone(), preview);
     }
 
@@ -1244,7 +1265,7 @@ async fn cancel_handler(
             )
                 .into_response();
         };
-        if pending_resp.session_id.as_deref() != Some(session.id.as_str()) {
+        if pending_resp.session_id.as_deref() != Some(session.principal_id.as_str()) {
             return (
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({
@@ -1372,7 +1393,7 @@ async fn agent_resources_put_handler(
         roots = desired.roots.len(),
         "resources_put_requested"
     );
-    apply_desired_state(state, agent_id, desired, session.id).await
+    apply_desired_state(state, agent_id, desired, session.principal_id).await
 }
 
 /// Reconcile a whole-state PUT body so that a root whose JSON object OMITS the
@@ -1515,7 +1536,7 @@ async fn add_root_handler(
         "root_add_requested"
     );
 
-    apply_desired_state(state, agent_id, DesiredResources { roots }, session.id).await
+    apply_desired_state(state, agent_id, DesiredResources { roots }, session.principal_id).await
 }
 
 #[derive(serde::Deserialize)]
@@ -1697,7 +1718,7 @@ async fn patch_root_handler(
         "root_patch_requested"
     );
 
-    apply_desired_state(state, agent_id, DesiredResources { roots }, session.id).await
+    apply_desired_state(state, agent_id, DesiredResources { roots }, session.principal_id).await
 }
 
 async fn delete_root_handler(
@@ -1734,7 +1755,7 @@ async fn delete_root_handler(
         "root_delete_requested"
     );
 
-    apply_desired_state(state, agent_id, DesiredResources { roots }, session.id).await
+    apply_desired_state(state, agent_id, DesiredResources { roots }, session.principal_id).await
 }
 
 #[derive(serde::Deserialize)]
@@ -1856,7 +1877,7 @@ async fn add_collection_handler(
         state,
         agent_id,
         DesiredCollections { collections },
-        session.id,
+        session.principal_id,
     )
     .await
 }
@@ -2039,7 +2060,7 @@ async fn patch_collection_handler(
         state,
         agent_id,
         DesiredCollections { collections },
-        session.id,
+        session.principal_id,
     )
     .await
 }
@@ -2109,7 +2130,7 @@ async fn delete_collection_handler(
         state,
         agent_id,
         DesiredCollections { collections },
-        session.id,
+        session.principal_id,
     )
     .await
 }
@@ -2473,6 +2494,7 @@ mod tests {
     fn test_session() -> Extension<AuthenticatedSession> {
         Extension(AuthenticatedSession {
             id: "test-session".to_string(),
+            principal_id: "test-principal".to_string(),
         })
     }
 
@@ -2693,6 +2715,7 @@ mod tests {
                 token.clone(),
                 GetAccessToken {
                     session_id: session.session_id.clone(),
+                    principal_id: session.principal_id.clone(),
                     purpose: GetAccessPurpose::Events,
                     agent_id: None,
                     root: None,
@@ -2745,6 +2768,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_access_token_does_not_rotate_past_half_life_session() {
+        // Regression: claim used to run AFTER refresh. A failed access-token
+        // claim on a half-life session retired the cookie id without Set-Cookie.
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let state = AppState::new(&test_config(), false);
+        let session_id = "half-life-sid".to_string();
+        let principal_id = "half-life-principal".to_string();
+        let csrf = "c".repeat(64);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        {
+            let mut inner = state.inner.write().await;
+            inner.sessions.sessions_insert_for_test(crate::auth::Session {
+                session_id: session_id.clone(),
+                principal_id: principal_id.clone(),
+                csrf_token: csrf,
+                permissions: vec!["view_files".to_string()],
+                created_at: now.saturating_sub(80),
+                expires_at: now + 20,
+                ttl_secs: 100,
+            });
+        }
+        let app = create_router(state.clone());
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/events?access_token=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+                    .header(header::COOKIE, format!("filebox_session={session_id}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let set_cookie = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .any(|v| v.contains("filebox_session="));
+        assert!(
+            !set_cookie,
+            "failed access-token claim must not emit a rotated session cookie"
+        );
+        let inner = state.inner.read().await;
+        assert!(
+            inner.sessions.get_session(&session_id).is_some(),
+            "original cookie id must still be live (no rotation on failed claim)"
+        );
+        assert!(inner.sessions.rotation_grace_is_empty_for_test());
+    }
+
+    #[tokio::test]
     async fn file_raw_accepts_scoped_access_token_without_csrf_header() {
         let state = AppState::new(&test_config(), false);
         let (session, _) = {
@@ -2760,6 +2838,7 @@ mod tests {
                 token.clone(),
                 GetAccessToken {
                     session_id: session.session_id.clone(),
+                    principal_id: session.principal_id.clone(),
                     purpose: GetAccessPurpose::FileRaw,
                     agent_id: Some("missing".to_string()),
                     root: Some("r".to_string()),
@@ -2862,6 +2941,7 @@ mod tests {
                 token.clone(),
                 GetAccessToken {
                     session_id: session.session_id.clone(),
+                    principal_id: session.principal_id.clone(),
                     purpose: GetAccessPurpose::FileRaw,
                     agent_id: Some("a".to_string()),
                     root: Some("r".to_string()),
@@ -2911,6 +2991,7 @@ mod tests {
                 token.clone(),
                 GetAccessToken {
                     session_id: session.session_id.clone(),
+                    principal_id: session.principal_id.clone(),
                     purpose: GetAccessPurpose::Events,
                     agent_id: None,
                     root: None,
@@ -2960,6 +3041,7 @@ mod tests {
                 token.clone(),
                 GetAccessToken {
                     session_id: session.session_id.clone(),
+                    principal_id: session.principal_id.clone(),
                     purpose: GetAccessPurpose::FileRaw,
                     agent_id: Some("a".to_string()),
                     root: Some("r".to_string()),
@@ -3009,6 +3091,7 @@ mod tests {
                 token.clone(),
                 GetAccessToken {
                     session_id: session.session_id.clone(),
+                    principal_id: session.principal_id.clone(),
                     purpose: GetAccessPurpose::Events,
                     agent_id: None,
                     root: None,
