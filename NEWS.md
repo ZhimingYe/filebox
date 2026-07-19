@@ -20,7 +20,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **Denylist expanded** — `shadow`/`gshadow`/`sudoers`, `.pgpass`/`.htpasswd`, `credentials.csv`/`credentials.txt`, `secrets.y{a,}ml`/`secrets.toml`, `*.tfstate`, `*.kdbx`, and related cloud credential filenames.
 - **Path validators** — pin/collection paths reject `\`; Hub WS debug logs no longer print raw post-auth frames (avoids token leakage).
 - **CSRF synchronizer token** — login issues a per-session CSRF token (JSON + non-HttpOnly `filebox_csrf` / `__Host-filebox_csrf` cookie). Protected API calls must send `X-CSRF-Token` (header only). Blocks same-site sibling pages that can send the session cookie but cannot read the CSRF cookie.
-- **GET access tokens** — `POST /api/access-tokens` mints short-lived, purpose-scoped bearers for headerless GETs (`/api/file/raw` downloads / PDF ranges, `/api/events` SSE). The CSRF secret is never placed in URLs, history, or proxy logs. File tokens TTL 60m / 10k request budget for PDF.js; the PDF viewer remints once on auth failure (403/429). Scope checks parse query strings with the same `form_urlencoded` decoder as axum `Query`.
+- **GET access tokens** — `POST /api/access-tokens` mints short-lived, purpose-scoped bearers for headerless GETs (`/api/file/raw` downloads / PDF ranges, `/api/events` SSE). The CSRF secret is never placed in URLs, history, or proxy logs. File tokens TTL 15m / 2k request budget; the PDF viewer remints once on auth failure (403/429). Scope checks parse query strings with the same `form_urlencoded` decoder as axum `Query`.
 
 ---
 
