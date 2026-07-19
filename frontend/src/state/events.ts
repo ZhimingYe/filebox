@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { eventsUrl } from '../api/client';
+import { eventsAccessUrl } from '../api/client';
 
 export interface SseEvent {
   event: string;
@@ -12,11 +12,12 @@ class SseManager {
   private source: EventSource | null = null;
   private listeners = new Set<Listener>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectGeneration = 0;
 
   subscribe(listener: Listener) {
     this.listeners.add(listener);
     if (!this.source) {
-      this.connect();
+      void this.connect();
     }
     return () => {
       this.listeners.delete(listener);
@@ -26,10 +27,43 @@ class SseManager {
     };
   }
 
-  private connect() {
-    if (this.source) return;
+  private clearReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
 
-    const es = new EventSource(eventsUrl());
+  private scheduleReconnect(generation: number) {
+    if (generation !== this.connectGeneration || this.listeners.size === 0) {
+      return;
+    }
+    this.clearReconnectTimer();
+    this.reconnectTimer = setTimeout(() => {
+      void this.connect();
+    }, 3000);
+  }
+
+  private async connect() {
+    if (this.source) return;
+    this.clearReconnectTimer();
+
+    const generation = ++this.connectGeneration;
+    let url: string;
+    try {
+      // EventSource cannot set X-CSRF-Token; mint a short-lived GET bearer.
+      url = await eventsAccessUrl();
+    } catch {
+      // Same generation/listener gates as the success path — otherwise a mint
+      // that fails after logout / last-subscriber-gone keeps hammering forever.
+      this.scheduleReconnect(generation);
+      return;
+    }
+    if (generation !== this.connectGeneration || this.listeners.size === 0) {
+      return;
+    }
+
+    const es = new EventSource(url);
     this.source = es;
 
     es.onmessage = (e) => {
@@ -66,8 +100,8 @@ class SseManager {
     es.onerror = () => {
       es.close();
       this.source = null;
-      // Reconnect after 3 seconds
-      this.reconnectTimer = setTimeout(() => this.connect(), 3000);
+      // Remint access token on reconnect (old one may be expired).
+      this.scheduleReconnect(generation);
     };
   }
 
@@ -84,10 +118,8 @@ class SseManager {
   }
 
   private disconnect() {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    this.connectGeneration += 1;
+    this.clearReconnectTimer();
     if (this.source) {
       this.source.close();
       this.source = null;

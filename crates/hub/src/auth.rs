@@ -13,7 +13,8 @@ pub struct Session {
     pub session_id: String,
     /// Synchronizer token for CSRF defense. Sent to the browser as a
     /// non-HttpOnly cookie + login JSON; must be echoed on API requests via
-    /// `X-CSRF-Token` (or `csrf` query for EventSource / download links).
+    /// the `X-CSRF-Token` header. Headerless GETs use short-lived access tokens
+    /// instead — never put this value in a URL query string.
     pub csrf_token: String,
     pub permissions: Vec<String>,
     pub created_at: u64,
@@ -105,8 +106,9 @@ impl SessionStore {
 
         if total > 0 && remaining > 0 && remaining.saturating_mul(2) < total {
             let new_id = generate_session_id();
-            // Keep the CSRF token across session-id rotation so open tabs and
-            // EventSource URLs that already embedded `csrf=` keep working.
+            // Keep the CSRF token across session-id rotation so open tabs that
+            // already hold the synchronizer (header / readable cookie) keep
+            // working. GET access tokens are rebound separately in middleware.
             let new_session = Session {
                 session_id: new_id.clone(),
                 csrf_token: current.csrf_token.clone(),

@@ -432,6 +432,7 @@ dependencies = [
  "chrono",
  "filebox-protocol",
  "filebox-updater",
+ "form_urlencoded",
  "futures-util",
  "hex",
  "http-body-util",

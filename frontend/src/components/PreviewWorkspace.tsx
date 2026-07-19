@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { PreviewPane } from './PreviewPane';
 import { PreviewErrorBoundary } from './PreviewErrorBoundary';
-import { fileRawUrl } from '../api/client';
+import { FileDownloadLink } from './FileDownloadLink';
 import { c, radius, font, shadow, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import type { PreviewTab } from '../hooks/usePreviewTabs';
 
@@ -467,14 +467,12 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
           <div style={styles.header}>
             <span style={styles.path}>{activeTab.path}</span>
             <div style={styles.actions}>
-              <a
-                href={fileRawUrl(agentId, activeTab.root, activeTab.path)}
-                download
+              <FileDownloadLink
+                agentId={agentId}
+                root={activeTab.root}
+                path={activeTab.path}
                 style={styles.downloadLink}
-                title="Download"
-              >
-                Download
-              </a>
+              />
               <button
                 type="button"
                 onClick={() => onClose(activeTab.id)}

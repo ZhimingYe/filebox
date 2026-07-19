@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 
+import { mintFileRawAccess } from '../api/client';
 import { c, radius, shadow, font } from '../theme';
+import { FileDownloadLink } from './FileDownloadLink';
 import {
   LoadingOverlay,
   LargeFileWarning,
@@ -36,7 +38,20 @@ interface Props {
 
 const ESTIMATED_ASPECT = 1.414; // A4 portrait, common default before we know real height
 
-export function PdfPreview({ agentId, root, path, url }: Props) {
+/** pdf.js surfaces HTTP auth failures as "Unexpected server response (403)" etc. */
+function isPdfAuthFailure(message: string): boolean {
+  const m = message.toLowerCase();
+  // Match status codes / known hub errors only — NOT bare "Unexpected server
+  // response", which also fires for 5xx and would remint-loop on agent outages.
+  return (
+    /\b(401|403|429)\b/.test(m)
+    || m.includes('access_token_invalid')
+    || m.includes('access_token_exhausted')
+    || m.includes('csrf_denied')
+  );
+}
+
+export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   // Same large-file gate every other preview uses: ask the agent for the file
   // size up-front via fsStat, and if it exceeds the threshold render a
   // "Load anyway?" warning instead of handing the URL straight to react-pdf.
@@ -48,11 +63,51 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
   // render guard below) depend on it. Declaring it lower would hit the
   // temporal dead zone when the effect dependency arrays evaluate at render.
   const mayLoad = !gate.sizeUnknown && !gate.error && !(gate.isLarge && !gate.bypassed);
+  // pdf.js cannot send X-CSRF-Token; use a short-lived access_token URL instead.
+  // mintNonce bumps to remint after a single auth failure.
+  const [accessUrl, setAccessUrl] = useState<string | null>(null);
+  const [mintNonce, setMintNonce] = useState(0);
   const [numPages, setNumPages] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [containerWidth, setContainerWidth] = useState<number>(0);
   const [slowLoad, setSlowLoad] = useState(false);
   const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set());
+  // At most one automatic remint until the next successful Document load (or
+  // a new file). Must NOT reset on every mintNonce bump — that caused an
+  // unbounded remint loop when the server kept returning 403.
+  const authRemintUsed = useRef(false);
+
+  useEffect(() => {
+    authRemintUsed.current = false;
+  }, [agentId, root, path]);
+
+  useEffect(() => {
+    if (!mayLoad) {
+      setAccessUrl(null);
+      return;
+    }
+    const controller = new AbortController();
+    setAccessUrl(null);
+    mintFileRawAccess(agentId, root, path, controller.signal)
+      .then(({ url }) => {
+        if (!controller.signal.aborted) setAccessUrl(url);
+      })
+      .catch((err: { name?: string; message?: string }) => {
+        if (!controller.signal.aborted && err?.name !== 'AbortError') {
+          setError(err?.message || 'Failed to authorize PDF download');
+        }
+      });
+    return () => controller.abort();
+  }, [mayLoad, agentId, root, path, mintNonce]);
+
+  const remintAfterAuthFailure = useCallback((message: string): boolean => {
+    if (!isPdfAuthFailure(message) || authRemintUsed.current) return false;
+    authRemintUsed.current = true;
+    setError(null);
+    setNumPages(0);
+    setMintNonce((n) => n + 1);
+    return true;
+  }, []);
   // Store per-page aspect ratio (height / width) instead of absolute height
   // so placeholders stay correct when the container resizes (pageWidth
   // changes) — no need to invalidate the cache on resize.
@@ -151,6 +206,9 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
   const onLoadSuccess = ({ numPages: n }: { numPages: number }) => {
     setNumPages(n);
     setError(null);
+    // Successful load restores the one-shot remint budget so a later mid-
+    // scroll token expiry can recover once without looping forever.
+    authRemintUsed.current = false;
     // First page always rendered initially (covers the "open at top" case).
     // The observer will add more as the user scrolls.
     setVisiblePages(new Set([1]));
@@ -158,7 +216,9 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
   };
 
   const onLoadError = (err: Error) => {
-    setError(err.message || 'Failed to load PDF');
+    const message = err.message || 'Failed to load PDF';
+    if (remintAfterAuthFailure(message)) return;
+    setError(message);
     setNumPages(0);
   };
 
@@ -169,6 +229,11 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
       if (prev[page.pageNumber] === aspect) return prev;
       return { ...prev, [page.pageNumber]: aspect };
     });
+  };
+
+  const onPageLoadError = (err: Error) => {
+    // Mid-scroll Range requests can 403 after token expiry / budget exhaustion.
+    remintAfterAuthFailure(err.message || '');
   };
 
   // Document is mounted only when mayLoad (declared above the effects) is
@@ -191,13 +256,21 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
           size={gate.size!}
           flavor="PDF"
           onForceLoad={gate.forceLoad}
-          url={url}
+          agentId={agentId}
+          root={root}
+          path={path}
         />
       )}
 
-      {mayLoad && numPages === 0 && !error && (
+      {mayLoad && !error && (!accessUrl || numPages === 0) && (
         <LoadingOverlay
-          message={slowLoad ? 'PDF is large, still loading...' : 'Loading PDF...'}
+          message={
+            !accessUrl
+              ? 'Authorizing PDF...'
+              : slowLoad
+                ? 'PDF is large, still loading...'
+                : 'Loading PDF...'
+          }
         />
       )}
 
@@ -205,14 +278,15 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
         <div style={styles.errorBox}>
           <p style={styles.errorText}>{error}</p>
           <div style={{ display: 'flex', gap: 12 }}>
-            <a href={url} download style={styles.downloadLink}>Download</a>
+            <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
           </div>
         </div>
       )}
 
-      {mayLoad && (
+      {mayLoad && accessUrl && (
         <Document
-          file={url}
+          key={accessUrl}
+          file={accessUrl}
           onLoadSuccess={onLoadSuccess}
           onLoadError={onLoadError}
           loading=""
@@ -257,6 +331,7 @@ export function PdfPreview({ agentId, root, path, url }: Props) {
                   renderTextLayer={false}
                   loading={<PageSpinner />}
                   onLoadSuccess={onPageLoadSuccess}
+                  onLoadError={onPageLoadError}
                 />
               ) : (
                 // Placeholder: a centered spinner tells the user the page is
