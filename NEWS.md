@@ -22,6 +22,15 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **CSRF synchronizer token** — login issues a per-session CSRF token (JSON + non-HttpOnly `filebox_csrf` / `__Host-filebox_csrf` cookie). Protected API calls must send `X-CSRF-Token` (header only). Blocks same-site sibling pages that can send the session cookie but cannot read the CSRF cookie.
 - **GET access tokens** — `POST /api/access-tokens` mints short-lived, purpose-scoped bearers for headerless GETs (`/api/file/raw` downloads / PDF ranges, `/api/events` SSE). The CSRF secret is never placed in URLs, history, or proxy logs. File tokens TTL 15m / 2k request budget; the PDF viewer remints once on auth failure (403/429). Scope checks parse query strings with the same `form_urlencoded` decoder as axum `Query`.
 
+
+---
+
+## v0.9.16 — 2026-07-20
+
+### Changed
+- Release cut from current `main` (CollectionPicker stay-open UX from #28; session/auth hardening from v0.9.14).
+
+
 ---
 
 ## v0.9.14 — 2026-07-19
