@@ -84,15 +84,18 @@ function detectDocIssues(html: string): { missingHtml: boolean; missingCharset: 
   return { missingHtml, missingCharset: !hasCharset };
 }
 
-function makeSandboxWrapper(blobUrl: string): string {
-  const escapedBlobUrl = escapeAttr(blobUrl);
+// Nested preview for "open in new window". Use srcdoc (not a blob: src) so
+// Safari/WebKit can render inside sandbox without allow-same-origin — blob
+// URLs in that configuration stay blank in WebKit.
+function makeSandboxWrapper(html: string): string {
+  const escapedHtml = escapeAttr(html);
   const escapedSandbox = escapeAttr(HTML_SANDBOX);
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; frame-src blob:; base-uri 'none'; form-action 'none'; object-src 'none'; navigate-to blob:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none';">
 <title>HTML Preview</title>
 <style>
 html,body{margin:0;width:100%;height:100%;background:${c.surface};}
@@ -100,7 +103,7 @@ iframe{border:0;width:100%;height:100%;}
 </style>
 </head>
 <body>
-<iframe sandbox="${escapedSandbox}" src="${escapedBlobUrl}" title="HTML Preview"></iframe>
+<iframe sandbox="${escapedSandbox}" srcdoc="${escapedHtml}" title="HTML Preview"></iframe>
 </body>
 </html>`;
 }
@@ -146,7 +149,10 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [slowPreviewSetup, setSlowPreviewSetup] = useState(false);
   const [previewRetryToken, setPreviewRetryToken] = useState(0);
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  // srcDoc HTML (not a blob: URL). Safari/WebKit leaves sandboxed blob iframes
+  // blank unless allow-same-origin is also set — which would defeat the sandbox.
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [iframeKey, setIframeKey] = useState(0);
   const [iframeLoading, setIframeLoading] = useState(true);
   const [slowRendering, setSlowRendering] = useState(false);
   const [showSource, setShowSource] = useState(false);
@@ -163,7 +169,6 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
       return next;
     });
   }, []);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const mounted = useMounted();
   const previewCancelRef = useRef<AbortController | null>(null);
   const previewSetupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -231,30 +236,25 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
 
   useEffect(() => {
     if (text === null || !previewBaseUrl) {
-      setBlobUrl(null);
+      setPreviewHtml(null);
       return;
     }
     const injectCharset = charsetFix && !!docIssue?.missingCharset;
     const processedHtml = injectPreviewGuards(text, previewBaseUrl, injectCharset);
-    const blob = new Blob([processedHtml], { type: injectCharset ? 'text/html; charset=utf-8' : 'text/html' });
-    const nextBlobUrl = URL.createObjectURL(blob);
-    setBlobUrl(nextBlobUrl);
+    setPreviewHtml(processedHtml);
+    setIframeKey((k) => k + 1);
     setIframeLoading(true);
     setSlowRendering(false);
-
-    return () => {
-      URL.revokeObjectURL(nextBlobUrl);
-    };
   }, [text, previewBaseUrl, charsetFix, docIssue?.missingCharset]);
   useEffect(() => {
-    if (!iframeLoading || showSource || !blobUrl) return;
+    if (!iframeLoading || showSource || !previewHtml) return;
     slowTimerRef.current = setTimeout(() => {
       if (mounted.current) setSlowRendering(true);
     }, 8000);
     return () => {
       if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
     };
-  }, [iframeLoading, showSource, blobUrl, mounted]);
+  }, [iframeLoading, showSource, previewHtml, mounted]);
 
   useEffect(() => () => {
     previewCancelRef.current?.abort();
@@ -277,11 +277,13 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   }, []);
 
   const openInNewWindow = useCallback(() => {
-    if (!blobUrl) return;
+    if (!previewHtml) return;
     if (wrapperRevokeTimerRef.current) clearTimeout(wrapperRevokeTimerRef.current);
     if (wrapperUrlRef.current) URL.revokeObjectURL(wrapperUrlRef.current);
 
-    const wrapperBlob = new Blob([makeSandboxWrapper(blobUrl)], { type: 'text/html' });
+    // Outer page is a top-level blob: URL (fine in Safari). The inner iframe
+    // uses srcdoc + sandbox so WebKit does not hit the blank blob-sandbox bug.
+    const wrapperBlob = new Blob([makeSandboxWrapper(previewHtml)], { type: 'text/html' });
     const wrapperUrl = URL.createObjectURL(wrapperBlob);
     wrapperUrlRef.current = wrapperUrl;
     window.open(wrapperUrl, '_blank', 'noopener,noreferrer');
@@ -291,18 +293,14 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
         wrapperUrlRef.current = null;
       }
     }, 60000);
-  }, [blobUrl]);
+  }, [previewHtml]);
 
   const handleRefresh = useCallback(() => {
-    const iframe = iframeRef.current;
-    if (!iframe || !blobUrl) return;
+    if (!previewHtml) return;
     setIframeLoading(true);
     setSlowRendering(false);
-    iframe.src = 'about:blank';
-    requestAnimationFrame(() => {
-      if (iframeRef.current) iframeRef.current.src = blobUrl;
-    });
-  }, [blobUrl]);
+    setIframeKey((k) => k + 1);
+  }, [previewHtml]);
 
   const handlePreviewSetupCancel = useCallback(() => {
     previewCancelRef.current?.abort();
@@ -354,7 +352,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
       </div>
     );
   }
-  if (previewLoading || (!showSource && text !== null && !blobUrl && !previewError)) {
+  if (previewLoading || (!showSource && text !== null && !previewHtml && !previewError)) {
     return (
       <div style={styles.container}>
         <LoadingOverlay
@@ -444,8 +442,8 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
           <pre style={styles.sourceCode}>{text}</pre>
         ) : (
           <iframe
-            ref={iframeRef}
-            src={blobUrl || ''}
+            key={iframeKey}
+            srcDoc={previewHtml || ''}
             sandbox={HTML_SANDBOX}
             style={styles.htmlFrame}
             title="HTML Preview"
