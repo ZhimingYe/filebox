@@ -25,6 +25,14 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ---
 
+## v0.9.18 — 2026-07-22
+
+### Changed
+- **Workspace Search UI polish** — denser toolbar aligned with Files/Collections (28px controls, single query row), quiet inline plan line that only surfaces non-default constraints, softer progress/empty chrome, and flatter find-mode hit rows (#33).
+
+
+---
+
 ## v0.9.17 — 2026-07-22
 
 ### Fixed
