@@ -15,16 +15,20 @@ import { useSse } from '../state/events';
 import { c, radius, font } from '../theme';
 
 /** Path header + border; context lines are fixed-pitch for VariableSizeList. */
-const HIT_PATH_H = 32;
+const HIT_PATH_H = 30;
 const HIT_LINE_H = 18;
-const HIT_CTX_PAD_Y = 12;
-const HIT_GAP = 6;
+const HIT_CTX_PAD_Y = 10;
+const HIT_GAP = 4;
 /** Card top + bottom border (1px each). */
 const HIT_BORDER = 2;
 
 function estimateHitHeight(hit: SearchHit): number {
   const n = hit.context?.length ?? 0;
-  const body = n === 0 ? 0 : HIT_CTX_PAD_Y + n * HIT_LINE_H;
+  if (n === 0) {
+    // Flat find-mode rows have no card border.
+    return HIT_PATH_H + HIT_GAP;
+  }
+  const body = HIT_CTX_PAD_Y + n * HIT_LINE_H;
   return HIT_PATH_H + body + HIT_BORDER + HIT_GAP;
 }
 
@@ -528,13 +532,26 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
   /** Live restatement of what Search will run — helps catch mistyped intent. */
   const planExpression = useMemo(() => {
     const scope = `${root || '?'}:${folderNorm}`;
-    const typePart = parsedExts.length
-      ? parsedExts.map((e) => `.${e}`).join(' ')
-      : 'all types';
-    const depthPart = parsedDepth != null ? `depth ≤ ${parsedDepth}` : 'unlimited depth';
-    const ignorePart = parsedIgnore.names.length
-      ? `ignore ${parsedIgnore.names.slice(0, 5).join(', ')}${parsedIgnore.names.length > 5 ? '…' : ''}`
-      : 'no ignore';
+    const constraintParts: string[] = [];
+    if (mode === 'content' && ctxLines !== DEFAULT_CONTEXT) {
+      constraintParts.push(`±${ctxLines} lines`);
+    }
+    if (parsedExts.length > 0) {
+      constraintParts.push(parsedExts.map((e) => `.${e}`).join(' '));
+    }
+    if (parsedDepth != null) {
+      constraintParts.push(`depth ≤ ${parsedDepth}`);
+    }
+    const defaultIgnore = DEFAULT_SEARCH_IGNORE.join(', ');
+    if (ignoreText.trim() !== defaultIgnore) {
+      if (parsedIgnore.names.length === 0) {
+        constraintParts.push('no ignore');
+      } else {
+        constraintParts.push(
+          `ignore ${parsedIgnore.names.slice(0, 3).join(', ')}${parsedIgnore.names.length > 3 ? '…' : ''}`,
+        );
+      }
+    }
     const modePart = mode === 'content'
       ? (queryTrim
         ? <>Content matching <code style={styles.planCode}>{queryTrim}</code></>
@@ -542,108 +559,91 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
       : (queryTrim
         ? <>Files named like <code style={styles.planCode}>{queryTrim}</code></>
         : <>Files · <span style={styles.planPlaceholder}>any name</span></>);
-    const constraintParts = [
-      mode === 'content' ? `±${ctxLines} lines` : null,
-      typePart,
-      depthPart,
-      ignorePart,
-    ].filter(Boolean) as string[];
     return { modePart, scope, constraintParts, ready: planReady };
   }, [
     root, folderNorm, mode, queryTrim, parsedExts, parsedDepth,
-    parsedIgnore.names, ctxLines, planReady,
+    parsedIgnore.names, ctxLines, planReady, ignoreText,
   ]);
 
   return (
     <div style={styles.container}>
       <div style={styles.toolbar}>
-        <div
-          role="group"
-          aria-label="Search mode"
-          style={styles.modeSeg}
-        >
-          <ModeButton
-            active={mode === 'content'}
-            onClick={() => setMode('content')}
-            label="Content"
-            position="start"
-          />
-          <ModeButton
-            active={mode === 'find'}
-            onClick={() => setMode('find')}
-            label="Files"
-            position="end"
-          />
-        </div>
-
         <div style={styles.queryRow}>
-          <label style={styles.fieldRoot}>
-            <span style={styles.fieldCaption}>Root</span>
-            <select
-              value={root}
-              onChange={(e) => setRoot(e.target.value)}
-              style={styles.select}
-              disabled={enabledRoots.length === 0 || loading}
-              aria-label="Search root"
-            >
-              {enabledRoots.length === 0 && <option value="">No roots</option>}
-              {enabledRoots.map((r) => (
-                <option key={r.name} value={r.name}>{r.name}</option>
-              ))}
-            </select>
-          </label>
-
-          <label style={styles.fieldFolder}>
-            <span style={styles.fieldCaption}>Folder</span>
-            <input
-              value={folder}
-              onChange={(e) => setFolder(e.target.value)}
-              onKeyDown={onQueryKeyDown}
-              placeholder="/"
-              style={styles.input}
-              disabled={loading}
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-              aria-label="Folder under root"
-              title="Folder under the selected root (/ = root)"
+          <div
+            role="group"
+            aria-label="Search mode"
+            style={styles.modeSeg}
+          >
+            <ModeButton
+              active={mode === 'content'}
+              onClick={() => setMode('content')}
+              label="Content"
+              position="start"
             />
-          </label>
-
-          <div style={styles.fieldQuery}>
-            <label style={styles.fieldQueryLabel}>
-              <span style={styles.fieldCaption}>
-                {mode === 'find' ? 'Name' : 'Pattern'}
-              </span>
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={onQueryKeyDown}
-                placeholder={mode === 'find' ? 'Filename contains…' : 'Regex pattern…'}
-                style={styles.inputQuery}
-                disabled={loading}
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                aria-label={mode === 'find' ? 'Filename contains' : 'Content regex pattern'}
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => void (loading ? handleCancel() : runSearch())}
-              disabled={!root && !loading}
-              style={{
-                ...(loading ? styles.cancelBtn : styles.searchBtn),
-                opacity: !root && !loading ? 0.55 : 1,
-                cursor: !root && !loading ? 'default' : 'pointer',
-              }}
-            >
-              {loading ? 'Cancel' : 'Search'}
-            </button>
+            <ModeButton
+              active={mode === 'find'}
+              onClick={() => setMode('find')}
+              label="Files"
+              position="end"
+            />
           </div>
+
+          <select
+            value={root}
+            onChange={(e) => setRoot(e.target.value)}
+            style={styles.select}
+            disabled={enabledRoots.length === 0 || loading}
+            aria-label="Search root"
+            title="Root"
+          >
+            {enabledRoots.length === 0 && <option value="">No roots</option>}
+            {enabledRoots.map((r) => (
+              <option key={r.name} value={r.name}>{r.name}</option>
+            ))}
+          </select>
+
+          <input
+            value={folder}
+            onChange={(e) => setFolder(e.target.value)}
+            onKeyDown={onQueryKeyDown}
+            placeholder="Folder /"
+            style={styles.inputFolder}
+            disabled={loading}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            aria-label="Folder under root"
+            title="Folder under the selected root (/ = root)"
+          />
+
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onQueryKeyDown}
+            placeholder={mode === 'find' ? 'Filename contains…' : 'Regex pattern…'}
+            style={styles.inputQuery}
+            disabled={loading}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            aria-label={mode === 'find' ? 'Filename contains' : 'Content regex pattern'}
+          />
+
+          <button
+            type="button"
+            onClick={() => void (loading ? handleCancel() : runSearch())}
+            disabled={!root && !loading}
+            style={{
+              ...(loading ? styles.cancelBtn : styles.searchBtn),
+              opacity: !root && !loading ? 0.55 : 1,
+              cursor: !root && !loading ? 'default' : 'pointer',
+            }}
+          >
+            {loading ? 'Cancel' : 'Search'}
+          </button>
         </div>
 
-        <div style={styles.optionsBar}>
+        <div style={styles.metaRow}>
           <button
             type="button"
             onClick={() => setOptionsOpen((v) => !v)}
@@ -666,6 +666,25 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
               <span style={styles.optionsBadge}>{activeOptionCount}</span>
             )}
           </button>
+
+          <div
+            style={{
+              ...styles.planPreview,
+              ...(planExpression.ready ? null : styles.planPreviewIncomplete),
+            }}
+            aria-live="polite"
+            title="Live preview of the search that will run"
+          >
+            <span style={styles.planPrimary}>{planExpression.modePart}</span>
+            <span style={styles.planSep}>·</span>
+            <code style={styles.planCode}>{planExpression.scope}</code>
+            {planExpression.constraintParts.map((part) => (
+              <span key={part} style={styles.planConstraint}>
+                <span style={styles.planSep}>·</span>
+                {part}
+              </span>
+            ))}
+          </div>
         </div>
 
         {optionsOpen && (
@@ -738,29 +757,6 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
             </label>
           </div>
         )}
-
-        <div
-          style={{
-            ...styles.planPreview,
-            ...(planExpression.ready ? null : styles.planPreviewIncomplete),
-          }}
-          aria-live="polite"
-          title="Live preview of the search that will run"
-        >
-          <span style={styles.planLabel}>Plan</span>
-          <div style={styles.planBody}>
-            <div style={styles.planPrimary}>{planExpression.modePart}</div>
-            <div style={styles.planSecondary}>
-              <code style={styles.planCode}>{planExpression.scope}</code>
-              {planExpression.constraintParts.map((part) => (
-                <span key={part}>
-                  <span style={styles.planSep}>·</span>
-                  {part}
-                </span>
-              ))}
-            </div>
-          </div>
-        </div>
 
         {(parsedIgnore.dropped > 0 || parsedIgnore.truncated) && (
           <p style={styles.ignoreWarn} role="status">
@@ -886,9 +882,14 @@ type HitRowData = {
 /** Module-level so VariableSizeList does not remount rows every parent render. */
 function VirtualHitRow({ index, style, data }: ListChildComponentProps<HitRowData>) {
   const hit = data.hits[index]!;
+  const hasContext = (hit.context?.length ?? 0) > 0;
   return (
     <div style={style}>
-      <div style={{ ...styles.hit, marginBottom: HIT_GAP }}>
+      <div style={{
+        ...(hasContext ? styles.hit : styles.hitFlat),
+        marginBottom: HIT_GAP,
+      }}
+      >
         <HitCardBody hit={hit} onOpen={data.onOpen} />
       </div>
     </div>
@@ -945,12 +946,14 @@ function HitCardBody({
 }) {
   const [hovered, setHovered] = useState(false);
   const context = hit.context ?? [];
+  const hasContext = context.length > 0;
   return (
     <>
       <button
         type="button"
         style={{
           ...styles.hitPath,
+          ...(hasContext ? styles.hitPathWithCtx : null),
           ...(hovered ? styles.hitPathHover : null),
         }}
         onClick={() => onOpen?.(hit.root, parentDir(hit.path))}
@@ -963,7 +966,7 @@ function HitCardBody({
         <span style={styles.hitPathText}>{hit.path.replace(/^\//, '')}</span>
         {hit.line != null && <span style={styles.hitLine}>:{hit.line}</span>}
       </button>
-      {context.length > 0 && (
+      {hasContext && (
         <pre style={styles.context}>
           {context.map((line, idx) => (
             <div
@@ -999,23 +1002,26 @@ const styles: Record<string, CSSProperties> = {
     flexShrink: 0,
     display: 'flex',
     flexDirection: 'column',
-    gap: 10,
-    padding: '10px 12px 12px',
+    gap: 8,
+    padding: '8px 12px',
     borderBottom: `1px solid ${c.border}`,
     background: c.bg,
   },
   modeSeg: {
     display: 'inline-flex',
-    alignSelf: 'flex-start',
+    flexShrink: 0,
+    height: 28,
     borderRadius: radius.md,
     border: `1px solid ${c.border}`,
     overflow: 'hidden',
-    background: c.bgSubtle,
+    background: 'transparent',
+    boxSizing: 'border-box',
   },
   modeBtn: {
     border: 'none',
     borderRadius: 0,
-    padding: '5px 14px',
+    padding: '0 12px',
+    height: '100%',
     fontSize: 12,
     fontWeight: 500,
     fontFamily: font.sans,
@@ -1023,7 +1029,7 @@ const styles: Record<string, CSSProperties> = {
     color: c.textSecondary,
     cursor: 'pointer',
     transition: 'background 0.12s, color 0.12s',
-    lineHeight: 1.2,
+    lineHeight: 1,
   },
   modeBtnStart: {
     borderRight: `1px solid ${c.border}`,
@@ -1041,44 +1047,21 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     flexWrap: 'wrap',
     gap: 8,
-    alignItems: 'end',
+    alignItems: 'center',
   },
   fieldCaption: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: 500,
-    color: c.textSecondary,
+    color: c.textMuted,
     lineHeight: 1,
-    marginBottom: 5,
+    marginBottom: 4,
     display: 'block',
   },
-  fieldRoot: {
-    display: 'flex',
-    flexDirection: 'column',
-    flex: '0 1 130px',
-    minWidth: 100,
-  },
-  fieldFolder: {
-    display: 'flex',
-    flexDirection: 'column',
-    flex: '0 1 140px',
-    minWidth: 110,
-  },
-  fieldQuery: {
-    display: 'flex',
-    alignItems: 'end',
-    gap: 8,
-    flex: '1 1 280px',
-    minWidth: 200,
-  },
-  fieldQueryLabel: {
-    display: 'flex',
-    flexDirection: 'column',
-    flex: 1,
-    minWidth: 0,
-  },
   input: {
-    height: 32,
-    border: `1px solid ${c.border}`,
+    height: 28,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: c.border,
     borderRadius: radius.md,
     padding: '0 10px',
     fontSize: 13,
@@ -1090,9 +1073,28 @@ const styles: Record<string, CSSProperties> = {
     width: '100%',
     boxSizing: 'border-box',
   },
+  inputFolder: {
+    height: 28,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: c.border,
+    borderRadius: radius.md,
+    padding: '0 10px',
+    fontSize: 13,
+    fontFamily: font.mono,
+    color: c.text,
+    background: 'transparent',
+    outline: 'none',
+    flex: '0 1 140px',
+    minWidth: 100,
+    maxWidth: 200,
+    boxSizing: 'border-box',
+  },
   inputQuery: {
-    height: 32,
-    border: `1px solid ${c.border}`,
+    height: 28,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: c.border,
     borderRadius: radius.md,
     padding: '0 10px',
     fontSize: 13,
@@ -1100,25 +1102,30 @@ const styles: Record<string, CSSProperties> = {
     color: c.text,
     background: c.surface,
     outline: 'none',
-    minWidth: 0,
-    flex: 1,
+    minWidth: 160,
+    flex: '1 1 220px',
     boxSizing: 'border-box',
   },
   select: {
-    height: 32,
-    border: `1px solid ${c.border}`,
+    height: 28,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: c.border,
     borderRadius: radius.md,
     padding: '0 8px',
     fontSize: 13,
     fontFamily: font.sans,
+    fontWeight: 500,
     color: c.text,
-    background: c.surface,
-    width: '100%',
+    background: 'transparent',
+    flex: '0 1 140px',
+    minWidth: 100,
+    maxWidth: 200,
     boxSizing: 'border-box',
   },
   searchBtn: {
-    height: 32,
-    padding: '0 16px',
+    height: 28,
+    padding: '0 14px',
     border: 'none',
     borderRadius: radius.md,
     background: c.accent,
@@ -1127,23 +1134,22 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 600,
     fontFamily: font.sans,
     flex: '0 0 auto',
-    alignSelf: 'end',
+    cursor: 'pointer',
   },
   cancelBtn: {
-    height: 32,
-    padding: '0 16px',
+    height: 28,
+    padding: '0 14px',
     border: `1px solid ${c.border}`,
     borderRadius: radius.md,
-    background: c.dangerBg,
+    background: 'transparent',
     color: c.danger,
     fontSize: 13,
     fontWeight: 600,
     fontFamily: font.sans,
     flex: '0 0 auto',
-    alignSelf: 'end',
     cursor: 'pointer',
   },
-  optionsBar: {
+  metaRow: {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
@@ -1177,59 +1183,34 @@ const styles: Record<string, CSSProperties> = {
   },
   planPreview: {
     display: 'flex',
-    alignItems: 'flex-start',
-    gap: 10,
-    padding: '8px 10px',
-    borderRadius: radius.md,
-    background: c.bgSubtle,
-    border: `1px solid ${c.border}`,
+    alignItems: 'center',
+    gap: 0,
+    flex: '1 1 200px',
     minWidth: 0,
-  },
-  planPreviewIncomplete: {
-    borderStyle: 'dashed',
-    background: c.bg,
-  },
-  planLabel: {
-    flexShrink: 0,
-    fontSize: 11,
-    fontWeight: 600,
-    color: c.textMuted,
-    letterSpacing: '0.04em',
-    textTransform: 'uppercase' as const,
-    lineHeight: '18px',
-    paddingTop: 1,
-  },
-  planBody: {
-    flex: 1,
-    minWidth: 0,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 3,
-  },
-  planPrimary: {
-    fontSize: 13,
-    fontWeight: 500,
-    color: c.text,
-    lineHeight: 1.35,
     overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap' as const,
-  },
-  planSecondary: {
     fontSize: 12,
     color: c.textMuted,
-    lineHeight: 1.4,
+    lineHeight: 1.35,
+    whiteSpace: 'nowrap' as const,
+  },
+  planPreviewIncomplete: {
+    opacity: 0.72,
+  },
+  planPrimary: {
+    fontSize: 12,
+    fontWeight: 500,
+    color: c.textSecondary,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap' as const,
+    flexShrink: 1,
+    minWidth: 0,
   },
   planCode: {
     fontFamily: font.mono,
-    fontSize: 12,
-    background: c.bgMuted,
-    padding: '1px 5px',
-    borderRadius: 4,
-    color: c.textSecondary,
+    fontSize: 11,
+    color: c.textMuted,
+    flexShrink: 0,
   },
   planPlaceholder: {
     color: c.textMuted,
@@ -1239,12 +1220,17 @@ const styles: Record<string, CSSProperties> = {
   planSep: {
     margin: '0 6px',
     color: c.textFaint,
+    flexShrink: 0,
+  },
+  planConstraint: {
+    color: c.textMuted,
+    flexShrink: 0,
   },
   optionsPanel: {
     display: 'flex',
     flexDirection: 'column',
     gap: 8,
-    padding: '10px 10px 8px',
+    padding: '8px 10px',
     borderRadius: radius.md,
     background: c.bgSubtle,
     border: `1px solid ${c.border}`,
@@ -1279,9 +1265,9 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.4,
   },
   progressBox: {
-    padding: '10px 12px',
+    padding: '8px 12px',
     borderBottom: `1px solid ${c.border}`,
-    background: c.accentBg,
+    background: c.bgSubtle,
     flexShrink: 0,
   },
   progressRow: {
@@ -1301,15 +1287,17 @@ const styles: Record<string, CSSProperties> = {
   progressLabel: {
     flex: 1,
     fontSize: 13,
-    color: c.text,
+    color: c.textSecondary,
     minWidth: 0,
   },
   cancelInline: {
     border: `1px solid ${c.border}`,
-    background: c.surface,
+    background: 'transparent',
     color: c.danger,
     borderRadius: radius.md,
-    padding: '4px 10px',
+    padding: '3px 10px',
+    height: 28,
+    boxSizing: 'border-box',
     fontSize: 12,
     fontFamily: font.sans,
     fontWeight: 500,
@@ -1319,14 +1307,14 @@ const styles: Record<string, CSSProperties> = {
   slowNote: {
     marginTop: 6,
     fontSize: 12,
-    color: c.textSecondary,
+    color: c.textMuted,
     lineHeight: 1.4,
   },
   error: {
-    padding: '8px 12px',
+    padding: '6px 12px',
     background: c.dangerBg,
     color: c.danger,
-    fontSize: 13,
+    fontSize: 12,
     borderBottom: `1px solid ${c.border}`,
     flexShrink: 0,
   },
@@ -1341,10 +1329,10 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     flexWrap: 'wrap',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
     flexShrink: 0,
-    padding: '8px 12px',
-    borderBottom: `1px solid ${c.borderSubtle}`,
+    padding: '6px 10px',
+    borderBottom: `1px solid ${c.border}`,
     background: c.bg,
   },
   meta: {
@@ -1376,17 +1364,19 @@ const styles: Record<string, CSSProperties> = {
     letterSpacing: '0.03em',
   },
   filterInput: {
-    height: 28,
-    border: `1px solid ${c.border}`,
-    borderRadius: radius.md,
-    padding: '0 10px',
-    fontSize: 12,
-    fontFamily: font.sans,
-    color: c.text,
-    background: c.surface,
-    outline: 'none',
-    flex: '0 1 200px',
+    flex: '1 1 180px',
     minWidth: 140,
+    maxWidth: 280,
+    padding: '6px 10px',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: c.border,
+    background: c.surface,
+    color: c.text,
+    fontSize: 13,
+    outline: 'none',
+    fontFamily: font.sans,
     boxSizing: 'border-box',
   },
   emptyWrap: {
@@ -1395,17 +1385,17 @@ const styles: Record<string, CSSProperties> = {
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 32,
+    padding: 24,
     textAlign: 'center',
   },
   emptyTitle: {
     margin: 0,
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: 600,
     color: c.text,
   },
   emptyHint: {
-    margin: '6px 0 0',
+    margin: '8px 0 0',
     fontSize: 13,
     color: c.textMuted,
     lineHeight: 1.4,
@@ -1415,13 +1405,19 @@ const styles: Record<string, CSSProperties> = {
     flex: 1,
     minHeight: 0,
     overflow: 'hidden',
-    padding: '8px 12px 12px',
+    padding: '6px 10px 10px',
     boxSizing: 'border-box',
   },
   hit: {
     border: `1px solid ${c.border}`,
     borderRadius: radius.md,
     background: c.surface,
+    overflow: 'hidden',
+    boxSizing: 'border-box',
+  },
+  hitFlat: {
+    borderRadius: radius.sm,
+    background: 'transparent',
     overflow: 'hidden',
     boxSizing: 'border-box',
   },
@@ -1433,9 +1429,8 @@ const styles: Record<string, CSSProperties> = {
     boxSizing: 'border-box',
     textAlign: 'left',
     border: 'none',
-    borderBottom: `1px solid ${c.borderSubtle}`,
-    background: c.bg,
-    padding: '0 12px',
+    background: 'transparent',
+    padding: '0 10px',
     fontSize: 12,
     fontFamily: font.mono,
     color: c.text,
@@ -1443,6 +1438,12 @@ const styles: Record<string, CSSProperties> = {
     gap: 0,
     minWidth: 0,
     transition: 'background 0.1s',
+    borderRadius: radius.sm,
+  },
+  hitPathWithCtx: {
+    borderBottom: `1px solid ${c.borderSubtle}`,
+    borderRadius: 0,
+    background: c.bg,
   },
   hitPathHover: {
     background: c.bgMuted,
@@ -1481,7 +1482,7 @@ const styles: Record<string, CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
-    padding: '0 12px',
+    padding: '0 10px',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     boxSizing: 'border-box',
