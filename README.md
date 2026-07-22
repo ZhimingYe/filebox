@@ -66,7 +66,7 @@ Current release: **v0.9.0**. See [NEWS.md](NEWS.md) for the full changelog.
 ### Security
 - Username/password authentication (bcrypt)
 - Agent token authentication (bcrypt)
-- CSRF synchronizer token (`X-CSRF-Token` header) on session APIs; short-lived GET access tokens for downloads / SSE
+- CSRF synchronizer token (`X-CSRF-Token` header) on session APIs; short-lived GET access tokens for SSE (EventSource)
 - Sensitive files denied by default
 - Read-only access
 - Path safety checks (canonicalize, symlink escape, denylist)
