@@ -532,13 +532,26 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
   /** Live restatement of what Search will run — helps catch mistyped intent. */
   const planExpression = useMemo(() => {
     const scope = `${root || '?'}:${folderNorm}`;
-    const typePart = parsedExts.length
-      ? parsedExts.map((e) => `.${e}`).join(' ')
-      : 'all types';
-    const depthPart = parsedDepth != null ? `depth ≤ ${parsedDepth}` : 'unlimited depth';
-    const ignorePart = parsedIgnore.names.length
-      ? `ignore ${parsedIgnore.names.slice(0, 5).join(', ')}${parsedIgnore.names.length > 5 ? '…' : ''}`
-      : 'no ignore';
+    const constraintParts: string[] = [];
+    if (mode === 'content' && ctxLines !== DEFAULT_CONTEXT) {
+      constraintParts.push(`±${ctxLines} lines`);
+    }
+    if (parsedExts.length > 0) {
+      constraintParts.push(parsedExts.map((e) => `.${e}`).join(' '));
+    }
+    if (parsedDepth != null) {
+      constraintParts.push(`depth ≤ ${parsedDepth}`);
+    }
+    const defaultIgnore = DEFAULT_SEARCH_IGNORE.join(', ');
+    if (ignoreText.trim() !== defaultIgnore) {
+      if (parsedIgnore.names.length === 0) {
+        constraintParts.push('no ignore');
+      } else {
+        constraintParts.push(
+          `ignore ${parsedIgnore.names.slice(0, 3).join(', ')}${parsedIgnore.names.length > 3 ? '…' : ''}`,
+        );
+      }
+    }
     const modePart = mode === 'content'
       ? (queryTrim
         ? <>Content matching <code style={styles.planCode}>{queryTrim}</code></>
@@ -546,16 +559,10 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
       : (queryTrim
         ? <>Files named like <code style={styles.planCode}>{queryTrim}</code></>
         : <>Files · <span style={styles.planPlaceholder}>any name</span></>);
-    const constraintParts = [
-      mode === 'content' ? `±${ctxLines} lines` : null,
-      typePart,
-      depthPart,
-      ignorePart,
-    ].filter(Boolean) as string[];
     return { modePart, scope, constraintParts, ready: planReady };
   }, [
     root, folderNorm, mode, queryTrim, parsedExts, parsedDepth,
-    parsedIgnore.names, ctxLines, planReady,
+    parsedIgnore.names, ctxLines, planReady, ignoreText,
   ]);
 
   return (
