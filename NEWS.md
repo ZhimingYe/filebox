@@ -25,6 +25,13 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ---
 
+## v0.9.17 — 2026-07-22
+
+### Fixed
+- **Safari HTML preview white screen** — sandboxed preview now uses `srcDoc` / `srcdoc` instead of a `blob:` iframe `src`. WebKit leaves sandboxed blob iframes blank without `allow-same-origin`; Chrome did not. Open-in-new-window uses the same pattern for its nested frame (#31).
+
+---
+
 ## v0.9.16 — 2026-07-20
 
 ### Changed
