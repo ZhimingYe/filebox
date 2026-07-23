@@ -213,8 +213,8 @@ curl -s -N -b /tmp/fb.cookie --noproxy '*' \
 | POST | `/api/agents/{id}/workspace-search` | yes | Workspace Search (find / content modes) |
 | GET | `/api/fs/list` | yes | Directory listing (proxied to agent) |
 | GET | `/api/fs/stat` | yes | File metadata |
-| GET | `/api/file/raw` | yes + CSRF header, or `access_token` | File bytes |
-| POST | `/api/access-tokens` | yes + CSRF | Mint short-lived GET bearer (`file_raw` / `events`) |
+| GET | `/api/file/raw` | yes + CSRF header (UI), or `access_token` | File bytes |
+| POST | `/api/access-tokens` | yes + CSRF | Mint short-lived GET bearer (UI uses `events`; `file_raw` still available for headerless clients) |
 | POST | `/api/preview/sessions` | yes | HTML preview session token |
 | GET | `/api/preview/{token}/{*path}` | token | HTML relative asset |
 | GET | `/api/agents/{id}/sys-stats` | yes | CPU/mem/etc |

@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react';
-import { fileRawAccessUrl, friendlyMessage } from '../api/client';
+import { fileRawUrl, friendlyMessage, withCsrf } from '../api/client';
 
 interface Props {
   agentId: string;
@@ -25,24 +25,37 @@ const buttonReset: CSSProperties = {
 };
 
 /**
- * Download trigger that mints a short-lived `access_token` on click so the
- * CSRF synchronizer never appears in the address bar / history / logs.
+ * Download trigger via credentialed fetch + blob URL.
  *
- * Rendered as a <button>, not an <a>: there is no valid href to fall back to
- * (the token only exists after minting), so a real anchor would offer
- * "open in new tab" / "copy link address" affordances that silently 403.
+ * Uses the CSRF header path (same as text/image previews) so there is no
+ * extra POST /api/access-tokens round-trip before the file bytes start.
+ * Rendered as a <button> — a real <a href> would either leak a dead
+ * unauthenticated URL or force minting into the address bar.
  */
 export function FileDownloadLink({ agentId, root, path, children, style, className }: Props) {
   const onClick = async () => {
     try {
-      const url = await fileRawAccessUrl(agentId, root, path);
+      const res = await fetch(fileRawUrl(agentId, root, path), withCsrf());
+      if (!res.ok) {
+        let payload: unknown = null;
+        try {
+          payload = await res.json();
+        } catch {
+          payload = { error: `HTTP ${res.status}` };
+        }
+        throw payload;
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = '';
+      a.href = objectUrl;
+      a.download = path.split('/').filter(Boolean).pop() || 'download';
       a.rel = 'noopener';
       document.body.appendChild(a);
       a.click();
       a.remove();
+      // Revoke after the click has been processed.
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
     } catch (err) {
       // Surface via alert only as a last resort — download is a one-shot action.
       window.alert(friendlyMessage(err));
