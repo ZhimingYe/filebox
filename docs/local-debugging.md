@@ -463,8 +463,10 @@ export FILEBOX_AGENT_SOFFICE="$HOME/opt/libreoffice/opt/libreoffice26.2/program/
 
 # Optional knobs
 # FILEBOX_AGENT_OFFICE_TIMEOUT_SECS=120
-# FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES=52428800
-# FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES=209715200
+# FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES=536870912
+# FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES=1073741824
+# FILEBOX_AGENT_OFFICE_MAX_LOG_BYTES=8388608
+# FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES=2147483648
 # FILEBOX_AGENT_OFFICE_CACHE_BYTES=1073741824
 ```
 
@@ -472,6 +474,11 @@ On successful probe (`soffice --headless --version`), the agent advertises
 `capabilities.office_pdf_preview: true`. The UI Settings page has an
 **Office → PDF preview** switch (browser `localStorage`, default on) to
 disable conversion without removing LibreOffice.
+
+There is no periodic Office monitor. Startup performs one bounded probe;
+later checks happen only when a user requests a conversion. Removing Office
+mid-run yields a retryable `office_unavailable` result without stopping the
+agent or blocking file browsing and other preview types.
 
 ### Rootless install (no sudo)
 
@@ -565,6 +572,8 @@ Env vars (verified):
 | `FILEBOX_AGENT_OFFICE_TIMEOUT_SECS` | Convert timeout (default 120) |
 | `FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES` | Max source Office file size |
 | `FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES` | Max output PDF size |
+| `FILEBOX_AGENT_OFFICE_MAX_LOG_BYTES` | Max captured stdout/stderr per conversion |
+| `FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES` | LibreOffice address-space limit |
 | `FILEBOX_AGENT_OFFICE_CACHE_BYTES` | On-disk PDF cache budget (LRU) |
 | `FILEBOX_UPDATE_BASE_URL` | `--update` mirror base URL |
 | `FILEBOX_ALLOW_INSECURE_UPDATE` | Allow `http://` update source |

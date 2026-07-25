@@ -164,12 +164,7 @@ function parseMaxDepth(raw: string): number | null {
 }
 
 function searchErrorMessage(err: unknown): string {
-  const mapped = friendlyMessage(err);
-  if (mapped !== 'An unexpected error occurred.') return mapped;
-  const e = err as { message?: string; error?: string } | null;
-  const raw = e?.message || e?.error;
-  if (typeof raw === 'string' && raw.trim()) return raw.trim();
-  return mapped;
+  return friendlyMessage(err);
 }
 
 /** Normalize folder input; `./` and `.` mean root. */

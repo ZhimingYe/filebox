@@ -121,8 +121,18 @@ pub async fn run_connection_loop(config: &AgentConfig) {
     // both the main file list and the directory tree. Cleared on resource
     // reconfigure inside the connection loop.
     let dir_cache: Arc<DirCache> = DirCache::new();
-    let office_runtime = crate::office_convert::probe_from_env(&config.data_dir)
-        .map(crate::office_convert::OfficeRuntime::new);
+    let office_runtime = crate::office_convert::probe_from_env(&config.data_dir).and_then(
+        |office_config| match crate::office_convert::OfficeRuntime::new(office_config) {
+            Ok(runtime) => Some(runtime),
+            Err(error) => {
+                tracing::warn!(
+                    "Office runtime initialization failed: {} — office_pdf_preview disabled",
+                    error
+                );
+                None
+            }
+        },
+    );
 
     tracing::info!(
         "Agent ID: {}, data dir: {:?}",
@@ -266,7 +276,16 @@ async fn run_one_connection(
     capabilities.pinned_folders = true;
     capabilities.collections = true;
     capabilities.workspace_search = true;
+    // Temporary runtime degradation is request-scoped, not a capability
+    // change. Keeping the configured capability advertised lets a later
+    // user-triggered retry recover after Office is reinstalled, without
+    // polling or requiring another Agent reconnect.
     capabilities.office_pdf_preview = office_runtime.is_some();
+    if let Some(runtime) = office_runtime {
+        capabilities.office_max_src_bytes = Some(runtime.config.max_src_bytes);
+        capabilities.office_max_pdf_bytes = Some(runtime.config.max_pdf_bytes);
+        capabilities.office_timeout_secs = Some(runtime.config.timeout.as_secs());
+    }
     let register = AgentMessage::Register {
         agent_id: Some(stable_agent_id.to_string()),
         name: config.agent_name.clone(),
@@ -299,6 +318,7 @@ async fn run_one_connection(
     let search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let (office_tx, mut office_rx) = mpsc::channel::<AgentMessage>(32);
+    let (fs_tx, mut fs_rx) = mpsc::channel::<AgentMessage>(128);
 
     loop {
         tokio::select! {
@@ -312,6 +332,13 @@ async fn run_one_connection(
                 .await;
             }
             Some(response) = office_rx.recv() => {
+                let _ = send_with_timeout(
+                    &mut write,
+                    Message::Text(serde_json::to_string(&response).unwrap().into()),
+                )
+                .await;
+            }
+            Some(response) = fs_rx.recv() => {
                 let _ = send_with_timeout(
                     &mut write,
                     Message::Text(serde_json::to_string(&response).unwrap().into()),
@@ -449,60 +476,88 @@ async fn run_one_connection(
                                 let roots_vec = resource_mgr.roots().to_vec();
                                 let dirs_only_flag = dirs_only.unwrap_or(false);
                                 let cache_clone = dir_cache.clone();
-                                let result = tokio::task::spawn_blocking(move || {
-                                    cache_clone.list(
-                                        &roots_vec, &root, &path, limit as usize,
-                                        cursor.as_deref(), dirs_only_flag,
-                                    )
-                                }).await;
-                                let response = match result {
-                                    Ok(Ok((items, next_cursor))) => AgentMessage::FsListResponse {
-                                        req_id,
-                                        items,
-                                        next_cursor,
-                                        error: None,
-                                    },
-                                    Ok(Err(e)) => AgentMessage::FsListResponse {
-                                        req_id,
-                                        items: vec![],
-                                        next_cursor: None,
-                                        error: Some(e),
-                                    },
-                                    Err(join_err) => AgentMessage::FsListResponse {
-                                        req_id,
-                                        items: vec![],
-                                        next_cursor: None,
-                                        error: Some(format!("agent worker panicked: {}", join_err)),
-                                    },
-                                };
-                                let _ = send_with_timeout(&mut write, Message::Text(
-                                    serde_json::to_string(&response).unwrap().into(),
-                                )).await;
+                                let tx = fs_tx.clone();
+                                tokio::spawn(async move {
+                                    let rid = req_id.clone();
+                                    let result = tokio::task::spawn_blocking(move || {
+                                        cache_clone.list(
+                                            &roots_vec, &root, &path, limit as usize,
+                                            cursor.as_deref(), dirs_only_flag,
+                                        )
+                                    }).await;
+                                    let response = match result {
+                                        Ok(Ok((items, next_cursor))) => AgentMessage::FsListResponse {
+                                            req_id,
+                                            items,
+                                            next_cursor,
+                                            error: None,
+                                        },
+                                        Ok(Err(e)) => AgentMessage::FsListResponse {
+                                            req_id,
+                                            items: vec![],
+                                            next_cursor: None,
+                                            error: Some(e),
+                                        },
+                                        Err(join_err) => AgentMessage::FsListResponse {
+                                            req_id: rid,
+                                            items: vec![],
+                                            next_cursor: None,
+                                            error: Some(format!("agent worker panicked: {}", join_err)),
+                                        },
+                                    };
+                                    let _ = tx.send(response).await;
+                                });
                             }
                             Ok(HubMessage::FsStatRequest { req_id, root, path }) => {
                                 tracing::debug!("FS stat: root={}, path={}", root, path);
-                                let response = if let Some(key) =
-                                    crate::office_convert::parse_cache_virtual_path(&path)
-                                {
-                                    match office_runtime {
-                                        Some(rt) => {
-                                            match crate::office_convert::stat_cache(
-                                                &rt.config.office_dir,
-                                                &key,
-                                            ) {
-                                                Ok(size) => AgentMessage::FsStatResponse {
+                                let roots_vec = resource_mgr.roots().to_vec();
+                                let runtime = office_runtime.cloned();
+                                let tx = fs_tx.clone();
+                                tokio::spawn(async move {
+                                    let rid = req_id.clone();
+                                    let result = tokio::task::spawn_blocking(move || {
+                                        if let Some(key) =
+                                            crate::office_convert::parse_cache_virtual_path(&path)
+                                        {
+                                            match runtime {
+                                                Some(rt) => match crate::office_convert::stat_cache(
+                                                    &rt.config.office_dir,
+                                                    &roots_vec,
+                                                    &root,
+                                                    &key,
+                                                ) {
+                                                    Ok(size) => AgentMessage::FsStatResponse {
+                                                        req_id,
+                                                        stat: Some(
+                                                            filebox_protocol::resources::FileStat {
+                                                                path,
+                                                                entry_type:
+                                                                    filebox_protocol::resources::FsEntryType::File,
+                                                                size,
+                                                                modified: None,
+                                                                permissions: None,
+                                                                denied: false,
+                                                            },
+                                                        ),
+                                                        error: None,
+                                                    },
+                                                    Err(e) => AgentMessage::FsStatResponse {
+                                                        req_id,
+                                                        stat: None,
+                                                        error: Some(e),
+                                                    },
+                                                },
+                                                None => AgentMessage::FsStatResponse {
                                                     req_id,
-                                                    stat: Some(
-                                                        filebox_protocol::resources::FileStat {
-                                                            path,
-                                                            entry_type:
-                                                                filebox_protocol::resources::FsEntryType::File,
-                                                            size,
-                                                            modified: None,
-                                                            permissions: None,
-                                                            denied: false,
-                                                        },
-                                                    ),
+                                                    stat: None,
+                                                    error: Some("office_unavailable".to_string()),
+                                                },
+                                            }
+                                        } else {
+                                            match crate::fs::stat_file(&roots_vec, &root, &path) {
+                                                Ok(stat) => AgentMessage::FsStatResponse {
+                                                    req_id,
+                                                    stat: Some(stat),
                                                     error: None,
                                                 },
                                                 Err(e) => AgentMessage::FsStatResponse {
@@ -512,134 +567,76 @@ async fn run_one_connection(
                                                 },
                                             }
                                         }
-                                        None => AgentMessage::FsStatResponse {
-                                            req_id,
+                                    }).await;
+                                    let response = result.unwrap_or_else(|join_err| {
+                                        AgentMessage::FsStatResponse {
+                                            req_id: rid,
                                             stat: None,
-                                            error: Some(
-                                                "Office preview cache unavailable".to_string(),
-                                            ),
-                                        },
-                                    }
-                                } else {
-                                    let roots_vec = resource_mgr.roots().to_vec();
-                                    let result = tokio::task::spawn_blocking(move || {
-                                        crate::fs::stat_file(&roots_vec, &root, &path)
-                                    })
-                                    .await;
-                                    match result {
-                                        Ok(Ok(stat)) => AgentMessage::FsStatResponse {
-                                            req_id,
-                                            stat: Some(stat),
-                                            error: None,
-                                        },
-                                        Ok(Err(e)) => AgentMessage::FsStatResponse {
-                                            req_id,
-                                            stat: None,
-                                            error: Some(e),
-                                        },
-                                        Err(join_err) => AgentMessage::FsStatResponse {
-                                            req_id,
-                                            stat: None,
-                                            error: Some(format!(
-                                                "agent worker panicked: {}",
-                                                join_err
-                                            )),
-                                        },
-                                    }
-                                };
-                                let _ = send_with_timeout(&mut write, Message::Text(
-                                    serde_json::to_string(&response).unwrap().into(),
-                                )).await;
+                                            error: Some(format!("agent worker panicked: {}", join_err)),
+                                        }
+                                    });
+                                    let _ = tx.send(response).await;
+                                });
                             }
                             Ok(HubMessage::FileReadRequest { req_id, root, path, offset, length }) => {
                                 tracing::debug!("FS read: root={}, path={}, offset={}, len={:?}", root, path, offset, length);
-                                let response = if let Some(key) =
-                                    crate::office_convert::parse_cache_virtual_path(&path)
-                                {
-                                    match office_runtime {
-                                        Some(rt) => {
-                                            let office_dir = rt.config.office_dir.clone();
-                                            let result = tokio::task::spawn_blocking(move || {
-                                                crate::office_convert::read_cache_range(
-                                                    &office_dir, &key, offset, length,
-                                                )
-                                            })
-                                            .await;
-                                            match result {
-                                                Ok(Ok((data, done))) => AgentMessage::FileChunk {
-                                                    req_id,
-                                                    offset,
-                                                    data,
-                                                    done,
-                                                    error: None,
-                                                },
-                                                Ok(Err(e)) => AgentMessage::FileChunk {
-                                                    req_id,
-                                                    offset: 0,
-                                                    data: vec![],
-                                                    done: true,
-                                                    error: Some(e),
-                                                },
-                                                Err(join_err) => AgentMessage::FileChunk {
-                                                    req_id,
-                                                    offset: 0,
-                                                    data: vec![],
-                                                    done: true,
-                                                    error: Some(format!(
-                                                        "agent worker panicked: {}",
-                                                        join_err
-                                                    )),
-                                                },
-                                            }
-                                        }
-                                        None => AgentMessage::FileChunk {
-                                            req_id,
-                                            offset: 0,
-                                            data: vec![],
-                                            done: true,
-                                            error: Some(
-                                                "Office preview cache unavailable".to_string(),
-                                            ),
-                                        },
-                                    }
-                                } else {
-                                    let roots_vec = resource_mgr.roots().to_vec();
+                                let roots_vec = resource_mgr.roots().to_vec();
+                                let runtime = office_runtime.cloned();
+                                let tx = fs_tx.clone();
+                                tokio::spawn(async move {
+                                    let rid = req_id.clone();
                                     let result = tokio::task::spawn_blocking(move || {
-                                        crate::fs::read_file_range(
-                                            &roots_vec, &root, &path, offset, length,
-                                        )
-                                    })
-                                    .await;
-                                    match result {
-                                        Ok(Ok((data, done))) => AgentMessage::FileChunk {
-                                            req_id,
-                                            offset,
-                                            data,
-                                            done,
-                                            error: None,
-                                        },
-                                        Ok(Err(e)) => AgentMessage::FileChunk {
-                                            req_id,
+                                        let read_result = if let Some(key) =
+                                            crate::office_convert::parse_cache_virtual_path(&path)
+                                        {
+                                            match runtime {
+                                                Some(rt) => crate::office_convert::read_cache_range(
+                                                    &rt.config.office_dir,
+                                                    &roots_vec,
+                                                    &root,
+                                                    &key,
+                                                    offset,
+                                                    length,
+                                                ),
+                                                None => Err("office_unavailable".to_string()),
+                                            }
+                                        } else {
+                                            crate::fs::read_file_range(
+                                                &roots_vec,
+                                                &root,
+                                                &path,
+                                                offset,
+                                                length,
+                                            )
+                                        };
+                                        match read_result {
+                                            Ok((data, done)) => AgentMessage::FileChunk {
+                                                req_id,
+                                                offset,
+                                                data,
+                                                done,
+                                                error: None,
+                                            },
+                                            Err(e) => AgentMessage::FileChunk {
+                                                req_id,
+                                                offset: 0,
+                                                data: vec![],
+                                                done: true,
+                                                error: Some(e),
+                                            },
+                                        }
+                                    }).await;
+                                    let response = result.unwrap_or_else(|join_err| {
+                                        AgentMessage::FileChunk {
+                                            req_id: rid,
                                             offset: 0,
                                             data: vec![],
                                             done: true,
-                                            error: Some(e),
-                                        },
-                                        Err(join_err) => AgentMessage::FileChunk {
-                                            req_id,
-                                            offset: 0,
-                                            data: vec![],
-                                            done: true,
-                                            error: Some(format!(
-                                                "agent worker panicked: {}",
-                                                join_err
-                                            )),
-                                        },
-                                    }
-                                };
-                                let _ = send_with_timeout(&mut write, Message::Text(
-                                    serde_json::to_string(&response).unwrap().into(),
-                                )).await;
+                                            error: Some(format!("agent worker panicked: {}", join_err)),
+                                        }
+                                    });
+                                    let _ = tx.send(response).await;
+                                });
                             }
                             Ok(HubMessage::Cancel { req_id }) => {
                                 tracing::debug!("Cancel request: {}", req_id);
@@ -755,18 +752,33 @@ async fn run_one_connection(
                                         total: None,
                                         message: Some("Starting search…".to_string()),
                                     });
-                                    let outcome = crate::search::run_search(&roots_vec, params);
+                                    let outcome = std::panic::catch_unwind(
+                                        std::panic::AssertUnwindSafe(|| {
+                                            crate::search::run_search(&roots_vec, params)
+                                        }),
+                                    );
                                     let response = match outcome {
-                                        Ok(result) => AgentMessage::WorkspaceSearchResponse {
+                                        Ok(Ok(result)) => AgentMessage::WorkspaceSearchResponse {
                                             req_id: rid.clone(),
                                             result: Some(result),
                                             error: None,
                                         },
-                                        Err(e) => AgentMessage::WorkspaceSearchResponse {
+                                        Ok(Err(e)) => AgentMessage::WorkspaceSearchResponse {
                                             req_id: rid.clone(),
                                             result: None,
                                             error: Some(e),
                                         },
+                                        Err(_) => {
+                                            tracing::error!(
+                                                "Workspace search worker panicked for {}",
+                                                rid
+                                            );
+                                            AgentMessage::WorkspaceSearchResponse {
+                                                req_id: rid.clone(),
+                                                result: None,
+                                                error: Some("agent_internal_error".to_string()),
+                                            }
+                                        }
                                     };
                                     if let Ok(mut map) = cancels.lock() {
                                         map.remove(&rid);
@@ -800,6 +812,25 @@ async fn run_one_connection(
                                     .await;
                                     continue;
                                 };
+                                let lease = match rt.reserve_job(&req_id) {
+                                    Ok(lease) => lease,
+                                    Err(error) => {
+                                        let resp = AgentMessage::OfficeConvertResponse {
+                                            req_id,
+                                            cache_key: None,
+                                            size: None,
+                                            error: Some(error),
+                                        };
+                                        let _ = send_with_timeout(
+                                            &mut write,
+                                            Message::Text(
+                                                serde_json::to_string(&resp).unwrap().into(),
+                                            ),
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                };
                                 let roots_vec = resource_mgr.roots().to_vec();
                                 let tx = office_tx.clone();
                                 let progress_tx = office_tx.clone();
@@ -817,7 +848,7 @@ async fn run_one_connection(
                                         };
                                         let _ = progress_tx.try_send(msg);
                                     });
-                                tokio::task::spawn_blocking(move || {
+                                let worker = tokio::task::spawn_blocking(move || {
                                     let _ = tx.try_send(AgentMessage::Progress {
                                         req_id: rid.clone(),
                                         phase: "preparing".to_string(),
@@ -825,15 +856,16 @@ async fn run_one_connection(
                                         total: None,
                                         message: Some("Preparing preview…".to_string()),
                                     });
-                                    let outcome = crate::office_convert::run_convert(
-                                        &rt,
+                                    let outcome = crate::office_convert::run_convert_reserved(
+                                        rt.as_ref(),
                                         &roots_vec,
                                         &rid,
                                         &root,
                                         &path,
+                                        lease,
                                         Some(on_progress),
                                     );
-                                    let response = match outcome {
+                                    match outcome {
                                         Ok(r) => AgentMessage::OfficeConvertResponse {
                                             req_id: rid.clone(),
                                             cache_key: Some(r.cache_key),
@@ -846,8 +878,28 @@ async fn run_one_connection(
                                             size: None,
                                             error: Some(e),
                                         },
+                                    }
+                                });
+                                let terminal_tx = office_tx.clone();
+                                let terminal_req_id = req_id.clone();
+                                tokio::spawn(async move {
+                                    let response = match worker.await {
+                                        Ok(response) => response,
+                                        Err(join_error) => {
+                                            tracing::error!(
+                                                "Office worker failed for {}: {}",
+                                                terminal_req_id,
+                                                join_error
+                                            );
+                                            AgentMessage::OfficeConvertResponse {
+                                                req_id: terminal_req_id,
+                                                cache_key: None,
+                                                size: None,
+                                                error: Some("office_internal_error".to_string()),
+                                            }
+                                        }
                                     };
-                                    let _ = tx.blocking_send(response);
+                                    let _ = terminal_tx.send(response).await;
                                 });
                             }
                             Ok(HubMessage::Error { message }) => {
@@ -895,6 +947,7 @@ async fn run_one_connection(
     // stopped polling) unblocks immediately instead of hanging forever.
     drop(search_rx);
     drop(office_rx);
+    drop(fs_rx);
 
     // Best-effort Close frame so the hub can run cleanup immediately instead
     // of waiting for TCP timeout. Ignore errors — we're tearing down anyway.

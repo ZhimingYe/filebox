@@ -15,10 +15,9 @@ use crate::state::{AppState, AuthenticatedSession, PendingResponse};
 pub struct OfficeConvertBody {
     pub root: String,
     pub path: String,
+    #[serde(default)]
+    pub client_nonce: Option<String>,
 }
-
-/// Soft ceiling: agent default timeout is 120s; leave headroom for WS/proxy.
-const HUB_OFFICE_WAIT_SECS: u64 = 3 * 60;
 
 struct CancelOnDrop {
     state: AppState,
@@ -81,6 +80,26 @@ pub async fn office_convert_handler(
             false,
         );
     }
+    if body.root.len() > 256 || body.path.len() > 4096 {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "root/path is too long",
+            false,
+        );
+    }
+    if body
+        .client_nonce
+        .as_deref()
+        .is_some_and(|nonce| nonce.is_empty() || nonce.len() > 128 || nonce.contains('\0'))
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "client_nonce is invalid",
+            false,
+        );
+    }
     if path_has_dotdot(&body.path) {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -140,6 +159,25 @@ pub async fn office_convert_handler(
             false,
         );
     }
+    if !agent.roots.iter().any(|configured| {
+        configured.name == root && configured.enabled
+    }) {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "root_unavailable",
+            "Root is no longer available",
+            true,
+        );
+    }
+    let hub_wait = Duration::from_secs(
+        agent
+            .capabilities
+            .office_timeout_secs
+            .unwrap_or(120)
+            .min(60 * 60)
+            .saturating_add(60)
+            .max(60),
+    );
 
     let req_id = format!("office_convert_{}", Uuid::new_v4());
     let msg = HubMessage::OfficeConvertRequest {
@@ -149,7 +187,7 @@ pub async fn office_convert_handler(
     };
 
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
-    {
+    let send_ok = {
         let mut pending = inner.pending_responses.write().await;
         pending.insert(
             req_id.clone(),
@@ -161,11 +199,24 @@ pub async fn office_convert_handler(
                 desired_collections: None,
             },
         );
-    }
+        // Enqueue the conversion before exposing req_id through SSE. Keeping
+        // the pending map write-locked closes the race where /api/cancel saw
+        // the request first, sent Cancel, and the Agent then received the
+        // conversion after that already-consumed cancellation.
+        inner.agents.send_to_agent(&agent_id, msg)
+    };
 
-    if !inner.agents.send_to_agent(&agent_id, msg) {
-        drop(inner);
+    drop(inner);
+    let mut guard = CancelOnDrop {
+        state: state.clone(),
+        agent_id: agent_id.clone(),
+        req_id: req_id.clone(),
+        armed: true,
+    };
+
+    if !send_ok {
         cleanup_pending(&state, &req_id).await;
+        guard.disarm();
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "backend_offline",
@@ -174,8 +225,9 @@ pub async fn office_convert_handler(
         );
     }
 
-    drop(inner);
-
+    // The request is now ordered ahead of any user Cancel on the Agent's
+    // single inbound channel. This correlation event still gives the viewer a
+    // deterministic req_id even if the Agent's first Progress arrived early.
     state
         .emit_sse(
             "progress",
@@ -186,18 +238,12 @@ pub async fn office_convert_handler(
                 // Phase markers, not bytes — omit total so UIs don't show "0 B / 3 B".
                 "total": null,
                 "message": "Preparing preview…",
+                "client_nonce": body.client_nonce,
             }),
         )
         .await;
 
-    let mut guard = CancelOnDrop {
-        state: state.clone(),
-        agent_id: agent_id.clone(),
-        req_id: req_id.clone(),
-        armed: true,
-    };
-
-    let resp = tokio::time::timeout(Duration::from_secs(HUB_OFFICE_WAIT_SECS), resp_rx.recv()).await;
+    let resp = tokio::time::timeout(hub_wait, resp_rx.recv()).await;
     cleanup_pending(&state, &req_id).await;
 
     match resp {
@@ -220,21 +266,63 @@ pub async fn office_convert_handler(
             }
 
             if let Some(err) = error.as_str() {
-                let status = match err {
-                    "agent_busy: another office conversion is already running"
-                    | "agent_busy" => StatusCode::CONFLICT,
-                    "too_large" => StatusCode::PAYLOAD_TOO_LARGE,
+                let code = match err {
+                    "timeout" => "office_timeout",
+                    "too_large" => "office_source_too_large",
+                    "convert_failed" => "office_convert_failed",
+                    legacy if legacy.starts_with("agent_busy") => "agent_busy",
+                    "office_source_too_large"
+                    | "office_output_too_large"
+                    | "denied"
+                    | "office_timeout"
+                    | "office_unavailable"
+                    | "root_unavailable"
+                    | "office_source_unavailable"
+                    | "office_storage_error"
+                    | "unsupported_feature"
+                    | "unsupported_format"
+                    | "office_internal_error"
+                    | "office_convert_failed" => err,
+                    _ => "office_convert_failed",
+                };
+                let status = match code {
+                    "agent_busy" => StatusCode::CONFLICT,
+                    "office_source_too_large" | "office_output_too_large" => {
+                        StatusCode::PAYLOAD_TOO_LARGE
+                    }
                     "denied" => StatusCode::FORBIDDEN,
-                    "timeout" => StatusCode::GATEWAY_TIMEOUT,
+                    "office_timeout" => StatusCode::GATEWAY_TIMEOUT,
+                    "office_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                    "root_unavailable" | "office_source_unavailable" => StatusCode::NOT_FOUND,
+                    "office_storage_error" => StatusCode::INSUFFICIENT_STORAGE,
                     "unsupported_feature" | "unsupported_format" => StatusCode::BAD_REQUEST,
                     _ => StatusCode::BAD_GATEWAY,
                 };
-                let code = if err.starts_with("agent_busy") {
-                    "agent_busy"
-                } else {
-                    err
+                let message = match code {
+                    "agent_busy" => "Another Office preview is currently being prepared. Please retry shortly.",
+                    "office_source_too_large" => "This Office document exceeds the Agent's configured conversion limit.",
+                    "office_output_too_large" => "The converted PDF exceeds the Agent's configured preview limit.",
+                    "denied" => "Access denied — sensitive file.",
+                    "office_timeout" => "Office conversion timed out. The original file is still available.",
+                    "office_unavailable" => "Office conversion is temporarily unavailable. The original file is still available.",
+                    "root_unavailable" => "This root is no longer available.",
+                    "office_source_unavailable" => "The source document is no longer readable.",
+                    "office_storage_error" => "The Agent could not store the temporary preview.",
+                    "unsupported_feature" => "Office PDF preview is not available on this Agent.",
+                    "unsupported_format" => "This file type cannot be converted for preview.",
+                    "office_internal_error" => "The Office preview worker failed safely. Please retry.",
+                    _ => "Office conversion failed. The original file is still available.",
                 };
-                return error_response(status, code, err, matches!(code, "agent_busy" | "timeout"));
+                let retryable = matches!(
+                    code,
+                    "agent_busy"
+                        | "office_timeout"
+                        | "office_unavailable"
+                        | "office_storage_error"
+                        | "office_internal_error"
+                        | "office_convert_failed"
+                );
+                return error_response(status, code, message, retryable);
             }
 
             Json(serde_json::json!({
@@ -297,7 +385,7 @@ mod tests {
     use axum::http::{header, Method, StatusCode};
     use axum::body::Body;
     use filebox_protocol::message::AgentMessage;
-    use filebox_protocol::resources::Capabilities;
+    use filebox_protocol::resources::{Capabilities, RootConfig};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::Notify;
@@ -337,7 +425,12 @@ mod tests {
             tx,
             Arc::new(Notify::new()),
             0,
-            vec![],
+            vec![RootConfig {
+                name: "docs".to_string(),
+                path: "/tmp".to_string(),
+                enabled: true,
+                pinned_folders: vec![],
+            }],
             0,
             vec![],
             caps_with_office(office),
@@ -412,6 +505,7 @@ mod tests {
             Json(OfficeConvertBody {
                 root: "docs".into(),
                 path: path.into(),
+                client_nonce: None,
             }),
         )
         .await
@@ -525,25 +619,25 @@ mod tests {
         assert_eq!(s, StatusCode::OK); // cancelled returns 200 JSON with error field
         assert_eq!(e, "cancelled");
 
-        let (s, e) = one("agent_busy: another office conversion is already running").await;
+        let (s, e) = one("agent_busy").await;
         assert_eq!(s, StatusCode::CONFLICT);
         assert_eq!(e, "agent_busy");
 
-        let (s, e) = one("timeout").await;
+        let (s, e) = one("office_timeout").await;
         assert_eq!(s, StatusCode::GATEWAY_TIMEOUT);
-        assert_eq!(e, "timeout");
+        assert_eq!(e, "office_timeout");
 
-        let (s, e) = one("too_large").await;
+        let (s, e) = one("office_source_too_large").await;
         assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
-        assert_eq!(e, "too_large");
+        assert_eq!(e, "office_source_too_large");
 
         let (s, e) = one("denied").await;
         assert_eq!(s, StatusCode::FORBIDDEN);
         assert_eq!(e, "denied");
 
-        let (s, e) = one("convert_failed").await;
+        let (s, e) = one("office_convert_failed").await;
         assert_eq!(s, StatusCode::BAD_GATEWAY);
-        assert_eq!(e, "convert_failed");
+        assert_eq!(e, "office_convert_failed");
     }
 
     #[tokio::test]

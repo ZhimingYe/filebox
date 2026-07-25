@@ -11,10 +11,6 @@ import { c } from '../theme';
 import { FileDownloadLink } from './FileDownloadLink';
 import {
   LoadingOverlay,
-  LargeFileWarning,
-  useFileGate,
-  FileGateError,
-  PREVIEW_SIZE_THRESHOLDS,
   styles,
 } from './previewShared';
 
@@ -27,24 +23,15 @@ interface Props {
 }
 
 type Phase =
-  | { kind: 'gate' }
   | { kind: 'converting'; message: string }
   | { kind: 'ready'; cacheKey: string }
   | { kind: 'error'; message: string; cancelled?: boolean };
 
 export function OfficePreview({ agentId, root, path }: Props) {
-  // Gate on the *source* Office file size before starting LibreOffice.
-  const gate = useFileGate({
-    agentId,
-    root,
-    path,
-    threshold: PREVIEW_SIZE_THRESHOLDS.pdf,
-  });
-  const mayConvert = !gate.sizeUnknown && !gate.error && !(gate.isLarge && !gate.bypassed);
-
-  const [phase, setPhase] = useState<Phase>({ kind: 'gate' });
+  const [phase, setPhase] = useState<Phase>({ kind: 'converting', message: 'Preparing preview…' });
   const [retryToken, setRetryToken] = useState(0);
   const reqIdRef = useRef<string | null>(null);
+  const clientNonceRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const convertingRef = useRef(false);
 
@@ -64,10 +51,14 @@ export function OfficePreview({ agentId, root, path }: Props) {
       req_id?: string;
       phase?: string;
       message?: string | null;
+      client_nonce?: string | null;
     };
     if (!d.req_id || !d.phase) return;
     if (!['preparing', 'converting', 'caching'].includes(d.phase)) return;
-    if (!reqIdRef.current) reqIdRef.current = d.req_id;
+    if (!reqIdRef.current) {
+      if (!d.client_nonce || d.client_nonce !== clientNonceRef.current) return;
+      reqIdRef.current = d.req_id;
+    }
     if (reqIdRef.current !== d.req_id) return;
     setPhase({
       kind: 'converting',
@@ -76,23 +67,23 @@ export function OfficePreview({ agentId, root, path }: Props) {
   }, []));
 
   useEffect(() => {
-    if (!mayConvert) {
-      setPhase({ kind: 'gate' });
-      return;
-    }
-
     let cancelled = false;
     convertingRef.current = true;
     reqIdRef.current = null;
+    const clientNonce = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    clientNonceRef.current = clientNonce;
     const controller = new AbortController();
     abortRef.current = controller;
     setPhase({ kind: 'converting', message: 'Preparing preview…' });
 
-    officeConvert(agentId, root, path, controller.signal)
+    officeConvert(agentId, root, path, clientNonce, controller.signal)
       .then((result) => {
         if (cancelled) return;
         convertingRef.current = false;
         reqIdRef.current = null;
+        clientNonceRef.current = null;
         abortRef.current = null;
         setPhase({ kind: 'ready', cacheKey: result.cache_key });
       })
@@ -101,6 +92,7 @@ export function OfficePreview({ agentId, root, path }: Props) {
         convertingRef.current = false;
         abortRef.current = null;
         reqIdRef.current = null;
+        clientNonceRef.current = null;
         if (e?.error === 'cancelled') {
           setPhase({ kind: 'error', message: 'Conversion cancelled.', cancelled: true });
           return;
@@ -117,36 +109,12 @@ export function OfficePreview({ agentId, root, path }: Props) {
       controller.abort();
       const req = reqIdRef.current;
       reqIdRef.current = null;
+      clientNonceRef.current = null;
       if (req) void cancelRequest(agentId, req).catch(() => {});
     };
-  }, [agentId, root, path, mayConvert, retryToken]);
+  }, [agentId, root, path, retryToken]);
 
-  if (gate.sizeUnknown) {
-    return (
-      <div style={styles.container}>
-        <LoadingOverlay message="Checking file size..." />
-      </div>
-    );
-  }
-
-  if (gate.error) {
-    return <FileGateError message={gate.error} onRetry={gate.retry} />;
-  }
-
-  if (gate.isLarge && !gate.bypassed) {
-    return (
-      <LargeFileWarning
-        size={gate.size!}
-        flavor="Office document"
-        onForceLoad={gate.forceLoad}
-        agentId={agentId}
-        root={root}
-        path={path}
-      />
-    );
-  }
-
-  if (phase.kind === 'converting' || phase.kind === 'gate') {
+  if (phase.kind === 'converting') {
     return (
       <div style={styles.container}>
         <LoadingOverlay
@@ -209,6 +177,9 @@ export function OfficePreview({ agentId, root, path }: Props) {
         root={root}
         path={derivedPath}
         url={derivedUrl}
+        skipSizeGate
+        downloadPath={path}
+        onRetry={() => setRetryToken((n) => n + 1)}
       />
     </Suspense>
   );

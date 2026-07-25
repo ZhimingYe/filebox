@@ -304,8 +304,10 @@ Optional limits (defaults shown):
 
 ```bash
 # FILEBOX_AGENT_OFFICE_TIMEOUT_SECS=120
-# FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES=52428800      # 50 MiB
-# FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES=209715200     # 200 MiB
+# FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES=536870912     # 512 MiB
+# FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES=1073741824    # 1 GiB
+# FILEBOX_AGENT_OFFICE_MAX_LOG_BYTES=8388608       # 8 MiB
+# FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES=2147483648 # 2 GiB
 # FILEBOX_AGENT_OFFICE_CACHE_BYTES=1073741824      # 1 GiB on-disk PDF cache
 ```
 
@@ -314,6 +316,12 @@ Restart the agent. On a successful probe it advertises
 headlessly into a cached PDF (`/.filebox/office-cache/<key>.pdf`) and opens
 it in the PDF viewer. Progress is cancelable; a second convert while one is
 running returns busy.
+
+The agent does not poll or periodically monitor LibreOffice. It validates the
+configured binary at startup and otherwise reacts only to preview requests. If
+LibreOffice is later removed or fails, that request returns a stable,
+retryable `office_unavailable` error, the original download remains available,
+and file browsing plus unrelated previews continue normally.
 
 ### 3. Verify
 

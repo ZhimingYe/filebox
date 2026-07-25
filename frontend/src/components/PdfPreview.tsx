@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 
-import { mintFileRawAccess } from '../api/client';
+import { friendlyMessage, mintFileRawAccess } from '../api/client';
 import { c, radius, shadow, font } from '../theme';
 import { FileDownloadLink } from './FileDownloadLink';
 import {
@@ -24,6 +24,9 @@ interface Props {
   root: string;
   path: string;
   url: string;
+  skipSizeGate?: boolean;
+  downloadPath?: string;
+  onRetry?: () => void;
 }
 
 // Browser-native PDF viewers (via <iframe>) don't exist on iOS Safari and
@@ -81,21 +84,33 @@ function isPdfAuthFailure(message: string): boolean {
   // Match status codes / known hub errors only — NOT bare "Unexpected server
   // response", which also fires for 5xx and would remint-loop on agent outages.
   return (
-    /\b(401|403|429)\b/.test(m)
+    /\b(401|403)\b/.test(m)
     || m.includes('access_token_invalid')
-    || m.includes('access_token_exhausted')
     || m.includes('csrf_denied')
   );
 }
 
-export function PdfPreview({ agentId, root, path, url: _url }: Props) {
+export function PdfPreview({
+  agentId,
+  root,
+  path,
+  url: _url,
+  skipSizeGate = false,
+  downloadPath = path,
+  onRetry,
+}: Props) {
   // Same large-file gate every other preview uses: ask the agent for the file
   // size up-front via fsStat, and if it exceeds the threshold render a
   // "Load anyway?" warning instead of handing the URL straight to react-pdf.
   // Without this a multi-hundred-MB PDF parses into memory and freezes the
   // tab with no recourse (the viewer has its own slow-load overlay, but that
   // can't undo the parse once started).
-  const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.pdf });
+  const gate = useFileGate({
+    agentId,
+    root,
+    path,
+    threshold: skipSizeGate ? Number.MAX_SAFE_INTEGER : PREVIEW_SIZE_THRESHOLDS.pdf,
+  });
   // Hoisted above all effects: several of them (slow-load timer, and the
   // render guard below) depend on it. Declaring it lower would hit the
   // temporal dead zone when the effect dependency arrays evaluate at render.
@@ -124,14 +139,15 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
       return;
     }
     const controller = new AbortController();
+    setError(null);
     setAccessUrl(null);
     mintFileRawAccess(agentId, root, path, controller.signal)
       .then(({ url }) => {
         if (!controller.signal.aborted) setAccessUrl(url);
       })
-      .catch((err: { name?: string; message?: string }) => {
+      .catch((err: { name?: string; message?: string; error?: string }) => {
         if (!controller.signal.aborted && err?.name !== 'AbortError') {
-          setError(err?.message || 'Failed to authorize PDF download');
+          setError(friendlyMessage(err));
         }
       });
     return () => controller.abort();
@@ -280,7 +296,7 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   const onLoadError = (err: Error) => {
     const message = err.message || 'Failed to load PDF';
     if (remintAfterAuthFailure(message)) return;
-    setError(message);
+    setError('Could not load this PDF. The file may be damaged or temporarily unavailable.');
     numPagesRef.current = 0;
     setNumPages(0);
   };
@@ -308,9 +324,19 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   };
 
   const onPageLoadError = (err: Error) => {
-    // Mid-scroll Range requests can 403 after token expiry / budget exhaustion.
-    remintAfterAuthFailure(err.message || '');
+    const message = err.message || '';
+    if (remintAfterAuthFailure(message)) return;
+    setError('Could not load this PDF page. The file may be damaged or temporarily unavailable.');
   };
+
+  const retryLoad = useCallback(() => {
+    setError(null);
+    numPagesRef.current = 0;
+    setNumPages(0);
+    setAccessUrl(null);
+    authRemintUsed.current = false;
+    setMintNonce((n) => n + 1);
+  }, []);
 
   // Document is mounted only when mayLoad (declared above the effects) is
   // true: either the file is under threshold, or the user clicked "Load
@@ -338,7 +364,7 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
         )}
 
         {gate.error && (
-          <FileGateError message={gate.error} onRetry={gate.retry} />
+          <FileGateError message={gate.error} onRetry={onRetry || gate.retry} />
         )}
 
         {gate.isLarge && !gate.bypassed && (
@@ -366,14 +392,26 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
 
         {error && (
           <div style={styles.errorBox}>
-            <p style={styles.errorText}>{error}</p>
+            <p style={styles.errorText}>
+              {isPdfAuthFailure(error)
+                ? 'PDF authorization expired. Please retry.'
+                : error}
+            </p>
             <div style={{ display: 'flex', gap: 12 }}>
-              <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
+              <button type="button" onClick={onRetry || retryLoad} style={styles.retryBtn}>
+                Retry
+              </button>
+              <FileDownloadLink
+                agentId={agentId}
+                root={root}
+                path={downloadPath}
+                style={styles.downloadLink}
+              />
             </div>
           </div>
         )}
 
-        {mayLoad && accessUrl && (
+        {mayLoad && accessUrl && !error && (
           <Document
             key={accessUrl}
             file={accessUrl}
@@ -542,6 +580,11 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100%', maxWidth: 480,
   },
   errorText: { margin: 0 },
+  retryBtn: {
+    padding: '6px 16px', borderRadius: radius.md,
+    border: `1px solid ${c.accent}`, background: 'transparent',
+    color: c.accent, cursor: 'pointer', fontSize: 13, fontWeight: 500,
+  },
   downloadLink: {
     padding: '6px 16px', borderRadius: radius.md,
     border: `1px solid ${c.danger}`, color: c.danger,

@@ -66,26 +66,30 @@ export function friendlyMessage(error: any): string {
     session_expired: 'Session expired. Please log in again.',
     csrf_denied: 'Security check failed. Reload the page and try again.',
     access_token_invalid: 'Download authorization expired. Retry the download.',
-    access_token_exhausted: 'Download authorization exhausted. Retry the download.',
     invalid_credentials: 'Invalid username or password.',
     not_found: 'Resource not found.',
     backend_slow: 'Agent is responding slowly.',
     request_stalled: 'Request appears stalled. You can cancel or retry.',
     request_cancelled: 'Request was cancelled.',
-    too_many_requests: 'Too many active requests. Please wait and retry.',
+    login_rate_limited: 'Too many login attempts. Please wait and retry.',
     file_too_large: 'File is too large to preview.',
+    file_unavailable: 'The file is no longer available or cannot be accessed.',
     preview_too_large: 'Preview is too large to render.',
     permission_denied: 'Permission denied.',
     path_denied: 'Access denied — sensitive file.',
     denied_sensitive_path: 'Access denied — sensitive file.',
     hub_overloaded: 'Server is overloaded. Please retry later.',
     agent_overloaded: 'Agent is overloaded. Please retry later.',
+    agent_internal_error: 'The agent operation failed safely. Please retry.',
     invalid_root_path: 'Path does not exist or is not accessible.',
     invalid_root_name: 'Invalid root name.',
     invalid_pinned_path: 'Invalid pinned folder path.',
     invalid_collection_name: 'Invalid collection name.',
     unsupported: 'This agent does not support that feature. Upgrade the agent.',
     invalid_request: 'Invalid search request.',
+    invalid_search_pattern: 'The search pattern is invalid.',
+    search_path_unavailable: 'The search folder is no longer available.',
+    search_failed: 'Search failed safely. Please retry.',
     cancelled: 'Request was cancelled.',
     agent_busy: 'Agent is busy with another request. Wait or cancel it.',
     invalid_collection_path: 'Invalid collection file path.',
@@ -93,9 +97,14 @@ export function friendlyMessage(error: any): string {
     resource_rejected: 'Agent rejected this change. The folder may be missing or the root changed.',
     unsupported_feature: 'This agent does not support that feature.',
     unsupported_format: 'This file type cannot be converted for preview.',
-    too_large: 'File is too large to convert for preview.',
-    convert_failed: 'Could not convert this document for preview. You can still download the original.',
-    timeout: 'Conversion timed out.',
+    office_unavailable: 'Office preview is temporarily unavailable. You can still download the original.',
+    office_timeout: 'Office conversion timed out. You can still download the original.',
+    office_convert_failed: 'Could not convert this document for preview. You can still download the original.',
+    office_storage_error: 'The agent could not store the temporary preview.',
+    office_source_unavailable: 'The source document is no longer readable.',
+    office_source_too_large: 'This document exceeds the agent’s configured conversion limit.',
+    office_output_too_large: 'The converted PDF exceeds the agent’s configured preview limit.',
+    office_internal_error: 'The Office preview worker failed safely. Please retry.',
     denied: 'Access denied — sensitive file.',
   };
   if (code && map[code]) return map[code];
@@ -169,6 +178,9 @@ export async function logout() {
 
 export interface AgentCapabilities {
   office_pdf_preview: boolean;
+  office_max_src_bytes?: number | null;
+  office_max_pdf_bytes?: number | null;
+  office_timeout_secs?: number | null;
   workspace_search: boolean;
   pinned_folders: boolean;
   collections: boolean;
@@ -617,6 +629,7 @@ export async function officeConvert(
   agentId: string,
   root: string,
   path: string,
+  clientNonce: string,
   signal?: AbortSignal,
 ): Promise<{ req_id?: string; cache_key: string; size: number }> {
   const raw = await request<{
@@ -626,14 +639,14 @@ export async function officeConvert(
     error: string | null;
   }>(`/api/agents/${agentId}/office-convert`, {
     method: 'POST',
-    body: JSON.stringify({ root, path }),
+    body: JSON.stringify({ root, path, client_nonce: clientNonce }),
     signal,
   });
   if (raw.error) {
     throw { status: 400, error: raw.error, message: raw.error };
   }
   if (!raw.cache_key || raw.size == null) {
-    throw { status: 502, error: 'convert_failed', message: 'convert_failed' };
+    throw { status: 502, error: 'office_convert_failed', message: 'office_convert_failed' };
   }
   return { req_id: raw.req_id, cache_key: raw.cache_key, size: raw.size };
 }

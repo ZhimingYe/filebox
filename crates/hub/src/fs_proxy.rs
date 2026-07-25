@@ -74,7 +74,6 @@ use filebox_protocol::message::HubMessage;
 
 use crate::state::{
     AppState, AuthenticatedSession, PendingResponse, PreviewSession,
-    PREVIEW_SESSION_MAX_BYTES, PREVIEW_SESSION_MAX_REQUESTS,
 };
 
 #[derive(Debug, serde::Deserialize)]
@@ -145,7 +144,7 @@ pub async fn fs_list_handler(
     };
 
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
-    {
+    let send_ok = {
         let mut pending = inner.pending_responses.write().await;
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
@@ -154,9 +153,12 @@ pub async fn fs_list_handler(
             desired_roots: None,
             desired_collections: None,
         });
-    }
+        inner.agents.send_to_agent(&params.agent_id, msg)
+    };
 
-    if !inner.agents.send_to_agent(&params.agent_id, msg) {
+    drop(inner);
+    if !send_ok {
+        cleanup_pending(&state, &req_id).await;
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "backend_offline",
@@ -164,8 +166,6 @@ pub async fn fs_list_handler(
             true,
         );
     }
-
-    drop(inner);
 
     let resp = tokio::time::timeout(Duration::from_secs(30), resp_rx.recv()).await;
 
@@ -218,7 +218,7 @@ pub async fn fs_stat_handler(
     };
 
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
-    {
+    let send_ok = {
         let mut pending = inner.pending_responses.write().await;
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
@@ -227,9 +227,12 @@ pub async fn fs_stat_handler(
             desired_roots: None,
             desired_collections: None,
         });
-    }
+        inner.agents.send_to_agent(&params.agent_id, msg)
+    };
 
-    if !inner.agents.send_to_agent(&params.agent_id, msg) {
+    drop(inner);
+    if !send_ok {
+        cleanup_pending(&state, &req_id).await;
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "backend_offline",
@@ -237,8 +240,6 @@ pub async fn fs_stat_handler(
             true,
         );
     }
-
-    drop(inner);
 
     let resp = tokio::time::timeout(Duration::from_secs(30), resp_rx.recv()).await;
 
@@ -255,11 +256,6 @@ pub async fn fs_stat_handler(
     }
 }
 
-// Hub-side accumulated body cap. Agent streams FileChunk in 4MB frames; we
-// gather them in memory before returning. This cap prevents a single huge
-// file from exhausting Hub memory under concurrent requests.
-const HUB_FILE_MAX: usize = 256 * 1024 * 1024;
-
 struct RawFileTarget {
     agent_id: String,
     root: String,
@@ -267,6 +263,8 @@ struct RawFileTarget {
     session_id: Option<String>,
     preview_token: Option<String>,
 }
+
+const RAW_STREAM_CHUNK_BYTES: u64 = 2 * 1024 * 1024;
 
 pub async fn file_raw_handler(
     State(state): State<AppState>,
@@ -368,208 +366,345 @@ async fn serve_raw_file(
     target: RawFileTarget,
     req: axum::extract::Request,
 ) -> Response {
-    // One-shot check that the agent is registered and online. We acquire
-    // and release the read guard here so the loop below doesn't hold it
-    // across awaits — that would block agent register/unregister for the
-    // whole multi-chunk transfer.
+    let raw_permit = match tokio::time::timeout(
+        Duration::from_secs(30),
+        state.raw_read_semaphore.clone().acquire_owned(),
+    )
+    .await
     {
-        let inner = state.inner.read().await;
-        let agent = match inner.agents.get(&target.agent_id) {
-            Some(a) => a,
-            None => return error_response(
-                StatusCode::NOT_FOUND,
-                "backend_offline",
-                &format!("Agent {} not found or offline", target.agent_id),
-                true,
-            ),
-        };
-        if agent.status == crate::agent_registry::AgentStatus::Offline {
+        Ok(Ok(permit)) => permit,
+        _ => {
             return error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "backend_offline",
-                &format!("Agent {} is offline", target.agent_id),
+                "hub_overloaded",
+                "The server is busy streaming files. Please retry shortly.",
                 true,
             );
         }
-    }
-
-    // Parse Range header
-    let (offset_start, length_opt) = parse_range_header(req.headers().get(header::RANGE));
+    };
+    let file_size = match request_raw_file_size(&state, &target).await {
+        Ok(size) => size,
+        Err(resp) => return resp,
+    };
+    let range = match resolve_byte_range(req.headers().get(header::RANGE), file_size) {
+        Ok(range) => range,
+        Err(()) => {
+            return Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(header::CONTENT_RANGE, format!("bytes */{}", file_size))
+                .header(header::ACCEPT_RANGES, "bytes")
+                .body(axum::body::Body::empty())
+                .unwrap()
+                .into_response();
+        }
+    };
+    let (offset_start, body_len) = range.unwrap_or((0, file_size));
     let file_path = target.path.clone();
-
-    // Agent caps each FileChunk at 4MB (crates/agent/src/fs.rs). Loop here
-    // and re-request subsequent offsets until done so the browser gets the
-    // full file body, not just the first 4MB.
-    let mut accumulated: Vec<u8> = Vec::new();
-    let mut first_round = true;
-
-    loop {
-        let current_offset = offset_start + accumulated.len() as u64;
-        // Only the first round honors the Range length; subsequent rounds
-        // read until the agent's own cap or EOF.
-        let current_length = if first_round { length_opt } else { None };
-
-        let req_id = format!("file_{}", Uuid::new_v4());
-        let msg = HubMessage::FileReadRequest {
-            req_id: req_id.clone(),
-            root: target.root.clone(),
-            path: target.path.clone(),
-            offset: current_offset,
-            length: current_length,
-        };
-
-        let (resp_tx, mut resp_rx) = mpsc::channel(1);
-        let send_ok = {
-            let inner = state.inner.read().await;
-            let mut pending = inner.pending_responses.write().await;
-            pending.insert(req_id.clone(), PendingResponse {
-                tx: resp_tx,
-                agent_id: target.agent_id.clone(),
-                session_id: target.session_id.clone(),
-                desired_roots: None,
-                desired_collections: None,
-            });
-            drop(pending);
-            inner.agents.send_to_agent(&target.agent_id, msg)
-        };
-        // inner dropped here — agent register/unregister can proceed while
-        // we await the agent's FileChunk.
-
-        if !send_ok {
-            cleanup_pending(&state, &req_id).await;
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "backend_offline",
-                "Failed to send request to agent",
-                true,
-            );
-        }
-
-        let resp = tokio::time::timeout(Duration::from_secs(60), resp_rx.recv()).await;
-
-        cleanup_pending(&state, &req_id).await;
-
-        let value = match resp {
-            Ok(Some(v)) => v,
-            _ => return error_response(
-                StatusCode::GATEWAY_TIMEOUT,
-                "request_timeout",
-                "Agent did not respond in time",
-                true,
-            ),
-        };
-
-        if let Some(err) = value["error"].as_str() {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "file_read_error",
-                err,
-                false,
-            );
-        }
-
-        let chunk_data = match decode_file_chunk_data(&value["data"]) {
-            Ok(data) => data,
-            Err(err) => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    "file_read_error",
-                    &err,
-                    false,
-                );
-            }
-        };
-
-        let done = value["done"].as_bool().unwrap_or(true);
-
-        // Dead-loop defense: agent returned no data and didn't mark done.
-        if chunk_data.is_empty() && !done {
-            tracing::warn!("file_raw_handler: agent returned empty chunk without done; breaking");
-            break;
-        }
-
-        // Hub memory guard. Check before extend so we don't materialize the
-        // oversize body just to throw it away. Returning 413 here surfaces
-        // clearly to the browser (image onerror, fetch non-2xx) instead of
-        // silently serving a truncated file.
-        let projected = accumulated.len() + chunk_data.len();
-        if projected > HUB_FILE_MAX {
-            tracing::warn!(
-                "file_raw_handler: {} would exceed HUB_FILE_MAX ({}); returning 413",
-                file_path, HUB_FILE_MAX
-            );
-            return error_response(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "file_too_large",
-                &format!(
-                    "File exceeds hub-side preview limit of {} bytes",
-                    HUB_FILE_MAX
-                ),
-                false,
-            );
-        }
-        if let Some(token) = target.preview_token.clone() {
-            if let Err(resp) = reserve_preview_bytes(&state, &token, chunk_data.len() as u64).await {
-                return resp;
-            }
-        }
-
-        accumulated.extend_from_slice(&chunk_data);
-
-        // Range length satisfied — truncate to exact length and stop.
-        if let Some(req_len) = length_opt {
-            if (accumulated.len() as u64) >= req_len {
-                accumulated.truncate(req_len as usize);
-                break;
-            }
-        }
-
-        if done {
-            break;
-        }
-
-        first_round = false;
-    }
-
-    let data = accumulated;
     let content_type = guess_content_type(&file_path);
     let disposition = if is_inline_type(content_type) { "inline" } else { "attachment" };
     let filename = file_path.rsplit('/').next().unwrap_or("file");
     // Sanitize filename: remove chars that could break Content-Disposition header
     let safe_filename: String = filename.chars().filter(|c| *c != '"' && *c != '\\' && *c != '\n' && *c != '\r').collect();
-
-    if length_opt.is_some() {
-        // Partial content response
-        if data.is_empty() {
-            let resp = Response::builder()
-                .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                .header(header::CONTENT_RANGE, "bytes */*")
-                .body(axum::body::Body::empty())
-                .unwrap();
-            return resp.into_response();
+    let is_partial = range.is_some();
+    let is_head = req.method() == axum::http::Method::HEAD;
+    let stream_state = state.clone();
+    let stream = async_stream::stream! {
+        let _raw_permit = raw_permit;
+        let mut sent = 0u64;
+        while sent < body_len {
+            let remaining = body_len - sent;
+            match request_raw_chunk(
+                &stream_state,
+                &target,
+                offset_start + sent,
+                remaining.min(RAW_STREAM_CHUNK_BYTES),
+            )
+            .await
+            {
+                Ok((chunk, done)) => {
+                    if chunk.is_empty() {
+                        if !done {
+                            tracing::warn!("file_raw_handler: agent returned an empty non-terminal chunk");
+                        }
+                        break;
+                    }
+                    let allowed = std::cmp::min(chunk.len() as u64, remaining) as usize;
+                    let chunk = if allowed == chunk.len() {
+                        chunk
+                    } else {
+                        chunk[..allowed].to_vec()
+                    };
+                    if let Some(token) = target.preview_token.as_deref() {
+                        if reserve_preview_bytes(&stream_state, token, chunk.len() as u64).await.is_err() {
+                            yield Err::<axum::body::Bytes, std::io::Error>(
+                                std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "HTML preview byte budget exceeded",
+                                ),
+                            );
+                            return;
+                        }
+                    }
+                    sent = sent.saturating_add(chunk.len() as u64);
+                    yield Ok::<axum::body::Bytes, std::io::Error>(
+                        axum::body::Bytes::from(chunk),
+                    );
+                    if done {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("file_raw_handler stream failed: {}", err);
+                    yield Err::<axum::body::Bytes, std::io::Error>(
+                        std::io::Error::new(std::io::ErrorKind::Other, err),
+                    );
+                    return;
+                }
+            }
         }
-        let end = offset_start + data.len() as u64 - 1;
-        let mut resp = Response::builder()
-            .status(StatusCode::PARTIAL_CONTENT)
-            .header(header::CONTENT_TYPE, content_type)
-            .header(header::CONTENT_LENGTH, data.len())
-            .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", offset_start, end, "*"))
-            .header(header::CONTENT_DISPOSITION, format!("{}; filename=\"{}\"", disposition, safe_filename))
-            .body(axum::body::Body::from(data))
-            .unwrap();
-        apply_raw_file_headers(&mut resp, content_type);
-        resp.into_response()
+    };
+    let body = if is_head {
+        axum::body::Body::empty()
     } else {
-        let mut resp = Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, content_type)
-            .header(header::CONTENT_LENGTH, data.len())
-            .header(header::CONTENT_DISPOSITION, format!("{}; filename=\"{}\"", disposition, safe_filename))
-            .body(axum::body::Body::from(data))
-            .unwrap();
-        apply_raw_file_headers(&mut resp, content_type);
-        resp.into_response()
+        axum::body::Body::from_stream(stream)
+    };
+    let mut builder = Response::builder()
+        .status(if is_partial {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        })
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, body_len)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("{}; filename=\"{}\"", disposition, safe_filename),
+        );
+    if is_partial {
+        let end = offset_start.saturating_add(body_len).saturating_sub(1);
+        builder = builder.header(
+            header::CONTENT_RANGE,
+            format!("bytes {}-{}/{}", offset_start, end, file_size),
+        );
     }
+    let mut resp = builder.body(body).unwrap();
+    apply_raw_file_headers(&mut resp, content_type);
+    resp.into_response()
+}
+
+async fn request_raw_file_size(
+    state: &AppState,
+    target: &RawFileTarget,
+) -> Result<u64, Response> {
+    let req_id = format!("file_stat_{}", Uuid::new_v4());
+    let value = request_raw_agent(
+        state,
+        target,
+        req_id.clone(),
+        HubMessage::FsStatRequest {
+            req_id,
+            root: target.root.clone(),
+            path: target.path.clone(),
+        },
+        Duration::from_secs(30),
+    )
+    .await
+    .map_err(|message| {
+        tracing::warn!("raw file stat request failed: {}", message);
+        error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "file_stat_error",
+            "Could not check the file before streaming",
+            true,
+        )
+    })?;
+    if let Some(err) = value["error"].as_str() {
+        tracing::warn!("Agent rejected raw file stat: {}", err);
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "file_unavailable",
+            "The file is unavailable or cannot be accessed",
+            false,
+        ));
+    }
+    if value["stat"]["denied"].as_bool().unwrap_or(false) {
+        return Err(error_response(
+            StatusCode::FORBIDDEN,
+            "path_denied",
+            "Access denied",
+            false,
+        ));
+    }
+    if value["stat"]["entry_type"].as_str() != Some("file") {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "file_unavailable",
+            "The selected path is not a readable file",
+            false,
+        ));
+    }
+    value["stat"]["size"].as_u64().ok_or_else(|| {
+        error_response(
+            StatusCode::BAD_GATEWAY,
+            "file_stat_error",
+            "Agent returned an invalid file size",
+            true,
+        )
+    })
+}
+
+async fn request_raw_chunk(
+    state: &AppState,
+    target: &RawFileTarget,
+    offset: u64,
+    length: u64,
+) -> Result<(Vec<u8>, bool), String> {
+    let req_id = format!("file_{}", Uuid::new_v4());
+    let value = request_raw_agent(
+        state,
+        target,
+        req_id.clone(),
+        HubMessage::FileReadRequest {
+            req_id,
+            root: target.root.clone(),
+            path: target.path.clone(),
+            offset,
+            length: Some(length),
+        },
+        Duration::from_secs(60),
+    )
+    .await?;
+    if let Some(err) = value["error"].as_str() {
+        return Err(err.to_string());
+    }
+    let returned_offset = value["offset"]
+        .as_u64()
+        .ok_or_else(|| "Agent returned an invalid file chunk offset".to_string())?;
+    if returned_offset != offset {
+        return Err("Agent returned a mismatched file chunk offset".to_string());
+    }
+    Ok((
+        decode_file_chunk_data(&value["data"])?,
+        value["done"].as_bool().unwrap_or(true),
+    ))
+}
+
+async fn request_raw_agent(
+    state: &AppState,
+    target: &RawFileTarget,
+    req_id: String,
+    message: HubMessage,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let send_ok = {
+        let inner = state.inner.read().await;
+        let Some(agent) = inner.agents.get(&target.agent_id) else {
+            return Err("Agent not found or offline".to_string());
+        };
+        if agent.status == crate::agent_registry::AgentStatus::Offline {
+            return Err("Agent is offline".to_string());
+        }
+        let mut pending = inner.pending_responses.write().await;
+        pending.insert(
+            req_id.clone(),
+            PendingResponse {
+                tx: resp_tx,
+                agent_id: target.agent_id.clone(),
+                session_id: target.session_id.clone(),
+                desired_roots: None,
+                desired_collections: None,
+            },
+        );
+        drop(pending);
+        inner.agents.send_to_agent(&target.agent_id, message)
+    };
+    if !send_ok {
+        cleanup_pending(state, &req_id).await;
+        return Err("Failed to send request to agent".to_string());
+    }
+    let cleanup = PendingRawCleanup {
+        state: state.clone(),
+        req_id: req_id.clone(),
+        active: true,
+    };
+    let response = tokio::time::timeout(timeout, resp_rx.recv()).await;
+    cleanup.finish().await;
+    match response {
+        Ok(Some(value)) => Ok(value),
+        _ => Err("Agent did not respond in time".to_string()),
+    }
+}
+
+struct PendingRawCleanup {
+    state: AppState,
+    req_id: String,
+    active: bool,
+}
+
+impl PendingRawCleanup {
+    async fn finish(mut self) {
+        cleanup_pending(&self.state, &self.req_id).await;
+        self.active = false;
+    }
+}
+
+impl Drop for PendingRawCleanup {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let state = self.state.clone();
+        let req_id = self.req_id.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                cleanup_pending(&state, &req_id).await;
+            });
+        }
+    }
+}
+
+fn resolve_byte_range(
+    header_value: Option<&HeaderValue>,
+    file_size: u64,
+) -> Result<Option<(u64, u64)>, ()> {
+    let Some(raw) = header_value.and_then(|value| value.to_str().ok()) else {
+        return Ok(None);
+    };
+    let Some((unit, spec)) = raw.split_once('=') else {
+        return Ok(None);
+    };
+    if !unit.eq_ignore_ascii_case("bytes") || spec.contains(',') {
+        return Ok(None);
+    }
+    let Some((start_raw, end_raw)) = spec.trim().split_once('-') else {
+        return Ok(None);
+    };
+    if file_size == 0 {
+        return Err(());
+    }
+    if start_raw.is_empty() {
+        let suffix = end_raw.parse::<u64>().map_err(|_| ())?;
+        if suffix == 0 {
+            return Err(());
+        }
+        let length = suffix.min(file_size);
+        return Ok(Some((file_size - length, length)));
+    }
+    let start = start_raw.parse::<u64>().map_err(|_| ())?;
+    if start >= file_size {
+        return Err(());
+    }
+    let end = if end_raw.is_empty() {
+        file_size - 1
+    } else {
+        end_raw.parse::<u64>().map_err(|_| ())?.min(file_size - 1)
+    };
+    if end < start {
+        return Err(());
+    }
+    Ok(Some((start, end - start + 1)))
 }
 
 const RAW_ACTIVE_CONTENT_CSP: &str =
@@ -640,23 +775,6 @@ async fn claim_preview_request(state: &AppState, token: &str) -> Result<PreviewS
         ));
     };
 
-    if preview.requests_served >= PREVIEW_SESSION_MAX_REQUESTS {
-        return Err(error_response(
-            StatusCode::TOO_MANY_REQUESTS,
-            "preview_budget_exceeded",
-            "Preview session request limit exceeded",
-            false,
-        ));
-    }
-    if preview.bytes_served >= PREVIEW_SESSION_MAX_BYTES {
-        return Err(error_response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "preview_budget_exceeded",
-            "Preview session byte limit exceeded",
-            false,
-        ));
-    }
-
     preview.requests_served = preview.requests_served.saturating_add(1);
     Ok(preview.clone())
 }
@@ -698,16 +816,7 @@ async fn reserve_preview_bytes(state: &AppState, token: &str, bytes: u64) -> Res
             false,
         ));
     };
-    let projected = preview.bytes_served.saturating_add(bytes);
-    if projected > PREVIEW_SESSION_MAX_BYTES {
-        return Err(error_response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "preview_budget_exceeded",
-            "Preview session byte limit exceeded",
-            false,
-        ));
-    }
-    preview.bytes_served = projected;
+    preview.bytes_served = preview.bytes_served.saturating_add(bytes);
     Ok(())
 }
 
@@ -764,7 +873,7 @@ pub async fn sys_stats_handler(
     };
 
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
-    {
+    let send_ok = {
         let mut pending = inner.pending_responses.write().await;
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
@@ -773,9 +882,12 @@ pub async fn sys_stats_handler(
             desired_roots: None,
             desired_collections: None,
         });
-    }
+        inner.agents.send_to_agent(&agent_id, msg)
+    };
 
-    if !inner.agents.send_to_agent(&agent_id, msg) {
+    drop(inner);
+    if !send_ok {
+        cleanup_pending(&state, &req_id).await;
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "backend_offline",
@@ -783,8 +895,6 @@ pub async fn sys_stats_handler(
             true,
         );
     }
-
-    drop(inner);
 
     let resp = tokio::time::timeout(Duration::from_secs(10), resp_rx.recv()).await;
 
@@ -799,55 +909,6 @@ pub async fn sys_stats_handler(
             true,
         ),
     }
-}
-
-fn parse_range_header(value: Option<&axum::http::HeaderValue>) -> (u64, Option<u64>) {
-    let Some(val) = value else {
-        return (0, None);
-    };
-
-    let Ok(s) = val.to_str() else {
-        return (0, None);
-    };
-
-    // Parse "bytes=START-END" or "bytes=START-". RFC 7233 specifies the
-    // range unit as a case-insensitive token ("bytes"), so accept any case
-    // variation of the prefix.
-    let s = s.trim();
-    let Some(prefix) = s.get(..6) else {
-        return (0, None);
-    };
-    if !prefix.eq_ignore_ascii_case("bytes=") {
-        return (0, None);
-    }
-
-    let range = &s[6..];
-    if range.contains(',') {
-        return (0, None);
-    }
-    let Some((start_raw, end_raw)) = range.split_once('-') else {
-        return (0, None);
-    };
-    if start_raw.is_empty() || end_raw.contains('-') {
-        return (0, None);
-    }
-
-    let Ok(start) = start_raw.parse::<u64>() else {
-        return (0, None);
-    };
-    let length = if end_raw.is_empty() {
-        None
-    } else {
-        let Ok(end) = end_raw.parse::<u64>() else {
-            return (start, None);
-        };
-        if end < start {
-            return (0, None);
-        }
-        Some(end - start + 1)
-    };
-
-    (start, length)
 }
 
 fn error_response(status: StatusCode, error: &str, message: &str, retryable: bool) -> Response {
@@ -895,7 +956,7 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use filebox_protocol::message::AgentMessage;
-    use filebox_protocol::resources::Capabilities;
+    use filebox_protocol::resources::{Capabilities, FileStat, FsEntryType};
     use std::sync::Arc;
     use tokio::sync::Notify;
 
@@ -903,139 +964,88 @@ mod tests {
         HeaderValue::from_str(val).unwrap()
     }
 
-    // ── parse_range_header ───────────────────────────────────────────────────
+    // ── resolve_byte_range ───────────────────────────────────────────────────
 
     #[test]
-    fn parse_range_none_returns_zero_offset_no_length() {
-        let (offset, length) = parse_range_header(None);
-        assert_eq!(offset, 0);
-        assert!(length.is_none());
+    fn resolve_range_none_returns_full_response() {
+        assert_eq!(resolve_byte_range(None, 1_000), Ok(None));
     }
 
     #[test]
-    fn parse_range_start_only_returns_open_ended() {
+    fn resolve_range_start_only_uses_real_file_size() {
         let h = hv("bytes=100-");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 100);
-        assert!(length.is_none());
+        assert_eq!(resolve_byte_range(Some(&h), 1_000), Ok(Some((100, 900))));
     }
 
     #[test]
-    fn parse_range_start_end_returns_length_inclusive() {
-        // bytes=0-99 means 100 bytes
+    fn resolve_range_start_end_is_inclusive() {
         let h = hv("bytes=0-99");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 0);
-        assert_eq!(length, Some(100));
+        assert_eq!(resolve_byte_range(Some(&h), 1_000), Ok(Some((0, 100))));
     }
 
     #[test]
-    fn parse_range_with_arbitrary_offset_and_end() {
-        // bytes=200-299 means 100 bytes
-        let h = hv("bytes=200-299");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 200);
-        assert_eq!(length, Some(100));
+    fn resolve_range_clamps_end_to_real_file_size() {
+        let h = hv("bytes=900-2000");
+        assert_eq!(resolve_byte_range(Some(&h), 1_000), Ok(Some((900, 100))));
     }
 
     #[test]
-    fn parse_range_rejects_non_bytes_prefix() {
-        let h = hv("items=0-100");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 0);
-        assert!(length.is_none());
-    }
-
-    #[test]
-    fn parse_range_accepts_uppercase_bytes_prefix() {
-        // RFC 7233: range unit is case-insensitive. Must accept "BYTES=",
-        // "Bytes=", etc., not just lowercase.
-        let h = hv("BYTES=100-199");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 100);
-        assert_eq!(length, Some(100));
-    }
-
-    #[test]
-    fn parse_range_accepts_mixed_case_bytes_prefix() {
-        let h = hv("Bytes=0-");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 0);
-        assert!(length.is_none());
-    }
-
-    #[test]
-    fn parse_range_rejects_short_header_without_six_byte_prefix() {
-        // Fewer than 6 bytes — must not panic on slicing.
-        let h = hv("abc");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 0);
-        assert!(length.is_none());
-    }
-
-    #[test]
-    fn parse_range_rejects_malformed_format() {
-        // Too many parts
-        let h = hv("bytes=1-2-3");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 0);
-        assert!(length.is_none());
-    }
-
-    #[test]
-    fn parse_range_with_invalid_start_falls_back_to_zero() {
-        let h = hv("bytes=abc-");
-        let (offset, _length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 0);
-    }
-
-    #[test]
-    fn parse_range_with_invalid_end_yields_no_length() {
-        let h = hv("bytes=0-xyz");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 0);
-        assert!(length.is_none());
-    }
-
-    #[test]
-    fn parse_range_rejects_end_before_start() {
-        let h = hv("bytes=20-10");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 0);
-        assert!(length.is_none());
-    }
-
-    #[test]
-    fn parse_range_rejects_suffix_range() {
+    fn resolve_range_supports_suffix() {
         let h = hv("bytes=-500");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 0);
-        assert!(length.is_none());
+        assert_eq!(resolve_byte_range(Some(&h), 1_000), Ok(Some((500, 500))));
     }
 
     #[test]
-    fn parse_range_rejects_multi_range() {
-        let h = hv("bytes=0-99,200-299");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 0);
-        assert!(length.is_none());
+    fn resolve_range_suffix_larger_than_file_returns_whole_file() {
+        let h = hv("bytes=-2000");
+        assert_eq!(resolve_byte_range(Some(&h), 1_000), Ok(Some((0, 1_000))));
     }
 
     #[test]
-    fn parse_range_handles_extra_whitespace() {
+    fn resolve_range_accepts_case_insensitive_unit() {
+        let h = hv("BYTES=100-199");
+        assert_eq!(resolve_byte_range(Some(&h), 1_000), Ok(Some((100, 100))));
+    }
+
+    #[test]
+    fn resolve_range_ignores_unknown_or_multi_range_units() {
+        let other = hv("items=0-100");
+        let multi = hv("bytes=0-99,200-299");
+        assert_eq!(resolve_byte_range(Some(&other), 1_000), Ok(None));
+        assert_eq!(resolve_byte_range(Some(&multi), 1_000), Ok(None));
+    }
+
+    #[test]
+    fn resolve_range_rejects_unsatisfiable_or_malformed_ranges() {
+        for raw in [
+            "bytes=1000-",
+            "bytes=20-10",
+            "bytes=-0",
+            "bytes=abc-",
+            "bytes=0-xyz",
+            "bytes=1-2-3",
+        ] {
+            let h = hv(raw);
+            assert_eq!(resolve_byte_range(Some(&h), 1_000), Err(()), "{raw}");
+        }
+    }
+
+    #[test]
+    fn resolve_range_handles_extra_whitespace() {
         let h = hv("  bytes=10-20  ");
-        let (offset, length) = parse_range_header(Some(&h));
-        assert_eq!(offset, 10);
-        assert_eq!(length, Some(11));
+        assert_eq!(resolve_byte_range(Some(&h), 1_000), Ok(Some((10, 11))));
     }
 
     #[test]
-    fn parse_range_invalid_header_value_falls_back_to_defaults() {
-        // Build a HeaderValue containing bytes that aren't visible ASCII — to_str() fails
+    fn resolve_range_invalid_header_value_is_ignored() {
         let bad = HeaderValue::from_bytes(b"bytes=\xff-").unwrap();
-        let (offset, length) = parse_range_header(Some(&bad));
-        assert_eq!(offset, 0);
-        assert!(length.is_none());
+        assert_eq!(resolve_byte_range(Some(&bad), 1_000), Ok(None));
+    }
+
+    #[test]
+    fn resolve_range_rejects_any_range_for_empty_file() {
+        let h = hv("bytes=0-");
+        assert_eq!(resolve_byte_range(Some(&h), 0), Err(()));
     }
 
     // ── guess_content_type ───────────────────────────────────────────────────
@@ -1205,7 +1215,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preview_byte_reservation_rejects_projected_over_budget() {
+    async fn preview_byte_accounting_does_not_block_large_html_documents() {
         let state = AppState::new(&test_config(), true);
         let token = "preview-token".to_string();
         let now = std::time::Instant::now();
@@ -1217,13 +1227,13 @@ mod tests {
             created_at: now,
             expires_at: now + std::time::Duration::from_secs(60),
             requests_served: 0,
-            bytes_served: PREVIEW_SESSION_MAX_BYTES - 1,
+            bytes_served: u64::MAX - 1,
         };
         let preview_sessions = state.inner.read().await.preview_sessions.clone();
         preview_sessions.write().await.insert(token.clone(), preview);
 
         assert!(reserve_preview_bytes(&state, &token, 1).await.is_ok());
-        assert!(reserve_preview_bytes(&state, &token, 1).await.is_err());
+        assert!(reserve_preview_bytes(&state, &token, 1).await.is_ok());
     }
 
     // ── file_raw_handler multi-chunk loop ───────────────────────────────────
@@ -1254,6 +1264,27 @@ mod tests {
         let agent_id_owned = agent_id.to_string();
         let handle = tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
+                if let HubMessage::FsStatRequest { req_id, path, .. } = msg {
+                    let stat = AgentMessage::FsStatResponse {
+                        req_id: req_id.clone(),
+                        stat: Some(FileStat {
+                            path,
+                            entry_type: FsEntryType::File,
+                            size: file_total,
+                            modified: None,
+                            permissions: None,
+                            denied: false,
+                        }),
+                        error: None,
+                    };
+                    let value = serde_json::to_value(&stat).unwrap();
+                    let pending_arc = state.inner.read().await.pending_responses.clone();
+                    let mut pending = pending_arc.write().await;
+                    if let Some(p) = pending.remove(&req_id) {
+                        let _ = p.tx.send(value).await;
+                    }
+                    continue;
+                }
                 let HubMessage::FileReadRequest { req_id, offset, length, .. } = msg else {
                     continue;
                 };
@@ -1382,7 +1413,7 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        assert!(content_range.starts_with("bytes 0-9/"), "got: {}", content_range);
+        assert_eq!(content_range, "bytes 0-9/1048576");
         let bytes = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();
@@ -1456,13 +1487,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_raw_handler_returns_413_when_exceeding_hub_max() {
-        // File larger than HUB_FILE_MAX (256MB) must fail with 413 instead
-        // of silently truncating. Mock claims a 300MB file and would happily
-        // emit chunks forever; the handler must bail on the first chunk that
-        // would push accumulated past the cap.
+    async fn file_raw_handler_accepts_files_larger_than_old_buffer_cap() {
+        // Large files are streamed; their total size is no longer a Hub
+        // allocation and must not be rejected by the old 256 MiB buffer cap.
         let state = AppState::new(&test_config(), true);
-        let file_total: u64 = (HUB_FILE_MAX as u64) + 1024 * 1024;
+        let file_total: u64 = 257 * 1024 * 1024;
         let (tx, agent_handle) =
             spawn_mock_file_agent(state.clone(), "a1", file_total, 4 * 1024 * 1024);
         register_mock_agent(&state, "a1", tx).await;
@@ -1480,13 +1509,17 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        // Body is the JSON error envelope, not image bytes.
-        let bytes = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
-        let body = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(body.contains("file_too_large"), "body: {}", body);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_LENGTH)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            file_total.to_string()
+        );
+        assert_eq!(response.headers().get(header::ACCEPT_RANGES).unwrap(), "bytes");
 
         agent_handle.abort();
     }
@@ -1499,8 +1532,28 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
         let state_for_agent = state.clone();
         let agent_handle = tokio::spawn(async move {
-            // Reply once with an empty non-terminal chunk, then stop
-            // responding. The handler should break, not spin.
+            // First answer the mandatory stat, then reply once with an empty
+            // non-terminal chunk. The stream should stop, not spin.
+            if let Some(HubMessage::FsStatRequest { req_id, path, .. }) = rx.recv().await {
+                let stat = AgentMessage::FsStatResponse {
+                    req_id: req_id.clone(),
+                    stat: Some(FileStat {
+                        path,
+                        entry_type: FsEntryType::File,
+                        size: 100,
+                        modified: None,
+                        permissions: None,
+                        denied: false,
+                    }),
+                    error: None,
+                };
+                let value = serde_json::to_value(&stat).unwrap();
+                let pending_arc = state_for_agent.inner.read().await.pending_responses.clone();
+                let mut pending = pending_arc.write().await;
+                if let Some(p) = pending.remove(&req_id) {
+                    let _ = p.tx.send(value).await;
+                }
+            }
             if let Some(msg) = rx.recv().await {
                 if let HubMessage::FileReadRequest { req_id, offset, .. } = msg {
                     let chunk = AgentMessage::FileChunk {

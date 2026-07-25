@@ -115,6 +115,15 @@ pub struct Capabilities {
     /// rolling-upgrade safety and when soffice is not configured/probed.
     #[serde(default)]
     pub office_pdf_preview: bool,
+    /// Agent-enforced Office source/output limits and conversion deadline.
+    /// Optional for rolling upgrades; absence means the Hub/UI must use
+    /// conservative legacy behavior.
+    #[serde(default)]
+    pub office_max_src_bytes: Option<u64>,
+    #[serde(default)]
+    pub office_max_pdf_bytes: Option<u64>,
+    #[serde(default)]
+    pub office_timeout_secs: Option<u64>,
 }
 
 impl Default for Capabilities {
@@ -132,6 +141,9 @@ impl Default for Capabilities {
             collections: false,
             workspace_search: false,
             office_pdf_preview: false,
+            office_max_src_bytes: None,
+            office_max_pdf_bytes: None,
+            office_timeout_secs: None,
         }
     }
 }

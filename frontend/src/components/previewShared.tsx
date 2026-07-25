@@ -207,7 +207,10 @@ export function LoadingOverlay({ message, onCancel }: {
 
 export const PREVIEW_SIZE_THRESHOLDS = {
   image: 10 * 1024 * 1024,
-  pdf: 10 * 1024 * 1024,
+  // PDF.js uses Range requests and virtualized canvases; 30–50 MiB PDFs are
+  // ordinary viewing, not an exceptional action. Keep a guard only for much
+  // larger documents whose parse tables can still pressure the browser.
+  pdf: 128 * 1024 * 1024,
   text: 2 * 1024 * 1024,
   markdown: 2 * 1024 * 1024,
   html: 2 * 1024 * 1024,
