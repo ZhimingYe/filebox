@@ -811,7 +811,8 @@ async fn run_one_connection(
                                             req_id: rid_for_progress.clone(),
                                             phase: phase.to_string(),
                                             processed,
-                                            total: Some(3),
+                                            // Phase index only — not a byte total.
+                                            total: None,
                                             message,
                                         };
                                         let _ = progress_tx.try_send(msg);
@@ -821,8 +822,8 @@ async fn run_one_connection(
                                         req_id: rid.clone(),
                                         phase: "preparing".to_string(),
                                         processed: 0,
-                                        total: Some(3),
-                                        message: Some("Starting conversion…".to_string()),
+                                        total: None,
+                                        message: Some("Preparing preview…".to_string()),
                                     });
                                     let outcome = crate::office_convert::run_convert(
                                         &rt,

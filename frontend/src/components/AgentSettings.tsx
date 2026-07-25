@@ -57,7 +57,8 @@ export function AgentSettings({ agent, onRefresh }: Props) {
   }, []);
 
   function toggleOfficePdfPreview() {
-    if (!officeCapable) return;
+    // Preference is browser-local and always editable — including when this
+    // agent has no LibreOffice — so users can opt out without being nudged.
     const next = !officePdfPreview;
     writeOfficePdfPreviewPref(next);
     setOfficePdfPreview(next);
@@ -144,27 +145,32 @@ export function AgentSettings({ agent, onRefresh }: Props) {
                 <div style={styles.prefLabel}>Office → PDF preview</div>
                 <p style={styles.prefHint}>
                   {officeCapable
-                    ? 'Convert Word, PowerPoint, and Excel files with LibreOffice on the agent, then open them in the PDF viewer.'
-                    : 'Unavailable — this agent has no LibreOffice configured (set FILEBOX_AGENT_SOFFICE).'}
+                    ? 'Optional. When on, Word / PowerPoint / Excel open as a PDF preview. Leave off to download originals only.'
+                    : 'Optional. This agent has no LibreOffice for conversion — download still works. The switch only affects agents that support preview.'}
                 </p>
+                {!officeCapable && (
+                  <p style={{ ...styles.prefHint, marginTop: 6, color: c.textMuted }}>
+                    Operator note: point the agent at soffice via FILEBOX_AGENT_SOFFICE if you want preview later.
+                  </p>
+                )}
               </div>
               <button
                 type="button"
                 role="switch"
-                aria-checked={officeCapable && officePdfPreview}
+                aria-checked={officePdfPreview}
                 aria-label="Office to PDF preview"
-                disabled={!officeCapable}
                 onClick={toggleOfficePdfPreview}
                 style={{
                   ...styles.switchTrack,
-                  ...(officeCapable && officePdfPreview ? styles.switchTrackOn : null),
-                  ...(!officeCapable ? styles.switchDisabled : null),
+                  ...(officePdfPreview ? styles.switchTrackOn : null),
+                  // Dim when the preference cannot apply to this agent.
+                  ...(!officeCapable ? { opacity: 0.72 } : null),
                 }}
               >
                 <span
                   style={{
                     ...styles.switchThumb,
-                    ...(officeCapable && officePdfPreview ? styles.switchThumbOn : null),
+                    ...(officePdfPreview ? styles.switchThumbOn : null),
                   }}
                 />
               </button>
@@ -400,10 +406,6 @@ const styles: Record<string, React.CSSProperties> = {
   switchTrackOn: {
     background: c.accent,
     borderColor: c.accent,
-  },
-  switchDisabled: {
-    opacity: 0.45,
-    cursor: 'default',
   },
   switchThumb: {
     position: 'absolute' as const,

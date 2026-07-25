@@ -94,7 +94,7 @@ export function friendlyMessage(error: any): string {
     unsupported_feature: 'This agent does not support that feature.',
     unsupported_format: 'This file type cannot be converted for preview.',
     too_large: 'File is too large to convert for preview.',
-    convert_failed: 'LibreOffice could not convert this document.',
+    convert_failed: 'Could not convert this document for preview. You can still download the original.',
     timeout: 'Conversion timed out.',
     denied: 'Access denied — sensitive file.',
   };

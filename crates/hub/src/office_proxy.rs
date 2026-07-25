@@ -183,8 +183,9 @@ pub async fn office_convert_handler(
                 "req_id": req_id,
                 "phase": "preparing",
                 "processed": 0,
-                "total": 3,
-                "message": "Office conversion started",
+                // Phase markers, not bytes — omit total so UIs don't show "0 B / 3 B".
+                "total": null,
+                "message": "Preparing preview…",
             }),
         )
         .await;

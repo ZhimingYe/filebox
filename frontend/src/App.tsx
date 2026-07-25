@@ -488,6 +488,9 @@ export default function App() {
       // Workspace Search owns its own progress panel; skip the global toast
       // so long scans don't flash / steal attention from Files etc.
       if (d.phase === 'search') return;
+      // Office→PDF owns LoadingOverlay in OfficePreview; hub/agent also used
+      // phase steps (0/3) that were wrongly rendered as "0 B / 3 B".
+      if (d.req_id.startsWith('office_convert_')) return;
       setProgressMap((prev) => {
         const next = new Map(prev);
         next.set(d.req_id, d);

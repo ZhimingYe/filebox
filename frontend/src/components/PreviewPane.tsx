@@ -48,18 +48,30 @@ function SuspenseFallback({ label }: { label: string }) {
 }
 
 function DownloadFallback({
-  agentId, root, path, ext, hint,
+  agentId, root, path, ext, title, hint,
 }: {
   agentId: string;
   root: string;
   path: string;
   ext: string;
+  title?: string;
   hint?: string;
 }) {
   return (
     <div style={styles.container}>
       <div style={styles.download}>
-        <p style={styles.downloadText}>
+        {title ? (
+          <p style={{ ...styles.downloadText, color: c.text, fontWeight: 600, margin: 0 }}>
+            {title}
+          </p>
+        ) : null}
+        <p style={{
+          ...styles.downloadText,
+          margin: 0,
+          maxWidth: 360,
+          textAlign: 'center',
+          lineHeight: 1.45,
+        }}>
           {hint || `No preview available for .${ext} files`}
         </p>
         <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
@@ -156,11 +168,27 @@ export const PreviewPane = memo(function PreviewPane({
         </Suspense>
       );
     }
-    const hint = !officeCapable
-      ? `No preview available for .${ext} files (agent has no LibreOffice configured)`
-      : `Office PDF preview is turned off in Settings`;
+    if (!prefOn) {
+      return (
+        <DownloadFallback
+          agentId={agentId}
+          root={root}
+          path={path}
+          ext={ext}
+          title="Office preview is off"
+          hint="This browser downloads Office files instead of converting them. Turn preview on in Settings anytime — or keep it off and download."
+        />
+      );
+    }
     return (
-      <DownloadFallback agentId={agentId} root={root} path={path} ext={ext} hint={hint} />
+      <DownloadFallback
+        agentId={agentId}
+        root={root}
+        path={path}
+        ext={ext}
+        title="Preview not available on this agent"
+        hint="In-browser Office preview is optional and needs LibreOffice on the agent. Browsing and download still work as usual."
+      />
     );
   }
 

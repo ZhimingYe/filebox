@@ -334,7 +334,7 @@ fn run_convert_inner(
             &on_progress,
             "preparing",
             0,
-            Some("Preparing conversion…".into()),
+            Some("Preparing preview…".into()),
         );
 
         let job_dir = cfg.office_dir.join("jobs").join(req_id);
@@ -358,7 +358,7 @@ fn run_convert_inner(
             &on_progress,
             "converting",
             1,
-            Some("Converting with LibreOffice…".into()),
+            Some("Converting to PDF…".into()),
         );
 
         let log_path = job_dir.join("log.txt");
@@ -384,7 +384,7 @@ fn run_convert_inner(
             "caching",
             2,
             Some(format!(
-                "Caching PDF… ({}s)",
+                "Finishing preview… ({}s)",
                 started.elapsed().as_secs()
             )),
         );

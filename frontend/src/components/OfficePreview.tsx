@@ -71,7 +71,7 @@ export function OfficePreview({ agentId, root, path }: Props) {
     if (reqIdRef.current !== d.req_id) return;
     setPhase({
       kind: 'converting',
-      message: d.message || `Converting with LibreOffice… (${d.phase})`,
+      message: d.message || 'Preparing preview…',
     });
   }, []));
 
@@ -86,7 +86,7 @@ export function OfficePreview({ agentId, root, path }: Props) {
     reqIdRef.current = null;
     const controller = new AbortController();
     abortRef.current = controller;
-    setPhase({ kind: 'converting', message: 'Converting with LibreOffice…' });
+    setPhase({ kind: 'converting', message: 'Preparing preview…' });
 
     officeConvert(agentId, root, path, controller.signal)
       .then((result) => {
