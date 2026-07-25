@@ -51,6 +51,7 @@ Current release: **v0.9.0**. See [NEWS.md](NEWS.md) for the full changelog.
 - PDF reader; image viewer with zoom/pan (including TIFF)
 - HTML preview (sandboxed session for relative assets)
 - CSV table view
+- Optional Office → PDF preview (Word / PowerPoint / Excel via agent-side LibreOffice)
 - Binary / inaccessible file handling with isolated error UI
 
 ### Roots & Pins
@@ -228,6 +229,104 @@ Open `http://localhost:3000` in a browser and log in with the configured credent
 | `token` | `FILEBOX_AGENT_TOKEN` | Agent auth token | Required |
 | `name` | `FILEBOX_AGENT_NAME` | Agent display name | `default-agent` |
 | `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Data storage directory | OS local data directory + `filebox` |
+| — | `FILEBOX_AGENT_SOFFICE` | Absolute path to `soffice` (enables Office → PDF) | unset |
+| — | `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` / `program/soffice` | unset |
+
+Office preview is optional. See [Office → PDF preview](#office--pdf-preview-optional-libreoffice) below.
+
+## Office → PDF preview (optional LibreOffice)
+
+Office files (`doc`/`docx`/`ppt`/`pptx`/`xls`/`xlsx` and macro variants) can
+open in the existing PDF viewer after the **agent** converts them with
+LibreOffice. The Hub never runs LibreOffice; the agent never bundles it.
+
+- **Headless only** — filebox always invokes `soffice --headless` (no GUI,
+  no display server required).
+- **Rootless-friendly** — install under `$HOME` and point the agent at that
+  binary; no `sudo apt` / system package needed.
+- **Opt-in** — without a working `soffice`, the agent simply omits
+  `capabilities.office_pdf_preview` and the UI stays download-only. In the
+  browser, Settings → **Office → PDF preview** can also turn conversion off
+  without uninstalling LibreOffice.
+
+### 1. Install LibreOffice rootless (no sudo)
+
+Pick the tarball that matches the agent host. Extract **into your home
+directory** — do not install system-wide.
+
+**Debian / Ubuntu-style** (deb packages inside the official tarball):
+
+```bash
+VERSION=26.2.5
+PREFIX="$HOME/opt/libreoffice"
+mkdir -p /tmp/lo-dl "$PREFIX" && cd /tmp/lo-dl
+curl -L -O \
+  "https://download.documentfoundation.org/libreoffice/stable/${VERSION}/deb/x86_64/LibreOffice_${VERSION}_Linux_x86-64_deb.tar.gz"
+tar -xzf "LibreOffice_${VERSION}_Linux_x86-64_deb.tar.gz"
+cd LibreOffice_*_Linux_x86-64_deb/DEBS
+for deb in *.deb; do dpkg-deb -x "$deb" "$PREFIX"; done
+```
+
+**Rocky / RHEL-style** (rpm packages):
+
+```bash
+VERSION=26.2.5
+PREFIX="$HOME/opt/libreoffice"
+mkdir -p /tmp/lo-dl "$PREFIX" && cd /tmp/lo-dl
+curl -L -O \
+  "https://download.documentfoundation.org/libreoffice/stable/${VERSION}/rpm/x86_64/LibreOffice_${VERSION}_Linux_x86-64_rpm.tar.gz"
+tar -xzf "LibreOffice_${VERSION}_Linux_x86-64_rpm.tar.gz"
+cd LibreOffice_*_Linux_x86-64_rpm/RPMS
+for rpm in *.rpm; do rpm2cpio "$rpm" | (cd "$PREFIX" && cpio -idm); done
+```
+
+Find and probe the binary (must print a LibreOffice version line):
+
+```bash
+SOFFICE="$(ls -d "$PREFIX"/opt/libreoffice*/program/soffice | head -1)"
+"$SOFFICE" --headless --version
+# e.g. LibreOffice 26.2.5.2 …
+```
+
+Bump `VERSION` to whatever is current on
+[Document Foundation downloads](https://www.libreoffice.org/download/download-libreoffice/).
+
+### 2. Point the agent at `soffice`
+
+Prefer an absolute path:
+
+```bash
+export FILEBOX_AGENT_SOFFICE="$HOME/opt/libreoffice/opt/libreoffice26.2/program/soffice"
+# Or: export FILEBOX_AGENT_SOFFICE_DIR="$HOME/opt/libreoffice/opt/libreoffice26.2/program"
+```
+
+Optional limits (defaults shown):
+
+```bash
+# FILEBOX_AGENT_OFFICE_TIMEOUT_SECS=120
+# FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES=52428800      # 50 MiB
+# FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES=209715200     # 200 MiB
+# FILEBOX_AGENT_OFFICE_CACHE_BYTES=1073741824      # 1 GiB on-disk PDF cache
+```
+
+Restart the agent. On a successful probe it advertises
+`office_pdf_preview: true`. Opening a supported Office file then converts
+headlessly into a cached PDF (`/.filebox/office-cache/<key>.pdf`) and opens
+it in the PDF viewer. Progress is cancelable; a second convert while one is
+running returns busy.
+
+### 3. Verify
+
+```bash
+# On the agent host
+"$FILEBOX_AGENT_SOFFICE" --headless --version
+
+# In the Hub UI: agent detail / API should show
+# capabilities.office_pdf_preview == true
+```
+
+For local bring-up notes and an automated fake-soffice e2e script, see
+[`docs/local-debugging.md`](docs/local-debugging.md) §8.
 
 ## Usage
 
