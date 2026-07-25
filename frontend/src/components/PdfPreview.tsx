@@ -152,19 +152,32 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   // Intrinsic page widths (PDF user units) for accurate scale-mode placeholders.
   const [pageBaseWidths, setPageBaseWidths] = useState<Record<number, number>>({});
   const [zoomMode, setZoomMode] = useState<PdfZoomMode>(() => readPdfZoomPref());
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const numPagesRef = useRef(0);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const placeholderRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   const setZoom = useCallback((mode: PdfZoomMode) => {
     setZoomMode(mode);
     writePdfZoomPref(mode);
+    // Multi-page: while placeholders resize, IntersectionObserver can briefly
+    // mark dozens of pages visible. Keep only a small window around the
+    // current anchor so zoom does not mount every canvas at once.
+    setVisiblePages((prev) => {
+      const n = numPagesRef.current;
+      const anchor = prev.size > 0 ? Math.min(...prev) : 1;
+      const next = new Set<number>();
+      for (let p = anchor; p <= Math.min(n || anchor + 1, anchor + 2); p++) {
+        if (p >= 1) next.add(p);
+      }
+      return next.size > 0 ? next : new Set([1]);
+    });
   }, []);
 
-  // Responsive page width: pages fit container width minus padding.
+  // Responsive page width: measure the *scroll* pane (not the zoom dock).
   // Coalesce to one update per frame and ignore sub-pixel noise so a parent
   // width change (sidebar toggle, splitter) can't storm page reflows.
   useEffect(() => {
-    const el = containerRef.current;
+    const el = scrollRef.current;
     if (!el) return;
     let raf = 0;
     const obs = new ResizeObserver(([entry]) => {
@@ -209,7 +222,7 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   // once layout settles and placeholders actually mount.
   useEffect(() => {
     if (numPages === 0 || !layoutReady) return;
-    const container = containerRef.current;
+    const container = scrollRef.current;
     if (!container) return;
 
     const observer = new IntersectionObserver(
@@ -239,7 +252,7 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
         root: container,
         // Viewport + 3 screens of buffer above and below — keeps pages
         // mounted briefly after they scroll out so a quick scroll-back
-        // doesn't re-render.
+        // doesn't re-render. Root is the scroll pane only (zoom dock excluded).
         rootMargin: '300% 0px',
         threshold: 0,
       },
@@ -251,6 +264,7 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   }, [numPages, layoutReady, layoutKey]);
 
   const onLoadSuccess = ({ numPages: n }: { numPages: number }) => {
+    numPagesRef.current = n;
     setNumPages(n);
     setError(null);
     // Successful load restores the one-shot remint budget so a later mid-
@@ -267,6 +281,7 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
     const message = err.message || 'Failed to load PDF';
     if (remintAfterAuthFailure(message)) return;
     setError(message);
+    numPagesRef.current = 0;
     setNumPages(0);
   };
 
@@ -314,125 +329,130 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   const wideOverflow = zoomMode !== 'fit' && containerWidth > 0 && widestLayout > containerWidth - 8;
 
   return (
-    <div
-      ref={containerRef}
-      style={{
-        ...styles.container,
-        // Wide scale modes must not center-clip the left edge (flex + overflow).
-        alignItems: wideOverflow ? 'flex-start' : 'center',
-        // Leave room so the floating zoom bar doesn't cover the last page.
-        paddingBottom: numPages > 0 ? 56 : 12,
-      }}
-    >
-      {gate.sizeUnknown && (
-        <LoadingOverlay message="Checking PDF size..." />
-      )}
+    // Shell owns the zoom dock; only the inner pane scrolls — so the toolbar
+    // never rides along with page content at 150%/200%.
+    <div style={styles.shell}>
+      <div ref={scrollRef} style={styles.scroll}>
+        {gate.sizeUnknown && (
+          <LoadingOverlay message="Checking PDF size..." />
+        )}
 
-      {gate.error && (
-        <FileGateError message={gate.error} onRetry={gate.retry} />
-      )}
+        {gate.error && (
+          <FileGateError message={gate.error} onRetry={gate.retry} />
+        )}
 
-      {gate.isLarge && !gate.bypassed && (
-        <LargeFileWarning
-          size={gate.size!}
-          flavor="PDF"
-          onForceLoad={gate.forceLoad}
-          agentId={agentId}
-          root={root}
-          path={path}
-        />
-      )}
+        {gate.isLarge && !gate.bypassed && (
+          <LargeFileWarning
+            size={gate.size!}
+            flavor="PDF"
+            onForceLoad={gate.forceLoad}
+            agentId={agentId}
+            root={root}
+            path={path}
+          />
+        )}
 
-      {mayLoad && !error && (!accessUrl || numPages === 0) && (
-        <LoadingOverlay
-          message={
-            !accessUrl
-              ? 'Authorizing PDF...'
-              : slowLoad
-                ? 'PDF is large, still loading...'
-                : 'Loading PDF...'
-          }
-        />
-      )}
+        {mayLoad && !error && (!accessUrl || numPages === 0) && (
+          <LoadingOverlay
+            message={
+              !accessUrl
+                ? 'Authorizing PDF...'
+                : slowLoad
+                  ? 'PDF is large, still loading...'
+                  : 'Loading PDF...'
+            }
+          />
+        )}
 
-      {error && (
-        <div style={styles.errorBox}>
-          <p style={styles.errorText}>{error}</p>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
+        {error && (
+          <div style={styles.errorBox}>
+            <p style={styles.errorText}>{error}</p>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {mayLoad && accessUrl && (
-        <Document
-          key={accessUrl}
-          file={accessUrl}
-          onLoadSuccess={onLoadSuccess}
-          onLoadError={onLoadError}
-          loading=""
-          error=""
-        >
-        {numPages > 0 && layoutReady && Array.from({ length: numPages }, (_, i) => {
-          const pageNum = i + 1;
-          const isVisible = visiblePages.has(pageNum);
-          // Placeholder keeps its slot in the document flow with either the
-          // real aspect (cached after first render) or an A4 estimate, so
-          // the scrollbar stays stable while pages mount/unmount.
-          const aspect = pageAspects[pageNum] ?? ESTIMATED_ASPECT;
-          const slotWidth = zoomMode === 'fit'
-            ? fitWidth!
-            : (pageBaseWidths[pageNum] ?? NOMINAL_PAGE_WIDTH_PT) * zoomMode;
-          const placeholderHeight = aspect * slotWidth;
-          return (
+        {mayLoad && accessUrl && (
+          <Document
+            key={accessUrl}
+            file={accessUrl}
+            onLoadSuccess={onLoadSuccess}
+            onLoadError={onLoadError}
+            loading=""
+            error=""
+          >
             <div
-              key={pageNum}
-              data-page-num={pageNum}
-              ref={(el) => {
-                if (el) placeholderRefs.current.set(pageNum, el);
-                else placeholderRefs.current.delete(pageNum);
-              }}
               style={{
-                ...styles.pageWrap,
-                // Keep the slot at least placeholderHeight tall while the real
-                // <Page> canvas loads. Without this the wrap collapses to the
-                // spinner's ~20px height, which shifts total document height,
-                // toggles the container scrollbar, and — because the
-                // ResizeObserver feeds that width back into fitWidth — kicks
-                // off a self-sustaining flicker/jump loop (see scrollbarGutter
-                // note below).
-                height: isVisible ? 'auto' : placeholderHeight,
-                minHeight: placeholderHeight,
+                ...styles.pagesColumn,
+                alignItems: wideOverflow ? 'flex-start' : 'center',
+                width: wideOverflow ? 'max-content' : '100%',
+                minWidth: '100%',
               }}
             >
-              {isVisible ? (
-                <Page
-                  // Key includes layout so canvas rebuilds at the new size
-                  // without remounting every virtualized placeholder slot.
-                  key={layoutKey}
-                  pageNumber={pageNum}
-                  {...(zoomMode === 'fit'
-                    ? { width: fitWidth }
-                    : { scale: zoomMode })}
-                  renderAnnotationLayer={false}
-                  renderTextLayer={false}
-                  loading={<PageSpinner />}
-                  onLoadSuccess={onPageLoadSuccess}
-                  onLoadError={onPageLoadError}
-                />
-              ) : (
-                // Placeholder: a centered spinner tells the user the page is
-                // queued for render, not that the page is blank. Without this
-                // cue, virtualized pages look like missing content.
-                <div style={{ ...styles.placeholderInner, minHeight: placeholderHeight }}>
-                  <PageSpinner />
-                </div>
-              )}
+              {numPages > 0 && layoutReady && Array.from({ length: numPages }, (_, i) => {
+                const pageNum = i + 1;
+                const isVisible = visiblePages.has(pageNum);
+                // Placeholder keeps its slot in the document flow with either the
+                // real aspect (cached after first render) or an A4 estimate, so
+                // the scrollbar stays stable while pages mount/unmount — critical
+                // for multi-page PDFs under virtualization + zoom changes.
+                const aspect = pageAspects[pageNum] ?? ESTIMATED_ASPECT;
+                const slotWidth = zoomMode === 'fit'
+                  ? fitWidth!
+                  : (pageBaseWidths[pageNum] ?? NOMINAL_PAGE_WIDTH_PT) * zoomMode;
+                const placeholderHeight = aspect * slotWidth;
+                return (
+                  <div
+                    key={pageNum}
+                    data-page-num={pageNum}
+                    ref={(el) => {
+                      if (el) placeholderRefs.current.set(pageNum, el);
+                      else placeholderRefs.current.delete(pageNum);
+                    }}
+                    style={{
+                      ...styles.pageWrap,
+                      // Keep the slot at least placeholderHeight tall while the real
+                      // <Page> canvas loads. Without this the wrap collapses to the
+                      // spinner's ~20px height, which shifts total document height,
+                      // toggles the container scrollbar, and — because the
+                      // ResizeObserver feeds that width back into fitWidth — kicks
+                      // off a self-sustaining flicker/jump loop (see scrollbarGutter
+                      // note below).
+                      height: isVisible ? 'auto' : placeholderHeight,
+                      minHeight: placeholderHeight,
+                    }}
+                  >
+                    {isVisible ? (
+                      <Page
+                        // Key includes layout so canvas rebuilds at the new size
+                        // without remounting every virtualized placeholder slot.
+                        key={layoutKey}
+                        pageNumber={pageNum}
+                        {...(zoomMode === 'fit'
+                          ? { width: fitWidth }
+                          : { scale: zoomMode })}
+                        renderAnnotationLayer={false}
+                        renderTextLayer={false}
+                        loading={<PageSpinner />}
+                        onLoadSuccess={onPageLoadSuccess}
+                        onLoadError={onPageLoadError}
+                      />
+                    ) : (
+                      // Placeholder: a centered spinner tells the user the page is
+                      // queued for render, not that the page is blank. Without this
+                      // cue, virtualized pages look like missing content.
+                      <div style={{ ...styles.placeholderInner, minHeight: placeholderHeight }}>
+                        <PageSpinner />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
-        </Document>
-      )}
+          </Document>
+        )}
+      </div>
 
       {numPages > 0 && (
         <div style={styles.zoomBar} role="toolbar" aria-label="PDF zoom">
@@ -462,11 +482,21 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  container: {
-    height: '100%', overflow: 'auto', padding: 12,
-    background: c.bgSubtle, minWidth: 0,
-    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
+  shell: {
+    height: '100%',
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    background: c.bgSubtle,
     fontFamily: font.sans,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  scroll: {
+    flex: 1,
+    minHeight: 0,
+    minWidth: 0,
+    overflow: 'auto',
     position: 'relative',
     // Reserve a stable gutter for the scrollbar even when content doesn't
     // overflow. The ResizeObserver feeds contentRect.width back into
@@ -477,6 +507,13 @@ const styles: Record<string, React.CSSProperties> = {
     // user interaction. `stable` keeps the gutter constant so the width is
     // invariant to overflow state, breaking the feedback loop.
     scrollbarGutter: 'stable',
+  },
+  pagesColumn: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    padding: 12,
+    boxSizing: 'border-box',
   },
   pageWrap: {
     background: c.surface, borderRadius: radius.md,
@@ -510,15 +547,19 @@ const styles: Record<string, React.CSSProperties> = {
     border: `1px solid ${c.danger}`, color: c.danger,
     textDecoration: 'none', fontSize: 13,
   },
+  // Docked footer of the shell — not inside the scroll pane, so it cannot
+  // slide away with tall/wide page content.
   zoomBar: {
-    position: 'sticky',
-    bottom: 8,
-    zIndex: 20,
+    flexShrink: 0,
     display: 'flex',
     justifyContent: 'center',
+    alignItems: 'center',
     width: '100%',
-    pointerEvents: 'none',
-    marginTop: 'auto',
+    padding: '8px 10px',
+    boxSizing: 'border-box',
+    borderTop: `1px solid ${c.border}`,
+    background: c.bgSubtle,
+    zIndex: 20,
   },
   zoomChips: {
     display: 'flex',
@@ -528,8 +569,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: radius.pill,
     background: c.surface,
     border: `1px solid ${c.border}`,
-    boxShadow: shadow.md,
-    pointerEvents: 'auto',
+    boxShadow: shadow.sm,
     maxWidth: '100%',
     overflowX: 'auto',
     WebkitOverflowScrolling: 'touch',
