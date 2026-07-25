@@ -778,12 +778,27 @@ mod tests {
     use tempfile::TempDir;
 
     fn write_fake_soffice(dir: &Path, delay_ms: u64, fail: bool) -> PathBuf {
-        let path = dir.join("soffice");
+        write_fake_soffice_named(dir, "soffice", delay_ms, fail, true)
+    }
+
+    fn write_fake_soffice_named(
+        dir: &Path,
+        name: &str,
+        delay_ms: u64,
+        fail: bool,
+        libreoffice_version: bool,
+    ) -> PathBuf {
+        let path = dir.join(name);
+        let version_line = if libreoffice_version {
+            "LibreOffice 26.2.5.2 fake"
+        } else {
+            "SomeOtherOffice 1.0"
+        };
         let script = format!(
             r#"#!/bin/sh
 set -e
 if [ "$1" = "--headless" ] && [ "$2" = "--version" ]; then
-  echo "LibreOffice 26.2.5.2 fake"
+  echo "{version_line}"
   exit 0
 fi
 outdir=""
@@ -802,9 +817,11 @@ fi
 {fail_block}
 base=$(basename "$input")
 name=${{base%.*}}
-printf '%%PDF-1.4 fake\n' > "$outdir/$name.pdf"
+# Minimal pdf.js-compatible PDF (same bytes as scripts/e2e_office_preview.sh).
+echo 'JVBERi0xLjQKMSAwIG9iajw8IC9UeXBlIC9DYXRhbG9nIC9QYWdlcyAyIDAgUiA+PmVuZG9iagoyIDAgb2JqPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj5lbmRvYmoKMyAwIG9iajw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL0NvbnRlbnRzIDQgMCBSIC9SZXNvdXJjZXM8PCAvRm9udDw8IC9GMSA1IDAgUiA+PiA+PiA+PmVuZG9iago0IDAgb2JqPDwgL0xlbmd0aCAzNiA+PnN0cmVhbQpCVCAvRjEgMjQgVGYgNzIgNzIwIFRkIChIZWxsbykgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+ZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU2IDAwMDAwIG4gCjAwMDAwMDAxMTEgMDAwMDAgbiAKMDAwMDAwMDIzMyAwMDAwMCBuIAowMDAwMDAwMzE3IDAwMDAwIG4gCnRyYWlsZXI8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgozODUKJSVFT0YK' | base64 -d > "$outdir/$name.pdf"
 exit 0
 "#,
+            version_line = version_line,
             sleep = if delay_ms > 0 {
                 format!("sleep {}", delay_ms as f64 / 1000.0)
             } else {
@@ -821,6 +838,27 @@ exit 0
         perms.set_mode(0o755);
         fs::set_permissions(&path, perms).unwrap();
         path
+    }
+
+    fn make_roots(root_dir: &Path) -> Vec<RootConfig> {
+        vec![RootConfig {
+            name: "docs".into(),
+            path: root_dir.to_string_lossy().into(),
+            enabled: true,
+            pinned_folders: vec![],
+        }]
+    }
+
+    fn cache_total_pdf_bytes(office_dir: &Path) -> u64 {
+        let cache = office_dir.join("cache");
+        let Ok(entries) = fs::read_dir(cache) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("pdf"))
+            .filter_map(|e| e.metadata().ok().map(|m| m.len()))
+            .sum()
     }
 
     fn cfg_with_soffice(tmp: &TempDir, soffice: PathBuf) -> OfficeConfig {
@@ -960,12 +998,7 @@ exit 0
         fs::create_dir_all(&root_dir).unwrap();
         fs::write(root_dir.join("a.docx"), b"1").unwrap();
         fs::write(root_dir.join("b.docx"), b"2").unwrap();
-        let roots = vec![RootConfig {
-            name: "docs".into(),
-            path: root_dir.to_string_lossy().into(),
-            enabled: true,
-            pinned_folders: vec![],
-        }];
+        let roots = make_roots(&root_dir);
         let runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, soffice));
         let rt1 = runtime.clone();
         let roots1 = roots.clone();
@@ -976,5 +1009,108 @@ exit 0
         let err = run_convert(&runtime, &roots, "b", "docs", "/b.docx", None).unwrap_err();
         assert!(err.starts_with("agent_busy"));
         t1.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn rejects_denylisted_office_path() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_fake_soffice(tmp.path(), 0, false);
+        let root_dir = tmp.path().join("root");
+        let ssh = root_dir.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(ssh.join("notes.docx"), b"secret-docx").unwrap();
+        let roots = make_roots(&root_dir);
+        let runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, soffice));
+        let err = run_convert(&runtime, &roots, "den", "docs", "/.ssh/notes.docx", None)
+            .unwrap_err();
+        assert_eq!(err, "denied");
+        assert_eq!(cache_total_pdf_bytes(&runtime.config.office_dir), 0);
+    }
+
+    #[test]
+    fn virtual_path_and_cache_miss_errors() {
+        assert!(parse_cache_virtual_path("/.filebox/office-cache/abcd.pdf").is_none());
+        assert!(parse_cache_virtual_path("/.filebox/other/aaaa.pdf").is_none());
+        let key = "b".repeat(64);
+        assert!(parse_cache_virtual_path(&format!("/.filebox/office-cache/{key}.PDF")).is_none());
+
+        let tmp = TempDir::new().unwrap();
+        let office_dir = tmp.path().join("office");
+        fs::create_dir_all(office_dir.join("cache")).unwrap();
+        let miss_key = "c".repeat(64);
+        assert!(stat_cache(&office_dir, &miss_key).is_err());
+        assert!(read_cache_range(&office_dir, &miss_key, 0, None).is_err());
+        assert!(read_cache_range(&office_dir, "short", 0, None).is_err());
+    }
+
+    #[test]
+    fn cache_lru_respects_budget() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_fake_soffice(tmp.path(), 0, false);
+        let root_dir = tmp.path().join("root");
+        fs::create_dir_all(&root_dir).unwrap();
+        for name in ["a.docx", "b.docx", "c.docx"] {
+            fs::write(root_dir.join(name), name.as_bytes()).unwrap();
+        }
+        let roots = make_roots(&root_dir);
+        let mut cfg = cfg_with_soffice(&tmp, soffice);
+        // Fake PDF is ~567 bytes; keep budget for a single entry.
+        cfg.cache_bytes = 600;
+        let runtime = OfficeRuntime::new(cfg);
+        run_convert(&runtime, &roots, "1", "docs", "/a.docx", None).unwrap();
+        run_convert(&runtime, &roots, "2", "docs", "/b.docx", None).unwrap();
+        run_convert(&runtime, &roots, "3", "docs", "/c.docx", None).unwrap();
+        let total = cache_total_pdf_bytes(&runtime.config.office_dir);
+        assert!(total > 0);
+        assert!(
+            total <= runtime.config.cache_bytes,
+            "cache total {total} exceeds budget {}",
+            runtime.config.cache_bytes
+        );
+    }
+
+    #[test]
+    fn probe_rejects_non_libreoffice_version() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_fake_soffice_named(tmp.path(), "soffice", 0, false, false);
+        std::env::set_var("FILEBOX_AGENT_SOFFICE", &soffice);
+        assert!(probe_from_env(tmp.path()).is_none());
+        std::env::remove_var("FILEBOX_AGENT_SOFFICE");
+    }
+
+    #[test]
+    fn probe_rejects_missing_binary() {
+        std::env::set_var("FILEBOX_AGENT_SOFFICE", "/nonexistent/soffice-xyz");
+        assert!(probe_from_env(Path::new("/tmp")).is_none());
+        std::env::remove_var("FILEBOX_AGENT_SOFFICE");
+    }
+
+    #[test]
+    fn convert_failed_on_soffice_error() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_fake_soffice(tmp.path(), 0, true);
+        let root_dir = tmp.path().join("root");
+        fs::create_dir_all(&root_dir).unwrap();
+        fs::write(root_dir.join("a.docx"), b"x").unwrap();
+        let roots = make_roots(&root_dir);
+        let runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, soffice));
+        let err = run_convert(&runtime, &roots, "fail", "docs", "/a.docx", None).unwrap_err();
+        assert_eq!(err, "convert_failed");
+    }
+
+    #[test]
+    fn runtime_reaps_stale_jobs_on_start() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_fake_soffice(tmp.path(), 0, false);
+        let office_dir = tmp.path().join("office");
+        let stale = office_dir.join("jobs").join("leftover-req");
+        fs::create_dir_all(&stale).unwrap();
+        fs::write(stale.join("log.txt"), b"old").unwrap();
+        assert!(stale.exists());
+        let _runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, soffice));
+        assert!(
+            !stale.exists(),
+            "stale job directory should be removed on runtime init"
+        );
     }
 }

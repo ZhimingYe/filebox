@@ -446,6 +446,12 @@ Office preview is **off** unless the agent can run an external `soffice`.
 The agent never bundles LibreOffice; point it at a user-installed binary
 (rootless-friendly).
 
+**Automated e2e (no real LibreOffice):** from the repo root run
+`./scripts/e2e_office_preview.sh`. It builds debug hub/agent, starts them
+with a fake `soffice`, and asserts capability, convert, virtual PDF raw
+read, cache hit, pptx/xlsx, denylist, unsupported format, `agent_busy`,
+cancel, and capability-off behavior.
+
 ### Configure the agent
 
 ```bash

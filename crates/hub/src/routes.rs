@@ -1242,12 +1242,12 @@ fn prune_oldest_preview_sessions<F>(
 // ── Cancel ───────────────────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
-struct CancelRequest {
-    agent_id: String,
-    req_id: String,
+pub(crate) struct CancelRequest {
+    pub agent_id: String,
+    pub req_id: String,
 }
 
-async fn cancel_handler(
+pub(crate) async fn cancel_handler(
     State(state): State<AppState>,
     Extension(session): Extension<AuthenticatedSession>,
     Json(req): Json<CancelRequest>,
