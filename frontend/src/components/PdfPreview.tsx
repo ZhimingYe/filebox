@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 
 import { mintFileRawAccess } from '../api/client';
@@ -37,6 +37,43 @@ interface Props {
 // 500 canvases at once and OOMs the tab.
 
 const ESTIMATED_ASPECT = 1.414; // A4 portrait, common default before we know real height
+/** Typical PDF page width in points — used for placeholders in scale mode. */
+const NOMINAL_PAGE_WIDTH_PT = 612;
+
+const PDF_ZOOM_PREF_KEY = 'filebox.pdfZoom';
+
+/** Fit container width, or an absolute pdf.js scale (1 = 100%). */
+type PdfZoomMode = 'fit' | number;
+
+const PDF_ZOOM_OPTIONS: { value: PdfZoomMode; label: string }[] = [
+  { value: 'fit', label: 'Adaptive' },
+  { value: 0.5, label: '50%' },
+  { value: 0.75, label: '75%' },
+  { value: 1, label: '100%' },
+  { value: 1.25, label: '125%' },
+  { value: 1.5, label: '150%' },
+  { value: 2, label: '200%' },
+];
+
+function readPdfZoomPref(): PdfZoomMode {
+  try {
+    const raw = sessionStorage.getItem(PDF_ZOOM_PREF_KEY);
+    if (raw === 'fit' || raw === null) return 'fit';
+    const n = Number(raw);
+    if (PDF_ZOOM_OPTIONS.some((o) => o.value === n)) return n;
+  } catch {
+    /* ignore */
+  }
+  return 'fit';
+}
+
+function writePdfZoomPref(mode: PdfZoomMode) {
+  try {
+    sessionStorage.setItem(PDF_ZOOM_PREF_KEY, String(mode));
+  } catch {
+    /* ignore */
+  }
+}
 
 /** pdf.js surfaces HTTP auth failures as "Unexpected server response (403)" etc. */
 function isPdfAuthFailure(message: string): boolean {
@@ -112,8 +149,16 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   // so placeholders stay correct when the container resizes (pageWidth
   // changes) — no need to invalidate the cache on resize.
   const [pageAspects, setPageAspects] = useState<Record<number, number>>({});
+  // Intrinsic page widths (PDF user units) for accurate scale-mode placeholders.
+  const [pageBaseWidths, setPageBaseWidths] = useState<Record<number, number>>({});
+  const [zoomMode, setZoomMode] = useState<PdfZoomMode>(() => readPdfZoomPref());
   const containerRef = useRef<HTMLDivElement | null>(null);
   const placeholderRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
+  const setZoom = useCallback((mode: PdfZoomMode) => {
+    setZoomMode(mode);
+    writePdfZoomPref(mode);
+  }, []);
 
   // Responsive page width: pages fit container width minus padding.
   // Coalesce to one update per frame and ignore sub-pixel noise so a parent
@@ -151,17 +196,19 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
     return () => clearTimeout(t);
   }, [numPages, mayLoad]);
 
-  // pageWidth: leave a little padding; pdf.js v6 requires an explicit pixel width.
-  // Computed before the virtualization effect so the effect can depend on it.
-  const pageWidth = containerWidth > 0 ? Math.max(200, containerWidth - 24) : undefined;
+  // Fit-width (Adaptive): leave a little padding. Scale modes use pdf.js
+  // `scale` (1 = 100%) so 100% is true document size, not "100% of pane".
+  const fitWidth = containerWidth > 0 ? Math.max(200, containerWidth - 24) : undefined;
+  const layoutReady = zoomMode === 'fit' ? fitWidth != null : true;
+  const layoutKey = zoomMode === 'fit' ? `fit:${fitWidth ?? 0}` : `scale:${zoomMode}`;
 
   // Virtualization: track which page placeholders are inside the viewport
   // (plus a generous rootMargin buffer) and only mount real <Page> for those.
-  // Depends on both numPages and pageWidth — the first paint after
-  // onLoadSuccess may still have pageWidth === 0 (ResizeObserver is async),
-  // so we (re)observe once pageWidth settles and placeholders actually mount.
+  // Depends on numPages + layout — the first paint after onLoadSuccess may
+  // still have fitWidth unset (ResizeObserver is async), so we (re)observe
+  // once layout settles and placeholders actually mount.
   useEffect(() => {
-    if (numPages === 0 || !pageWidth) return;
+    if (numPages === 0 || !layoutReady) return;
     const container = containerRef.current;
     if (!container) return;
 
@@ -201,7 +248,7 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
     placeholderRefs.current.forEach((el) => observer.observe(el));
 
     return () => observer.disconnect();
-  }, [numPages, pageWidth]);
+  }, [numPages, layoutReady, layoutKey]);
 
   const onLoadSuccess = ({ numPages: n }: { numPages: number }) => {
     setNumPages(n);
@@ -213,6 +260,7 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
     // The observer will add more as the user scrolls.
     setVisiblePages(new Set([1]));
     setPageAspects({});
+    setPageBaseWidths({});
   };
 
   const onLoadError = (err: Error) => {
@@ -222,12 +270,25 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
     setNumPages(0);
   };
 
-  const onPageLoadSuccess = (page: { pageNumber: number; width: number; height: number }) => {
-    setPageAspects((prev) => {
-      if (!page.width) return prev;
-      const aspect = page.height / page.width;
-      if (prev[page.pageNumber] === aspect) return prev;
-      return { ...prev, [page.pageNumber]: aspect };
+  const onPageLoadSuccess = (page: {
+    pageNumber: number;
+    width: number;
+    height: number;
+    originalWidth?: number;
+    originalHeight?: number;
+  }) => {
+    if (!page.width) return;
+    const aspect = page.height / page.width;
+    const baseWidth = page.originalWidth && page.originalWidth > 0
+      ? page.originalWidth
+      : NOMINAL_PAGE_WIDTH_PT;
+    setPageAspects((prev) => (
+      prev[page.pageNumber] === aspect ? prev : { ...prev, [page.pageNumber]: aspect }
+    ));
+    setPageBaseWidths((prev) => {
+      const rounded = Math.round(baseWidth * 10) / 10;
+      if (prev[page.pageNumber] === rounded) return prev;
+      return { ...prev, [page.pageNumber]: rounded };
     });
   };
 
@@ -241,8 +302,28 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
   // anyway". Mounting it earlier would make react-pdf start fetching/parsing
   // immediately, which is exactly what the gate exists to prevent.
 
+  const widestLayout = useMemo(() => {
+    if (zoomMode === 'fit') return fitWidth ?? 0;
+    let maxBase = NOMINAL_PAGE_WIDTH_PT;
+    for (const w of Object.values(pageBaseWidths)) {
+      if (w > maxBase) maxBase = w;
+    }
+    return maxBase * zoomMode;
+  }, [zoomMode, fitWidth, pageBaseWidths]);
+
+  const wideOverflow = zoomMode !== 'fit' && containerWidth > 0 && widestLayout > containerWidth - 8;
+
   return (
-    <div ref={containerRef} style={styles.container}>
+    <div
+      ref={containerRef}
+      style={{
+        ...styles.container,
+        // Wide scale modes must not center-clip the left edge (flex + overflow).
+        alignItems: wideOverflow ? 'flex-start' : 'center',
+        // Leave room so the floating zoom bar doesn't cover the last page.
+        paddingBottom: numPages > 0 ? 56 : 12,
+      }}
+    >
       {gate.sizeUnknown && (
         <LoadingOverlay message="Checking PDF size..." />
       )}
@@ -292,16 +373,17 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
           loading=""
           error=""
         >
-        {numPages > 0 && pageWidth && Array.from({ length: numPages }, (_, i) => {
+        {numPages > 0 && layoutReady && Array.from({ length: numPages }, (_, i) => {
           const pageNum = i + 1;
           const isVisible = visiblePages.has(pageNum);
           // Placeholder keeps its slot in the document flow with either the
           // real aspect (cached after first render) or an A4 estimate, so
-          // the scrollbar stays stable while pages mount/unmount. Using
-          // aspect (not absolute height) makes placeholders resize correctly
-          // when pageWidth changes.
+          // the scrollbar stays stable while pages mount/unmount.
           const aspect = pageAspects[pageNum] ?? ESTIMATED_ASPECT;
-          const placeholderHeight = aspect * pageWidth;
+          const slotWidth = zoomMode === 'fit'
+            ? fitWidth!
+            : (pageBaseWidths[pageNum] ?? NOMINAL_PAGE_WIDTH_PT) * zoomMode;
+          const placeholderHeight = aspect * slotWidth;
           return (
             <div
               key={pageNum}
@@ -316,7 +398,7 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
                 // <Page> canvas loads. Without this the wrap collapses to the
                 // spinner's ~20px height, which shifts total document height,
                 // toggles the container scrollbar, and — because the
-                // ResizeObserver feeds that width back into pageWidth — kicks
+                // ResizeObserver feeds that width back into fitWidth — kicks
                 // off a self-sustaining flicker/jump loop (see scrollbarGutter
                 // note below).
                 height: isVisible ? 'auto' : placeholderHeight,
@@ -325,8 +407,13 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
             >
               {isVisible ? (
                 <Page
+                  // Key includes layout so canvas rebuilds at the new size
+                  // without remounting every virtualized placeholder slot.
+                  key={layoutKey}
                   pageNumber={pageNum}
-                  width={pageWidth}
+                  {...(zoomMode === 'fit'
+                    ? { width: fitWidth }
+                    : { scale: zoomMode })}
                   renderAnnotationLayer={false}
                   renderTextLayer={false}
                   loading={<PageSpinner />}
@@ -346,6 +433,30 @@ export function PdfPreview({ agentId, root, path, url: _url }: Props) {
         })}
         </Document>
       )}
+
+      {numPages > 0 && (
+        <div style={styles.zoomBar} role="toolbar" aria-label="PDF zoom">
+          <div style={styles.zoomChips}>
+            {PDF_ZOOM_OPTIONS.map((opt) => {
+              const active = opt.value === zoomMode;
+              return (
+                <button
+                  key={String(opt.value)}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => setZoom(opt.value)}
+                  style={{
+                    ...styles.zoomChip,
+                    ...(active ? styles.zoomChipActive : null),
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -359,7 +470,7 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'relative',
     // Reserve a stable gutter for the scrollbar even when content doesn't
     // overflow. The ResizeObserver feeds contentRect.width back into
-    // pageWidth, so without this, the scrollbar appearing/disappearing as
+    // fitWidth, so without this, the scrollbar appearing/disappearing as
     // pages mount/unmount changes the available width a few pixels each way,
     // which re-renders every page, which shifts total height, which toggles
     // the scrollbar again — a self-sustaining flicker/jump loop even with no
@@ -398,6 +509,51 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '6px 16px', borderRadius: radius.md,
     border: `1px solid ${c.danger}`, color: c.danger,
     textDecoration: 'none', fontSize: 13,
+  },
+  zoomBar: {
+    position: 'sticky',
+    bottom: 8,
+    zIndex: 20,
+    display: 'flex',
+    justifyContent: 'center',
+    width: '100%',
+    pointerEvents: 'none',
+    marginTop: 'auto',
+  },
+  zoomChips: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    padding: '4px 6px',
+    borderRadius: radius.pill,
+    background: c.surface,
+    border: `1px solid ${c.border}`,
+    boxShadow: shadow.md,
+    pointerEvents: 'auto',
+    maxWidth: '100%',
+    overflowX: 'auto',
+    WebkitOverflowScrolling: 'touch',
+    scrollbarWidth: 'none',
+  },
+  zoomChip: {
+    flex: '0 0 auto',
+    padding: '6px 10px',
+    borderRadius: radius.pill,
+    border: 'none',
+    background: 'transparent',
+    color: c.textSecondary,
+    cursor: 'pointer',
+    fontSize: 12,
+    lineHeight: 1.2,
+    fontFamily: font.sans,
+    fontWeight: 500,
+    whiteSpace: 'nowrap',
+    minHeight: 32,
+    transition: 'background 0.12s, color 0.12s',
+  },
+  zoomChipActive: {
+    background: c.accentBg,
+    color: c.accent,
   },
 };
 
