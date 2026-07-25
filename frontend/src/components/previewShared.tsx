@@ -205,16 +205,16 @@ export function LoadingOverlay({ message, onCancel }: {
 // still usable. This handles files removed after the directory was listed
 // without polling or monitoring the directory for changes.
 
+const MEDIA_PREVIEW_CONFIRM_BYTES = 15 * 1024 * 1024;
+const TEXT_PREVIEW_CONFIRM_BYTES = 2 * 1024 * 1024;
+
 export const PREVIEW_SIZE_THRESHOLDS = {
-  image: 10 * 1024 * 1024,
-  // PDF.js uses Range requests and virtualized canvases; 30–50 MiB PDFs are
-  // ordinary viewing, not an exceptional action. Keep a guard only for much
-  // larger documents whose parse tables can still pressure the browser.
-  pdf: 128 * 1024 * 1024,
-  text: 2 * 1024 * 1024,
-  markdown: 2 * 1024 * 1024,
-  html: 2 * 1024 * 1024,
-  csv: 5 * 1024 * 1024,
+  image: MEDIA_PREVIEW_CONFIRM_BYTES,
+  pdf: MEDIA_PREVIEW_CONFIRM_BYTES,
+  text: TEXT_PREVIEW_CONFIRM_BYTES,
+  markdown: TEXT_PREVIEW_CONFIRM_BYTES,
+  html: TEXT_PREVIEW_CONFIRM_BYTES,
+  csv: TEXT_PREVIEW_CONFIRM_BYTES,
 } as const;
 
 export function useFileGate(opts: {
@@ -254,7 +254,7 @@ export function useFileGate(opts: {
   }, [agentId, root, path, threshold, retryToken, mounted]);
 
   const sizeUnknown = size === null && error === null;
-  const isLarge = size !== null && size > threshold;
+  const isLarge = size !== null && size >= threshold;
 
   return {
     size,

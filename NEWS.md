@@ -13,6 +13,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ### Changed
 - **Image preview** — flex stage fits tall images; wheel / pinch zoom and pointer pan; dimension downscale caps (max edge 8192, ~16M pixels); `ImagePreview` is now lazy-loaded like other heavy viewers.
+- **Preview size confirmation** — images and PDFs (including Office-converted PDFs) require explicit confirmation at 15 MiB or larger; text, Markdown, HTML, CSV, and TSV require confirmation at 2 MiB or larger.
 - **Login** — removed the misleading `admin` username placeholder; credentials must still be typed explicitly.
 
 ### Security

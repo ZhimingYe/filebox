@@ -23,8 +23,6 @@ interface Props {
   agentId: string;
   root: string;
   path: string;
-  url: string;
-  skipSizeGate?: boolean;
   downloadPath?: string;
   onRetry?: () => void;
 }
@@ -94,8 +92,6 @@ export function PdfPreview({
   agentId,
   root,
   path,
-  url: _url,
-  skipSizeGate = false,
   downloadPath = path,
   onRetry,
 }: Props) {
@@ -109,7 +105,7 @@ export function PdfPreview({
     agentId,
     root,
     path,
-    threshold: skipSizeGate ? Number.MAX_SAFE_INTEGER : PREVIEW_SIZE_THRESHOLDS.pdf,
+    threshold: PREVIEW_SIZE_THRESHOLDS.pdf,
   });
   // Hoisted above all effects: several of them (slow-load timer, and the
   // render guard below) depend on it. Declaring it lower would hit the

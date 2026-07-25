@@ -1,7 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
   cancelRequest,
-  fileRawUrl,
   friendlyMessage,
   officeCacheVirtualPath,
   officeConvert,
@@ -202,7 +201,6 @@ export function OfficePreview({ agentId, root, path }: Props) {
   }
 
   const derivedPath = officeCacheVirtualPath(phase.cacheKey);
-  const derivedUrl = fileRawUrl(agentId, root, derivedPath);
 
   return (
     <Suspense
@@ -217,8 +215,6 @@ export function OfficePreview({ agentId, root, path }: Props) {
         agentId={agentId}
         root={root}
         path={derivedPath}
-        url={derivedUrl}
-        skipSizeGate
         downloadPath={path}
         onRetry={() => setRetryToken((n) => n + 1)}
       />
