@@ -614,7 +614,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                             | Ok(AgentMessage::FsStatResponse { req_id, .. })
                             | Ok(AgentMessage::FileChunk { req_id, .. })
                             | Ok(AgentMessage::SysStatsResponse { req_id, .. })
-                            | Ok(AgentMessage::WorkspaceSearchResponse { req_id, .. }) => {
+                            | Ok(AgentMessage::WorkspaceSearchResponse { req_id, .. })
+                            | Ok(AgentMessage::OfficeConvertResponse { req_id, .. }) => {
                                 let pending_resp =
                                     take_pending_for_agent(&state, &req_id, &agent_id_for_msgs).await;
                                 if let Some(pending_resp) = pending_resp {

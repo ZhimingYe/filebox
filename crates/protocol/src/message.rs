@@ -95,6 +95,14 @@ pub enum AgentMessage {
         result: Option<SearchResult>,
         error: Option<String>,
     },
+    /// Office → PDF conversion result. On success `cache_key` identifies the
+    /// derived PDF readable via the virtual path `/.filebox/office-cache/<key>.pdf`.
+    OfficeConvertResponse {
+        req_id: String,
+        cache_key: Option<String>,
+        size: Option<u64>,
+        error: Option<String>,
+    },
 }
 
 mod base64_bytes {
@@ -231,6 +239,12 @@ pub enum HubMessage {
         /// `None` / `0` = unlimited.
         #[serde(default)]
         max_depth: Option<u32>,
+    },
+    /// Convert an Office document under a root to PDF via external LibreOffice.
+    OfficeConvertRequest {
+        req_id: String,
+        root: String,
+        path: String,
     },
 }
 
@@ -455,6 +469,44 @@ mod tests {
             AgentMessage::SysStatsResponse { stats, .. } => {
                 assert!(stats.is_some());
                 assert_eq!(stats.unwrap().cpu_usage_percent, 10.0);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn office_convert_request_response_round_trips() {
+        let req = HubMessage::OfficeConvertRequest {
+            req_id: "oc1".into(),
+            root: "docs".into(),
+            path: "/report.docx".into(),
+        };
+        let back = round_trip_hub(&req);
+        match back {
+            HubMessage::OfficeConvertRequest { root, path, .. } => {
+                assert_eq!(root, "docs");
+                assert_eq!(path, "/report.docx");
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let resp = AgentMessage::OfficeConvertResponse {
+            req_id: "oc1".into(),
+            cache_key: Some("abc123".into()),
+            size: Some(4096),
+            error: None,
+        };
+        let back = round_trip_agent(&resp);
+        match back {
+            AgentMessage::OfficeConvertResponse {
+                cache_key,
+                size,
+                error,
+                ..
+            } => {
+                assert_eq!(cache_key.as_deref(), Some("abc123"));
+                assert_eq!(size, Some(4096));
+                assert!(error.is_none());
             }
             _ => panic!("wrong variant"),
         }

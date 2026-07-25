@@ -881,6 +881,7 @@ export default function App() {
                         onCloseAll={previewTabs.closeAll}
                         onCloseLeft={previewTabs.closeLeft}
                         onCloseRight={previewTabs.closeRight}
+                        officeCapable={!!selectedAgent.capabilities?.office_pdf_preview}
                       />
                     ) : null}
                   />
@@ -906,6 +907,7 @@ export default function App() {
                       path={activeTab.path}
                       entryType={activeTab.entry.entry_type}
                       denied={activeTab.entry.denied}
+                      officeCapable={!!selectedAgent.capabilities?.office_pdf_preview}
                     />
                   </PreviewErrorBoundary>
                 </div>

@@ -5,6 +5,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 ## Unreleased
 
 ### Added
+- **Office → PDF preview** — optional Agent-side LibreOffice conversion for `doc`/`docx`/`docm`, `ppt`/`pptx`/`pptm`, `xls`/`xlsx`/`xlsm`. Configure `FILEBOX_AGENT_SOFFICE` (rootless tarball install supported); gated by `capabilities.office_pdf_preview`. Progress + cancel, per-job sandbox/profile, process-group kill on timeout/cancel, on-disk PDF cache, virtual path `/.filebox/office-cache/<key>.pdf` reused by the existing PDF viewer. Browser Settings switch (`filebox.officePdfPreview`, default on) can disable conversion without removing LibreOffice.
 - **Workspace Search** — sidebar Search view with fd-like Files mode (filename substring) and rg-like Content mode (case-insensitive regex + context). Scoped to one root and optional folder; optional extension filter. In-process on the agent (`ignore` + `regex`); path-safe, no symlink follow, denylist-aware. Progress via SSE, cancelable, one concurrent search per agent, scan/result caps for high-load trees. Gated by `capabilities.workspace_search`.
 - **Workspace Search ignore + depth** — UI fields for folder names to skip (`renv`, `venv`, `node_modules`, … by default) and max directory depth. Sent per request; prefs saved per backend in the browser. No agent.toml required.
 - **Workspace Search results UX** — virtualized hit list (`react-window`) plus a static “Filter results” box over path/context (client-side only; does not re-query the agent).

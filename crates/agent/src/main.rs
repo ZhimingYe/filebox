@@ -5,6 +5,7 @@ mod config_store;
 mod connection;
 mod dir_cache;
 mod fs;
+mod office_convert;
 mod resources;
 mod search;
 mod sysinfo;

@@ -140,10 +140,37 @@ export const binaryExts = new Set([
   // Media (non-image)
   'mp3', 'mp4', 'wav', 'flac', 'ogg', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm',
   'ttf', 'otf', 'woff', 'woff2', 'eot',
-  // Other binary
-  'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp',
+  // Other binary (Office stay binary so they never fall into TextPreview)
+  'doc', 'docx', 'docm', 'xls', 'xlsx', 'xlsm', 'ppt', 'pptx', 'pptm',
+  'odt', 'ods', 'odp',
   'epub', 'mobi',
 ]);
+
+/** Extensions converted via Agent LibreOffice → PDF preview. */
+export const OFFICE_PREVIEW_EXTS = new Set([
+  'doc', 'docx', 'docm', 'ppt', 'pptx', 'pptm', 'xls', 'xlsx', 'xlsm',
+]);
+
+export function isOfficePreviewExt(ext: string): boolean {
+  return OFFICE_PREVIEW_EXTS.has(ext.toLowerCase());
+}
+
+const OFFICE_PDF_PREF_KEY = 'filebox.officePdfPreview';
+
+/** Browser preference: when false, Office files stay download-only. Default on. */
+export function readOfficePdfPreviewPref(): boolean {
+  try {
+    return localStorage.getItem(OFFICE_PDF_PREF_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+export function writeOfficePdfPreviewPref(enabled: boolean): void {
+  try {
+    localStorage.setItem(OFFICE_PDF_PREF_KEY, enabled ? 'true' : 'false');
+  } catch { /* ignore quota */ }
+}
 
 export function isTextFile(ext: string): boolean {
   if (binaryExts.has(ext)) return false;

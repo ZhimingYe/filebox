@@ -86,12 +86,17 @@ export function friendlyMessage(error: any): string {
     invalid_collection_name: 'Invalid collection name.',
     unsupported: 'This agent does not support that feature. Upgrade the agent.',
     invalid_request: 'Invalid search request.',
-    cancelled: 'Search cancelled.',
-    agent_busy: 'Agent is busy with another search. Wait or cancel it.',
+    cancelled: 'Request was cancelled.',
+    agent_busy: 'Agent is busy with another request. Wait or cancel it.',
     invalid_collection_path: 'Invalid collection file path.',
     collection_name_conflict: 'A collection with this name already exists.',
     resource_rejected: 'Agent rejected this change. The folder may be missing or the root changed.',
-    unsupported_feature: 'This agent version does not support pinned folders.',
+    unsupported_feature: 'This agent does not support that feature.',
+    unsupported_format: 'This file type cannot be converted for preview.',
+    too_large: 'File is too large to convert for preview.',
+    convert_failed: 'LibreOffice could not convert this document.',
+    timeout: 'Conversion timed out.',
+    denied: 'Access denied — sensitive file.',
   };
   if (code && map[code]) return map[code];
   return 'An unexpected error occurred.';
@@ -162,6 +167,13 @@ export async function logout() {
 
 // ── Health ───────────────────────────────────────────────────────────────────
 
+export interface AgentCapabilities {
+  office_pdf_preview: boolean;
+  workspace_search: boolean;
+  pinned_folders: boolean;
+  collections: boolean;
+}
+
 export interface AgentInfo {
   id: string;
   name: string;
@@ -176,6 +188,8 @@ export interface AgentInfo {
   collections_revision: number;
   pending_collections_update: boolean;
   collections: CollectionInfo[];
+  /** Present on current hubs; treat missing fields as false for older hubs. */
+  capabilities?: Partial<AgentCapabilities>;
 }
 
 export interface CollectionItem {
@@ -592,4 +606,34 @@ export async function cancelRequest(agentId: string, reqId: string) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent_id: agentId, req_id: reqId }),
   });
+}
+
+/** Virtual path for a cached Office→PDF preview on the agent. */
+export function officeCacheVirtualPath(cacheKey: string): string {
+  return `/.filebox/office-cache/${cacheKey}.pdf`;
+}
+
+export async function officeConvert(
+  agentId: string,
+  root: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<{ req_id?: string; cache_key: string; size: number }> {
+  const raw = await request<{
+    req_id?: string;
+    cache_key: string | null;
+    size: number | null;
+    error: string | null;
+  }>(`/api/agents/${agentId}/office-convert`, {
+    method: 'POST',
+    body: JSON.stringify({ root, path }),
+    signal,
+  });
+  if (raw.error) {
+    throw { status: 400, error: raw.error, message: raw.error };
+  }
+  if (!raw.cache_key || raw.size == null) {
+    throw { status: 502, error: 'convert_failed', message: 'convert_failed' };
+  }
+  return { req_id: raw.req_id, cache_key: raw.cache_key, size: raw.size };
 }

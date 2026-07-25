@@ -110,6 +110,11 @@ pub struct Capabilities {
     /// Defaults to `false` for rolling-upgrade safety.
     #[serde(default)]
     pub workspace_search: bool,
+    /// Whether this agent can convert Office documents to PDF via an external
+    /// LibreOffice `soffice` (env-configured). Defaults to `false` for
+    /// rolling-upgrade safety and when soffice is not configured/probed.
+    #[serde(default)]
+    pub office_pdf_preview: bool,
 }
 
 impl Default for Capabilities {
@@ -126,6 +131,7 @@ impl Default for Capabilities {
             pinned_folders: false,
             collections: false,
             workspace_search: false,
+            office_pdf_preview: false,
         }
     }
 }
@@ -358,6 +364,10 @@ mod tests {
             !caps.workspace_search,
             "workspace_search must default to false (legacy-detection sentinel)"
         );
+        assert!(
+            !caps.office_pdf_preview,
+            "office_pdf_preview must default to false (legacy-detection sentinel)"
+        );
     }
 
     #[test]
@@ -377,6 +387,7 @@ mod tests {
         }"#;
         let caps: Capabilities = serde_json::from_str(legacy_json).unwrap();
         assert!(!caps.pinned_folders);
+        assert!(!caps.office_pdf_preview);
         assert!(caps.fs_list);
     }
 

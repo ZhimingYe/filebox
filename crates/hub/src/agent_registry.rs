@@ -91,6 +91,12 @@ impl AgentConnection {
                     })
                     .collect()
             },
+            capabilities: AgentCapabilitiesInfo {
+                office_pdf_preview: self.capabilities.office_pdf_preview,
+                workspace_search: self.capabilities.workspace_search,
+                pinned_folders: self.capabilities.pinned_folders,
+                collections: self.capabilities.collections,
+            },
         }
     }
 
@@ -112,6 +118,15 @@ impl AgentConnection {
     }
 }
 
+/// Subset of agent capabilities exposed to the frontend for UI gating.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentCapabilitiesInfo {
+    pub office_pdf_preview: bool,
+    pub workspace_search: bool,
+    pub pinned_folders: bool,
+    pub collections: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AgentInfoResponse {
     pub id: String,
@@ -127,6 +142,7 @@ pub struct AgentInfoResponse {
     pub collections_revision: u64,
     pub pending_collections_update: bool,
     pub collections: Vec<CollectionInfo>,
+    pub capabilities: AgentCapabilitiesInfo,
 }
 
 pub struct AgentRegistry {
