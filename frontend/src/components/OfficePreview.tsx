@@ -27,6 +27,45 @@ type Phase =
   | { kind: 'ready'; cacheKey: string }
   | { kind: 'error'; message: string; cancelled?: boolean };
 
+function createRequestUuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+async function cancelOfficeRequest(agentId: string, reqId: string): Promise<void> {
+  // The convert POST is issued first, but a very fast click can put /cancel on
+  // the wire before the Hub has inserted the pending request. Retry only that
+  // narrow 404 race; all other failures remain best-effort and bounded.
+  for (const delay of [0, 50, 150]) {
+    if (delay > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    try {
+      await cancelRequest(agentId, reqId);
+      return;
+    } catch (error: unknown) {
+      const status =
+        typeof error === 'object' && error !== null && 'status' in error
+          ? (error as { status?: unknown }).status
+          : undefined;
+      if (status !== 404) return;
+    }
+  }
+}
+
 export function OfficePreview({ agentId, root, path }: Props) {
   const [phase, setPhase] = useState<Phase>({ kind: 'converting', message: 'Preparing preview…' });
   const [retryToken, setRetryToken] = useState(0);
@@ -37,11 +76,11 @@ export function OfficePreview({ agentId, root, path }: Props) {
 
   const cancelConvert = useCallback(() => {
     convertingRef.current = false;
-    abortRef.current?.abort();
-    abortRef.current = null;
     const req = reqIdRef.current;
     reqIdRef.current = null;
-    if (req) void cancelRequest(agentId, req).catch(() => {});
+    if (req) void cancelOfficeRequest(agentId, req);
+    abortRef.current?.abort();
+    abortRef.current = null;
     setPhase({ kind: 'error', message: 'Conversion cancelled.', cancelled: true });
   }, [agentId]);
 
@@ -70,15 +109,17 @@ export function OfficePreview({ agentId, root, path }: Props) {
     let cancelled = false;
     convertingRef.current = true;
     reqIdRef.current = null;
-    const clientNonce = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const clientNonce = createRequestUuid();
     clientNonceRef.current = clientNonce;
+    const reqId = `office_convert_${clientNonce}`;
+    // Known before the first SSE event, so Cancel remains functional even
+    // while the events connection is reconnecting.
+    reqIdRef.current = reqId;
     const controller = new AbortController();
     abortRef.current = controller;
     setPhase({ kind: 'converting', message: 'Preparing preview…' });
 
-    officeConvert(agentId, root, path, clientNonce, controller.signal)
+    officeConvert(agentId, root, path, reqId, clientNonce, controller.signal)
       .then((result) => {
         if (cancelled) return;
         convertingRef.current = false;
@@ -106,11 +147,11 @@ export function OfficePreview({ agentId, root, path }: Props) {
     return () => {
       cancelled = true;
       convertingRef.current = false;
-      controller.abort();
       const req = reqIdRef.current;
       reqIdRef.current = null;
       clientNonceRef.current = null;
-      if (req) void cancelRequest(agentId, req).catch(() => {});
+      if (req) void cancelOfficeRequest(agentId, req);
+      controller.abort();
     };
   }, [agentId, root, path, retryToken]);
 

@@ -470,6 +470,11 @@ export FILEBOX_AGENT_SOFFICE="$HOME/opt/libreoffice/opt/libreoffice26.2/program/
 # FILEBOX_AGENT_OFFICE_CACHE_BYTES=1073741824
 ```
 
+`FILEBOX_AGENT_OFFICE_CACHE_BYTES` must fit at least one converted PDF;
+otherwise conversion fails safely with `office_cache_too_small`. `RLIMIT_AS`
+is applied on Linux/Android only because macOS rejects that limit; the other
+process, output, timeout, and cleanup bounds still apply on macOS.
+
 On successful probe (`soffice --headless --version`), the agent advertises
 `capabilities.office_pdf_preview: true`. The UI Settings page has an
 **Office → PDF preview** switch (browser `localStorage`, default on) to
@@ -477,8 +482,9 @@ disable conversion without removing LibreOffice.
 
 There is no periodic Office monitor. Startup performs one bounded probe;
 later checks happen only when a user requests a conversion. Removing Office
-mid-run yields a retryable `office_unavailable` result without stopping the
-agent or blocking file browsing and other preview types.
+or making the configured binary non-executable mid-run yields a retryable
+`office_unavailable` result without stopping the agent or blocking file
+browsing and other preview types.
 
 ### Rootless install (no sudo)
 

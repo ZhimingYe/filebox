@@ -521,6 +521,14 @@ async fn request_raw_file_size(
     })?;
     if let Some(err) = value["error"].as_str() {
         tracing::warn!("Agent rejected raw file stat: {}", err);
+        if err.starts_with("agent_overloaded") {
+            return Err(error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "agent_overloaded",
+                "The agent is busy with file requests. Please retry shortly.",
+                true,
+            ));
+        }
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "file_unavailable",
@@ -669,7 +677,10 @@ fn resolve_byte_range(
     header_value: Option<&HeaderValue>,
     file_size: u64,
 ) -> Result<Option<(u64, u64)>, ()> {
-    let Some(raw) = header_value.and_then(|value| value.to_str().ok()) else {
+    let Some(raw) = header_value
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+    else {
         return Ok(None);
     };
     let Some((unit, spec)) = raw.split_once('=') else {
@@ -959,6 +970,7 @@ mod tests {
     use filebox_protocol::resources::{Capabilities, FileStat, FsEntryType};
     use std::sync::Arc;
     use tokio::sync::Notify;
+    use tokio::task::JoinSet;
 
     fn hv(val: &str) -> HeaderValue {
         HeaderValue::from_str(val).unwrap()
@@ -1308,9 +1320,6 @@ mod tests {
                 if let Some(p) = pending.remove(&req_id) {
                     let _ = p.tx.send(value).await;
                 }
-                if done {
-                    break;
-                }
             }
             let _ = agent_id_owned; // silence unused warning
         });
@@ -1419,6 +1428,51 @@ mod tests {
             .unwrap();
         assert_eq!(bytes.len(), 10);
 
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn seventy_concurrent_pdf_ranges_stream_without_activity_quota() {
+        let state = AppState::new(&test_config(), true);
+        let (tx, agent_handle) =
+            spawn_mock_file_agent(state.clone(), "a1", 1024 * 1024, 4 * 1024 * 1024);
+        register_mock_agent(&state, "a1", tx).await;
+        let mut requests = JoinSet::new();
+
+        for index in 0..70 {
+            let state = state.clone();
+            requests.spawn(async move {
+                let response = file_raw_handler(
+                    State(state),
+                    test_session(),
+                    Query(FileRawParams {
+                        agent_id: "a1".to_string(),
+                        root: "test".to_string(),
+                        path: format!("document-{index}.pdf"),
+                    }),
+                    build_raw_request(Some("bytes=0-1023")),
+                )
+                .await;
+                assert_eq!(
+                    response.status(),
+                    StatusCode::PARTIAL_CONTENT,
+                    "PDF {index} should obtain a Range response"
+                );
+                let bytes = axum::body::to_bytes(response.into_body(), 2048)
+                    .await
+                    .unwrap();
+                assert_eq!(bytes.len(), 1024);
+            });
+        }
+
+        while let Some(result) = requests.join_next().await {
+            result.unwrap();
+        }
+        assert_eq!(
+            state.raw_read_semaphore.available_permits(),
+            96,
+            "all raw-stream permits must be released after the responses finish"
+        );
         agent_handle.abort();
     }
 

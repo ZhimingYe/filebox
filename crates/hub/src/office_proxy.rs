@@ -15,6 +15,10 @@ use crate::state::{AppState, AuthenticatedSession, PendingResponse};
 pub struct OfficeConvertBody {
     pub root: String,
     pub path: String,
+    /// Optional client-generated ID so Cancel never depends on SSE delivery.
+    /// Must be `office_convert_<uuid>`.
+    #[serde(default)]
+    pub req_id: Option<String>,
     #[serde(default)]
     pub client_nonce: Option<String>,
 }
@@ -100,6 +104,18 @@ pub async fn office_convert_handler(
             false,
         );
     }
+    if body
+        .req_id
+        .as_deref()
+        .is_some_and(|req_id| !valid_office_req_id(req_id))
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "req_id must be office_convert_<uuid>",
+            false,
+        );
+    }
     if path_has_dotdot(&body.path) {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -179,7 +195,10 @@ pub async fn office_convert_handler(
             .max(60),
     );
 
-    let req_id = format!("office_convert_{}", Uuid::new_v4());
+    let req_id = body
+        .req_id
+        .clone()
+        .unwrap_or_else(|| format!("office_convert_{}", Uuid::new_v4()));
     let msg = HubMessage::OfficeConvertRequest {
         req_id: req_id.clone(),
         root,
@@ -187,26 +206,38 @@ pub async fn office_convert_handler(
     };
 
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let mut duplicate_req_id = false;
     let send_ok = {
         let mut pending = inner.pending_responses.write().await;
-        pending.insert(
-            req_id.clone(),
-            PendingResponse {
-                tx: resp_tx,
-                agent_id: agent_id.clone(),
-                session_id: Some(session.principal_id.clone()),
-                desired_roots: None,
-                desired_collections: None,
-            },
-        );
-        // Enqueue the conversion before exposing req_id through SSE. Keeping
-        // the pending map write-locked closes the race where /api/cancel saw
-        // the request first, sent Cancel, and the Agent then received the
-        // conversion after that already-consumed cancellation.
-        inner.agents.send_to_agent(&agent_id, msg)
+        if pending.contains_key(&req_id) {
+            duplicate_req_id = true;
+            false
+        } else {
+            pending.insert(
+                req_id.clone(),
+                PendingResponse {
+                    tx: resp_tx,
+                    agent_id: agent_id.clone(),
+                    session_id: Some(session.principal_id.clone()),
+                    desired_roots: None,
+                    desired_collections: None,
+                },
+            );
+            // Enqueue the conversion while the pending map is still locked so
+            // a subsequent Cancel can never overtake this request.
+            inner.agents.send_to_agent(&agent_id, msg)
+        }
     };
 
     drop(inner);
+    if duplicate_req_id {
+        return error_response(
+            StatusCode::CONFLICT,
+            "invalid_request",
+            "An Office conversion with this req_id is already active",
+            false,
+        );
+    }
     let mut guard = CancelOnDrop {
         state: state.clone(),
         agent_id: agent_id.clone(),
@@ -279,6 +310,7 @@ pub async fn office_convert_handler(
                     | "root_unavailable"
                     | "office_source_unavailable"
                     | "office_storage_error"
+                    | "office_cache_too_small"
                     | "unsupported_feature"
                     | "unsupported_format"
                     | "office_internal_error"
@@ -294,7 +326,9 @@ pub async fn office_convert_handler(
                     "office_timeout" => StatusCode::GATEWAY_TIMEOUT,
                     "office_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
                     "root_unavailable" | "office_source_unavailable" => StatusCode::NOT_FOUND,
-                    "office_storage_error" => StatusCode::INSUFFICIENT_STORAGE,
+                    "office_storage_error" | "office_cache_too_small" => {
+                        StatusCode::INSUFFICIENT_STORAGE
+                    }
                     "unsupported_feature" | "unsupported_format" => StatusCode::BAD_REQUEST,
                     _ => StatusCode::BAD_GATEWAY,
                 };
@@ -308,6 +342,7 @@ pub async fn office_convert_handler(
                     "root_unavailable" => "This root is no longer available.",
                     "office_source_unavailable" => "The source document is no longer readable.",
                     "office_storage_error" => "The Agent could not store the temporary preview.",
+                    "office_cache_too_small" => "The converted PDF exceeds the Agent's Office cache budget. Increase FILEBOX_AGENT_OFFICE_CACHE_BYTES.",
                     "unsupported_feature" => "Office PDF preview is not available on this Agent.",
                     "unsupported_format" => "This file type cannot be converted for preview.",
                     "office_internal_error" => "The Office preview worker failed safely. Please retry.",
@@ -363,6 +398,12 @@ async fn cleanup_pending(state: &AppState, req_id: &str) {
 
 fn path_has_dotdot(path: &str) -> bool {
     path.split(['/', '\\']).any(|part| part == "..")
+}
+
+fn valid_office_req_id(req_id: &str) -> bool {
+    req_id
+        .strip_prefix("office_convert_")
+        .is_some_and(|suffix| Uuid::parse_str(suffix).is_ok())
 }
 
 fn error_response(status: StatusCode, error: &str, message: &str, retryable: bool) -> Response {
@@ -498,6 +539,15 @@ mod tests {
     }
 
     async fn call_convert(state: AppState, agent_id: &str, path: &str) -> Response {
+        call_convert_with_req(state, agent_id, path, None).await
+    }
+
+    async fn call_convert_with_req(
+        state: AppState,
+        agent_id: &str,
+        path: &str,
+        req_id: Option<String>,
+    ) -> Response {
         office_convert_handler(
             State(state),
             test_session(),
@@ -505,6 +555,7 @@ mod tests {
             Json(OfficeConvertBody {
                 root: "docs".into(),
                 path: path.into(),
+                req_id,
                 client_nonce: None,
             }),
         )
@@ -532,6 +583,14 @@ mod tests {
         assert!(path_has_dotdot("../secret.doc"));
         assert!(path_has_dotdot("/a/../b.xls"));
         assert!(!path_has_dotdot("/folder/report.docx"));
+    }
+
+    #[test]
+    fn validates_client_generated_office_request_ids() {
+        let valid = format!("office_convert_{}", Uuid::new_v4());
+        assert!(valid_office_req_id(&valid));
+        assert!(!valid_office_req_id("office_convert_not-a-uuid"));
+        assert!(!valid_office_req_id(&Uuid::new_v4().to_string()));
     }
 
     #[tokio::test]
@@ -604,6 +663,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn office_convert_preserves_client_generated_request_id() {
+        let state = AppState::new(&test_config(), true);
+        let (tx, handle) = spawn_mock_office_agent(state.clone(), MockOfficeOutcome::Success);
+        register_agent(&state, "a1", tx, true).await;
+        let req_id = format!("office_convert_{}", Uuid::new_v4());
+        let (status, v) = body_json(
+            call_convert_with_req(state, "a1", "/report.docx", Some(req_id.clone())).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["req_id"], req_id);
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn office_convert_rejects_duplicate_active_request_id() {
+        let state = AppState::new(&test_config(), true);
+        let (tx, handle) = spawn_mock_office_agent(
+            state.clone(),
+            MockOfficeOutcome::DelayThen(
+                Box::new(MockOfficeOutcome::Success),
+                Duration::from_secs(30),
+            ),
+        );
+        register_agent(&state, "a1", tx, true).await;
+        let req_id = format!("office_convert_{}", Uuid::new_v4());
+        let first_state = state.clone();
+        let first_req_id = req_id.clone();
+        let first = tokio::spawn(async move {
+            call_convert_with_req(
+                first_state,
+                "a1",
+                "/report.docx",
+                Some(first_req_id),
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let pending = state.inner.read().await.pending_responses.clone();
+                if pending.read().await.contains_key(&req_id) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("first request registered");
+
+        let (status, v) = body_json(
+            call_convert_with_req(
+                state.clone(),
+                "a1",
+                "/report.docx",
+                Some(req_id.clone()),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(v["error"], "invalid_request");
+
+        let _ = crate::routes::cancel_handler(
+            State(state),
+            test_session(),
+            Json(crate::routes::CancelRequest {
+                agent_id: "a1".to_string(),
+                req_id,
+            }),
+        )
+        .await;
+        let _ = first.await;
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn office_convert_maps_agent_errors() {
         async fn one(err: &'static str) -> (StatusCode, String) {
             let state = AppState::new(&test_config(), true);
@@ -638,6 +774,10 @@ mod tests {
         let (s, e) = one("office_convert_failed").await;
         assert_eq!(s, StatusCode::BAD_GATEWAY);
         assert_eq!(e, "office_convert_failed");
+
+        let (s, e) = one("office_cache_too_small").await;
+        assert_eq!(s, StatusCode::INSUFFICIENT_STORAGE);
+        assert_eq!(e, "office_cache_too_small");
     }
 
     #[tokio::test]
@@ -652,25 +792,34 @@ mod tests {
         );
         register_agent(&state, "a1", tx, true).await;
 
+        let req_id = format!("office_convert_{}", Uuid::new_v4());
         let state_for_convert = state.clone();
+        let req_for_convert = req_id.clone();
         let convert_task = tokio::spawn(async move {
-            call_convert(state_for_convert, "a1", "/slow.docx").await
+            call_convert_with_req(
+                state_for_convert,
+                "a1",
+                "/slow.docx",
+                Some(req_for_convert),
+            )
+            .await
         });
 
-        // Wait until pending has an office_convert_* entry.
-        let req_id = tokio::time::timeout(Duration::from_secs(2), async {
+        // The client knows req_id without waiting for SSE. Only wait for the
+        // POST to be registered so the test deterministically exercises Cancel.
+        tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let pending = state.inner.read().await.pending_responses.clone();
                 let map = pending.read().await;
-                if let Some(id) = map.keys().find(|k| k.starts_with("office_convert_")) {
-                    return id.clone();
+                if map.contains_key(&req_id) {
+                    return;
                 }
                 drop(map);
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("pending office convert req_id");
+        .expect("pending client-generated office req_id");
 
         let cancel_resp = crate::routes::cancel_handler(
             State(state.clone()),

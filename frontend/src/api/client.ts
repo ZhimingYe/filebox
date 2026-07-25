@@ -101,6 +101,7 @@ export function friendlyMessage(error: any): string {
     office_timeout: 'Office conversion timed out. You can still download the original.',
     office_convert_failed: 'Could not convert this document for preview. You can still download the original.',
     office_storage_error: 'The agent could not store the temporary preview.',
+    office_cache_too_small: 'The converted PDF exceeds the agent’s Office cache budget. Increase FILEBOX_AGENT_OFFICE_CACHE_BYTES.',
     office_source_unavailable: 'The source document is no longer readable.',
     office_source_too_large: 'This document exceeds the agent’s configured conversion limit.',
     office_output_too_large: 'The converted PDF exceeds the agent’s configured preview limit.',
@@ -629,6 +630,7 @@ export async function officeConvert(
   agentId: string,
   root: string,
   path: string,
+  reqId: string,
   clientNonce: string,
   signal?: AbortSignal,
 ): Promise<{ req_id?: string; cache_key: string; size: number }> {
@@ -639,7 +641,7 @@ export async function officeConvert(
     error: string | null;
   }>(`/api/agents/${agentId}/office-convert`, {
     method: 'POST',
-    body: JSON.stringify({ root, path, client_nonce: clientNonce }),
+    body: JSON.stringify({ root, path, req_id: reqId, client_nonce: clientNonce }),
     signal,
   });
   if (raw.error) {

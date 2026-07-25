@@ -471,25 +471,6 @@ fn run_convert_inner(
         );
 
         let deadline = Instant::now() + cfg.timeout;
-        let fingerprint = fingerprint_source(
-            &mut source,
-            &cancel,
-            deadline,
-            cfg.max_src_bytes,
-            src_size,
-            on_progress.as_ref(),
-        )?;
-        let cache_key = make_cache_key(root, path, &fingerprint, &cfg.version_id);
-
-        if let Some(size) = cache_pdf_size(&cfg.office_dir, &cache_key) {
-            touch_cache_meta(&cfg.office_dir, &cache_key);
-            return Ok(OfficeConvertResult { cache_key, size });
-        }
-
-        if cancel.load(Ordering::Relaxed) {
-            return Err("cancelled".to_string());
-        }
-
         let job_dir = cfg
             .office_dir
             .join("jobs")
@@ -506,7 +487,25 @@ fn run_convert_inner(
         fs::create_dir_all(&outdir)
             .map_err(|e| diagnostic("office_storage_error", format!("mkdir output: {e}")))?;
         let staged = indir.join(format!("source.{ext}"));
-        stage_input(&mut source, &staged, &cancel, deadline, cfg.max_src_bytes)?;
+        let fingerprint = stage_and_fingerprint_source(
+            &mut source,
+            &staged,
+            &cancel,
+            deadline,
+            cfg.max_src_bytes,
+            src_size,
+            on_progress.as_ref(),
+        )?;
+        let cache_key = make_cache_key(root, path, &fingerprint, &cfg.version_id);
+
+        if let Some(size) = cache_pdf_size(&cfg.office_dir, &cache_key) {
+            touch_cache_meta(&cfg.office_dir, &cache_key);
+            return Ok(OfficeConvertResult { cache_key, size });
+        }
+
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".to_string());
+        }
 
         emit(
             &on_progress,
@@ -556,6 +555,15 @@ fn run_convert_inner(
         if pdf_size > cfg.max_pdf_bytes {
             return Err("office_output_too_large".to_string());
         }
+        if cfg.cache_bytes == 0 || pdf_size > cfg.cache_bytes {
+            return Err(diagnostic(
+                "office_cache_too_small",
+                format!(
+                    "converted PDF ({pdf_size} bytes) exceeds Office cache budget ({} bytes)",
+                    cfg.cache_bytes
+                ),
+            ));
+        }
 
         promote_to_cache(
             &cfg.office_dir,
@@ -568,7 +576,7 @@ fn run_convert_inner(
             src_size,
             &fingerprint,
         )?;
-        enforce_cache_budget(&cfg.office_dir, cfg.cache_bytes);
+        enforce_cache_budget_preserving(&cfg.office_dir, cfg.cache_bytes, &cache_key);
 
         Ok(OfficeConvertResult {
             cache_key,
@@ -692,6 +700,14 @@ fn write_cache_meta_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
 }
 
 fn enforce_cache_budget(office_dir: &Path, budget: u64) {
+    enforce_cache_budget_inner(office_dir, budget, None);
+}
+
+fn enforce_cache_budget_preserving(office_dir: &Path, budget: u64, preserve_key: &str) {
+    enforce_cache_budget_inner(office_dir, budget, Some(preserve_key));
+}
+
+fn enforce_cache_budget_inner(office_dir: &Path, budget: u64, preserve_key: Option<&str>) {
     if budget == 0 {
         // Delete all cache entries.
         let cache = office_dir.join("cache");
@@ -727,7 +743,7 @@ fn enforce_cache_budget(office_dir: &Path, budget: u64) {
     if total <= budget {
         return;
     }
-    pdfs.sort_by_key(|(_, _, a)| *a);
+    pdfs.sort_by_key(|(_, _, last_access)| *last_access);
     for (path, size, _) in pdfs {
         if total <= budget {
             break;
@@ -737,9 +753,25 @@ fn enforce_cache_budget(office_dir: &Path, budget: u64) {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string();
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(cache_meta_path(office_dir, &key));
-        total = total.saturating_sub(size);
+        if preserve_key == Some(key.as_str()) {
+            continue;
+        }
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                let _ = fs::remove_file(cache_meta_path(office_dir, &key));
+                total = total.saturating_sub(size);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                total = total.saturating_sub(size);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to evict Office cache entry {}: {}",
+                    path.display(),
+                    error
+                );
+            }
+        }
     }
 }
 
@@ -781,8 +813,9 @@ impl Drop for FileCleanup {
     }
 }
 
-fn fingerprint_source(
+fn stage_and_fingerprint_source(
     src: &mut File,
+    dest: &Path,
     cancel: &AtomicBool,
     deadline: Instant,
     max_bytes: u64,
@@ -791,6 +824,8 @@ fn fingerprint_source(
 ) -> Result<String, String> {
     src.seek(SeekFrom::Start(0))
         .map_err(|e| diagnostic("office_source_unavailable", format!("seek source: {e}")))?;
+    let mut out = File::create(dest)
+        .map_err(|e| diagnostic("office_storage_error", format!("create staged input: {e}")))?;
     let mut hasher = Sha256::new();
     let mut copied = 0u64;
     let mut buf = vec![0u8; 1024 * 1024];
@@ -812,6 +847,8 @@ fn fingerprint_source(
             return Err("office_source_too_large".to_string());
         }
         hasher.update(&buf[..read]);
+        out.write_all(&buf[..read])
+            .map_err(|e| diagnostic("office_storage_error", format!("stage input: {e}")))?;
         if copied == read as u64 || copied % (8 * 1024 * 1024) < read as u64 {
             if let Some(callback) = on_progress {
                 callback(
@@ -826,44 +863,9 @@ fn fingerprint_source(
             }
         }
     }
-    Ok(hex::encode(hasher.finalize()))
-}
-
-fn stage_input(
-    src: &mut File,
-    dest: &Path,
-    cancel: &AtomicBool,
-    deadline: Instant,
-    max_bytes: u64,
-) -> Result<(), String> {
-    src.seek(SeekFrom::Start(0))
-        .map_err(|e| diagnostic("office_source_unavailable", format!("seek source: {e}")))?;
-    let mut out = File::create(dest)
-        .map_err(|e| diagnostic("office_storage_error", format!("create staged input: {e}")))?;
-    let mut copied = 0u64;
-    let mut buf = vec![0u8; 1024 * 1024];
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("cancelled".to_string());
-        }
-        if Instant::now() >= deadline {
-            return Err("office_timeout".to_string());
-        }
-        let read = src
-            .read(&mut buf)
-            .map_err(|e| diagnostic("office_source_unavailable", format!("read source: {e}")))?;
-        if read == 0 {
-            break;
-        }
-        copied = copied.saturating_add(read as u64);
-        if copied > max_bytes {
-            return Err("office_source_too_large".to_string());
-        }
-        out.write_all(&buf[..read])
-            .map_err(|e| diagnostic("office_storage_error", format!("stage input: {e}")))?;
-    }
     out.sync_all()
-        .map_err(|e| diagnostic("office_storage_error", format!("sync staged input: {e}")))
+        .map_err(|e| diagnostic("office_storage_error", format!("sync staged input: {e}")))?;
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn find_output_pdf(outdir: &Path) -> Result<PathBuf, String> {
@@ -939,7 +941,12 @@ fn run_soffice(
             if libc::setsid() == -1 {
                 return Err(std::io::Error::last_os_error());
             }
+            // macOS rejects RLIMIT_AS with EINVAL. Keep the address-space cap
+            // on Linux/Android and retain portable limits on other Unix hosts.
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             set_process_limit(libc::RLIMIT_AS, max_memory)?;
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            let _ = max_memory;
             set_process_limit(libc::RLIMIT_FSIZE, max_file)?;
             set_process_limit(libc::RLIMIT_NOFILE, 256)?;
             set_process_limit(libc::RLIMIT_CPU, cpu_secs)?;
@@ -948,8 +955,14 @@ fn run_soffice(
     }
 
     let mut child = cmd.spawn().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            diagnostic("office_unavailable", "configured soffice disappeared")
+        if matches!(
+            e.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+        ) {
+            diagnostic(
+                "office_unavailable",
+                "configured soffice disappeared or is not executable",
+            )
         } else {
             diagnostic("office_convert_failed", format!("spawn soffice: {e}"))
         }
@@ -1698,7 +1711,7 @@ exit 0
         let runtime = OfficeRuntime::new(cfg).unwrap();
         run_convert(&runtime, &roots, "1", "docs", "/a.docx", None).unwrap();
         run_convert(&runtime, &roots, "2", "docs", "/b.docx", None).unwrap();
-        run_convert(&runtime, &roots, "3", "docs", "/c.docx", None).unwrap();
+        let latest = run_convert(&runtime, &roots, "3", "docs", "/c.docx", None).unwrap();
         let total = cache_total_pdf_bytes(&runtime.config.office_dir);
         assert!(total > 0);
         assert!(
@@ -1706,6 +1719,34 @@ exit 0
             "cache total {total} exceeds budget {}",
             runtime.config.cache_bytes
         );
+        assert!(
+            stat_cache(
+                &runtime.config.office_dir,
+                &roots,
+                "docs",
+                &latest.cache_key,
+            )
+            .is_ok(),
+            "budget enforcement must not evict the PDF just returned as successful"
+        );
+    }
+
+    #[test]
+    fn cache_budget_smaller_than_output_fails_without_false_success() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_fake_soffice(tmp.path(), 0, false);
+        let root_dir = tmp.path().join("root");
+        fs::create_dir_all(&root_dir).unwrap();
+        fs::write(root_dir.join("a.docx"), b"x").unwrap();
+        let roots = make_roots(&root_dir);
+        let mut cfg = cfg_with_soffice(&tmp, soffice);
+        cfg.cache_bytes = 1;
+        let runtime = OfficeRuntime::new(cfg).unwrap();
+
+        let error =
+            run_convert(&runtime, &roots, "small-cache", "docs", "/a.docx", None).unwrap_err();
+        assert_eq!(error, "office_cache_too_small");
+        assert_eq!(cache_total_pdf_bytes(&runtime.config.office_dir), 0);
     }
 
     #[test]
@@ -1763,6 +1804,27 @@ exit 0
             run_convert(&runtime, &roots, "gone-2", "docs", "/a.docx", None).unwrap_err(),
             "office_unavailable"
         );
+    }
+
+    #[test]
+    fn non_executable_soffice_reports_unavailable_and_degrades_passively() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_fake_soffice(tmp.path(), 0, false);
+        let root_dir = tmp.path().join("root");
+        fs::create_dir_all(&root_dir).unwrap();
+        fs::write(root_dir.join("a.docx"), b"x").unwrap();
+        let roots = make_roots(&root_dir);
+        let runtime =
+            OfficeRuntime::new(cfg_with_soffice(&tmp, soffice.clone())).unwrap();
+        let mut permissions = fs::metadata(&soffice).unwrap().permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(&soffice, permissions).unwrap();
+
+        assert_eq!(
+            run_convert(&runtime, &roots, "no-exec", "docs", "/a.docx", None).unwrap_err(),
+            "office_unavailable"
+        );
+        assert!(!runtime.is_ready());
     }
 
     #[test]

@@ -311,6 +311,13 @@ Optional limits (defaults shown):
 # FILEBOX_AGENT_OFFICE_CACHE_BYTES=1073741824      # 1 GiB on-disk PDF cache
 ```
 
+The cache budget must be large enough for one converted PDF. If an output
+cannot fit, the request fails safely with `office_cache_too_small` instead of
+reporting success for an immediately evicted file. The address-space memory
+limit is enforced on Linux/Android; macOS keeps the portable file-size,
+descriptor, CPU, timeout, and process-group limits because macOS rejects
+`RLIMIT_AS`.
+
 Restart the agent. On a successful probe it advertises
 `office_pdf_preview: true`. Opening a supported Office file then converts
 headlessly into a cached PDF (`/.filebox/office-cache/<key>.pdf`) and opens
@@ -319,9 +326,10 @@ running returns busy.
 
 The agent does not poll or periodically monitor LibreOffice. It validates the
 configured binary at startup and otherwise reacts only to preview requests. If
-LibreOffice is later removed or fails, that request returns a stable,
-retryable `office_unavailable` error, the original download remains available,
-and file browsing plus unrelated previews continue normally.
+LibreOffice is later removed or becomes non-executable, that request returns a
+stable, retryable `office_unavailable` error. Other conversion failures use
+stable Office-specific errors; the original download remains available, and
+file browsing plus unrelated previews continue normally.
 
 ### 3. Verify
 
