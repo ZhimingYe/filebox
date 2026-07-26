@@ -1022,6 +1022,7 @@ export function ExplorerView({
         <div style={styles.titleBlock}>
           <span style={styles.title}>Explorer</span>
         </div>
+        <span style={styles.sortLabel}>sort by:</span>
         <select
           value={sortBy}
           onChange={(event) => setSortBy(event.target.value as ExplorerSortKey)}
@@ -1448,6 +1449,12 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: font.sans,
     fontSize: 11.5,
     cursor: 'pointer',
+  },
+  sortLabel: {
+    flexShrink: 0,
+    color: c.textMuted,
+    fontSize: 11.5,
+    whiteSpace: 'nowrap',
   },
   toolbarButton: {
     width: 30,
