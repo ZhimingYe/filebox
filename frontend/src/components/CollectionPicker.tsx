@@ -28,8 +28,6 @@ const PANEL_WIDTH = 280;
 
 export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
-  const anchorRef = useRef(anchorEl);
-  anchorRef.current = anchorEl;
 
   const [panelPos, setPanelPos] = useState<PanelPos | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -41,9 +39,14 @@ export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }
   const collections = agent.collections ?? [];
 
   const placePanel = useCallback(() => {
-    const anchor = anchorRef.current;
-    if (!anchor) return;
-    const rect = anchor.getBoundingClientRect();
+    // Virtualized lists unmount rows once they leave the viewport. Never keep
+    // a picker positioned against a detached button (its rect collapses to
+    // zero and the panel would jump to a viewport corner).
+    if (!anchorEl.isConnected) {
+      onClose();
+      return;
+    }
+    const rect = anchorEl.getBoundingClientRect();
     const gap = 4;
     const margin = 8;
     const spaceBelow = window.innerHeight - rect.bottom - margin;
@@ -81,7 +84,7 @@ export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }
       }
       return next;
     });
-  }, []);
+  }, [anchorEl, onClose]);
 
   useEffect(() => {
     placePanel();
@@ -98,7 +101,7 @@ export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }
     const onPointerDown = (event: PointerEvent) => {
       const t = event.target as Node | null;
       if (panelRef.current && t && panelRef.current.contains(t)) return;
-      if (anchorRef.current && t && anchorRef.current.contains(t)) return;
+      if (t && anchorEl.contains(t)) return;
       onClose();
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -123,7 +126,7 @@ export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }
       document.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('blur', onClose);
     };
-  }, [onClose, creating]);
+  }, [anchorEl, onClose, creating]);
 
   const addTo = async (coll: CollectionInfo) => {
     setBusy(coll.name);

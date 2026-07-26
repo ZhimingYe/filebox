@@ -44,6 +44,17 @@ export function IconFolder({ style }: SvgProps) {
   );
 }
 
+/** Nested folders and a file — independent Explorer workspace view. */
+export function IconExplorer({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <path d="M2 3.5h4l1 1H14v3H2z" />
+      <path d="M4 9h3l.8.8H12v3H4z" />
+      <path d="M2 7.5v4h2" />
+    </Svg>
+  );
+}
+
 /** Stacked layers — virtual collections workspace nav icon. */
 export function IconCollection({ style }: SvgProps) {
   return (

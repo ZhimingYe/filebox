@@ -6,6 +6,7 @@ import { useIsMobile } from './state/useIsMobile';
 import { Login } from './components/Login';
 import { BackendList } from './components/BackendList';
 import { FileBrowser } from './components/FileBrowser';
+import { ExplorerView } from './components/ExplorerView';
 import { PreviewPane } from './components/PreviewPane';
 import { PreviewErrorBoundary } from './components/PreviewErrorBoundary';
 import { PreviewWorkspace } from './components/PreviewWorkspace';
@@ -23,6 +24,7 @@ import { NoAgentSelected } from './components/NoAgentSelected';
 import {
   IconChevronLeft,
   IconFolder,
+  IconExplorer,
   IconCollection,
   IconSearch,
   IconSettings,
@@ -60,7 +62,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'collections' | 'search' | 'settings' | 'stats';
+type View = 'files' | 'explorer' | 'collections' | 'search' | 'settings' | 'stats';
 
 interface ProgressEvent {
   req_id: string;
@@ -295,7 +297,10 @@ export default function App() {
   // file in the directory currently shown by FileBrowser.
   // Files and Collections both use preview tabs; Settings/Stats do not.
   useEffect(() => {
-    if (!activeTab || (view !== 'files' && view !== 'collections')) return;
+    if (
+      !activeTab
+      || (view !== 'files' && view !== 'explorer' && view !== 'collections')
+    ) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
@@ -468,9 +473,10 @@ export default function App() {
   }, [isMobile, previewTabs]);
 
   const navigate = useCallback((v: View) => {
+    if (isMobile && v !== view) previewTabs.closeAll();
     setView(v);
     if (isMobile) setSidebarOpen(false);
-  }, [isMobile]);
+  }, [isMobile, previewTabs, view]);
 
   // Auto-refresh health and track progress when SSE events arrive
   useSse(useCallback((evt) => {
@@ -512,6 +518,9 @@ export default function App() {
   const openCollectionPicker = useCallback((root: string, path: string, anchor: HTMLElement) => {
     setCollectionPicker({ root, path, anchor });
   }, []);
+  const closeCollectionPicker = useCallback(() => {
+    setCollectionPicker(null);
+  }, []);
 
   const openInFiles = useCallback((root: string, path: string) => {
     setView('files');
@@ -537,6 +546,7 @@ export default function App() {
 
   const navItems = [
     { v: 'files' as const, label: 'Files', Icon: IconFolder },
+    { v: 'explorer' as const, label: 'Explorer', Icon: IconExplorer },
     { v: 'collections' as const, label: 'Collections', Icon: IconCollection },
     { v: 'search' as const, label: 'Search', Icon: IconSearch },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
@@ -702,7 +712,8 @@ export default function App() {
   );
 
   // ── Mobile file view: show list OR preview, not both ──
-  const showMobilePreview = isMobile && !!activeTab && (view === 'files' || view === 'collections');
+  const showMobilePreview = isMobile && !!activeTab
+    && (view === 'files' || view === 'explorer' || view === 'collections');
 
   return (
     <div style={styles.app}>
@@ -797,7 +808,13 @@ export default function App() {
                 type="button"
                 onClick={() => previewTabs.closeAll()}
                 style={styles.backBtn}
-                title={view === 'collections' ? 'Back to collection' : 'Back to files'}
+                title={
+                  view === 'collections'
+                    ? 'Back to collection'
+                    : view === 'explorer'
+                      ? 'Back to Explorer'
+                      : 'Back to files'
+                }
               >
                 <IconChevronLeft />
                 <span>Back</span>
@@ -856,7 +873,7 @@ export default function App() {
                   <WorkspaceSplit
                     splitRatio={splitRatio}
                     onSplitRatioChange={setSplitRatio}
-                    showPreview={!!activeTab}
+                    showPreview={view === 'files' && !!activeTab}
                     list={(
                       <FileBrowser
                         agentId={selectedAgent.id}
@@ -873,7 +890,7 @@ export default function App() {
                         onSwitchRoot={switchRoot}
                       />
                     )}
-                    preview={activeTab ? (
+                    preview={view === 'files' && activeTab ? (
                       <PreviewWorkspace
                         agentId={selectedAgent.id}
                         tabs={previewTabs.tabs}
@@ -890,7 +907,59 @@ export default function App() {
                   />
                 )}
               </div>
-              {isMobile && showMobilePreview && activeTab && (view === 'files' || view === 'collections') && (
+              <div
+                style={{
+                  ...(isMobile ? styles.mobileFilesLayout : styles.splitViewShell),
+                  ...(view !== 'explorer' || (isMobile && showMobilePreview)
+                    ? styles.filesViewHidden
+                    : {}),
+                }}
+              >
+                {isMobile ? (
+                  <div style={styles.mobileFileWrap}>
+                    <ExplorerView
+                      key={`${selectedAgent.id}:${selectedAgent.resource_revision}`}
+                      agentId={selectedAgent.id}
+                      roots={selectedAgent.roots}
+                      active={view === 'explorer' && !showMobilePreview}
+                      onFileSelect={handleFileSelect}
+                      onAddToCollection={openCollectionPicker}
+                    />
+                  </div>
+                ) : (
+                  <WorkspaceSplit
+                    splitRatio={splitRatio}
+                    onSplitRatioChange={setSplitRatio}
+                    showPreview={view === 'explorer' && !!activeTab}
+                    list={(
+                      <ExplorerView
+                        key={`${selectedAgent.id}:${selectedAgent.resource_revision}`}
+                        agentId={selectedAgent.id}
+                        roots={selectedAgent.roots}
+                        active={view === 'explorer'}
+                        onFileSelect={handleFileSelect}
+                        onAddToCollection={openCollectionPicker}
+                      />
+                    )}
+                    preview={view === 'explorer' && activeTab ? (
+                      <PreviewWorkspace
+                        agentId={selectedAgent.id}
+                        tabs={previewTabs.tabs}
+                        activeTab={activeTab}
+                        activeTabId={previewTabs.activeTabId}
+                        onActivate={previewTabs.activate}
+                        onClose={previewTabs.close}
+                        onCloseAll={previewTabs.closeAll}
+                        onCloseLeft={previewTabs.closeLeft}
+                        onCloseRight={previewTabs.closeRight}
+                        officeCapable={!!selectedAgent.capabilities?.office_pdf_preview}
+                      />
+                    ) : null}
+                  />
+                )}
+              </div>
+              {isMobile && showMobilePreview && activeTab
+                && (view === 'files' || view === 'explorer' || view === 'collections') && (
                 <div style={styles.mobilePreviewWrap}>
                   <div style={styles.previewHeader}>
                     <span style={styles.previewPath}>{activeTab.path}</span>
@@ -964,7 +1033,7 @@ export default function App() {
           agent={selectedAgent}
           target={{ root: collectionPicker.root, path: collectionPicker.path }}
           anchorEl={collectionPicker.anchor}
-          onClose={() => setCollectionPicker(null)}
+          onClose={closeCollectionPicker}
           onChanged={refresh}
         />
       )}

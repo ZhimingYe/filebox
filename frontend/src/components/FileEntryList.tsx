@@ -1,5 +1,4 @@
 import {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -9,6 +8,7 @@ import {
 } from 'react';
 import { FixedSizeList, type ListChildComponentProps } from 'react-window';
 import type { FsEntry } from '../api/client';
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { font } from '../theme';
 import { useIsMobile } from '../state/useIsMobile';
 import {
@@ -45,27 +45,6 @@ export interface FileEntryListProps {
   onRowClick: (row: FileEntryListRowModel, index: number) => void;
   /** Extra icon buttons in the name cell on hover, before "Copy full path". */
   renderNameHoverActions?: (row: FileEntryListRowModel, index: number) => ReactNode;
-}
-
-function useCopyToClipboard() {
-  const [copiedPath, setCopiedPath] = useState<string | null>(null);
-  const copyToClipboard = useCallback(async (text: string, label: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedPath(label);
-      setTimeout(() => setCopiedPath(null), 2000);
-    } catch {
-      const textArea = document.createElement('textarea');
-      textArea.value = text;
-      document.body.appendChild(textArea);
-      textArea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textArea);
-      setCopiedPath(label);
-      setTimeout(() => setCopiedPath(null), 2000);
-    }
-  }, []);
-  return { copiedPath, copyToClipboard };
 }
 
 function useRecentEntryClock(entries: FsEntry[]) {
