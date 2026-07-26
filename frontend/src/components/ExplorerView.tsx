@@ -762,9 +762,6 @@ export function ExplorerView({
       <div style={styles.toolbar}>
         <div style={styles.titleBlock}>
           <span style={styles.title}>Explorer</span>
-          <span style={styles.limits}>
-            {expanded.size}/{MAX_EXPANDED_DIRECTORIES} folders expanded
-          </span>
         </div>
         <button
           type="button"
@@ -1071,8 +1068,7 @@ const styles: Record<string, CSSProperties> = {
   },
   titleBlock: {
     display: 'flex',
-    flexDirection: 'column',
-    gap: 1,
+    alignItems: 'center',
     flex: 1,
     minWidth: 0,
   },
@@ -1080,11 +1076,6 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 13,
     fontWeight: 600,
     color: c.text,
-  },
-  limits: {
-    fontSize: 10.5,
-    color: c.textMuted,
-    fontVariantNumeric: 'tabular-nums',
   },
   toolbarButton: {
     width: 30,
