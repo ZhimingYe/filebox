@@ -36,8 +36,25 @@ const DEFAULT_MAX_MEMORY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_SPREADSHEET_SHEETS: usize = 2048;
 const CACHE_FILE_ACCOUNTING_FLOOR_BYTES: u64 = 4096;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(1);
 const DEGRADED_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 static CACHE_META_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(unix)]
+macro_rules! set_process_limit {
+    ($resource:expr, $value:expr) => {{
+        let limit = libc::rlimit {
+            rlim_cur: $value as libc::rlim_t,
+            rlim_max: $value as libc::rlim_t,
+        };
+        // Invoked only from the `pre_exec` unsafe block below.
+        if libc::setrlimit($resource, &limit) != 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }};
+}
 
 #[derive(Clone)]
 pub struct OfficeConfig {
@@ -81,10 +98,13 @@ struct OfficeJobHandle {
 
 impl OfficeRuntime {
     pub fn new(config: OfficeConfig) -> Result<Arc<Self>, String> {
-        fs::create_dir_all(config.office_dir.join("cache"))
+        create_private_dir_all(&config.office_dir)
+            .map_err(|e| diagnostic("office_storage_error", format!("create office dir: {e}")))?;
+        create_private_dir_all(&config.office_dir.join("cache"))
             .map_err(|e| diagnostic("office_storage_error", format!("create cache dir: {e}")))?;
-        fs::create_dir_all(config.office_dir.join("jobs"))
+        create_private_dir_all(&config.office_dir.join("jobs"))
             .map_err(|e| diagnostic("office_storage_error", format!("create jobs dir: {e}")))?;
+        harden_existing_cache_permissions(&config.office_dir.join("cache"));
         // Reap crashed leftovers from a previous process.
         reap_stale_jobs(&config.office_dir.join("jobs"));
         reap_stale_cache_temps(&config.office_dir.join("cache"));
@@ -301,10 +321,11 @@ fn probe_soffice_version(soffice: &Path) -> Result<String, String> {
         .stdout
         .take()
         .ok_or_else(|| "failed to capture soffice version output".to_string())?;
-    let reader = std::thread::spawn(move || {
+    let (reader_tx, reader_rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = stdout.by_ref().take(64 * 1024).read_to_end(&mut buf);
-        buf
+        let _ = reader_tx.send(buf);
     });
     let deadline = Instant::now() + PROBE_TIMEOUT;
     let status = loop {
@@ -327,9 +348,21 @@ fn probe_soffice_version(soffice: &Path) -> Result<String, String> {
             }
         }
     };
-    let stdout = reader
-        .join()
-        .map_err(|_| "soffice version reader panicked".to_string())?;
+    // A launcher must not keep the Agent blocked by leaving stdout inherited
+    // in a detached descendant. Give the normal reader a brief chance to
+    // finish, then kill remaining process-group members and bound the drain.
+    let stdout = match reader_rx.recv_timeout(Duration::from_millis(100)) {
+        Ok(stdout) => stdout,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            kill_process_group(probe_pgid);
+            reader_rx
+                .recv_timeout(PIPE_DRAIN_GRACE)
+                .map_err(|_| "soffice version output did not close promptly".to_string())?
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("soffice version reader failed".to_string());
+        }
+    };
     if !status.success() {
         return Err(format!("soffice --version exited {status}"));
     }
@@ -499,11 +532,13 @@ fn run_convert_inner(
         let profile = job_dir.join("profile");
         let indir = job_dir.join("in");
         let outdir = job_dir.join("out");
-        fs::create_dir_all(&profile)
+        create_private_dir_all(&job_dir)
+            .map_err(|e| diagnostic("office_storage_error", format!("mkdir job: {e}")))?;
+        create_private_dir_all(&profile)
             .map_err(|e| diagnostic("office_storage_error", format!("mkdir profile: {e}")))?;
-        fs::create_dir_all(&indir)
+        create_private_dir_all(&indir)
             .map_err(|e| diagnostic("office_storage_error", format!("mkdir input: {e}")))?;
-        fs::create_dir_all(&outdir)
+        create_private_dir_all(&outdir)
             .map_err(|e| diagnostic("office_storage_error", format!("mkdir output: {e}")))?;
         let staged = indir.join(format!("source.{ext}"));
         let fingerprint = stage_and_fingerprint_source(
@@ -822,7 +857,7 @@ fn promote_to_cache(
     fingerprint: &str,
 ) -> Result<(), String> {
     let cache_dir = office_dir.join("cache");
-    fs::create_dir_all(&cache_dir)
+    create_private_dir_all(&cache_dir)
         .map_err(|e| diagnostic("office_storage_error", format!("mkdir cache: {e}")))?;
     let dest = cache_artifact_path(office_dir, key, format);
     let tmp = cache_dir.join(format!("{key}.{format}.tmp"));
@@ -832,6 +867,8 @@ fn promote_to_cache(
     };
     fs::copy(source, &tmp)
         .map_err(|e| diagnostic("office_storage_error", format!("cache copy: {e}")))?;
+    set_private_file_permissions(&tmp)
+        .map_err(|e| diagnostic("office_storage_error", format!("cache permissions: {e}")))?;
     fs::rename(&tmp, &dest)
         .map_err(|e| diagnostic("office_storage_error", format!("cache rename: {e}")))?;
     tmp_cleanup.active = false;
@@ -886,7 +923,9 @@ fn write_cache_meta_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
         path: tmp.clone(),
         active: true,
     };
-    fs::write(&tmp, contents)?;
+    let mut file = create_private_file(&tmp)?;
+    file.write_all(contents.as_bytes())?;
+    file.sync_all()?;
     fs::rename(&tmp, path)?;
     cleanup.active = false;
     Ok(())
@@ -1185,7 +1224,7 @@ fn stage_and_fingerprint_source(
 ) -> Result<String, String> {
     src.seek(SeekFrom::Start(0))
         .map_err(|e| diagnostic("office_source_unavailable", format!("seek source: {e}")))?;
-    let mut out = File::create(dest)
+    let mut out = create_private_file(dest)
         .map_err(|e| diagnostic("office_storage_error", format!("create staged input: {e}")))?;
     let mut hasher = Sha256::new();
     let mut copied = 0u64;
@@ -1291,6 +1330,57 @@ fn diagnostic(code: &str, detail: impl std::fmt::Display) -> String {
     code.to_string()
 }
 
+fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn create_private_file(path: &Path) -> std::io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    set_private_file_permissions(path)?;
+    Ok(file)
+}
+
+fn set_private_file_permissions(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn harden_existing_cache_permissions(cache_dir: &Path) {
+    let Ok(entries) = fs::read_dir(cache_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|file_type| file_type.is_file()) {
+            if let Err(error) = set_private_file_permissions(&entry.path()) {
+                tracing::warn!(
+                    "Failed to restrict Office cache file {}: {}",
+                    entry.path().display(),
+                    error
+                );
+            }
+        }
+    }
+}
+
 fn run_soffice(
     cfg: &OfficeConfig,
     profile: &Path,
@@ -1305,10 +1395,10 @@ fn run_soffice(
 ) -> Result<(), String> {
     let profile_uri = path_to_file_uri(profile);
     let tmp_dir = job_dir.join("tmp");
-    fs::create_dir_all(&tmp_dir)
+    create_private_dir_all(&tmp_dir)
         .map_err(|e| diagnostic("office_storage_error", format!("create temp dir: {e}")))?;
     let log = Arc::new(Mutex::new(
-        File::create(log_path)
+        create_private_file(log_path)
             .map_err(|e| diagnostic("office_storage_error", format!("open log: {e}")))?,
     ));
     let log_remaining = Arc::new(AtomicU64::new(cfg.max_log_bytes));
@@ -1348,12 +1438,12 @@ fn run_soffice(
             // macOS rejects RLIMIT_AS with EINVAL. Keep the address-space cap
             // on Linux/Android and retain portable limits on other Unix hosts.
             #[cfg(any(target_os = "linux", target_os = "android"))]
-            set_process_limit(libc::RLIMIT_AS, max_memory)?;
+            set_process_limit!(libc::RLIMIT_AS, max_memory)?;
             #[cfg(not(any(target_os = "linux", target_os = "android")))]
             let _ = max_memory;
-            set_process_limit(libc::RLIMIT_FSIZE, max_file)?;
-            set_process_limit(libc::RLIMIT_NOFILE, 256)?;
-            set_process_limit(libc::RLIMIT_CPU, cpu_secs)?;
+            set_process_limit!(libc::RLIMIT_FSIZE, max_file)?;
+            set_process_limit!(libc::RLIMIT_NOFILE, 256)?;
+            set_process_limit!(libc::RLIMIT_CPU, cpu_secs)?;
             Ok(())
         });
     }
@@ -1474,23 +1564,6 @@ fn directory_size_exceeds(root: &Path, limit: u64) -> bool {
     false
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
-type RlimitResource = libc::__rlimit_resource_t;
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
-type RlimitResource = libc::c_int;
-
-#[cfg(unix)]
-fn set_process_limit(resource: RlimitResource, value: u64) -> std::io::Result<()> {
-    let limit = libc::rlimit {
-        rlim_cur: value as libc::rlim_t,
-        rlim_max: value as libc::rlim_t,
-    };
-    if unsafe { libc::setrlimit(resource, &limit) } != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
 fn spawn_log_drain<R>(
     mut reader: R,
     log: Arc<Mutex<File>>,
@@ -1539,11 +1612,20 @@ fn finish_log_drain(
     stdout: Option<std::thread::JoinHandle<()>>,
     stderr: Option<std::thread::JoinHandle<()>>,
 ) {
-    if let Some(handle) = stdout {
-        let _ = handle.join();
+    let handles: Vec<_> = [stdout, stderr].into_iter().flatten().collect();
+    let deadline = Instant::now() + PIPE_DRAIN_GRACE;
+    while handles.iter().any(|handle| !handle.is_finished()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
     }
-    if let Some(handle) = stderr {
-        let _ = handle.join();
+    for handle in handles {
+        if handle.is_finished() {
+            let _ = handle.join();
+        } else {
+            // Dropping a JoinHandle detaches it. This is preferable to freezing
+            // all future Office work if a descendant escaped the process group
+            // while retaining stdout/stderr.
+            tracing::warn!("Office log pipe did not close promptly; detaching drain thread");
+        }
     }
 }
 
@@ -1567,17 +1649,38 @@ fn append_log_note(log_path: &Path, note: &str) {
     }
 }
 
+#[cfg(unix)]
+fn path_to_file_uri(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+
+    let abs = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf());
+    let bytes = abs.as_os_str().as_bytes();
+    let mut uri = String::with_capacity(bytes.len() + 16);
+    uri.push_str("file://");
+    if !bytes.starts_with(b"/") {
+        uri.push('/');
+    }
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for &byte in bytes {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'.' | b'_' | b'~') {
+            uri.push(byte as char);
+        } else {
+            uri.push('%');
+            uri.push(HEX[(byte >> 4) as usize] as char);
+            uri.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    uri
+}
+
+#[cfg(not(unix))]
 fn path_to_file_uri(path: &Path) -> String {
     let abs = path
         .canonicalize()
         .unwrap_or_else(|_| path.to_path_buf());
-    let s = abs.to_string_lossy();
-    // LibreOffice expects file:///absolute/path
-    if s.starts_with('/') {
-        format!("file://{s}")
-    } else {
-        format!("file:///{s}")
-    }
+    format!("file:///{}", abs.to_string_lossy().replace('\\', "/"))
 }
 
 #[cfg(unix)]
@@ -1737,6 +1840,63 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::fs::symlink;
     use tempfile::TempDir;
+
+    #[test]
+    fn office_storage_uses_owner_only_permissions() {
+        let tmp = TempDir::new().unwrap();
+        let private_dir = tmp.path().join("office");
+        fs::create_dir_all(&private_dir).unwrap();
+        fs::set_permissions(&private_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        create_private_dir_all(&private_dir).unwrap();
+        assert_eq!(
+            fs::metadata(&private_dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+
+        let private_file = private_dir.join("cache.pdf");
+        fs::write(&private_file, b"preview").unwrap();
+        fs::set_permissions(&private_file, fs::Permissions::from_mode(0o644)).unwrap();
+        harden_existing_cache_permissions(&private_dir);
+        assert_eq!(
+            fs::metadata(&private_file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let created_file = private_dir.join("metadata.json");
+        drop(create_private_file(&created_file).unwrap());
+        assert_eq!(
+            fs::metadata(&created_file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn file_uri_percent_encodes_linux_path_bytes() {
+        let path = Path::new("/tmp/file box/profile#100%");
+        assert_eq!(
+            path_to_file_uri(path),
+            "file:///tmp/file%20box/profile%23100%25"
+        );
+    }
+
+    #[test]
+    fn log_drain_cleanup_has_a_hard_deadline() {
+        use std::os::unix::net::UnixStream;
+
+        let (reader, writer) = UnixStream::pair().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("office.log");
+        let log = Arc::new(Mutex::new(create_private_file(&log_path).unwrap()));
+        let remaining = Arc::new(AtomicU64::new(1024));
+        let handle = spawn_log_drain(reader, log, remaining);
+        let started = Instant::now();
+        finish_log_drain(Some(handle), None);
+        assert!(
+            started.elapsed() < PIPE_DRAIN_GRACE + Duration::from_secs(1),
+            "pipe drain cleanup exceeded its hard deadline"
+        );
+        drop(writer);
+    }
 
     fn write_fake_soffice(dir: &Path, delay_ms: u64, fail: bool) -> PathBuf {
         write_fake_soffice_named(dir, "soffice", delay_ms, fail, true)

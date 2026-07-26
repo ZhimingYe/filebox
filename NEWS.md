@@ -21,6 +21,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ### Fixed
 - **Explorer interaction recovery** — directory rows can pin/unpin folders without losing expanded state; queued, slow, paginated, cancelled, timed-out, refreshed, and failed loads have visible status with Cancel/Retry controls; Hub/network errors keep actionable messages; shared Files/Explorer clipboard copying times out into a verified fallback instead of hanging; abandoned directory/stat/read requests now cancel Agent work end-to-end; directory scans use an isolated worker pool plus bounded, cancellable caches so pathological trees cannot starve file previews.
+- **Linux-first Office conversion** — musl builds no longer depend on a glibc-only `libc` typedef; Office job/cache storage is owner-only, LibreOffice profile paths use byte-safe file-URI encoding, and pipe cleanup is time-bounded so an escaped helper cannot freeze future previews. A path-filtered, auto-cancelling musl check now validates Rust changes before release tags.
 
 ### Security
 - **Dependency CVEs** — bcrypt 0.19.1 → 0.19.2 (RUSTSEC-2026-0199 panic-DoS); crossbeam-epoch 0.9.18 → 0.9.20 (RUSTSEC-2026-0204); npm `dompurify` overridden to 3.4.12 (Monaco transitive XSS advisories).
