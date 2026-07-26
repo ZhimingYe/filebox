@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{mpsc, Notify, Semaphore};
 use tokio::task::JoinSet;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -29,6 +29,33 @@ const MAX_SEARCH_INFLIGHT: usize = 1;
 /// historical/request-count quota.
 const FS_WORKER_CONCURRENCY: usize = 32;
 const FS_MAX_INFLIGHT: usize = 256;
+const DIR_LIST_WORKER_CONCURRENCY: usize = 4;
+const DIR_LIST_MAX_INFLIGHT: usize = 32;
+
+struct FsCancellation {
+    cancelled: Arc<AtomicBool>,
+    notify: Notify,
+}
+
+impl FsCancellation {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            notify: Notify::new(),
+        })
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.notify.notify_one();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
+type FsCancellationMap = Arc<Mutex<HashMap<String, Arc<FsCancellation>>>>;
 
 // ── Timeouts and tunables ─────────────────────────────────────────────────
 //
@@ -118,28 +145,54 @@ fn try_spawn_fs_job<F>(
     admission: &Arc<Semaphore>,
     workers: &Arc<Semaphore>,
     tx: &mpsc::Sender<AgentMessage>,
+    req_id: String,
+    cancellations: &FsCancellationMap,
     job: F,
+    cancelled_response: AgentMessage,
     panic_response: AgentMessage,
 ) -> bool
 where
-    F: FnOnce() -> AgentMessage + Send + 'static,
+    F: FnOnce(Arc<AtomicBool>) -> AgentMessage + Send + 'static,
 {
     let Ok(admission_permit) = admission.clone().try_acquire_owned() else {
         return false;
     };
     let workers = workers.clone();
     let tx = tx.clone();
+    let cancellation = FsCancellation::new();
+    if let Ok(mut map) = cancellations.lock() {
+        if let Some(previous) = map.insert(req_id.clone(), cancellation.clone()) {
+            previous.cancel();
+        }
+    }
+    let cancellations = cancellations.clone();
     tasks.spawn(async move {
         let _admission_permit = admission_permit;
-        let Ok(worker_permit) = workers.acquire_owned().await else {
+        let worker_permit = if cancellation.is_cancelled() {
+            None
+        } else {
+            tokio::select! {
+                permit = workers.acquire_owned() => permit.ok(),
+                _ = cancellation.notify.notified() => None,
+            }
+        };
+        let Some(worker_permit) = worker_permit else {
+            let _ = tx.send(cancelled_response).await;
+            remove_fs_cancellation(&cancellations, &req_id, &cancellation);
             return;
         };
         // Move the permit into the blocking closure. If the WebSocket
         // connection disappears and aborts this async wrapper, a kernel-stuck
         // syscall still owns its global permit until it actually returns.
+        let cancel_flag = cancellation.cancelled.clone();
+        let cancelled_in_worker = cancelled_response.clone();
         let blocking = tokio::task::spawn_blocking(move || {
             let _worker_permit = worker_permit;
-            job()
+            if cancel_flag.load(Ordering::Acquire) {
+                cancelled_in_worker
+            } else {
+                job(cancel_flag)
+            }
         });
         let response = match blocking.await {
             Ok(response) => response,
@@ -149,8 +202,24 @@ where
             }
         };
         let _ = tx.send(response).await;
+        remove_fs_cancellation(&cancellations, &req_id, &cancellation);
     });
     true
+}
+
+fn remove_fs_cancellation(
+    cancellations: &FsCancellationMap,
+    req_id: &str,
+    expected: &Arc<FsCancellation>,
+) {
+    if let Ok(mut map) = cancellations.lock() {
+        if map
+            .get(req_id)
+            .is_some_and(|current| Arc::ptr_eq(current, expected))
+        {
+            map.remove(req_id);
+        }
+    }
 }
 
 pub async fn run_connection_loop(config: &AgentConfig) {
@@ -186,6 +255,7 @@ pub async fn run_connection_loop(config: &AgentConfig) {
     // Shared across reconnects. A filesystem syscall left behind by a broken
     // WebSocket must continue counting against the same global worker bound.
     let fs_workers = Arc::new(Semaphore::new(FS_WORKER_CONCURRENCY));
+    let dir_list_workers = Arc::new(Semaphore::new(DIR_LIST_WORKER_CONCURRENCY));
 
     tracing::info!(
         "Agent ID: {}, data dir: {:?}",
@@ -205,6 +275,7 @@ pub async fn run_connection_loop(config: &AgentConfig) {
             &dir_cache,
             office_runtime.as_ref(),
             &fs_workers,
+            &dir_list_workers,
         )
         .await;
 
@@ -259,6 +330,7 @@ async fn run_one_connection(
     dir_cache: &Arc<DirCache>,
     office_runtime: Option<&Arc<crate::office_convert::OfficeRuntime>>,
     fs_workers: &Arc<Semaphore>,
+    dir_list_workers: &Arc<Semaphore>,
 ) {
     tracing::info!("Connecting to {}", ws_url);
 
@@ -375,6 +447,8 @@ async fn run_one_connection(
     let (office_tx, mut office_rx) = mpsc::channel::<AgentMessage>(32);
     let (fs_tx, mut fs_rx) = mpsc::channel::<AgentMessage>(128);
     let fs_admission = Arc::new(Semaphore::new(FS_MAX_INFLIGHT));
+    let dir_list_admission = Arc::new(Semaphore::new(DIR_LIST_MAX_INFLIGHT));
+    let fs_cancellations: FsCancellationMap = Arc::new(Mutex::new(HashMap::new()));
     let mut fs_tasks = JoinSet::new();
 
     loop {
@@ -545,15 +619,23 @@ async fn run_one_connection(
                                     next_cursor: None,
                                     error: Some("agent_internal_error".to_string()),
                                 };
+                                let cancelled_response = AgentMessage::FsListResponse {
+                                    req_id: req_id.clone(),
+                                    items: vec![],
+                                    next_cursor: None,
+                                    error: Some("request_cancelled".to_string()),
+                                };
                                 let job_req_id = req_id.clone();
                                 let accepted = try_spawn_fs_job(
                                     &mut fs_tasks,
-                                    &fs_admission,
-                                    fs_workers,
+                                    &dir_list_admission,
+                                    dir_list_workers,
                                     &fs_tx,
-                                    move || match cache_clone.list(
+                                    req_id.clone(),
+                                    &fs_cancellations,
+                                    move |cancelled| match cache_clone.list_with_cancel(
                                         &roots_vec, &root, &path, limit as usize,
-                                        cursor.as_deref(), dirs_only_flag,
+                                        cursor.as_deref(), dirs_only_flag, &cancelled,
                                     ) {
                                         Ok((items, next_cursor)) => AgentMessage::FsListResponse {
                                             req_id: job_req_id,
@@ -568,6 +650,7 @@ async fn run_one_connection(
                                             error: Some(e),
                                         },
                                     },
+                                    cancelled_response,
                                     panic_response,
                                 );
                                 if !accepted {
@@ -598,13 +681,27 @@ async fn run_one_connection(
                                     stat: None,
                                     error: Some("agent_internal_error".to_string()),
                                 };
+                                let cancelled_response = AgentMessage::FsStatResponse {
+                                    req_id: req_id.clone(),
+                                    stat: None,
+                                    error: Some("request_cancelled".to_string()),
+                                };
                                 let job_req_id = req_id.clone();
                                 let accepted = try_spawn_fs_job(
                                     &mut fs_tasks,
                                     &fs_admission,
                                     fs_workers,
                                     &fs_tx,
-                                    move || {
+                                    req_id.clone(),
+                                    &fs_cancellations,
+                                    move |cancelled| {
+                                        if cancelled.load(Ordering::Acquire) {
+                                            return AgentMessage::FsStatResponse {
+                                                req_id: job_req_id.clone(),
+                                                stat: None,
+                                                error: Some("request_cancelled".to_string()),
+                                            };
+                                        }
                                         if let Some(cache) =
                                             crate::office_convert::parse_cache_virtual_path(&path)
                                         {
@@ -657,6 +754,7 @@ async fn run_one_connection(
                                             }
                                         }
                                     },
+                                    cancelled_response,
                                     panic_response,
                                 );
                                 if !accepted {
@@ -688,13 +786,31 @@ async fn run_one_connection(
                                     done: true,
                                     error: Some("agent_internal_error".to_string()),
                                 };
+                                let cancelled_response = AgentMessage::FileChunk {
+                                    req_id: req_id.clone(),
+                                    offset,
+                                    data: vec![],
+                                    done: true,
+                                    error: Some("request_cancelled".to_string()),
+                                };
                                 let job_req_id = req_id.clone();
                                 let accepted = try_spawn_fs_job(
                                     &mut fs_tasks,
                                     &fs_admission,
                                     fs_workers,
                                     &fs_tx,
-                                    move || {
+                                    req_id.clone(),
+                                    &fs_cancellations,
+                                    move |cancelled| {
+                                        if cancelled.load(Ordering::Acquire) {
+                                            return AgentMessage::FileChunk {
+                                                req_id: job_req_id.clone(),
+                                                offset,
+                                                data: vec![],
+                                                done: true,
+                                                error: Some("request_cancelled".to_string()),
+                                            };
+                                        }
                                         let read_result = if let Some(cache) =
                                             crate::office_convert::parse_cache_virtual_path(&path)
                                         {
@@ -718,6 +834,15 @@ async fn run_one_connection(
                                                 length,
                                             )
                                         };
+                                        if cancelled.load(Ordering::Acquire) {
+                                            return AgentMessage::FileChunk {
+                                                req_id: job_req_id.clone(),
+                                                offset,
+                                                data: vec![],
+                                                done: true,
+                                                error: Some("request_cancelled".to_string()),
+                                            };
+                                        }
                                         match read_result {
                                             Ok((data, done)) => AgentMessage::FileChunk {
                                                 req_id: job_req_id,
@@ -735,6 +860,7 @@ async fn run_one_connection(
                                             },
                                         }
                                     },
+                                    cancelled_response,
                                     panic_response,
                                 );
                                 if !accepted {
@@ -758,6 +884,11 @@ async fn run_one_connection(
                             }
                             Ok(HubMessage::Cancel { req_id }) => {
                                 tracing::debug!("Cancel request: {}", req_id);
+                                if let Ok(map) = fs_cancellations.lock() {
+                                    if let Some(cancellation) = map.get(&req_id) {
+                                        cancellation.cancel();
+                                    }
+                                }
                                 if let Ok(map) = search_cancels.lock() {
                                     if let Some(flag) = map.get(&req_id) {
                                         flag.store(true, Ordering::Relaxed);
@@ -1106,8 +1237,9 @@ async fn run_one_connection(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use filebox_protocol::message::AgentMessage;
@@ -1165,8 +1297,9 @@ mod tests {
         let mut tasks = JoinSet::new();
         let active = Arc::new(AtomicUsize::new(0));
         let max_active = Arc::new(AtomicUsize::new(0));
+        let cancellations = Arc::new(Mutex::new(HashMap::new()));
 
-        for _ in 0..6 {
+        for index in 0..6 {
             let active = active.clone();
             let max_active = max_active.clone();
             assert!(try_spawn_fs_job(
@@ -1174,13 +1307,16 @@ mod tests {
                 &admission,
                 &workers,
                 &tx,
-                move || {
+                format!("job-{index}"),
+                &cancellations,
+                move |_| {
                     let now = active.fetch_add(1, Ordering::AcqRel) + 1;
                     max_active.fetch_max(now, Ordering::AcqRel);
                     std::thread::sleep(Duration::from_millis(20));
                     active.fetch_sub(1, Ordering::AcqRel);
                     AgentMessage::Pong
                 },
+                AgentMessage::Pong,
                 AgentMessage::Pong,
             ));
         }
@@ -1190,7 +1326,10 @@ mod tests {
                 &admission,
                 &workers,
                 &tx,
-                || AgentMessage::Pong,
+                "overflow".to_string(),
+                &cancellations,
+                |_| AgentMessage::Pong,
+                AgentMessage::Pong,
                 AgentMessage::Pong,
             ),
             "the admission bound must reject work instead of spawning an unbounded waiter"
@@ -1213,16 +1352,20 @@ mod tests {
         let (tx, _rx) = mpsc::channel(1);
         let mut tasks = JoinSet::new();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let cancellations = Arc::new(Mutex::new(HashMap::new()));
 
         assert!(try_spawn_fs_job(
             &mut tasks,
             &admission,
             &workers,
             &tx,
-            move || {
+            "blocked".to_string(),
+            &cancellations,
+            move |_| {
                 let _ = release_rx.recv();
                 AgentMessage::Pong
             },
+            AgentMessage::Pong,
             AgentMessage::Pong,
         ));
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -1249,5 +1392,54 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_file_job_is_released_without_running_after_cancel() {
+        let admission = Arc::new(Semaphore::new(1));
+        let workers = Arc::new(Semaphore::new(1));
+        let held_worker = workers.clone().acquire_owned().await.unwrap();
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut tasks = JoinSet::new();
+        let cancellations = Arc::new(Mutex::new(HashMap::new()));
+        let ran = Arc::new(AtomicUsize::new(0));
+        let ran_in_job = ran.clone();
+
+        assert!(try_spawn_fs_job(
+            &mut tasks,
+            &admission,
+            &workers,
+            &tx,
+            "cancel-me".to_string(),
+            &cancellations,
+            move |_| {
+                ran_in_job.fetch_add(1, Ordering::AcqRel);
+                AgentMessage::Pong
+            },
+            AgentMessage::Heartbeat,
+            AgentMessage::Pong,
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let cancellation = cancellations
+                    .lock()
+                    .ok()
+                    .and_then(|map| map.get("cancel-me").cloned());
+                if let Some(cancellation) = cancellation {
+                    cancellation.cancel();
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(rx.recv().await, Some(AgentMessage::Heartbeat)));
+        while tasks.join_next().await.is_some() {}
+        assert_eq!(ran.load(Ordering::Acquire), 0);
+        assert_eq!(admission.available_permits(), 1);
+        drop(held_worker);
     }
 }

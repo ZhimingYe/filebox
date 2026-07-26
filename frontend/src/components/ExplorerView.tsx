@@ -103,6 +103,15 @@ const FILE_NAME_COLLATOR = new Intl.Collator(undefined, {
   sensitivity: 'base',
   numeric: true,
 });
+const SORTED_ENTRIES_CACHE = new WeakMap<
+  FsEntry[],
+  Map<string, FsEntry[]>
+>();
+const APPENDED_ENTRIES = new WeakMap<
+  FsEntry[],
+  { previous: FsEntry[]; appended: FsEntry[] }
+>();
+const MODIFIED_TIME_CACHE = new WeakMap<FsEntry, number>();
 
 function directoryErrorMessage(error: unknown): string {
   const friendly = api.friendlyMessage(error);
@@ -190,8 +199,8 @@ function compareExplorerEntries(
 
   let comparison = 0;
   if (sortBy === 'modified') {
-    const aTime = a.modified ? Date.parse(a.modified) : Number.NaN;
-    const bTime = b.modified ? Date.parse(b.modified) : Number.NaN;
+    const aTime = modifiedTime(a);
+    const bTime = modifiedTime(b);
     const aHasTime = Number.isFinite(aTime);
     const bHasTime = Number.isFinite(bTime);
     if (aHasTime !== bHasTime) return aHasTime ? -1 : 1;
@@ -202,6 +211,77 @@ function compareExplorerEntries(
 
   if (comparison !== 0) return sortAsc ? comparison : -comparison;
   return FILE_NAME_COLLATOR.compare(a.name, b.name);
+}
+
+function modifiedTime(entry: FsEntry): number {
+  const cached = MODIFIED_TIME_CACHE.get(entry);
+  if (cached !== undefined) return cached;
+  const parsed = entry.modified ? Date.parse(entry.modified) : Number.NaN;
+  MODIFIED_TIME_CACHE.set(entry, parsed);
+  return parsed;
+}
+
+function mergeSortedEntries(
+  left: FsEntry[],
+  right: FsEntry[],
+  sortBy: ExplorerSortKey,
+  sortAsc: boolean,
+): FsEntry[] {
+  const merged: FsEntry[] = [];
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    if (
+      compareExplorerEntries(
+        left[leftIndex],
+        right[rightIndex],
+        sortBy,
+        sortAsc,
+      ) <= 0
+    ) {
+      merged.push(left[leftIndex]);
+      leftIndex += 1;
+    } else {
+      merged.push(right[rightIndex]);
+      rightIndex += 1;
+    }
+  }
+  if (leftIndex < left.length) merged.push(...left.slice(leftIndex));
+  if (rightIndex < right.length) merged.push(...right.slice(rightIndex));
+  return merged;
+}
+
+function sortedExplorerEntries(
+  items: FsEntry[],
+  sortBy: ExplorerSortKey,
+  sortAsc: boolean,
+): FsEntry[] {
+  const cacheKey = `${sortBy}:${sortAsc ? 'asc' : 'desc'}`;
+  const cached = SORTED_ENTRIES_CACHE.get(items)?.get(cacheKey);
+  if (cached) return cached;
+
+  const append = APPENDED_ENTRIES.get(items);
+  const sorted = append
+    ? mergeSortedEntries(
+        sortedExplorerEntries(append.previous, sortBy, sortAsc),
+        sortedExplorerEntries(append.appended, sortBy, sortAsc),
+        sortBy,
+        sortAsc,
+      )
+    : [...items].sort(
+        (a, b) => compareExplorerEntries(a, b, sortBy, sortAsc),
+      );
+  if (append) APPENDED_ENTRIES.delete(items);
+  const itemCache = SORTED_ENTRIES_CACHE.get(items) ?? new Map<string, FsEntry[]>();
+  itemCache.set(cacheKey, sorted);
+  SORTED_ENTRIES_CACHE.set(items, itemCache);
+  return sorted;
+}
+
+function appendExplorerEntries(existing: FsEntry[], appended: FsEntry[]): FsEntry[] {
+  const combined = [...existing, ...appended];
+  APPENDED_ENTRIES.set(combined, { previous: existing, appended });
+  return combined;
 }
 
 function isSameOrDescendant(
@@ -259,7 +339,19 @@ export function ExplorerView({
 }: Props) {
   const isMobile = useIsMobile();
   const rowHeight = isMobile ? 38 : 30;
-  const enabledRoots = useMemo(() => roots.filter((root) => root.enabled), [roots]);
+  const rootsSignature = JSON.stringify(roots.map((root) => [
+    root.name,
+    root.path_display,
+    root.enabled,
+    root.pinned_folders,
+  ]));
+  const enabledRoots = useMemo(
+    () => roots.filter((root) => root.enabled),
+    // Agent RTT/telemetry refreshes replace the roots array even when its
+    // Explorer-visible structure is identical.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rootsSignature],
+  );
   const [nodes, setNodes] = useState<Map<string, DirectoryState>>(new Map());
   const nodesRef = useRef(nodes);
   const firstRootKey = enabledRoots[0] ? nodeKey(enabledRoots[0].name, '/') : null;
@@ -288,6 +380,7 @@ export function ExplorerView({
   });
   const [pinBusyIds, setPinBusyIds] = useState<Set<string>>(new Set());
   const pinBusyRef = useRef<Set<string>>(new Set());
+  const pinQueuesRef = useRef<Map<string, Promise<void>>>(new Map());
   const [viewportHeight, setViewportHeight] = useState(0);
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<FixedSizeList>(null);
@@ -321,7 +414,8 @@ export function ExplorerView({
       });
     });
     return ids;
-  }, [roots]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rootsSignature]);
 
   const showNotice = useCallback((
     message: string | null,
@@ -462,7 +556,9 @@ export function ExplorerView({
           return next;
         }
         next.set(task.key, {
-          items: task.append ? [...existing.items, ...data.items] : data.items,
+          items: task.append
+            ? appendExplorerEntries(existing.items, data.items)
+            : data.items,
           nextCursor: data.next_cursor ?? null,
           loading: false,
           loadPhase: null,
@@ -692,9 +788,7 @@ export function ExplorerView({
           message,
         });
       }
-      const sortedItems = [...state.items].sort(
-        (a, b) => compareExplorerEntries(a, b, sortBy, sortAsc),
-      );
+      const sortedItems = sortedExplorerEntries(state.items, sortBy, sortAsc);
       sortedItems.forEach((entry) => {
         const pathForEntry = childPath(path, entry.name);
         const id = nodeKey(root.name, pathForEntry);
@@ -868,29 +962,48 @@ export function ExplorerView({
     const pinned = pinnedIds.has(row.id);
     pinBusyRef.current.add(row.id);
     setPinBusyIds(new Set(pinBusyRef.current));
-    showNotice(`${pinned ? 'Unpinning' : 'Pinning'} ${row.label}…`);
-    try {
-      const result = await api.patchRoot(agentId, row.root, pinned
-        ? { pin_remove: normalizePinPath(row.path) }
-        : { pin_add: normalizePinPath(row.path) });
-      await onRootsChange?.();
-      if (isPendingAgentUpdate(result)) {
+    const previous = pinQueuesRef.current.get(row.root);
+    showNotice(
+      previous
+        ? `${pinned ? 'Unpin' : 'Pin'} for ${row.label} queued…`
+        : `${pinned ? 'Unpinning' : 'Pinning'} ${row.label}…`,
+    );
+    const operation = (previous ?? Promise.resolve()).then(async () => {
+      if (!mountedRef.current) return;
+      showNotice(`${pinned ? 'Unpinning' : 'Pinning'} ${row.label}…`);
+      try {
+        const result = await api.patchRoot(agentId, row.root, pinned
+          ? { pin_remove: normalizePinPath(row.path) }
+          : { pin_add: normalizePinPath(row.path) });
+        await onRootsChange?.();
+        if (!mountedRef.current) return;
+        if (isPendingAgentUpdate(result)) {
+          showNotice(
+            `${row.label} will be ${pinned ? 'unpinned' : 'pinned'} when the Agent reconnects.`,
+            4_000,
+          );
+        } else {
+          showNotice(`${row.label} ${pinned ? 'unpinned' : 'pinned'}.`, 1_800);
+        }
+      } catch (error: unknown) {
+        if (!mountedRef.current) return;
         showNotice(
-          `${row.label} will be ${pinned ? 'unpinned' : 'pinned'} when the Agent reconnects.`,
-          4_000,
+          `${pinned ? 'Unpin' : 'Pin'} failed: ${directoryErrorMessage(error)} `
+          + 'Use the pin button to retry.',
+          5_000,
         );
-      } else {
-        showNotice(`${row.label} ${pinned ? 'unpinned' : 'pinned'}.`, 1_800);
+      } finally {
+        pinBusyRef.current.delete(row.id);
+        if (mountedRef.current) setPinBusyIds(new Set(pinBusyRef.current));
       }
-    } catch (error: unknown) {
-      showNotice(
-        `${pinned ? 'Unpin' : 'Pin'} failed: ${directoryErrorMessage(error)} `
-        + 'Use the pin button to retry.',
-        5_000,
-      );
+    });
+    pinQueuesRef.current.set(row.root, operation);
+    try {
+      await operation;
     } finally {
-      pinBusyRef.current.delete(row.id);
-      if (mountedRef.current) setPinBusyIds(new Set(pinBusyRef.current));
+      if (pinQueuesRef.current.get(row.root) === operation) {
+        pinQueuesRef.current.delete(row.root);
+      }
     }
   }, [agentId, onRootsChange, pinnedIds, showNotice]);
 
@@ -944,12 +1057,14 @@ export function ExplorerView({
     const reservedEntries = reservedEntriesRef.current;
     const active = activeRef.current;
     const pinBusy = pinBusyRef.current;
+    const pinQueues = pinQueuesRef.current;
     return () => {
       mountedRef.current = false;
       queueRef.current = [];
       scheduled.clear();
       reservedEntries.clear();
       pinBusy.clear();
+      pinQueues.clear();
       if (noticeTimerRef.current !== null) {
         window.clearTimeout(noticeTimerRef.current);
       }

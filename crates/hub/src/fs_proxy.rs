@@ -170,10 +170,12 @@ pub async fn fs_list_handler(
     let cleanup = PendingResponseCleanup {
         state: state.clone(),
         req_id: req_id.clone(),
+        cancel_agent_id: Some(params.agent_id.clone()),
         active: true,
     };
     let resp = tokio::time::timeout(Duration::from_secs(30), resp_rx.recv()).await;
-    cleanup.finish().await;
+    let cancelled = !matches!(resp, Ok(Some(_)));
+    cleanup.finish(cancelled).await;
 
     match resp {
         Ok(Some(value)) => Json(value).into_response(),
@@ -248,10 +250,12 @@ pub async fn fs_stat_handler(
     let cleanup = PendingResponseCleanup {
         state: state.clone(),
         req_id: req_id.clone(),
+        cancel_agent_id: Some(params.agent_id.clone()),
         active: true,
     };
     let resp = tokio::time::timeout(Duration::from_secs(30), resp_rx.recv()).await;
-    cleanup.finish().await;
+    let cancelled = !matches!(resp, Ok(Some(_)));
+    cleanup.finish(cancelled).await;
 
     match resp {
         Ok(Some(value)) => Json(value).into_response(),
@@ -643,10 +647,12 @@ async fn request_raw_agent(
     let cleanup = PendingResponseCleanup {
         state: state.clone(),
         req_id: req_id.clone(),
+        cancel_agent_id: Some(target.agent_id.clone()),
         active: true,
     };
     let response = tokio::time::timeout(timeout, resp_rx.recv()).await;
-    cleanup.finish().await;
+    let cancelled = !matches!(response, Ok(Some(_)));
+    cleanup.finish(cancelled).await;
     match response {
         Ok(Some(value)) => Ok(value),
         _ => Err("Agent did not respond in time".to_string()),
@@ -656,11 +662,17 @@ async fn request_raw_agent(
 struct PendingResponseCleanup {
     state: AppState,
     req_id: String,
+    cancel_agent_id: Option<String>,
     active: bool,
 }
 
 impl PendingResponseCleanup {
-    async fn finish(mut self) {
+    async fn finish(mut self, cancel: bool) {
+        if cancel {
+            if let Some(agent_id) = self.cancel_agent_id.as_deref() {
+                send_cancel(&self.state, agent_id, &self.req_id).await;
+            }
+        }
         cleanup_pending(&self.state, &self.req_id).await;
         self.active = false;
     }
@@ -673,8 +685,12 @@ impl Drop for PendingResponseCleanup {
         }
         let state = self.state.clone();
         let req_id = self.req_id.clone();
+        let cancel_agent_id = self.cancel_agent_id.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
+                if let Some(agent_id) = cancel_agent_id {
+                    send_cancel(&state, &agent_id, &req_id).await;
+                }
                 cleanup_pending(&state, &req_id).await;
             });
         }
@@ -918,10 +934,11 @@ pub async fn sys_stats_handler(
     let cleanup = PendingResponseCleanup {
         state: state.clone(),
         req_id: req_id.clone(),
+        cancel_agent_id: None,
         active: true,
     };
     let resp = tokio::time::timeout(Duration::from_secs(10), resp_rx.recv()).await;
-    cleanup.finish().await;
+    cleanup.finish(false).await;
 
     match resp {
         Ok(Some(value)) => Json(value).into_response(),
@@ -972,6 +989,16 @@ async fn cleanup_pending(state: &AppState, req_id: &str) {
     let pending = state.inner.read().await.pending_responses.clone();
     let mut map = pending.write().await;
     map.remove(req_id);
+}
+
+async fn send_cancel(state: &AppState, agent_id: &str, req_id: &str) {
+    let inner = state.inner.read().await;
+    let _ = inner.agents.send_to_agent(
+        agent_id,
+        HubMessage::Cancel {
+            req_id: req_id.to_string(),
+        },
+    );
 }
 
 #[cfg(test)]
@@ -1280,6 +1307,7 @@ mod tests {
         drop(PendingResponseCleanup {
             state: state.clone(),
             req_id: req_id.clone(),
+            cancel_agent_id: None,
             active: true,
         });
 
@@ -1290,6 +1318,42 @@ mod tests {
         })
         .await
         .expect("abandoned pending response should be cleaned up");
+    }
+
+    #[tokio::test]
+    async fn pending_response_cleanup_cancels_abandoned_agent_work() {
+        let state = AppState::new(&test_config(), true);
+        let (agent_tx, mut agent_rx) = mpsc::unbounded_channel();
+        register_mock_agent(&state, "a1", agent_tx).await;
+        let req_id = "abandoned-fs-request".to_string();
+        let (tx, _rx) = mpsc::channel(1);
+        let pending = state.inner.read().await.pending_responses.clone();
+        pending.write().await.insert(
+            req_id.clone(),
+            PendingResponse {
+                tx,
+                agent_id: "a1".to_string(),
+                session_id: None,
+                desired_roots: None,
+                desired_collections: None,
+            },
+        );
+
+        drop(PendingResponseCleanup {
+            state: state.clone(),
+            req_id: req_id.clone(),
+            cancel_agent_id: Some("a1".to_string()),
+            active: true,
+        });
+
+        let message = tokio::time::timeout(Duration::from_secs(1), agent_rx.recv())
+            .await
+            .expect("cancel should reach the agent")
+            .expect("agent channel should stay open");
+        assert!(matches!(
+            message,
+            HubMessage::Cancel { req_id: cancelled } if cancelled == req_id
+        ));
     }
 
     // ── file_raw_handler multi-chunk loop ───────────────────────────────────

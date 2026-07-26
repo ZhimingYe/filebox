@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use filebox_protocol::resources::{FileStat, FsEntry, FsEntryType, RootConfig};
 use filebox_protocol::denylist;
@@ -221,6 +222,42 @@ pub(crate) fn read_dir_sorted(
     path: &str,
     dirs_only: bool,
 ) -> Result<(Vec<FsEntry>, Option<std::time::SystemTime>), String> {
+    let mut items = Vec::new();
+    let dir_mtime = scan_dir_entries(
+        roots,
+        root_name,
+        path,
+        dirs_only,
+        None,
+        |entry| {
+            items.push(entry);
+            Ok(())
+        },
+    )?;
+    items.sort_by(compare_fs_entries);
+    Ok((items, dir_mtime))
+}
+
+pub(crate) fn compare_fs_entries(a: &FsEntry, b: &FsEntry) -> std::cmp::Ordering {
+    let a_is_dir = a.entry_type == FsEntryType::Directory;
+    let b_is_dir = b.entry_type == FsEntryType::Directory;
+    b_is_dir
+        .cmp(&a_is_dir)
+        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        .then_with(|| a.name.cmp(&b.name))
+}
+
+pub(crate) fn scan_dir_entries<F>(
+    roots: &[RootConfig],
+    root_name: &str,
+    path: &str,
+    dirs_only: bool,
+    cancelled: Option<&AtomicBool>,
+    mut visit: F,
+) -> Result<Option<std::time::SystemTime>, String>
+where
+    F: FnMut(FsEntry) -> Result<(), String>,
+{
     let (abs_path, root_canonical) = resolve_path(roots, root_name, path)?;
 
     if !abs_path.is_dir() {
@@ -239,9 +276,10 @@ pub(crate) fn read_dir_sorted(
     let entries = fs::read_dir(&abs_path)
         .map_err(|e| format!("Failed to read directory: {}", e))?;
 
-    let mut items: Vec<FsEntry> = Vec::new();
-
     for entry in entries {
+        if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Err("request_cancelled".to_string());
+        }
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
         let file_name = entry.file_name().to_string_lossy().to_string();
         let entry_path = entry.path();
@@ -294,25 +332,19 @@ pub(crate) fn read_dir_sorted(
                 })
         };
 
-        items.push(FsEntry {
+        visit(FsEntry {
             name: file_name,
             entry_type,
             size,
             modified,
             denied,
-        });
+        })?;
     }
 
-    // Sort: directories first, then alphabetically
-    items.sort_by(|a, b| {
-        let a_is_dir = a.entry_type == FsEntryType::Directory;
-        let b_is_dir = b.entry_type == FsEntryType::Directory;
-        b_is_dir
-            .cmp(&a_is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
-
-    Ok((items, dir_mtime))
+    if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return Err("request_cancelled".to_string());
+    }
+    Ok(dir_mtime)
 }
 
 /// Apply cursor pagination to a pre-sorted entry list. The cursor is the name

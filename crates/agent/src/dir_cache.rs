@@ -1,10 +1,12 @@
-use std::collections::HashMap;
+use std::cmp::Ordering as CmpOrdering;
+use std::collections::{BinaryHeap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
-use filebox_protocol::resources::{FsEntry, RootConfig};
+use filebox_protocol::resources::{FsEntry, FsEntryType, RootConfig};
 
-use crate::fs::{dir_mtime, paginate, read_dir_sorted};
+use crate::fs::{dir_mtime, scan_dir_entries};
 
 /// Per-directory listing cache for the agent.
 ///
@@ -14,11 +16,10 @@ use crate::fs::{dir_mtime, paginate, read_dir_sorted};
 /// without a cache, fetching page 2 of a 100k-entry directory re-reads all
 /// 100k entries and re-canonicalizes them. That is O(N) PER PAGE.
 ///
-/// **The fix:** memoize the sorted entry vec per (root, path, dirs_only) and
-/// invalidate via the directory's mtime. A content add/remove/rename bumps the
-/// directory mtime on virtually every real filesystem, so a single O(1) stat
-/// per request replaces the O(N) re-read. Cache hits then paginate a cached
-/// vec — true O(limit) pagination.
+/// **The fix:** retain only the smallest bounded prefix needed for ordinary
+/// pagination, memoize it per (root, path, dirs_only), and invalidate via the
+/// directory's mtime. Oversized directories are rescanned with bounded heaps
+/// once a cursor moves past the cached prefix, so memory stays bounded.
 ///
 /// **Validity / safety:**
 /// - mtime change → natural invalidation (entry is recomputed on next access).
@@ -31,16 +32,15 @@ use crate::fs::{dir_mtime, paginate, read_dir_sorted};
 ///   is treated as "never cache" — every access recomputes. Correctness over
 ///   speed.
 ///
-/// **Bound:** a hard cap on cached directories (LRU-ish: evict the entry with
-/// the oldest `last_used` when over cap). Tree navigation is lazy so a few
-/// hundred cached dirs is plenty; the cap prevents unbounded growth if a user
-/// scrolls through thousands of directories.
+/// **Bound:** hard caps apply to per-directory entries, total cached entries,
+/// and cached directory count. LRU-ish eviction removes the oldest listing.
 pub struct DirCache {
     inner: Mutex<Inner>,
 }
 
 struct Inner {
     entries: HashMap<CacheKey, CacheEntry>,
+    total_entries: usize,
 }
 
 #[derive(Hash, PartialEq, Eq, Clone)]
@@ -52,22 +52,183 @@ struct CacheKey {
 
 struct CacheEntry {
     items: Vec<FsEntry>,
+    truncated: bool,
     dir_mtime: Option<SystemTime>,
     last_used: Instant,
 }
 
-/// Maximum number of directories whose listing we keep cached. Each entry holds
-/// a sorted Vec<FsEntry>; for typical directories this is small. The cap is on
-/// DIRECTORY count, not total items, so a few huge directories could in theory
-/// use more memory — but the agent already materializes those transiently per
-/// request without a cache, so caching them is strictly better than before.
 const MAX_CACHED_DIRS: usize = 256;
+const MAX_CACHEABLE_ENTRIES_PER_DIR: usize = 20_000;
+const MAX_CACHED_ENTRIES: usize = 200_000;
+
+#[derive(Clone)]
+struct RankedEntry {
+    folded_name: String,
+    entry: FsEntry,
+}
+
+impl RankedEntry {
+    fn new(entry: FsEntry) -> Self {
+        Self {
+            folded_name: entry.name.to_lowercase(),
+            entry,
+        }
+    }
+}
+
+impl PartialEq for RankedEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == CmpOrdering::Equal
+    }
+}
+
+impl Eq for RankedEntry {}
+
+impl PartialOrd for RankedEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedEntry {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        let self_is_dir = self.entry.entry_type == FsEntryType::Directory;
+        let other_is_dir = other.entry.entry_type == FsEntryType::Directory;
+        other_is_dir
+            .cmp(&self_is_dir)
+            .then_with(|| self.folded_name.cmp(&other.folded_name))
+            .then_with(|| self.entry.name.cmp(&other.entry.name))
+    }
+}
+
+struct ScannedPage {
+    cache_items: Vec<FsEntry>,
+    truncated: bool,
+    page: Vec<FsEntry>,
+    next_cursor: Option<String>,
+    dir_mtime: Option<SystemTime>,
+}
+
+fn push_smallest(heap: &mut BinaryHeap<RankedEntry>, entry: RankedEntry, capacity: usize) {
+    if capacity == 0 {
+        return;
+    }
+    if heap.len() < capacity {
+        heap.push(entry);
+        return;
+    }
+    if heap.peek().is_some_and(|largest| entry < *largest) {
+        heap.pop();
+        heap.push(entry);
+    }
+}
+
+fn push_smallest_ref(
+    heap: &mut BinaryHeap<RankedEntry>,
+    entry: &RankedEntry,
+    capacity: usize,
+) {
+    if capacity == 0 {
+        return;
+    }
+    if heap.len() < capacity || heap.peek().is_some_and(|largest| entry < largest) {
+        push_smallest(heap, entry.clone(), capacity);
+    }
+}
+
+fn sorted_entries(heap: BinaryHeap<RankedEntry>) -> Vec<FsEntry> {
+    heap.into_sorted_vec()
+        .into_iter()
+        .map(|ranked| ranked.entry)
+        .collect()
+}
+
+fn scan_bounded(
+    roots: &[RootConfig],
+    root_name: &str,
+    path: &str,
+    limit: usize,
+    cursor: Option<&str>,
+    dirs_only: bool,
+    cancelled: &AtomicBool,
+) -> Result<ScannedPage, String> {
+    let page_capacity = limit.saturating_add(1);
+    let cache_capacity = MAX_CACHEABLE_ENTRIES_PER_DIR.saturating_add(1);
+    let mut cache_heap = BinaryHeap::with_capacity(cache_capacity);
+    let mut after_directory_cursor = BinaryHeap::with_capacity(page_capacity);
+    let mut after_file_cursor = BinaryHeap::with_capacity(page_capacity);
+    let mut cursor_is_directory = None;
+    let mut total_entries = 0usize;
+    let folded_cursor = cursor.map(str::to_lowercase);
+
+    let dir_mtime = scan_dir_entries(
+        roots,
+        root_name,
+        path,
+        dirs_only,
+        Some(cancelled),
+        |entry| {
+            total_entries = total_entries.saturating_add(1);
+            let ranked = RankedEntry::new(entry);
+            if let Some(cursor) = cursor {
+                if ranked.entry.name == cursor {
+                    cursor_is_directory =
+                        Some(ranked.entry.entry_type == FsEntryType::Directory);
+                }
+                let is_directory = ranked.entry.entry_type == FsEntryType::Directory;
+                let name_after_cursor = ranked
+                    .folded_name
+                    .as_str()
+                    .cmp(folded_cursor.as_deref().unwrap_or_default())
+                    .then_with(|| ranked.entry.name.as_str().cmp(cursor))
+                    == CmpOrdering::Greater;
+                if !is_directory || name_after_cursor {
+                    push_smallest_ref(
+                        &mut after_directory_cursor,
+                        &ranked,
+                        page_capacity,
+                    );
+                }
+                if !is_directory && name_after_cursor {
+                    push_smallest_ref(&mut after_file_cursor, &ranked, page_capacity);
+                }
+            }
+            push_smallest(&mut cache_heap, ranked, cache_capacity);
+            Ok(())
+        },
+    )?;
+
+    let mut leading = sorted_entries(cache_heap);
+    let truncated = total_entries > MAX_CACHEABLE_ENTRIES_PER_DIR;
+    let page_candidates = match (cursor, cursor_is_directory) {
+        (Some(_), Some(true)) => sorted_entries(after_directory_cursor),
+        (Some(_), Some(false)) => sorted_entries(after_file_cursor),
+        _ => leading.iter().take(page_capacity).cloned().collect(),
+    };
+    let has_more = page_candidates.len() > limit;
+    let page: Vec<FsEntry> = page_candidates.into_iter().take(limit).collect();
+    let next_cursor = has_more
+        .then(|| page.last().map(|entry| entry.name.clone()))
+        .flatten();
+    if leading.len() > MAX_CACHEABLE_ENTRIES_PER_DIR {
+        leading.truncate(MAX_CACHEABLE_ENTRIES_PER_DIR);
+    }
+
+    Ok(ScannedPage {
+        cache_items: leading,
+        truncated,
+        page,
+        next_cursor,
+        dir_mtime,
+    })
+}
 
 impl DirCache {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner {
                 entries: HashMap::new(),
+                total_entries: 0,
             }),
         })
     }
@@ -77,14 +238,15 @@ impl DirCache {
     pub fn clear(&self) {
         let mut inner = self.inner.lock().expect("DirCache mutex poisoned");
         inner.entries.clear();
+        inner.total_entries = 0;
     }
 
-    /// List a directory with cache-backed pagination. On a cache hit (same
-    /// mtime), paginates the cached vec in O(limit). On a miss, recomputes via
-    /// `read_dir_sorted`, stores, then paginates.
+    /// List a directory with cache-backed pagination. Cache hits paginate in
+    /// O(limit); misses scan with bounded memory and support cooperative cancel.
     ///
     /// `dirs_only` is part of the key: a dirs-only listing is a different vec
     /// from a full listing, so they are cached independently.
+    #[allow(dead_code)]
     pub fn list(
         &self,
         roots: &[RootConfig],
@@ -94,6 +256,31 @@ impl DirCache {
         cursor: Option<&str>,
         dirs_only: bool,
     ) -> Result<(Vec<FsEntry>, Option<String>), String> {
+        let cancelled = AtomicBool::new(false);
+        self.list_with_cancel(
+            roots,
+            root_name,
+            path,
+            limit,
+            cursor,
+            dirs_only,
+            &cancelled,
+        )
+    }
+
+    pub fn list_with_cancel(
+        &self,
+        roots: &[RootConfig],
+        root_name: &str,
+        path: &str,
+        limit: usize,
+        cursor: Option<&str>,
+        dirs_only: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<(Vec<FsEntry>, Option<String>), String> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("request_cancelled".to_string());
+        }
         // Cheap validity probe — O(1) stat. Also enforces path security even
         // on a cache hit (resolve + sensitive-fs check live in dir_mtime), so
         // serving from cache never bypasses the safety checks.
@@ -110,30 +297,39 @@ impl DirCache {
             return Ok(page);
         }
 
-        // Miss: recompute and store. read_dir_sorted re-resolves the path
-        // (dir_mtime already resolved it, but resolve is cheap relative to the
-        // read and only happens on miss).
-        let (items, mtime) = read_dir_sorted(roots, root_name, path, dirs_only)?;
-        // Paginate by reference (no full-vec clone), then store the owned vec.
-        let page = paginate(&items, limit, cursor);
+        let scanned = scan_bounded(
+            roots,
+            root_name,
+            path,
+            limit,
+            cursor,
+            dirs_only,
+            cancelled,
+        )?;
 
         // Don't cache when mtime is unavailable: we couldn't validate it later,
         // so a cached entry could go stale silently. Recompute-every-time is
         // the safe fallback.
-        if let Some(mtime) = mtime {
+        if let Some(mtime) = scanned.dir_mtime {
+            let cached_len = scanned.cache_items.len();
             let mut inner = self.inner.lock().expect("DirCache mutex poisoned");
-            inner.entries.insert(
+            let previous = inner.entries.insert(
                 key,
                 CacheEntry {
-                    items,
+                    items: scanned.cache_items,
+                    truncated: scanned.truncated,
                     dir_mtime: Some(mtime),
                     last_used: Instant::now(),
                 },
             );
+            if let Some(previous) = previous {
+                inner.total_entries = inner.total_entries.saturating_sub(previous.items.len());
+            }
+            inner.total_entries = inner.total_entries.saturating_add(cached_len);
             Self::evict_if_needed(&mut inner);
         }
 
-        Ok(page)
+        Ok((scanned.page, scanned.next_cursor))
     }
 
     /// Attempt to serve from cache. Returns the paginated page on a validated
@@ -153,15 +349,37 @@ impl DirCache {
             return None;
         }
         entry.last_used = Instant::now();
-        // Borrow the cached vec (no clone of the full list); paginate clones
-        // only the ≤ limit items it returns.
-        Some(paginate(&entry.items, limit, cursor))
+        let start = match cursor {
+            Some(cursor) => entry.items.iter().position(|item| item.name == cursor)? + 1,
+            None => 0,
+        };
+        let available = entry.items.len().saturating_sub(start);
+        if entry.truncated && available < limit {
+            return None;
+        }
+        let page: Vec<FsEntry> = entry
+            .items
+            .iter()
+            .skip(start)
+            .take(limit)
+            .cloned()
+            .collect();
+        let has_more = start.saturating_add(page.len()) < entry.items.len()
+            || (entry.truncated && page.len() == limit);
+        let next_cursor = (has_more && page.len() == limit)
+            .then(|| page.last().map(|item| item.name.clone()))
+            .flatten();
+        Some((page, next_cursor))
     }
 
     /// Evict the least-recently-used entry when over the cap. Called under the
     /// lock on insert. O(n) scan, but n ≤ MAX_CACHED_DIRS + 1 so it's cheap.
     fn evict_if_needed(inner: &mut Inner) {
-        while inner.entries.len() > MAX_CACHED_DIRS {
+        Self::evict_to_limits(inner, MAX_CACHED_DIRS, MAX_CACHED_ENTRIES);
+    }
+
+    fn evict_to_limits(inner: &mut Inner, max_dirs: usize, max_entries: usize) {
+        while inner.entries.len() > max_dirs || inner.total_entries > max_entries {
             // Find the entry with the oldest last_used. Scope the immutable
             // borrow so it ends before the mutable remove.
             let evict_key: Option<CacheKey> = {
@@ -172,7 +390,10 @@ impl DirCache {
                     .map(|(k, _)| k.clone())
             };
             if let Some(evict_key) = evict_key {
-                inner.entries.remove(&evict_key);
+                if let Some(evicted) = inner.entries.remove(&evict_key) {
+                    inner.total_entries =
+                        inner.total_entries.saturating_sub(evicted.items.len());
+                }
             } else {
                 break;
             }
@@ -339,5 +560,93 @@ mod tests {
         let _ = cache.list(&roots, "test", "", 100, None, false).unwrap();
         let escape = cache.list(&roots, "test", "../../..", 100, None, false);
         assert!(escape.is_err(), "path-escape must still be rejected on cache hit path");
+    }
+
+    #[test]
+    fn cancelled_list_stops_before_touching_the_filesystem() {
+        let cache = DirCache::new();
+        let cancelled = AtomicBool::new(true);
+        let result = cache.list_with_cancel(
+            &[],
+            "missing",
+            "/",
+            200,
+            None,
+            false,
+            &cancelled,
+        );
+        assert_eq!(result.unwrap_err(), "request_cancelled");
+    }
+
+    #[test]
+    fn bounded_heap_keeps_only_the_smallest_entries() {
+        let mut heap = BinaryHeap::new();
+        for name in ["z.txt", "b.txt", "a.txt", "m.txt"] {
+            push_smallest(
+                &mut heap,
+                RankedEntry::new(FsEntry {
+                    name: name.to_string(),
+                    entry_type: FsEntryType::File,
+                    size: None,
+                    modified: None,
+                    denied: false,
+                }),
+                2,
+            );
+        }
+        let names: Vec<String> = sorted_entries(heap)
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(names, vec!["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn cache_eviction_honors_total_entry_budget() {
+        let make_entry = |name: &str| FsEntry {
+            name: name.to_string(),
+            entry_type: FsEntryType::File,
+            size: None,
+            modified: None,
+            denied: false,
+        };
+        let old_key = CacheKey {
+            root: "root".to_string(),
+            path: "/old".to_string(),
+            dirs_only: false,
+        };
+        let new_key = CacheKey {
+            root: "root".to_string(),
+            path: "/new".to_string(),
+            dirs_only: false,
+        };
+        let mut inner = Inner {
+            entries: HashMap::new(),
+            total_entries: 6,
+        };
+        inner.entries.insert(
+            old_key.clone(),
+            CacheEntry {
+                items: vec![make_entry("a"), make_entry("b"), make_entry("c")],
+                truncated: false,
+                dir_mtime: Some(SystemTime::UNIX_EPOCH),
+                last_used: Instant::now() - std::time::Duration::from_secs(1),
+            },
+        );
+        inner.entries.insert(
+            new_key.clone(),
+            CacheEntry {
+                items: vec![make_entry("d"), make_entry("e"), make_entry("f")],
+                truncated: false,
+                dir_mtime: Some(SystemTime::UNIX_EPOCH),
+                last_used: Instant::now(),
+            },
+        );
+
+        DirCache::evict_to_limits(&mut inner, 10, 4);
+
+        assert!(!inner.entries.contains_key(&old_key));
+        assert!(inner.entries.contains_key(&new_key));
+        assert_eq!(inner.total_entries, 3);
     }
 }

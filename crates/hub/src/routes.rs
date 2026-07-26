@@ -1418,6 +1418,7 @@ async fn agent_resources_put_handler(
     Path(agent_id): Path<String>,
     Json(value): Json<serde_json::Value>,
 ) -> Response {
+    let _resource_update_guard = state.lock_resource_update(&agent_id).await;
     // Parse to a Value first so we can detect whether each root EXPLICITLY
     // carried a pinned_folders key. Backward-compat: a legacy automation /
     // recovery script that omits the field must NOT wipe existing pins (the
@@ -1538,6 +1539,7 @@ async fn add_root_handler(
         ).into_response();
     }
 
+    let _resource_update_guard = state.lock_resource_update(&agent_id).await;
     let inner = state.inner.read().await;
     let agent = match inner.agents.get(&agent_id) {
         Some(a) => a,
@@ -1549,7 +1551,11 @@ async fn add_root_handler(
         }
     };
 
-    let mut roots = agent.roots.clone();
+    let mut roots = agent
+        .pending_update
+        .as_ref()
+        .map(|pending| pending.roots.clone())
+        .unwrap_or_else(|| agent.roots.clone());
     if roots.iter().any(|r| r.name == req.name) {
         return (
             StatusCode::CONFLICT,
@@ -1619,6 +1625,7 @@ async fn patch_root_handler(
         }
     }
 
+    let _resource_update_guard = state.lock_resource_update(&agent_id).await;
     let inner = state.inner.read().await;
     let agent = match inner.agents.get(&agent_id) {
         Some(a) => a,
@@ -1769,6 +1776,7 @@ async fn delete_root_handler(
     Extension(session): Extension<AuthenticatedSession>,
     Path((agent_id, root_name)): Path<(String, String)>,
 ) -> Response {
+    let _resource_update_guard = state.lock_resource_update(&agent_id).await;
     let inner = state.inner.read().await;
     let agent = match inner.agents.get(&agent_id) {
         Some(a) => a,
@@ -1780,8 +1788,17 @@ async fn delete_root_handler(
         }
     };
 
-    let roots: Vec<RootConfig> = agent.roots.iter().filter(|r| r.name != root_name).cloned().collect();
-    if roots.len() == agent.roots.len() {
+    let base_roots = agent
+        .pending_update
+        .as_ref()
+        .map(|pending| pending.roots.clone())
+        .unwrap_or_else(|| agent.roots.clone());
+    let roots: Vec<RootConfig> = base_roots
+        .iter()
+        .filter(|r| r.name != root_name)
+        .cloned()
+        .collect();
+    if roots.len() == base_roots.len() {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "not_found", "message": format!("Root '{}' not found", root_name), "retryable": false})),

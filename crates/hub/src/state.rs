@@ -132,6 +132,14 @@ pub struct AppState {
     /// Bounds simultaneous streamed raw responses by actual concurrency,
     /// independent of how many files a user has viewed historically.
     pub raw_read_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Serializes full desired-resource rewrites per Agent. Resource updates
+    /// carry a revision and a complete root set, so overlapping rewrites for
+    /// one Agent would otherwise race while unrelated Agents should proceed.
+    resource_update_locks: Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>,
+        >,
+    >,
     pub secure_cookies: bool,
 }
 
@@ -156,6 +164,20 @@ pub struct AppStateInner {
 }
 
 impl AppState {
+    pub async fn lock_resource_update(
+        &self,
+        agent_id: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.resource_update_locks.lock().await;
+            locks
+                .entry(agent_id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    }
+
     pub async fn emit_sse(&self, event: &str, data: serde_json::Value) {
         let inner = self.inner.read().await;
         let _ = inner.sse_tx.send(SseEvent {
@@ -185,6 +207,9 @@ impl AppState {
             // rate limit. Memory remains bounded because each stream asks the
             // Agent for at most RAW_STREAM_CHUNK_BYTES at a time.
             raw_read_semaphore: Arc::new(tokio::sync::Semaphore::new(96)),
+            resource_update_locks: Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             secure_cookies,
         }
     }
@@ -331,5 +356,41 @@ mod tests {
         let pending = state.inner.blocking_read().pending_responses.clone();
         let map = pending.blocking_read();
         assert!(map.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resource_updates_serialize_per_agent_only() {
+        let config = crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            agent_token_hash: "fake-hash".to_string(),
+            users: vec![],
+        };
+        let state = AppState::new(&config, false);
+        let first = state.lock_resource_update("a1").await;
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                state.lock_resource_update("a1"),
+            )
+            .await
+            .is_err(),
+            "the same Agent must serialize resource rewrites",
+        );
+        let other = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            state.lock_resource_update("a2"),
+        )
+        .await
+        .expect("unrelated Agents must not block each other");
+        drop(other);
+        drop(first);
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            state.lock_resource_update("a1"),
+        )
+        .await
+        .expect("the lock must be released after the prior update");
     }
 }
