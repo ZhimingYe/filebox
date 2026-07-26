@@ -18,6 +18,9 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **CSV preview hardening** — the table keeps only the first 100 logical records, correctly handles quoted multiline cells, and avoids expanding the full file into a line array.
 - **Login** — removed the misleading `admin` username placeholder; credentials must still be typed explicitly.
 
+### Fixed
+- **Explorer interaction recovery** — refresh notices now finish on success, failure, or cancellation; directory chevrons update the selected refresh target; clipboard fallback verifies success, cleans up safely, and reports permission failures instead of silently claiming a copy.
+
 ### Security
 - **Dependency CVEs** — bcrypt 0.19.1 → 0.19.2 (RUSTSEC-2026-0199 panic-DoS); crossbeam-epoch 0.9.18 → 0.9.20 (RUSTSEC-2026-0204); npm `dompurify` overridden to 3.4.12 (Monaco transitive XSS advisories).
 - **Workspace Search content open** — content mode now uses the same openat + `O_NOFOLLOW` chain as file reads, closing an intermediate-symlink TOCTOU gap.

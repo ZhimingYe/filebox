@@ -189,8 +189,47 @@ export function ExplorerView({
   const queueRef = useRef<LoadTask[]>([]);
   const activeRef = useRef<Map<string, { controller: AbortController; seq: number }>>(new Map());
   const reservedEntriesRef = useRef<Map<number, number>>(new Map());
+  const refreshSeqsRef = useRef<Set<number>>(new Set());
+  const refreshFailedRef = useRef(false);
+  const refreshCancelledRef = useRef(false);
+  const noticeTimerRef = useRef<number | null>(null);
   const pumpRef = useRef<() => void>(() => {});
   const { copiedPath, copyToClipboard } = useCopyToClipboard();
+
+  const showNotice = useCallback((
+    message: string | null,
+    autoDismissMs?: number,
+  ) => {
+    if (noticeTimerRef.current !== null) {
+      window.clearTimeout(noticeTimerRef.current);
+      noticeTimerRef.current = null;
+    }
+    setNotice(message);
+    if (message && autoDismissMs) {
+      noticeTimerRef.current = window.setTimeout(() => {
+        setNotice(null);
+        noticeTimerRef.current = null;
+      }, autoDismissMs);
+    }
+  }, []);
+
+  const finishRefreshTask = useCallback((
+    seq: number,
+    result: 'success' | 'failed' | 'cancelled',
+  ) => {
+    if (!refreshSeqsRef.current.delete(seq)) return;
+    if (result === 'failed') refreshFailedRef.current = true;
+    if (result === 'cancelled') refreshCancelledRef.current = true;
+    if (refreshSeqsRef.current.size > 0 || !mountedRef.current) return;
+
+    if (refreshCancelledRef.current) {
+      showNotice(null);
+    } else if (refreshFailedRef.current) {
+      showNotice('Refresh finished with errors. Use Retry on the affected folder.', 4_000);
+    } else {
+      showNotice(null);
+    }
+  }, [showNotice]);
 
   const updateNodes = useCallback((
     updater: (previous: Map<string, DirectoryState>) => Map<string, DirectoryState>,
@@ -204,6 +243,7 @@ export function ExplorerView({
 
   const startTask = useCallback((task: LoadTask) => {
     const controller = new AbortController();
+    let result: 'success' | 'failed' | 'cancelled' = 'success';
     activeRef.current.set(task.key, { controller, seq: task.seq });
 
     void api.fsList(
@@ -220,8 +260,10 @@ export function ExplorerView({
         || controller.signal.aborted
         || scheduledRef.current.get(task.key) !== task.seq
       ) {
+        result = 'cancelled';
         return;
       }
+      if (data.error) result = 'failed';
       updateNodes((previous) => {
         const next = new Map(previous);
         const existing = previous.get(task.key) ?? EMPTY_DIRECTORY;
@@ -252,8 +294,10 @@ export function ExplorerView({
         || (error as { name?: string })?.name === 'AbortError'
         || scheduledRef.current.get(task.key) !== task.seq
       ) {
+        result = 'cancelled';
         return;
       }
+      result = 'failed';
       const message = error instanceof Error ? error.message : 'Failed to load folder';
       updateNodes((previous) => {
         const next = new Map(previous);
@@ -276,9 +320,10 @@ export function ExplorerView({
       if (scheduledRef.current.get(task.key) === task.seq) {
         scheduledRef.current.delete(task.key);
       }
+      finishRefreshTask(task.seq, result);
       pumpRef.current();
     });
-  }, [agentId, updateNodes]);
+  }, [agentId, finishRefreshTask, updateNodes]);
 
   const pumpQueue = useCallback(() => {
     while (
@@ -306,9 +351,9 @@ export function ExplorerView({
     root: string,
     path: string,
     append = false,
-  ): boolean => {
+  ): number | null => {
     const key = nodeKey(root, path);
-    if (scheduledRef.current.has(key)) return false;
+    if (scheduledRef.current.has(key)) return null;
     const existing = nodesRef.current.get(key) ?? EMPTY_DIRECTORY;
     const reserved = Array.from(reservedEntriesRef.current.values())
       .reduce((sum, count) => sum + count, 0);
@@ -321,11 +366,11 @@ export function ExplorerView({
       + reserveForTask
       > MAX_CACHED_ENTRIES
     ) {
-      setNotice(
+      showNotice(
         `Explorer keeps at most ${MAX_CACHED_ENTRIES.toLocaleString()} cached items. `
         + 'Collapse folders before loading more.',
       );
-      return false;
+      return null;
     }
 
     const seq = ++requestSeqRef.current;
@@ -350,8 +395,8 @@ export function ExplorerView({
       seq,
     });
     pumpRef.current();
-    return true;
-  }, [updateNodes]);
+    return seq;
+  }, [showNotice, updateNodes]);
 
   const cancelLoads = useCallback((keys: Set<string>) => {
     if (keys.size === 0) return;
@@ -361,6 +406,7 @@ export function ExplorerView({
       if (scheduledRef.current.get(task.key) === task.seq) {
         scheduledRef.current.delete(task.key);
       }
+      finishRefreshTask(task.seq, 'cancelled');
       return false;
     });
     keys.forEach((key) => {
@@ -381,7 +427,7 @@ export function ExplorerView({
       return next;
     });
     pumpRef.current();
-  }, [updateNodes]);
+  }, [finishRefreshTask, updateNodes]);
 
   const collapseDirectory = useCallback((root: string, path: string) => {
     const collapsedKeys = new Set<string>();
@@ -403,7 +449,7 @@ export function ExplorerView({
     const key = nodeKey(root, path);
     if (expandedRef.current.has(key)) return;
     if (expandedRef.current.size >= MAX_EXPANDED_DIRECTORIES) {
-      setNotice(
+      showNotice(
         `Explorer can keep ${MAX_EXPANDED_DIRECTORIES} folders expanded at once. `
         + 'Collapse a folder to continue.',
       );
@@ -423,7 +469,7 @@ export function ExplorerView({
         return next;
       });
     }
-  }, [scheduleLoad, updateNodes]);
+  }, [scheduleLoad, showNotice, updateNodes]);
 
   const toggleDirectory = useCallback((root: string, path: string) => {
     const key = nodeKey(root, path);
@@ -592,6 +638,13 @@ export function ExplorerView({
     selectedNode,
   ]);
 
+  const handleCopy = useCallback(async (path: string, label: string) => {
+    const copied = await copyToClipboard(path, label);
+    if (!copied) {
+      showNotice('Unable to copy the path. Check browser clipboard permission and retry.', 4_000);
+    }
+  }, [copyToClipboard, showNotice]);
+
   const refreshCurrentBranch = useCallback(() => {
     const fallbackRoot = enabledRoots[0];
     if (!fallbackRoot) return;
@@ -603,16 +656,27 @@ export function ExplorerView({
     const targets = [directory];
     const parent = parentPath(directory);
     if (parent !== directory) targets.push(parent);
-    let scheduled = 0;
+    const sequences: number[] = [];
     targets.slice(0, 2).forEach((path) => {
-      if (scheduleLoad(root, path)) scheduled += 1;
+      const seq = scheduleLoad(root, path);
+      if (seq !== null) sequences.push(seq);
     });
-    setNotice(
-      scheduled > 0
-        ? `Refreshing ${scheduled === 1 ? 'the selected folder' : 'the selected folder and its parent'}…`
-        : 'The selected branch is already refreshing.',
-    );
-  }, [enabledRoots, scheduleLoad, selectedNode]);
+    if (sequences.length > 0) {
+      refreshFailedRef.current = false;
+      refreshCancelledRef.current = false;
+      sequences.forEach((seq) => refreshSeqsRef.current.add(seq));
+      showNotice(
+        `Refreshing ${sequences.length === 1 ? 'the selected folder' : 'the selected folder and its parent'}…`,
+      );
+      return;
+    }
+    const alreadyRefreshing = targets.some((path) => (
+      scheduledRef.current.has(nodeKey(root, path))
+    ));
+    if (alreadyRefreshing) {
+      showNotice('The selected branch is already refreshing.', 1_500);
+    }
+  }, [enabledRoots, scheduleLoad, selectedNode, showNotice]);
 
   const collapseAll = useCallback(() => {
     const allScheduled = new Set(scheduledRef.current.keys());
@@ -622,8 +686,8 @@ export function ExplorerView({
     updateNodes((previous) => trimCollapsedCache(new Map(previous), new Set()));
     const firstRoot = enabledRoots[0];
     setSelectedId(firstRoot ? nodeKey(firstRoot.name, '/') : null);
-    setNotice(null);
-  }, [cancelLoads, enabledRoots, updateNodes]);
+    showNotice(null);
+  }, [cancelLoads, enabledRoots, showNotice, updateNodes]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -635,6 +699,9 @@ export function ExplorerView({
       queueRef.current = [];
       scheduled.clear();
       reservedEntries.clear();
+      if (noticeTimerRef.current !== null) {
+        window.clearTimeout(noticeTimerRef.current);
+      }
       active.forEach(({ controller }) => controller.abort());
       active.clear();
     };
@@ -674,22 +741,20 @@ export function ExplorerView({
     isMobile,
     copiedPath,
     onActivate: activateNode,
-    onToggle: toggleDirectory,
     onRetry: (root, path) => scheduleLoad(root, path),
     onLoadMore: (root, path) => scheduleLoad(root, path, true),
-    onCopy: copyToClipboard,
+    onCopy: handleCopy,
     onAddToCollection,
   }), [
     activateNode,
     copiedPath,
-    copyToClipboard,
+    handleCopy,
     hoveredId,
     isMobile,
     onAddToCollection,
     rows,
     scheduleLoad,
     selectedId,
-    toggleDirectory,
   ]);
 
   return (
@@ -725,7 +790,7 @@ export function ExplorerView({
           <span>{notice}</span>
           <button
             type="button"
-            onClick={() => setNotice(null)}
+            onClick={() => showNotice(null)}
             style={styles.noticeDismiss}
             aria-label="Dismiss Explorer message"
           >
@@ -777,7 +842,6 @@ interface ExplorerRowData {
   isMobile: boolean;
   copiedPath: string | null;
   onActivate: (row: Extract<ExplorerRow, { kind: 'node' }>) => void;
-  onToggle: (root: string, path: string) => void;
   onRetry: (root: string, path: string) => void;
   onLoadMore: (root: string, path: string) => void;
   onCopy: (path: string, label: string) => void;
@@ -866,7 +930,7 @@ function ExplorerVirtualRow({
           type="button"
           onClick={(event) => {
             event.stopPropagation();
-            if (!row.denied) data.onToggle(row.root, row.path);
+            if (!row.denied) data.onActivate(row);
           }}
           style={styles.chevronButton}
           aria-label={row.expanded ? `Collapse ${row.label}` : `Expand ${row.label}`}
