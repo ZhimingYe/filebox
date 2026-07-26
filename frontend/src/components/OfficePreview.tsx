@@ -29,6 +29,9 @@ type Phase =
   | { kind: 'ready'; outputs: OfficePreviewOutput[] }
   | { kind: 'error'; message: string; cancelled?: boolean };
 
+const OFFICE_START_DEBOUNCE_MS = 200;
+const OFFICE_BUSY_RETRY_DELAYS_MS = [100, 200, 400, 800, 1_200, 1_600, 2_000] as const;
+
 function createRequestUuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -66,6 +69,24 @@ async function cancelOfficeRequest(agentId: string, reqId: string): Promise<void
       if (status !== 404) return;
     }
   }
+}
+
+function waitForDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export function OfficePreview({ agentId, root, path }: Props) {
@@ -117,40 +138,76 @@ export function OfficePreview({ agentId, root, path }: Props) {
     let cancelled = false;
     convertingRef.current = true;
     reqIdRef.current = null;
-    const clientNonce = createRequestUuid();
-    clientNonceRef.current = clientNonce;
-    const reqId = `office_convert_${clientNonce}`;
-    // Known before the first SSE event, so Cancel remains functional even
-    // while the events connection is reconnecting.
-    reqIdRef.current = reqId;
     const controller = new AbortController();
     abortRef.current = controller;
 
-    officeConvert(agentId, root, path, reqId, clientNonce, controller.signal)
-      .then((result) => {
-        if (cancelled) return;
-        convertingRef.current = false;
-        reqIdRef.current = null;
-        clientNonceRef.current = null;
-        abortRef.current = null;
-        setSelectedOutput(0);
-        setPhase({ kind: 'ready', outputs: result.outputs });
-      })
-      .catch((e: { error?: string; message?: string; name?: string }) => {
-        if (cancelled || e?.name === 'AbortError') return;
-        convertingRef.current = false;
-        abortRef.current = null;
-        reqIdRef.current = null;
-        clientNonceRef.current = null;
-        if (e?.error === 'cancelled') {
-          setPhase({ kind: 'error', message: 'Conversion cancelled.', cancelled: true });
-          return;
+    const run = async () => {
+      try {
+        // A short dwell avoids launching LibreOffice for files the user only
+        // crosses while rapidly switching tabs. Inactive previews unmount and
+        // abort this timer, so only the latest visible file survives.
+        await waitForDelay(OFFICE_START_DEBOUNCE_MS, controller.signal);
+
+        for (let attempt = 0; ; attempt += 1) {
+          const clientNonce = createRequestUuid();
+          clientNonceRef.current = clientNonce;
+          const reqId = `office_convert_${clientNonce}`;
+          // Known before the first SSE event, so Cancel remains functional
+          // even while the events connection is reconnecting.
+          reqIdRef.current = reqId;
+          try {
+            const result = await officeConvert(
+              agentId,
+              root,
+              path,
+              reqId,
+              clientNonce,
+              controller.signal,
+            );
+            if (cancelled) return;
+            convertingRef.current = false;
+            reqIdRef.current = null;
+            clientNonceRef.current = null;
+            abortRef.current = null;
+            setSelectedOutput(0);
+            setPhase({ kind: 'ready', outputs: result.outputs });
+            return;
+          } catch (error: unknown) {
+            const e = error as { error?: string; message?: string; name?: string };
+            if (cancelled || e?.name === 'AbortError') return;
+            reqIdRef.current = null;
+            clientNonceRef.current = null;
+            const retryDelay = OFFICE_BUSY_RETRY_DELAYS_MS[attempt];
+            if (e?.error === 'agent_busy' && retryDelay !== undefined) {
+              setPhase({
+                kind: 'converting',
+                message: 'Waiting for the previous Office preview to stop…',
+              });
+              await waitForDelay(retryDelay, controller.signal);
+              continue;
+            }
+            convertingRef.current = false;
+            abortRef.current = null;
+            if (e?.error === 'cancelled') {
+              setPhase({ kind: 'error', message: 'Conversion cancelled.', cancelled: true });
+              return;
+            }
+            setPhase({
+              kind: 'error',
+              message: friendlyMessage(e) || e?.message || 'Conversion failed.',
+            });
+            return;
+          }
         }
-        setPhase({
-          kind: 'error',
-          message: friendlyMessage(e) || e?.message || 'Conversion failed.',
-        });
-      });
+      } catch (error: unknown) {
+        if (!cancelled && (error as { name?: string })?.name !== 'AbortError') {
+          convertingRef.current = false;
+          abortRef.current = null;
+          setPhase({ kind: 'error', message: 'Conversion failed.' });
+        }
+      }
+    };
+    void run();
 
     return () => {
       cancelled = true;
