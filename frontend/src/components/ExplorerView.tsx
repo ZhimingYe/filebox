@@ -88,6 +88,8 @@ type ExplorerRow =
       loading: boolean;
     };
 
+type ExplorerSortKey = 'name' | 'modified';
+
 const PAGE_LIMIT = 200;
 const MAX_EXPANDED_DIRECTORIES = 32;
 const MAX_CACHED_DIRECTORIES = 64;
@@ -95,6 +97,12 @@ const MAX_CACHED_ENTRIES = 20_000;
 const MAX_CONCURRENT_LOADS = 2;
 const SLOW_DIRECTORY_LOAD_MS = 8_000;
 const DIRECTORY_LOAD_TIMEOUT_MS = 35_000;
+const EXPLORER_SORT_KEY_STORAGE = 'filebox.explorerSortKey';
+const EXPLORER_SORT_ASC_STORAGE = 'filebox.explorerSortAsc';
+const FILE_NAME_COLLATOR = new Intl.Collator(undefined, {
+  sensitivity: 'base',
+  numeric: true,
+});
 
 function directoryErrorMessage(error: unknown): string {
   const friendly = api.friendlyMessage(error);
@@ -170,6 +178,32 @@ function isPendingAgentUpdate(value: unknown): boolean {
   );
 }
 
+function compareExplorerEntries(
+  a: FsEntry,
+  b: FsEntry,
+  sortBy: ExplorerSortKey,
+  sortAsc: boolean,
+): number {
+  const aDirectory = a.entry_type === 'directory';
+  const bDirectory = b.entry_type === 'directory';
+  if (aDirectory !== bDirectory) return aDirectory ? -1 : 1;
+
+  let comparison = 0;
+  if (sortBy === 'modified') {
+    const aTime = a.modified ? Date.parse(a.modified) : Number.NaN;
+    const bTime = b.modified ? Date.parse(b.modified) : Number.NaN;
+    const aHasTime = Number.isFinite(aTime);
+    const bHasTime = Number.isFinite(bTime);
+    if (aHasTime !== bHasTime) return aHasTime ? -1 : 1;
+    if (aHasTime && bHasTime) comparison = aTime - bTime;
+  } else {
+    comparison = FILE_NAME_COLLATOR.compare(a.name, b.name);
+  }
+
+  if (comparison !== 0) return sortAsc ? comparison : -comparison;
+  return FILE_NAME_COLLATOR.compare(a.name, b.name);
+}
+
 function isSameOrDescendant(
   candidateKey: string,
   root: string,
@@ -236,6 +270,22 @@ export function ExplorerView({
   const [selectedId, setSelectedId] = useState<string | null>(firstRootKey);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<ExplorerSortKey>(() => {
+    try {
+      return localStorage.getItem(EXPLORER_SORT_KEY_STORAGE) === 'modified'
+        ? 'modified'
+        : 'name';
+    } catch {
+      return 'name';
+    }
+  });
+  const [sortAsc, setSortAsc] = useState(() => {
+    try {
+      return localStorage.getItem(EXPLORER_SORT_ASC_STORAGE) !== '0';
+    } catch {
+      return true;
+    }
+  });
   const [pinBusyIds, setPinBusyIds] = useState<Set<string>>(new Set());
   const pinBusyRef = useRef<Set<string>>(new Set());
   const [viewportHeight, setViewportHeight] = useState(0);
@@ -254,6 +304,15 @@ export function ExplorerView({
   const noticeTimerRef = useRef<number | null>(null);
   const pumpRef = useRef<() => void>(() => {});
   const { copiedPath, copyToClipboard } = useCopyToClipboard();
+  useEffect(() => {
+    try {
+      localStorage.setItem(EXPLORER_SORT_KEY_STORAGE, sortBy);
+      localStorage.setItem(EXPLORER_SORT_ASC_STORAGE, sortAsc ? '1' : '0');
+    } catch {
+      // Storage may be unavailable in hardened/private browser contexts.
+    }
+  }, [sortAsc, sortBy]);
+
   const pinnedIds = useMemo(() => {
     const ids = new Set<string>();
     roots.forEach((root) => {
@@ -633,7 +692,10 @@ export function ExplorerView({
           message,
         });
       }
-      state.items.forEach((entry) => {
+      const sortedItems = [...state.items].sort(
+        (a, b) => compareExplorerEntries(a, b, sortBy, sortAsc),
+      );
+      sortedItems.forEach((entry) => {
         const pathForEntry = childPath(path, entry.name);
         const id = nodeKey(root.name, pathForEntry);
         const directory = entry.entry_type === 'directory';
@@ -699,7 +761,7 @@ export function ExplorerView({
       if (expanded.has(id)) appendChildren(root, '/', 1);
     });
     return flattened;
-  }, [enabledRoots, expanded, nodes]);
+  }, [enabledRoots, expanded, nodes, sortAsc, sortBy]);
 
   const nodeRows = useMemo(
     () => rows.flatMap((row, index) => (row.kind === 'node' ? [{ row, index }] : [])),
@@ -960,6 +1022,25 @@ export function ExplorerView({
         <div style={styles.titleBlock}>
           <span style={styles.title}>Explorer</span>
         </div>
+        <select
+          value={sortBy}
+          onChange={(event) => setSortBy(event.target.value as ExplorerSortKey)}
+          style={styles.sortSelect}
+          aria-label="Sort Explorer by"
+          title="Sort Explorer by"
+        >
+          <option value="name">Name</option>
+          <option value="modified">Modified</option>
+        </select>
+        <button
+          type="button"
+          onClick={() => setSortAsc((current) => !current)}
+          style={styles.toolbarButton}
+          title={sortAsc ? 'Sort descending' : 'Sort ascending'}
+          aria-label={sortAsc ? 'Sort descending' : 'Sort ascending'}
+        >
+          <SortDirectionIcon ascending={sortAsc} />
+        </button>
         <button
           type="button"
           onClick={refreshCurrentBranch}
@@ -1276,6 +1357,20 @@ function RefreshIcon() {
   );
 }
 
+function SortDirectionIcon({ ascending }: { ascending: boolean }) {
+  return (
+    <svg style={styles.svg} viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d={ascending ? 'M8 13V3M4.5 6.5 8 3l3.5 3.5' : 'M8 3v10m-3.5-3.5L8 13l3.5-3.5'}
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function CollapseIcon() {
   return (
     <svg style={styles.svg} viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -1340,6 +1435,19 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 13,
     fontWeight: 600,
     color: c.text,
+  },
+  sortSelect: {
+    width: 86,
+    height: 28,
+    flexShrink: 0,
+    padding: '0 22px 0 7px',
+    border: `1px solid ${c.border}`,
+    borderRadius: radius.sm,
+    background: c.bg,
+    color: c.textSecondary,
+    fontFamily: font.sans,
+    fontSize: 11.5,
+    cursor: 'pointer',
   },
   toolbarButton: {
     width: 30,

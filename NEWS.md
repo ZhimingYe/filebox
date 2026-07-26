@@ -13,6 +13,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **Monaco code preview** — read-only Monaco Editor replaces Prism / `react-syntax-highlighter` for code files (Find, wrap, syntax highlight). Lazy-loaded; not placed in Vite `manualChunks` so the ~4MB editor is not preloaded on every page.
 
 ### Changed
+- **Explorer sorting** — choose filename or modification date with ascending/descending direction; folders stay ahead of files, missing timestamps stay last, and the browser remembers the preference.
 - **Image preview** — flex stage fits tall images; wheel / pinch zoom and pointer pan; dimension downscale caps (max edge 8192, ~16M pixels); `ImagePreview` is now lazy-loaded like other heavy viewers.
 - **Preview size confirmation** — images and PDFs (including Office-converted PDFs) require explicit confirmation at 15 MiB or larger; text, Markdown, and HTML require confirmation at 2 MiB or larger. CSV and TSV require confirmation from 2 MiB through 15 MiB and stay download-only above 15 MiB.
 - **CSV preview hardening** — the table keeps only the first 100 logical records, correctly handles quoted multiline cells, and avoids expanding the full file into a line array.
