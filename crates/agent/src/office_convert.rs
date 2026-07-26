@@ -34,6 +34,10 @@ const DEFAULT_CACHE_BYTES: u64 = 1024 * 1024 * 1024;
 const DEFAULT_MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_SPREADSHEET_SHEETS: usize = 2048;
+const PDF_CONVERSION_VERSION: &str = "pdf-v2";
+const OFFICE_NOFILE_LIMIT: u64 = 1024;
+#[cfg(target_os = "linux")]
+const MEMORY_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const CACHE_FILE_ACCOUNTING_FLOOR_BYTES: u64 = 4096;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(1);
@@ -43,9 +47,20 @@ static CACHE_META_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 #[cfg(unix)]
 macro_rules! set_process_limit {
     ($resource:expr, $value:expr) => {{
+        let mut inherited = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit($resource, &mut inherited) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // Never attempt to raise a hard limit inherited from systemd, a
+        // container, or the launching shell. Unprivileged setrlimit would
+        // fail and prevent LibreOffice from spawning at all.
+        let clamped = clamp_process_limit($value, inherited.rlim_max);
         let limit = libc::rlimit {
-            rlim_cur: $value as libc::rlim_t,
-            rlim_max: $value as libc::rlim_t,
+            rlim_cur: clamped,
+            rlim_max: clamped,
         };
         // Invoked only from the `pre_exec` unsafe block below.
         if libc::setrlimit($resource, &limit) != 0 {
@@ -54,6 +69,12 @@ macro_rules! set_process_limit {
             Ok(())
         }
     }};
+}
+
+#[cfg(unix)]
+fn clamp_process_limit(requested: u64, inherited_max: libc::rlim_t) -> libc::rlim_t {
+    let requested = libc::rlim_t::try_from(requested).unwrap_or(libc::rlim_t::MAX);
+    requested.min(inherited_max)
 }
 
 #[derive(Clone)]
@@ -421,6 +442,7 @@ pub fn cache_virtual_path(cache_key: &str, format: &str) -> String {
 
 pub type ProgressFn = Arc<dyn Fn(&str, u64, Option<String>) + Send + Sync>;
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn run_convert(
     runtime: &Arc<OfficeRuntime>,
     roots: &[RootConfig],
@@ -433,6 +455,7 @@ pub fn run_convert(
     run_convert_reserved(runtime, roots, req_id, root, path, lease, on_progress)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn run_convert_reserved(
     runtime: &OfficeRuntime,
     roots: &[RootConfig],
@@ -440,6 +463,28 @@ pub fn run_convert_reserved(
     root: &str,
     path: &str,
     lease: OfficeJobLease,
+    on_progress: Option<ProgressFn>,
+) -> Result<OfficeConvertResult, String> {
+    run_convert_reserved_with_options(
+        runtime,
+        roots,
+        req_id,
+        root,
+        path,
+        lease,
+        false,
+        on_progress,
+    )
+}
+
+pub fn run_convert_reserved_with_options(
+    runtime: &OfficeRuntime,
+    roots: &[RootConfig],
+    req_id: &str,
+    root: &str,
+    path: &str,
+    lease: OfficeJobLease,
+    force: bool,
     on_progress: Option<ProgressFn>,
 ) -> Result<OfficeConvertResult, String> {
     let result = run_convert_inner(
@@ -450,6 +495,7 @@ pub fn run_convert_reserved(
         path,
         lease.cancel.clone(),
         lease.pgid.clone(),
+        force,
         on_progress,
     );
     if matches!(&result, Err(error) if error == "office_unavailable") {
@@ -469,6 +515,7 @@ fn run_convert_inner(
     path: &str,
     cancel: Arc<AtomicBool>,
     pgid_slot: Arc<Mutex<Option<i32>>>,
+    force: bool,
     on_progress: Option<ProgressFn>,
 ) -> Result<OfficeConvertResult, String> {
     let cfg = &runtime.config;
@@ -556,16 +603,22 @@ fn run_convert_inner(
             path,
             &fingerprint,
             &cfg.version_id,
-            if spreadsheet { "csv-sheets-v1" } else { "pdf-v1" },
+            if spreadsheet {
+                "csv-sheets-v1"
+            } else {
+                PDF_CONVERSION_VERSION
+            },
         );
 
-        if let Some(outputs) = load_cached_outputs(&cfg.office_dir, &conversion_key) {
-            let primary = &outputs[0];
-            return Ok(OfficeConvertResult {
-                cache_key: primary.cache_key.clone(),
-                size: primary.size,
-                outputs,
-            });
+        if !force {
+            if let Some(outputs) = load_cached_outputs(&cfg.office_dir, &conversion_key) {
+                let primary = &outputs[0];
+                return Ok(OfficeConvertResult {
+                    cache_key: primary.cache_key.clone(),
+                    size: primary.size,
+                    outputs,
+                });
+            }
         }
 
         if cancel.load(Ordering::Relaxed) {
@@ -616,6 +669,11 @@ fn run_convert_inner(
         );
 
         let derived = find_outputs(&outdir, spreadsheet)?;
+        for output in &derived {
+            if output.format == "pdf" {
+                validate_pdf_output(&output.path)?;
+            }
+        }
         let total_size = derived.iter().try_fold(0u64, |total, output| {
             let size = fs::metadata(&output.path)
                 .map_err(|e| diagnostic("office_storage_error", format!("stat output: {e}")))?
@@ -770,6 +828,19 @@ fn cache_artifact_size(office_dir: &Path, key: &str, format: &str) -> Option<u64
     }
 }
 
+fn cached_artifact_is_valid(
+    office_dir: &Path,
+    key: &str,
+    format: &str,
+    expected_size: u64,
+) -> bool {
+    if cache_artifact_size(office_dir, key, format) != Some(expected_size) {
+        return false;
+    }
+    format != "pdf"
+        || validate_pdf_structure(&cache_artifact_path(office_dir, key, format)).is_ok()
+}
+
 fn load_cached_outputs(
     office_dir: &Path,
     conversion_key: &str,
@@ -790,11 +861,12 @@ fn load_cached_outputs(
                             &output.cache_key,
                             &output.format,
                         )
-                        && cache_artifact_size(
+                        && cached_artifact_is_valid(
                             office_dir,
                             &output.cache_key,
                             &output.format,
-                        ) == Some(output.size)
+                            output.size,
+                        )
                 });
             if valid {
                 for output in &outputs {
@@ -802,15 +874,26 @@ fn load_cached_outputs(
                 }
                 return Some(outputs);
             }
+            remove_cached_outputs(office_dir, &outputs);
         }
         let _ = fs::remove_file(manifest_path);
     }
 
-    // A PDF created by the previous cache schema remains usable.
+    // A manifestless single-PDF entry for the current conversion key remains
+    // usable (for example after upgrading from an earlier manifest schema).
     if !cache_metadata_has_format(office_dir, conversion_key, "pdf") {
         return None;
     }
     let size = cache_artifact_size(office_dir, conversion_key, "pdf")?;
+    if !cached_artifact_is_valid(office_dir, conversion_key, "pdf", size) {
+        let _ = fs::remove_file(cache_artifact_path(
+            office_dir,
+            conversion_key,
+            "pdf",
+        ));
+        let _ = fs::remove_file(cache_meta_path(office_dir, conversion_key));
+        return None;
+    }
     touch_cache_meta(office_dir, conversion_key);
     Some(vec![OfficePreviewOutput {
         label: "Document".to_string(),
@@ -907,6 +990,13 @@ fn write_cache_manifest(
 
 fn remove_cached_outputs(office_dir: &Path, outputs: &[OfficePreviewOutput]) {
     for output in outputs {
+        // Manifests live on disk and may be corrupt. Never let their contents
+        // construct a path outside the private cache directory.
+        if !cache_key_is_valid(&output.cache_key)
+            || !matches!(output.format.as_str(), "pdf" | "csv")
+        {
+            continue;
+        }
         let _ = fs::remove_file(cache_artifact_path(
             office_dir,
             &output.cache_key,
@@ -1325,6 +1415,87 @@ fn find_outputs(outdir: &Path, spreadsheet: bool) -> Result<Vec<DerivedOutput>, 
         .collect())
 }
 
+fn validate_pdf_output(path: &Path) -> Result<(), String> {
+    validate_pdf_structure(path)
+        .map_err(|detail| diagnostic("office_invalid_pdf", detail))
+}
+
+/// Cheap bounded validation before an external converter output is trusted.
+///
+/// This deliberately does not render the document or inflate streams. It
+/// verifies the PDF header, terminal marker, final startxref pointer and the
+/// referenced xref/object location. That catches truncated and half-written
+/// outputs without adding another unbounded parser to the Agent.
+fn validate_pdf_structure(path: &Path) -> Result<(), String> {
+    const HEAD_BYTES: usize = 1024;
+    const TAIL_BYTES: usize = 128 * 1024;
+
+    let mut file = File::open(path).map_err(|e| format!("open PDF output: {e}"))?;
+    let len = file
+        .metadata()
+        .map_err(|e| format!("stat PDF output: {e}"))?
+        .len();
+    if len < 32 {
+        return Err("PDF output is too small".to_string());
+    }
+
+    let mut head = vec![0u8; (len as usize).min(HEAD_BYTES)];
+    file.read_exact(&mut head)
+        .map_err(|e| format!("read PDF header: {e}"))?;
+    if !head.windows(5).any(|window| window == b"%PDF-") {
+        return Err("PDF header is missing".to_string());
+    }
+
+    let tail_len = (len as usize).min(TAIL_BYTES);
+    file.seek(SeekFrom::End(-(tail_len as i64)))
+        .map_err(|e| format!("seek PDF trailer: {e}"))?;
+    let mut tail = vec![0u8; tail_len];
+    file.read_exact(&mut tail)
+        .map_err(|e| format!("read PDF trailer: {e}"))?;
+    let eof = rfind_bytes(&tail, b"%%EOF")
+        .ok_or_else(|| "PDF end marker is missing".to_string())?;
+    let before_eof = &tail[..eof];
+    let startxref = rfind_bytes(before_eof, b"startxref")
+        .ok_or_else(|| "PDF startxref is missing".to_string())?;
+    let raw_offset = before_eof[startxref + b"startxref".len()..]
+        .iter()
+        .copied()
+        .skip_while(u8::is_ascii_whitespace)
+        .take_while(u8::is_ascii_digit)
+        .collect::<Vec<_>>();
+    if raw_offset.is_empty() {
+        return Err("PDF startxref offset is invalid".to_string());
+    }
+    let xref_offset = std::str::from_utf8(&raw_offset)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|offset| *offset < len)
+        .ok_or_else(|| "PDF startxref offset is out of bounds".to_string())?;
+
+    file.seek(SeekFrom::Start(xref_offset))
+        .map_err(|e| format!("seek PDF xref: {e}"))?;
+    let mut target = [0u8; 32];
+    let read = file
+        .read(&mut target)
+        .map_err(|e| format!("read PDF xref: {e}"))?;
+    let target = &target[..read];
+    let target = &target[target
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(target.len())..];
+    if !target.starts_with(b"xref") && !target.first().is_some_and(u8::is_ascii_digit) {
+        return Err("PDF startxref target is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).rposition(|window| window == needle)
+}
+
 fn diagnostic(code: &str, detail: impl std::fmt::Display) -> String {
     tracing::warn!("Office operation failed [{}]: {}", code, detail);
     code.to_string()
@@ -1394,6 +1565,8 @@ fn run_soffice(
     convert_spec: &str,
 ) -> Result<(), String> {
     let profile_uri = path_to_file_uri(profile);
+    #[cfg(not(target_os = "linux"))]
+    let _ = cfg.max_memory_bytes;
     let tmp_dir = job_dir.join("tmp");
     create_private_dir_all(&tmp_dir)
         .map_err(|e| diagnostic("office_storage_error", format!("create temp dir: {e}")))?;
@@ -1427,7 +1600,6 @@ fn run_soffice(
     #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
-        let max_memory = cfg.max_memory_bytes;
         let max_file = cfg.max_pdf_bytes.max(1024 * 1024);
         let cpu_secs = timeout.as_secs().saturating_add(10).max(1);
         cmd.pre_exec(move || {
@@ -1435,14 +1607,8 @@ fn run_soffice(
             if libc::setsid() == -1 {
                 return Err(std::io::Error::last_os_error());
             }
-            // macOS rejects RLIMIT_AS with EINVAL. Keep the address-space cap
-            // on Linux/Android and retain portable limits on other Unix hosts.
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            set_process_limit!(libc::RLIMIT_AS, max_memory)?;
-            #[cfg(not(any(target_os = "linux", target_os = "android")))]
-            let _ = max_memory;
             set_process_limit!(libc::RLIMIT_FSIZE, max_file)?;
-            set_process_limit!(libc::RLIMIT_NOFILE, 256)?;
+            set_process_limit!(libc::RLIMIT_NOFILE, OFFICE_NOFILE_LIMIT)?;
             set_process_limit!(libc::RLIMIT_CPU, cpu_secs)?;
             Ok(())
         });
@@ -1476,6 +1642,12 @@ fn run_soffice(
     }
 
     let deadline = Instant::now() + timeout;
+    #[cfg(target_os = "linux")]
+    let mut memory_pids = HashSet::from([child.id()]);
+    #[cfg(target_os = "linux")]
+    let memory_pgid = child.id();
+    #[cfg(target_os = "linux")]
+    let mut next_memory_check = Instant::now();
     let max_job_bytes = cfg
         .max_src_bytes
         .saturating_add(cfg.max_pdf_bytes)
@@ -1510,6 +1682,24 @@ fn run_soffice(
                 return Err("office_convert_failed".to_string());
             }
             Ok(None) => {
+                #[cfg(target_os = "linux")]
+                if cfg.max_memory_bytes > 0 && Instant::now() >= next_memory_check {
+                    if let Some(observed_bytes) =
+                        linux_process_tree_rss_bytes(&mut memory_pids, memory_pgid)
+                    {
+                        if observed_bytes > cfg.max_memory_bytes {
+                            terminate_child(&mut child, pgid_slot);
+                            let detail = format!(
+                                "Office process tree used {observed_bytes} bytes resident memory; limit is {} bytes",
+                                cfg.max_memory_bytes
+                            );
+                            append_log_note(log_path, &detail);
+                            finish_log_drain(stdout_log.take(), stderr_log.take());
+                            return Err(diagnostic("office_memory_limit", detail));
+                        }
+                    }
+                    next_memory_check = Instant::now() + MEMORY_CHECK_INTERVAL;
+                }
                 if Instant::now() >= next_disk_check {
                     if directory_size_exceeds(job_dir, max_job_bytes) {
                         terminate_child(&mut child, pgid_slot);
@@ -1535,6 +1725,75 @@ fn run_soffice(
             }
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_tree_rss_bytes(pids: &mut HashSet<u32>, expected_pgid: u32) -> Option<u64> {
+    let mut pending: Vec<u32> = pids.iter().copied().collect();
+    while let Some(pid) = pending.pop() {
+        let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
+            continue;
+        };
+        for task in tasks.flatten() {
+            let children_path = task.path().join("children");
+            let Ok(raw) = fs::read_to_string(children_path) else {
+                continue;
+            };
+            for child in raw
+                .split_whitespace()
+                .filter_map(|value| value.parse::<u32>().ok())
+            {
+                if linux_process_group(child) == Some(expected_pgid) && pids.insert(child) {
+                    pending.push(child);
+                }
+            }
+        }
+    }
+
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page_size <= 0 {
+        return None;
+    }
+    let mut observed = false;
+    let mut total = 0u64;
+    pids.retain(|pid| {
+        if linux_process_group(*pid) != Some(expected_pgid) {
+            return false;
+        }
+        let Ok(raw) = fs::read_to_string(format!("/proc/{pid}/statm")) else {
+            return false;
+        };
+        let Some(rss_pages) = raw
+            .split_whitespace()
+            .nth(1)
+            .and_then(|value| value.parse::<u64>().ok())
+        else {
+            return false;
+        };
+        observed = true;
+        total = total.saturating_add(rss_pages.saturating_mul(page_size as u64));
+        true
+    });
+    observed.then_some(total)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_group(pid: u32) -> Option<u32> {
+    let raw = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_linux_process_group(&raw)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_linux_process_group(stat: &str) -> Option<u32> {
+    // `comm` is parenthesized and may itself contain spaces or `)`, so split
+    // after its final closing parenthesis. The suffix begins with state,
+    // parent pid, then process-group id.
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(2)?
+        .parse()
+        .ok()
 }
 
 fn directory_size_exceeds(root: &Path, limit: u64) -> bool {
@@ -1871,6 +2130,19 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn process_limits_never_raise_an_inherited_hard_limit() {
+        assert_eq!(clamp_process_limit(1024, 256), 256);
+        assert_eq!(clamp_process_limit(1024, 4096), 1024);
+    }
+
+    #[test]
+    fn parses_linux_process_group_with_complex_command_name() {
+        let stat = "123 (soffice worker) name) S 1 123 123 0 0";
+        assert_eq!(parse_linux_process_group(stat), Some(123));
+    }
+
+    #[test]
     fn file_uri_percent_encodes_linux_path_bytes() {
         let path = Path::new("/tmp/file box/profile#100%");
         assert_eq!(
@@ -1899,7 +2171,11 @@ mod tests {
     }
 
     fn write_fake_soffice(dir: &Path, delay_ms: u64, fail: bool) -> PathBuf {
-        write_fake_soffice_named(dir, "soffice", delay_ms, fail, true)
+        write_fake_soffice_named(dir, "soffice", delay_ms, fail, true, true)
+    }
+
+    fn write_invalid_pdf_soffice(dir: &Path) -> PathBuf {
+        write_fake_soffice_named(dir, "soffice-invalid", 0, false, true, false)
     }
 
     fn write_fake_soffice_named(
@@ -1908,6 +2184,7 @@ mod tests {
         delay_ms: u64,
         fail: bool,
         libreoffice_version: bool,
+        valid_pdf: bool,
     ) -> PathBuf {
         let path = dir.join(name);
         let version_line = if libreoffice_version {
@@ -1947,8 +2224,7 @@ case "$convert" in
     exit 0
     ;;
 esac
-# Minimal pdf.js-compatible PDF (same bytes as scripts/e2e_office_preview.sh).
-echo 'JVBERi0xLjQKMSAwIG9iajw8IC9UeXBlIC9DYXRhbG9nIC9QYWdlcyAyIDAgUiA+PmVuZG9iagoyIDAgb2JqPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj5lbmRvYmoKMyAwIG9iajw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL0NvbnRlbnRzIDQgMCBSIC9SZXNvdXJjZXM8PCAvRm9udDw8IC9GMSA1IDAgUiA+PiA+PiA+PmVuZG9iago0IDAgb2JqPDwgL0xlbmd0aCAzNiA+PnN0cmVhbQpCVCAvRjEgMjQgVGYgNzIgNzIwIFRkIChIZWxsbykgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+ZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU2IDAwMDAwIG4gCjAwMDAwMDAxMTEgMDAwMDAgbiAKMDAwMDAwMDIzMyAwMDAwMCBuIAowMDAwMDAwMzE3IDAwMDAwIG4gCnRyYWlsZXI8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgozODUKJSVFT0YK' | base64 -d > "$outdir/$name.pdf"
+{pdf_output}
 exit 0
 "#,
             version_line = version_line,
@@ -1961,7 +2237,14 @@ exit 0
                 "echo fail >&2; exit 1"
             } else {
                 "true"
-            }
+            },
+            pdf_output = if valid_pdf {
+                // Minimal pdf.js-compatible PDF (same bytes as
+                // scripts/e2e_office_preview.sh).
+                r#"echo 'JVBERi0xLjQKMSAwIG9iajw8IC9UeXBlIC9DYXRhbG9nIC9QYWdlcyAyIDAgUiA+PmVuZG9iagoyIDAgb2JqPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj5lbmRvYmoKMyAwIG9iajw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL0NvbnRlbnRzIDQgMCBSIC9SZXNvdXJjZXM8PCAvRm9udDw8IC9GMSA1IDAgUiA+PiA+PiA+PmVuZG9iago0IDAgb2JqPDwgL0xlbmd0aCAzNiA+PnN0cmVhbQpCVCAvRjEgMjQgVGYgNzIgNzIwIFRkIChIZWxsbykgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+ZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU2IDAwMDAwIG4gCjAwMDAwMDAxMTEgMDAwMDAgbiAKMDAwMDAwMDIzMyAwMDAwMCBuIAowMDAwMDAwMzE3IDAwMDAwIG4gCnRyYWlsZXI8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgozODUKJSVFT0YK' | base64 -d > "$outdir/$name.pdf""#
+            } else {
+                r#"printf '%s\n' '%PDF-1.7' 'truncated output' > "$outdir/$name.pdf""#
+            },
         );
         fs::write(&path, script).unwrap();
         let mut perms = fs::metadata(&path).unwrap().permissions();
@@ -2090,6 +2373,168 @@ exit 0
             .unwrap();
         assert!(done);
         assert!(data.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn force_convert_replaces_an_existing_pdf_cache_entry() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_fake_soffice(tmp.path(), 0, false);
+        let root_dir = tmp.path().join("root");
+        fs::create_dir_all(&root_dir).unwrap();
+        fs::write(root_dir.join("report.pptx"), b"fake-pptx-bytes").unwrap();
+        let roots = make_roots(&root_dir);
+        let runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, soffice)).unwrap();
+
+        let first =
+            run_convert(&runtime, &roots, "force-1", "docs", "/report.pptx", None).unwrap();
+        let cached =
+            run_convert(&runtime, &roots, "force-2", "docs", "/report.pptx", None).unwrap();
+        assert_eq!(first.cache_key, cached.cache_key);
+        let before: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(cache_meta_path(
+                &runtime.config.office_dir,
+                &first.cache_key,
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(before["hits"], 2);
+
+        let lease = runtime.reserve_job("force-3").unwrap();
+        let rebuilt = run_convert_reserved_with_options(
+            &runtime,
+            &roots,
+            "force-3",
+            "docs",
+            "/report.pptx",
+            lease,
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(rebuilt.cache_key, first.cache_key);
+        let after: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(cache_meta_path(
+                &runtime.config.office_dir,
+                &first.cache_key,
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after["hits"], 1);
+    }
+
+    #[test]
+    fn failed_force_convert_preserves_the_previous_cache_entry() {
+        let tmp = TempDir::new().unwrap();
+        let root_dir = tmp.path().join("root");
+        fs::create_dir_all(&root_dir).unwrap();
+        fs::write(root_dir.join("report.pptx"), b"fake-pptx-bytes").unwrap();
+        let roots = make_roots(&root_dir);
+
+        let valid_soffice = write_fake_soffice(tmp.path(), 0, false);
+        let runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, valid_soffice)).unwrap();
+        let first =
+            run_convert(&runtime, &roots, "preserve-1", "docs", "/report.pptx", None).unwrap();
+        let artifact =
+            cache_artifact_path(&runtime.config.office_dir, &first.cache_key, "pdf");
+        let previous = fs::read(&artifact).unwrap();
+        drop(runtime);
+
+        let invalid_soffice = write_invalid_pdf_soffice(tmp.path());
+        let runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, invalid_soffice)).unwrap();
+        let lease = runtime.reserve_job("preserve-2").unwrap();
+        let error = run_convert_reserved_with_options(
+            &runtime,
+            &roots,
+            "preserve-2",
+            "docs",
+            "/report.pptx",
+            lease,
+            true,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error, "office_invalid_pdf");
+        assert_eq!(fs::read(&artifact).unwrap(), previous);
+
+        let cached =
+            run_convert(&runtime, &roots, "preserve-3", "docs", "/report.pptx", None).unwrap();
+        assert_eq!(cached.cache_key, first.cache_key);
+    }
+
+    #[test]
+    fn pdf_validation_rejects_truncated_and_invalid_xref_outputs() {
+        let tmp = TempDir::new().unwrap();
+        let truncated = tmp.path().join("truncated.pdf");
+        fs::write(&truncated, b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n").unwrap();
+        assert!(validate_pdf_structure(&truncated).is_err());
+
+        let invalid_xref = tmp.path().join("invalid-xref.pdf");
+        fs::write(
+            &invalid_xref,
+            b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\nstartxref\n999999\n%%EOF\n",
+        )
+        .unwrap();
+        assert!(validate_pdf_structure(&invalid_xref).is_err());
+    }
+
+    #[test]
+    fn invalid_converter_pdf_is_rejected_before_cache_promotion() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_invalid_pdf_soffice(tmp.path());
+        let root_dir = tmp.path().join("root");
+        fs::create_dir_all(&root_dir).unwrap();
+        fs::write(root_dir.join("report.pptx"), b"fake-pptx-bytes").unwrap();
+        let roots = make_roots(&root_dir);
+        let runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, soffice)).unwrap();
+
+        let error =
+            run_convert(&runtime, &roots, "bad-output", "docs", "/report.pptx", None).unwrap_err();
+        assert_eq!(error, "office_invalid_pdf");
+        assert_eq!(cache_total_pdf_bytes(&runtime.config.office_dir), 0);
+    }
+
+    #[test]
+    fn corrupt_manifest_paths_cannot_escape_cache_cleanup() {
+        let tmp = TempDir::new().unwrap();
+        let office_dir = tmp.path().join("office");
+        fs::create_dir_all(office_dir.join("cache")).unwrap();
+        let outside = tmp.path().join("outside.pdf");
+        fs::write(&outside, b"keep").unwrap();
+
+        remove_cached_outputs(
+            &office_dir,
+            &[OfficePreviewOutput {
+                label: "bad".into(),
+                format: "pdf".into(),
+                cache_key: "../../outside".into(),
+                size: 4,
+            }],
+        );
+        assert_eq!(fs::read(outside).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn invalid_cached_pdf_is_discarded_and_regenerated() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_fake_soffice(tmp.path(), 0, false);
+        let root_dir = tmp.path().join("root");
+        fs::create_dir_all(&root_dir).unwrap();
+        fs::write(root_dir.join("report.pptx"), b"fake-pptx-bytes").unwrap();
+        let roots = make_roots(&root_dir);
+        let runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, soffice)).unwrap();
+
+        let first =
+            run_convert(&runtime, &roots, "bad-cache-1", "docs", "/report.pptx", None).unwrap();
+        let artifact =
+            cache_artifact_path(&runtime.config.office_dir, &first.cache_key, "pdf");
+        fs::write(&artifact, vec![b'X'; first.size as usize]).unwrap();
+
+        let regenerated =
+            run_convert(&runtime, &roots, "bad-cache-2", "docs", "/report.pptx", None).unwrap();
+        assert_eq!(regenerated.cache_key, first.cache_key);
+        assert!(validate_pdf_structure(&artifact).is_ok());
     }
 
     #[test]
@@ -2523,7 +2968,7 @@ exit 0
     #[test]
     fn probe_rejects_non_libreoffice_version() {
         let tmp = TempDir::new().unwrap();
-        let soffice = write_fake_soffice_named(tmp.path(), "soffice", 0, false, false);
+        let soffice = write_fake_soffice_named(tmp.path(), "soffice", 0, false, false, true);
         std::env::set_var("FILEBOX_AGENT_SOFFICE", &soffice);
         assert!(probe_from_env(tmp.path()).is_none());
         std::env::remove_var("FILEBOX_AGENT_SOFFICE");

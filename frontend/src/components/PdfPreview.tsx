@@ -24,7 +24,7 @@ interface Props {
   root: string;
   path: string;
   downloadPath?: string;
-  onRetry?: () => void;
+  onRetry?: (options?: { forceReconvert?: boolean }) => void;
 }
 
 // Browser-native PDF viewers (via <iframe>) don't exist on iOS Safari and
@@ -88,6 +88,31 @@ function isPdfAuthFailure(message: string): boolean {
   );
 }
 
+function isPdfContentFailure(message: string): boolean {
+  const value = message.toLowerCase();
+  return (
+    value.includes('invalid pdf')
+    || value.includes('invalidpdfexception')
+    || value.includes('missing pdf')
+    || value.includes('empty pdf')
+    || value.includes('format error')
+    || value.includes('formaterror')
+    || value.includes('xref')
+    || value.includes('bad fcheck')
+  );
+}
+
+function isPdfTransportFailure(message: string): boolean {
+  const value = message.toLowerCase();
+  return (
+    value.includes('unexpected server response')
+    || value.includes('network')
+    || value.includes('failed to fetch')
+    || value.includes('timeout')
+    || value.includes('temporarily unavailable')
+  );
+}
+
 export function PdfPreview({
   agentId,
   root,
@@ -117,6 +142,7 @@ export function PdfPreview({
   const [mintNonce, setMintNonce] = useState(0);
   const [numPages, setNumPages] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
+  const [forceReconvertOnRetry, setForceReconvertOnRetry] = useState(false);
   const [containerWidth, setContainerWidth] = useState<number>(0);
   const [slowLoad, setSlowLoad] = useState(false);
   const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set());
@@ -279,6 +305,7 @@ export function PdfPreview({
     numPagesRef.current = n;
     setNumPages(n);
     setError(null);
+    setForceReconvertOnRetry(false);
     // Successful load restores the one-shot remint budget so a later mid-
     // scroll token expiry can recover once without looping forever.
     authRemintUsed.current = false;
@@ -292,7 +319,17 @@ export function PdfPreview({
   const onLoadError = (err: Error) => {
     const message = err.message || 'Failed to load PDF';
     if (remintAfterAuthFailure(message)) return;
-    setError('Could not load this PDF. The file may be damaged or temporarily unavailable.');
+    // A converted Office PDF that reached pdf.js but cannot be decoded is
+    // suspect even when a browser/pdf.js version uses an unfamiliar error
+    // string. Do not rebuild for clear network/HTTP failures.
+    const contentFailure = isPdfContentFailure(message)
+      || (!!onRetry && !isPdfTransportFailure(message));
+    setForceReconvertOnRetry(contentFailure);
+    setError(
+      contentFailure && onRetry
+        ? 'The converted PDF is invalid or incomplete. Retry will rebuild it.'
+        : 'Could not load this PDF. The file may be damaged or temporarily unavailable.',
+    );
     numPagesRef.current = 0;
     setNumPages(0);
   };
@@ -322,7 +359,14 @@ export function PdfPreview({
   const onPageLoadError = (err: Error) => {
     const message = err.message || '';
     if (remintAfterAuthFailure(message)) return;
-    setError('Could not load this PDF page. The file may be damaged or temporarily unavailable.');
+    const contentFailure = isPdfContentFailure(message)
+      || (!!onRetry && !isPdfTransportFailure(message));
+    setForceReconvertOnRetry(contentFailure);
+    setError(
+      contentFailure && onRetry
+        ? 'The converted PDF page is invalid. Retry will rebuild the preview.'
+        : 'Could not load this PDF page. The file may be damaged or temporarily unavailable.',
+    );
   };
 
   const retryLoad = useCallback(() => {
@@ -330,6 +374,7 @@ export function PdfPreview({
     numPagesRef.current = 0;
     setNumPages(0);
     setAccessUrl(null);
+    setForceReconvertOnRetry(false);
     authRemintUsed.current = false;
     setMintNonce((n) => n + 1);
   }, []);
@@ -394,7 +439,17 @@ export function PdfPreview({
                 : error}
             </p>
             <div style={{ display: 'flex', gap: 12 }}>
-              <button type="button" onClick={onRetry || retryLoad} style={styles.retryBtn}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onRetry) {
+                    onRetry({ forceReconvert: forceReconvertOnRetry });
+                  } else {
+                    retryLoad();
+                  }
+                }}
+                style={styles.retryBtn}
+              >
                 Retry
               </button>
               <FileDownloadLink

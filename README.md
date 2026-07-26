@@ -308,17 +308,24 @@ Optional limits (defaults shown):
 # FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES=536870912     # 512 MiB
 # FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES=1073741824    # 1 GiB combined derived output
 # FILEBOX_AGENT_OFFICE_MAX_LOG_BYTES=8388608       # 8 MiB
-# FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES=2147483648 # 2 GiB
+# FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES=2147483648 # 2 GiB resident memory (Linux)
 # FILEBOX_AGENT_OFFICE_CACHE_BYTES=1073741824      # 1 GiB on-disk preview cache
 ```
 
 The cache budget counts derived files, metadata, manifests, and empty-file
 entries, and must be large enough for one complete converted preview. If an
 output cannot fit, the request fails safely with `office_cache_too_small`
-instead of reporting success for an immediately evicted file. The address-space
-memory limit is enforced on Linux/Android; macOS keeps the portable file-size,
-descriptor, CPU, timeout, and process-group limits because macOS rejects
-`RLIMIT_AS`.
+instead of reporting success for an immediately evicted file. On Linux the
+memory limit is checked against the converting process tree's resident memory
+only while a preview request is active. It deliberately does not use
+`RLIMIT_AS`: LibreOffice Impress can reserve several GiB of virtual address
+space while using far less physical memory. Other platforms retain the
+portable file-size, descriptor, CPU, timeout, and process-group limits.
+
+PDF output is structurally validated before it enters the cache. A malformed
+or truncated cached PDF is discarded automatically; if browser PDF decoding
+still fails, **Retry** forces one clean conversion instead of returning the
+same cached artifact.
 
 Restart the agent. On a successful probe it advertises
 `office_pdf_preview: true` (the capability name is retained for compatibility).

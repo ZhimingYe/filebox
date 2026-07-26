@@ -256,6 +256,10 @@ pub enum HubMessage {
         req_id: String,
         root: String,
         path: String,
+        /// Ignore and replace an existing derived preview for this source.
+        /// Used after the browser proves that a cached PDF cannot be decoded.
+        #[serde(default)]
+        force: bool,
     },
 }
 
@@ -491,12 +495,19 @@ mod tests {
             req_id: "oc1".into(),
             root: "docs".into(),
             path: "/report.docx".into(),
+            force: false,
         };
         let back = round_trip_hub(&req);
         match back {
-            HubMessage::OfficeConvertRequest { root, path, .. } => {
+            HubMessage::OfficeConvertRequest {
+                root,
+                path,
+                force,
+                ..
+            } => {
                 assert_eq!(root, "docs");
                 assert_eq!(path, "/report.docx");
+                assert!(!force);
             }
             _ => panic!("wrong variant"),
         }
@@ -544,6 +555,50 @@ mod tests {
                 assert!(outputs.is_empty());
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn office_convert_request_defaults_force_for_older_hubs() {
+        let raw = r#"{
+            "type": "office_convert_request",
+            "req_id": "oc-old",
+            "root": "docs",
+            "path": "/report.pptx"
+        }"#;
+        let message: HubMessage = serde_json::from_str(raw).unwrap();
+        match message {
+            HubMessage::OfficeConvertRequest { force, .. } => assert!(!force),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn older_agents_ignore_the_new_office_force_field() {
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum LegacyHubMessage {
+            OfficeConvertRequest {
+                req_id: String,
+                root: String,
+                path: String,
+            },
+        }
+
+        let request = HubMessage::OfficeConvertRequest {
+            req_id: "oc-new".into(),
+            root: "docs".into(),
+            path: "/report.pptx".into(),
+            force: true,
+        };
+        let raw = serde_json::to_string(&request).unwrap();
+        let legacy: LegacyHubMessage = serde_json::from_str(&raw).unwrap();
+        match legacy {
+            LegacyHubMessage::OfficeConvertRequest { req_id, root, path } => {
+                assert_eq!(req_id, "oc-new");
+                assert_eq!(root, "docs");
+                assert_eq!(path, "/report.pptx");
+            }
         }
     }
 

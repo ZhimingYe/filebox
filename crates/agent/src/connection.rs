@@ -1039,7 +1039,12 @@ async fn run_one_connection(
                                     let _ = tx.blocking_send(response);
                                 });
                             }
-                            Ok(HubMessage::OfficeConvertRequest { req_id, root, path }) => {
+                            Ok(HubMessage::OfficeConvertRequest {
+                                req_id,
+                                root,
+                                path,
+                                force,
+                            }) => {
                                 tracing::debug!(
                                     "Office convert: root={} path={}",
                                     root,
@@ -1110,15 +1115,17 @@ async fn run_one_connection(
                                         total: None,
                                         message: Some("Preparing preview…".to_string()),
                                     });
-                                    let outcome = crate::office_convert::run_convert_reserved(
-                                        rt.as_ref(),
-                                        &roots_vec,
-                                        &rid,
-                                        &root,
-                                        &path,
-                                        lease,
-                                        Some(on_progress),
-                                    );
+                                    let outcome =
+                                        crate::office_convert::run_convert_reserved_with_options(
+                                            rt.as_ref(),
+                                            &roots_vec,
+                                            &rid,
+                                            &root,
+                                            &path,
+                                            lease,
+                                            force,
+                                            Some(on_progress),
+                                        );
                                     match outcome {
                                         Ok(r) => {
                                             let legacy_pdf = r
