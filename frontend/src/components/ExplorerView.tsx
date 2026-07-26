@@ -13,6 +13,7 @@ import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { useIsMobile } from '../state/useIsMobile';
 import { c, font, radius } from '../theme';
 import { getEntryIcon, IconFolder } from './fileListShared';
+import { IconPin } from './icons';
 
 interface Props {
   agentId: string;
@@ -20,14 +21,18 @@ interface Props {
   active: boolean;
   onFileSelect: (root: string, path: string, entry: FsEntry) => void;
   onAddToCollection?: (root: string, path: string, anchor: HTMLElement) => void;
+  onRootsChange?: () => void | Promise<void>;
 }
 
 interface DirectoryState {
   items: FsEntry[];
   nextCursor: string | null;
   loading: boolean;
+  loadPhase: 'queued' | 'loading' | 'slow' | null;
+  loadMode: 'replace' | 'append' | null;
   loaded: boolean;
   error: string | null;
+  errorAppend: boolean;
   lastUsed: number;
 }
 
@@ -64,6 +69,15 @@ type ExplorerRow =
       depth: number;
       message: string;
       retryable: boolean;
+      append: boolean;
+    }
+  | {
+      kind: 'loading';
+      id: string;
+      root: string;
+      parentPath: string;
+      depth: number;
+      message: string;
     }
   | {
       kind: 'load-more';
@@ -79,11 +93,18 @@ const MAX_EXPANDED_DIRECTORIES = 32;
 const MAX_CACHED_DIRECTORIES = 64;
 const MAX_CACHED_ENTRIES = 20_000;
 const MAX_CONCURRENT_LOADS = 2;
+const SLOW_DIRECTORY_LOAD_MS = 8_000;
+const DIRECTORY_LOAD_TIMEOUT_MS = 35_000;
 
 function directoryErrorMessage(error: unknown): string {
   const friendly = api.friendlyMessage(error);
   if (friendly !== 'An unexpected error occurred.') return friendly;
-  if (error instanceof Error && error.message) return error.message;
+  if (error instanceof Error && error.message) {
+    if (/failed to fetch|load failed|networkerror|network request failed/i.test(error.message)) {
+      return 'Network connection was interrupted. Check the connection and retry.';
+    }
+    return error.message;
+  }
   if (typeof error === 'string' && error.trim()) return error;
   if (
     typeof error === 'object'
@@ -101,8 +122,11 @@ const EMPTY_DIRECTORY: DirectoryState = {
   items: [],
   nextCursor: null,
   loading: false,
+  loadPhase: null,
+  loadMode: null,
   loaded: false,
   error: null,
+  errorAppend: false,
   lastUsed: 0,
 };
 
@@ -129,6 +153,21 @@ function parentPath(path: string): string {
 function displayPath(rootPath: string, relativePath: string): string {
   const base = rootPath.replace(/\/+$/, '');
   return relativePath === '/' ? base || '/' : `${base}${relativePath}`;
+}
+
+function normalizePinPath(path: string): string {
+  let normalized = path.length > 1 ? path.replace(/\/+$/, '') : path;
+  if (!normalized.startsWith('/')) normalized = `/${normalized}`;
+  return normalized || '/';
+}
+
+function isPendingAgentUpdate(value: unknown): boolean {
+  return (
+    typeof value === 'object'
+    && value !== null
+    && 'state' in value
+    && value.state === 'pending_agent_reconnect'
+  );
 }
 
 function isSameOrDescendant(
@@ -182,6 +221,7 @@ export function ExplorerView({
   active,
   onFileSelect,
   onAddToCollection,
+  onRootsChange,
 }: Props) {
   const isMobile = useIsMobile();
   const rowHeight = isMobile ? 38 : 30;
@@ -196,6 +236,8 @@ export function ExplorerView({
   const [selectedId, setSelectedId] = useState<string | null>(firstRootKey);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [pinBusyIds, setPinBusyIds] = useState<Set<string>>(new Set());
+  const pinBusyRef = useRef<Set<string>>(new Set());
   const [viewportHeight, setViewportHeight] = useState(0);
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<FixedSizeList>(null);
@@ -212,6 +254,15 @@ export function ExplorerView({
   const noticeTimerRef = useRef<number | null>(null);
   const pumpRef = useRef<() => void>(() => {});
   const { copiedPath, copyToClipboard } = useCopyToClipboard();
+  const pinnedIds = useMemo(() => {
+    const ids = new Set<string>();
+    roots.forEach((root) => {
+      root.pinned_folders.forEach((path) => {
+        ids.add(nodeKey(root.name, normalizePinPath(path)));
+      });
+    });
+    return ids;
+  }, [roots]);
 
   const showNotice = useCallback((
     message: string | null,
@@ -240,11 +291,11 @@ export function ExplorerView({
     if (refreshSeqsRef.current.size > 0 || !mountedRef.current) return;
 
     if (refreshCancelledRef.current) {
-      showNotice(null);
+      showNotice('Refresh cancelled. Retry when ready.', 2_500);
     } else if (refreshFailedRef.current) {
       showNotice('Refresh finished with errors. Use Retry on the affected folder.', 4_000);
     } else {
-      showNotice(null);
+      showNotice('Refresh complete.', 1_800);
     }
   }, [showNotice]);
 
@@ -261,7 +312,56 @@ export function ExplorerView({
   const startTask = useCallback((task: LoadTask) => {
     const controller = new AbortController();
     let result: 'success' | 'failed' | 'cancelled' = 'success';
+    let timedOut = false;
     activeRef.current.set(task.key, { controller, seq: task.seq });
+    updateNodes((previous) => {
+      const next = new Map(previous);
+      const existing = previous.get(task.key) ?? EMPTY_DIRECTORY;
+      next.set(task.key, {
+        ...existing,
+        loadPhase: 'loading',
+        loadMode: task.append ? 'append' : 'replace',
+      });
+      return next;
+    });
+
+    const slowTimer = window.setTimeout(() => {
+      if (
+        !mountedRef.current
+        || scheduledRef.current.get(task.key) !== task.seq
+      ) return;
+      updateNodes((previous) => {
+        const next = new Map(previous);
+        const existing = previous.get(task.key);
+        if (existing?.loading) {
+          next.set(task.key, { ...existing, loadPhase: 'slow' });
+        }
+        return next;
+      });
+    }, SLOW_DIRECTORY_LOAD_MS);
+    const timeoutTimer = window.setTimeout(() => {
+      if (scheduledRef.current.get(task.key) !== task.seq) return;
+      timedOut = true;
+      controller.abort();
+    }, DIRECTORY_LOAD_TIMEOUT_MS);
+
+    const setFailure = (message: string) => {
+      updateNodes((previous) => {
+        const next = new Map(previous);
+        const existing = previous.get(task.key) ?? EMPTY_DIRECTORY;
+        next.set(task.key, {
+          ...existing,
+          loading: false,
+          loadPhase: null,
+          loadMode: null,
+          loaded: true,
+          error: message,
+          errorAppend: task.append,
+          lastUsed: ++usageTickRef.current,
+        });
+        return next;
+      });
+    };
 
     void api.fsList(
       agentId,
@@ -272,6 +372,11 @@ export function ExplorerView({
       false,
       controller.signal,
     ).then((data) => {
+      if (timedOut) {
+        result = 'failed';
+        setFailure('Folder loading timed out. Check the connection and retry.');
+        return;
+      }
       if (
         !mountedRef.current
         || controller.signal.aborted
@@ -288,8 +393,11 @@ export function ExplorerView({
           next.set(task.key, {
             ...existing,
             loading: false,
+            loadPhase: null,
+            loadMode: null,
             loaded: true,
             error: directoryErrorMessage(data.error),
+            errorAppend: task.append,
             lastUsed: ++usageTickRef.current,
           });
           return next;
@@ -298,13 +406,21 @@ export function ExplorerView({
           items: task.append ? [...existing.items, ...data.items] : data.items,
           nextCursor: data.next_cursor ?? null,
           loading: false,
+          loadPhase: null,
+          loadMode: null,
           loaded: true,
           error: null,
+          errorAppend: false,
           lastUsed: ++usageTickRef.current,
         });
         return trimCollapsedCache(next, expandedRef.current);
       });
     }).catch((error: unknown) => {
+      if (timedOut && mountedRef.current) {
+        result = 'failed';
+        setFailure('Folder loading timed out. Check the connection and retry.');
+        return;
+      }
       if (
         !mountedRef.current
         || controller.signal.aborted
@@ -315,20 +431,10 @@ export function ExplorerView({
         return;
       }
       result = 'failed';
-      const message = directoryErrorMessage(error);
-      updateNodes((previous) => {
-        const next = new Map(previous);
-        const existing = previous.get(task.key) ?? EMPTY_DIRECTORY;
-        next.set(task.key, {
-          ...existing,
-          loading: false,
-          loaded: true,
-          error: message,
-          lastUsed: ++usageTickRef.current,
-        });
-        return next;
-      });
+      setFailure(directoryErrorMessage(error));
     }).finally(() => {
+      window.clearTimeout(slowTimer);
+      window.clearTimeout(timeoutTimer);
       reservedEntriesRef.current.delete(task.seq);
       const active = activeRef.current.get(task.key);
       if (active?.seq === task.seq) {
@@ -398,7 +504,10 @@ export function ExplorerView({
       next.set(key, {
         ...(previous.get(key) ?? EMPTY_DIRECTORY),
         loading: true,
+        loadPhase: 'queued',
+        loadMode: append ? 'append' : 'replace',
         error: null,
+        errorAppend: false,
         lastUsed: ++usageTickRef.current,
       });
       return next;
@@ -439,7 +548,14 @@ export function ExplorerView({
       const next = new Map(previous);
       keys.forEach((key) => {
         const state = next.get(key);
-        if (state?.loading) next.set(key, { ...state, loading: false });
+        if (state?.loading) {
+          next.set(key, {
+            ...state,
+            loading: false,
+            loadPhase: null,
+            loadMode: null,
+          });
+        }
       });
       return next;
     });
@@ -502,6 +618,21 @@ export function ExplorerView({
     const appendChildren = (root: RootInfo, path: string, depth: number) => {
       const key = nodeKey(root.name, path);
       const state = nodes.get(key) ?? EMPTY_DIRECTORY;
+      if (state.loading && state.loadMode === 'replace') {
+        const message = state.loadPhase === 'queued'
+          ? 'Waiting to load…'
+          : state.loadPhase === 'slow'
+            ? 'Still loading this folder…'
+            : 'Loading folder…';
+        flattened.push({
+          kind: 'loading',
+          id: `loading:${key}`,
+          root: root.name,
+          parentPath: path,
+          depth,
+          message,
+        });
+      }
       state.items.forEach((entry) => {
         const pathForEntry = childPath(path, entry.name);
         const id = nodeKey(root.name, pathForEntry);
@@ -534,16 +665,17 @@ export function ExplorerView({
           depth,
           message: state.error,
           retryable: true,
+          append: state.errorAppend,
         });
       }
-      if (state.nextCursor) {
+      if (state.nextCursor && !(state.error && state.errorAppend)) {
         flattened.push({
           kind: 'load-more',
           id: `more:${key}:${state.nextCursor}`,
           root: root.name,
           parentPath: path,
           depth,
-          loading: state.loading,
+          loading: state.loading && state.loadMode === 'append',
         });
       }
     };
@@ -662,6 +794,44 @@ export function ExplorerView({
     }
   }, [copyToClipboard, showNotice]);
 
+  const handleCancelLoad = useCallback((root: string, path: string) => {
+    cancelLoads(new Set([nodeKey(root, path)]));
+    showNotice('Folder loading cancelled. You can expand or retry it again.', 2_500);
+  }, [cancelLoads, showNotice]);
+
+  const handlePin = useCallback(async (
+    row: Extract<ExplorerRow, { kind: 'node' }>,
+  ) => {
+    if (!row.isDirectory || row.denied || pinBusyRef.current.has(row.id)) return;
+    const pinned = pinnedIds.has(row.id);
+    pinBusyRef.current.add(row.id);
+    setPinBusyIds(new Set(pinBusyRef.current));
+    showNotice(`${pinned ? 'Unpinning' : 'Pinning'} ${row.label}…`);
+    try {
+      const result = await api.patchRoot(agentId, row.root, pinned
+        ? { pin_remove: normalizePinPath(row.path) }
+        : { pin_add: normalizePinPath(row.path) });
+      await onRootsChange?.();
+      if (isPendingAgentUpdate(result)) {
+        showNotice(
+          `${row.label} will be ${pinned ? 'unpinned' : 'pinned'} when the Agent reconnects.`,
+          4_000,
+        );
+      } else {
+        showNotice(`${row.label} ${pinned ? 'unpinned' : 'pinned'}.`, 1_800);
+      }
+    } catch (error: unknown) {
+      showNotice(
+        `${pinned ? 'Unpin' : 'Pin'} failed: ${directoryErrorMessage(error)} `
+        + 'Use the pin button to retry.',
+        5_000,
+      );
+    } finally {
+      pinBusyRef.current.delete(row.id);
+      if (mountedRef.current) setPinBusyIds(new Set(pinBusyRef.current));
+    }
+  }, [agentId, onRootsChange, pinnedIds, showNotice]);
+
   const refreshCurrentBranch = useCallback(() => {
     const fallbackRoot = enabledRoots[0];
     if (!fallbackRoot) return;
@@ -711,11 +881,13 @@ export function ExplorerView({
     const scheduled = scheduledRef.current;
     const reservedEntries = reservedEntriesRef.current;
     const active = activeRef.current;
+    const pinBusy = pinBusyRef.current;
     return () => {
       mountedRef.current = false;
       queueRef.current = [];
       scheduled.clear();
       reservedEntries.clear();
+      pinBusy.clear();
       if (noticeTimerRef.current !== null) {
         window.clearTimeout(noticeTimerRef.current);
       }
@@ -757,18 +929,26 @@ export function ExplorerView({
     setHoveredId,
     isMobile,
     copiedPath,
+    pinnedIds,
+    pinBusyIds,
     onActivate: activateNode,
-    onRetry: (root, path) => scheduleLoad(root, path),
+    onRetry: (root, path, append) => scheduleLoad(root, path, append),
+    onCancel: handleCancelLoad,
     onLoadMore: (root, path) => scheduleLoad(root, path, true),
     onCopy: handleCopy,
+    onPin: handlePin,
     onAddToCollection,
   }), [
     activateNode,
     copiedPath,
+    handleCancelLoad,
     handleCopy,
+    handlePin,
     hoveredId,
     isMobile,
     onAddToCollection,
+    pinnedIds,
+    pinBusyIds,
     rows,
     scheduleLoad,
     selectedId,
@@ -855,10 +1035,14 @@ interface ExplorerRowData {
   setHoveredId: (id: string | null) => void;
   isMobile: boolean;
   copiedPath: string | null;
+  pinnedIds: Set<string>;
+  pinBusyIds: Set<string>;
   onActivate: (row: Extract<ExplorerRow, { kind: 'node' }>) => void;
-  onRetry: (root: string, path: string) => void;
+  onRetry: (root: string, path: string, append: boolean) => void;
+  onCancel: (root: string, path: string) => void;
   onLoadMore: (root: string, path: string) => void;
   onCopy: (path: string, label: string) => void;
+  onPin: (row: Extract<ExplorerRow, { kind: 'node' }>) => void;
   onAddToCollection?: (root: string, path: string, anchor: HTMLElement) => void;
 }
 
@@ -868,6 +1052,28 @@ function ExplorerVirtualRow({
   data,
 }: ListChildComponentProps<ExplorerRowData>) {
   const row = data.rows[index];
+  if (row.kind === 'loading') {
+    return (
+      <div
+        style={{
+          ...style,
+          ...styles.messageRow,
+          paddingLeft: 12 + row.depth * 14,
+        }}
+        role="status"
+      >
+        <span style={styles.inlineSpinner} />
+        <span style={styles.loadingText}>{row.message}</span>
+        <button
+          type="button"
+          onClick={() => data.onCancel(row.root, row.parentPath)}
+          style={styles.inlineButton}
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
   if (row.kind === 'message') {
     return (
       <div
@@ -876,12 +1082,13 @@ function ExplorerVirtualRow({
           ...styles.messageRow,
           paddingLeft: 12 + row.depth * 14,
         }}
+        role="alert"
       >
         <span style={styles.errorText} title={row.message}>{row.message}</span>
         {row.retryable && (
           <button
             type="button"
-            onClick={() => data.onRetry(row.root, row.parentPath)}
+            onClick={() => data.onRetry(row.root, row.parentPath, row.append)}
             style={styles.inlineButton}
           >
             Retry
@@ -899,14 +1106,27 @@ function ExplorerVirtualRow({
           paddingLeft: 12 + row.depth * 14,
         }}
       >
-        <button
-          type="button"
-          onClick={() => data.onLoadMore(row.root, row.parentPath)}
-          style={styles.loadMoreButton}
-          disabled={row.loading}
-        >
-          {row.loading ? 'Loading…' : `Load ${PAGE_LIMIT} more…`}
-        </button>
+        {row.loading ? (
+          <>
+            <span style={styles.inlineSpinner} />
+            <span style={styles.loadingText}>Loading more…</span>
+            <button
+              type="button"
+              onClick={() => data.onCancel(row.root, row.parentPath)}
+              style={styles.inlineButton}
+            >
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => data.onLoadMore(row.root, row.parentPath)}
+            style={styles.loadMoreButton}
+          >
+            Load {PAGE_LIMIT} more…
+          </button>
+        )}
       </div>
     );
   }
@@ -914,6 +1134,9 @@ function ExplorerVirtualRow({
   const selected = data.selectedId === row.id;
   const hovered = data.hoveredId === row.id;
   const showActions = !row.denied && (data.isMobile || selected || hovered);
+  const canPin = row.isDirectory && !row.denied;
+  const pinned = data.pinnedIds.has(row.id);
+  const pinBusy = data.pinBusyIds.has(row.id);
   const canCollect = !!(
     data.onAddToCollection
     && row.entry?.entry_type === 'file'
@@ -964,6 +1187,30 @@ function ExplorerVirtualRow({
       {row.denied && <span style={styles.deniedBadge}>denied</span>}
       {showActions && (
         <span style={styles.actions}>
+          {canPin && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                void data.onPin(row);
+              }}
+              style={{
+                ...styles.actionButton,
+                ...(pinned ? styles.actionButtonActive : {}),
+                ...(pinBusy ? styles.actionButtonDisabled : {}),
+              }}
+              title={pinBusy
+                ? `${pinned ? 'Unpinning' : 'Pinning'}…`
+                : pinned
+                  ? 'Unpin folder'
+                  : 'Pin folder to sidebar'}
+              aria-label={`${pinned ? 'Unpin' : 'Pin'} ${row.label}`}
+              aria-pressed={pinned}
+              disabled={pinBusy}
+            >
+              {pinBusy ? <span style={styles.inlineSpinner} /> : <IconPin />}
+            </button>
+          )}
           {canCollect && (
             <button
               type="button"
@@ -1232,6 +1479,14 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
   },
+  actionButtonActive: {
+    background: c.accentBg,
+    color: c.accent,
+  },
+  actionButtonDisabled: {
+    opacity: 0.55,
+    cursor: 'wait',
+  },
   messageRow: {
     display: 'flex',
     alignItems: 'center',
@@ -1246,6 +1501,13 @@ const styles: Record<string, CSSProperties> = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
     color: c.danger,
+  },
+  loadingText: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    color: c.textMuted,
   },
   inlineButton: {
     flexShrink: 0,
@@ -1266,6 +1528,16 @@ const styles: Record<string, CSSProperties> = {
   spinner: {
     width: 9,
     height: 9,
+    border: `1.5px solid ${c.border}`,
+    borderTopColor: c.accent,
+    borderRadius: '50%',
+    animation: 'spin 0.6s linear infinite',
+    boxSizing: 'border-box',
+  },
+  inlineSpinner: {
+    width: 10,
+    height: 10,
+    flexShrink: 0,
     border: `1.5px solid ${c.border}`,
     borderTopColor: c.accent,
     borderRadius: '50%',

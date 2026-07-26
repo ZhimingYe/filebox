@@ -342,6 +342,14 @@ export default function App() {
   }, [activeTab, previewTabs, view, collectionPicker]);
 
   const selectedAgent = useMemo(() => agents.find((a) => a.id === selectedAgentId) || null, [agents, selectedAgentId]);
+  const explorerStructureKey = useMemo(() => {
+    if (!selectedAgent) return '';
+    const rootsKey = selectedAgent.roots
+      .filter((root) => root.enabled)
+      .map((root) => `${root.name}\u0000${root.path_display}`)
+      .join('\u0001');
+    return `${selectedAgent.id}:${rootsKey}`;
+  }, [selectedAgent]);
 
   // Count pinned folders across the selected agent's ENABLED roots, so the
   // sidebar Pinned Folders section can be hidden entirely when there are none
@@ -918,12 +926,13 @@ export default function App() {
                 {isMobile ? (
                   <div style={styles.mobileFileWrap}>
                     <ExplorerView
-                      key={`${selectedAgent.id}:${selectedAgent.resource_revision}`}
+                      key={explorerStructureKey}
                       agentId={selectedAgent.id}
                       roots={selectedAgent.roots}
                       active={view === 'explorer' && !showMobilePreview}
                       onFileSelect={handleFileSelect}
                       onAddToCollection={openCollectionPicker}
+                      onRootsChange={refresh}
                     />
                   </div>
                 ) : (
@@ -933,12 +942,13 @@ export default function App() {
                     showPreview={view === 'explorer' && !!activeTab}
                     list={(
                       <ExplorerView
-                        key={`${selectedAgent.id}:${selectedAgent.resource_revision}`}
+                        key={explorerStructureKey}
                         agentId={selectedAgent.id}
                         roots={selectedAgent.roots}
                         active={view === 'explorer'}
                         onFileSelect={handleFileSelect}
                         onAddToCollection={openCollectionPicker}
+                        onRootsChange={refresh}
                       />
                     )}
                     preview={view === 'explorer' && activeTab ? (
