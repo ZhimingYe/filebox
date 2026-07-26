@@ -5,10 +5,12 @@ import { c } from '../theme';
 
 import {
   isTextFile,
-  isOfficePreviewExt,
-  readOfficePdfPreviewPref,
   styles,
 } from './previewShared';
+import {
+  isOfficePreviewExt,
+  readOfficePdfPreviewPref,
+} from './officePreviewSupport';
 
 // Heavy preview components are lazy-loaded so their deps only download when
 // the user actually opens that file type. The biggest is TextPreview
