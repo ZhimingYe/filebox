@@ -5,6 +5,8 @@ import { c } from '../theme';
 
 import {
   isTextFile,
+  isOfficePreviewExt,
+  readOfficePdfPreviewPref,
   styles,
 } from './previewShared';
 
@@ -20,6 +22,7 @@ const TextPreview = lazy(() => import('./TextPreview').then(m => ({ default: m.T
 const MarkdownPreview = lazy(() => import('./MarkdownPreview').then(m => ({ default: m.MarkdownPreview })));
 const HtmlPreview = lazy(() => import('./HtmlPreview').then(m => ({ default: m.HtmlPreview })));
 const CsvPreview = lazy(() => import('./CsvPreview').then(m => ({ default: m.CsvPreview })));
+const OfficePreview = lazy(() => import('./OfficePreview').then(m => ({ default: m.OfficePreview })));
 
 interface Props {
   agentId: string;
@@ -27,6 +30,8 @@ interface Props {
   path: string;
   entryType: string;
   denied: boolean;
+  /** Agent advertised office_pdf_preview capability. */
+  officeCapable?: boolean;
 }
 
 function SuspenseFallback({ label }: { label: string }) {
@@ -42,11 +47,46 @@ function SuspenseFallback({ label }: { label: string }) {
   );
 }
 
+function DownloadFallback({
+  agentId, root, path, ext, title, hint,
+}: {
+  agentId: string;
+  root: string;
+  path: string;
+  ext: string;
+  title?: string;
+  hint?: string;
+}) {
+  return (
+    <div style={styles.container}>
+      <div style={styles.download}>
+        {title ? (
+          <p style={{ ...styles.downloadText, color: c.text, fontWeight: 600, margin: 0 }}>
+            {title}
+          </p>
+        ) : null}
+        <p style={{
+          ...styles.downloadText,
+          margin: 0,
+          maxWidth: 360,
+          textAlign: 'center',
+          lineHeight: 1.45,
+        }}>
+          {hint || `No preview available for .${ext} files`}
+        </p>
+        <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
+      </div>
+    </div>
+  );
+}
+
 // Memoized so dragging the file/preview splitter (which re-renders App and
 // would otherwise cascade into a Monaco layout pass on every animation
 // frame) does not re-render the preview subtree. Props are all primitives
 // that only change when the selected file changes.
-export const PreviewPane = memo(function PreviewPane({ agentId, root, path, entryType, denied }: Props) {
+export const PreviewPane = memo(function PreviewPane({
+  agentId, root, path, entryType, denied, officeCapable = false,
+}: Props) {
   if (denied) {
     return (
       <div style={styles.container}>
@@ -85,7 +125,7 @@ export const PreviewPane = memo(function PreviewPane({ agentId, root, path, entr
   if (ext === 'pdf') {
     return (
       <Suspense fallback={<SuspenseFallback label="Loading PDF viewer..." />}>
-        <PdfPreview key={`${root}:${path}`} agentId={agentId} root={root} path={path} url={url} />
+        <PdfPreview key={`${root}:${path}`} agentId={agentId} root={root} path={path} />
       </Suspense>
     );
   }
@@ -114,6 +154,44 @@ export const PreviewPane = memo(function PreviewPane({ agentId, root, path, entr
     );
   }
 
+  if (isOfficePreviewExt(ext)) {
+    const prefOn = readOfficePdfPreviewPref();
+    if (officeCapable && prefOn) {
+      return (
+        <Suspense fallback={<SuspenseFallback label="Loading Office preview..." />}>
+          <OfficePreview
+            key={`${agentId}:${root}:${path}`}
+            agentId={agentId}
+            root={root}
+            path={path}
+          />
+        </Suspense>
+      );
+    }
+    if (!prefOn) {
+      return (
+        <DownloadFallback
+          agentId={agentId}
+          root={root}
+          path={path}
+          ext={ext}
+          title="Office preview is off"
+          hint="This browser downloads Office files instead of converting them. Turn preview on in Settings anytime — or keep it off and download."
+        />
+      );
+    }
+    return (
+      <DownloadFallback
+        agentId={agentId}
+        root={root}
+        path={path}
+        ext={ext}
+        title="Preview not available on this agent"
+        hint="In-browser Office preview is optional and needs LibreOffice on the agent. Browsing and download still work as usual."
+      />
+    );
+  }
+
   if (isTextFile(ext)) {
     return (
       <Suspense fallback={<SuspenseFallback label="Loading code viewer..." />}>
@@ -123,12 +201,6 @@ export const PreviewPane = memo(function PreviewPane({ agentId, root, path, entr
   }
 
   return (
-    <div style={styles.container}>
-      <div style={styles.download}>
-        <p style={styles.downloadText}>No preview available for .{ext} files</p>
-        <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
-      </div>
-    </div>
+    <DownloadFallback agentId={agentId} root={root} path={path} ext={ext} />
   );
 });
-

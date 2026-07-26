@@ -3,6 +3,14 @@ use serde::de::{Error as DeError, SeqAccess, Visitor};
 use crate::resources::{Capabilities, CollectionConfig, FileStat, FsEntry, RootConfig, SysStats};
 use crate::search::{SearchMode, SearchResult};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficePreviewOutput {
+    pub label: String,
+    pub format: String,
+    pub cache_key: String,
+    pub size: u64,
+}
+
 // ── Agent → Hub ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +101,17 @@ pub enum AgentMessage {
     WorkspaceSearchResponse {
         req_id: String,
         result: Option<SearchResult>,
+        error: Option<String>,
+    },
+    /// Office conversion result. `cache_key` / `size` retain the primary
+    /// output for rolling-upgrade compatibility; `outputs` contains every
+    /// derived PDF or per-sheet CSV.
+    OfficeConvertResponse {
+        req_id: String,
+        cache_key: Option<String>,
+        size: Option<u64>,
+        #[serde(default)]
+        outputs: Vec<OfficePreviewOutput>,
         error: Option<String>,
     },
 }
@@ -231,6 +250,12 @@ pub enum HubMessage {
         /// `None` / `0` = unlimited.
         #[serde(default)]
         max_depth: Option<u32>,
+    },
+    /// Convert an Office document under a root to PDF via external LibreOffice.
+    OfficeConvertRequest {
+        req_id: String,
+        root: String,
+        path: String,
     },
 }
 
@@ -455,6 +480,68 @@ mod tests {
             AgentMessage::SysStatsResponse { stats, .. } => {
                 assert!(stats.is_some());
                 assert_eq!(stats.unwrap().cpu_usage_percent, 10.0);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn office_convert_request_response_round_trips() {
+        let req = HubMessage::OfficeConvertRequest {
+            req_id: "oc1".into(),
+            root: "docs".into(),
+            path: "/report.docx".into(),
+        };
+        let back = round_trip_hub(&req);
+        match back {
+            HubMessage::OfficeConvertRequest { root, path, .. } => {
+                assert_eq!(root, "docs");
+                assert_eq!(path, "/report.docx");
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let resp = AgentMessage::OfficeConvertResponse {
+            req_id: "oc1".into(),
+            cache_key: Some("abc123".into()),
+            size: Some(4096),
+            outputs: vec![OfficePreviewOutput {
+                label: "Document".into(),
+                format: "pdf".into(),
+                cache_key: "abc123".into(),
+                size: 4096,
+            }],
+            error: None,
+        };
+        let back = round_trip_agent(&resp);
+        match back {
+            AgentMessage::OfficeConvertResponse {
+                cache_key,
+                size,
+                outputs,
+                error,
+                ..
+            } => {
+                assert_eq!(cache_key.as_deref(), Some("abc123"));
+                assert_eq!(size, Some(4096));
+                assert_eq!(outputs.len(), 1);
+                assert_eq!(outputs[0].format, "pdf");
+                assert!(error.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let legacy: AgentMessage = serde_json::from_value(serde_json::json!({
+            "type": "office_convert_response",
+            "req_id": "oc-old",
+            "cache_key": "abc123",
+            "size": 4096,
+            "error": null
+        }))
+        .unwrap();
+        match legacy {
+            AgentMessage::OfficeConvertResponse { outputs, .. } => {
+                assert!(outputs.is_empty());
             }
             _ => panic!("wrong variant"),
         }

@@ -30,10 +30,7 @@ pub struct PreviewSession {
 }
 
 pub const PREVIEW_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
-pub const PREVIEW_SESSION_MAX_REQUESTS: u32 = 500;
-pub const PREVIEW_SESSION_MAX_BYTES: u64 = 512 * 1024 * 1024;
 pub const PREVIEW_SESSION_MAX_TOTAL: usize = 1024;
-pub const PREVIEW_SESSION_MAX_PER_SESSION: usize = 32;
 
 /// Short-lived bearer for headerless GETs (downloads, PDF range fetches, SSE).
 /// Minted under CSRF; consumed via `access_token` query — never the CSRF secret.
@@ -57,15 +54,18 @@ pub struct GetAccessToken {
     pub requests_served: u32,
 }
 
-pub const GET_ACCESS_TOKEN_TTL_FILE: Duration = Duration::from_secs(15 * 60);
+/// Scoped to one file and still bound to the live browser session. One hour
+/// avoids forcing a complex/large PDF to remount while the user is reading.
+pub const GET_ACCESS_TOKEN_TTL_FILE: Duration = Duration::from_secs(60 * 60);
 /// EventSource reconnects remint before expiry; keep this long enough that a
 /// healthy tab is not forced through mint storms, but short enough that a
 /// leaked URL dies reasonably fast.
 pub const GET_ACCESS_TOKEN_TTL_EVENTS: Duration = Duration::from_secs(30 * 60);
 /// PDF.js issues many Range requests against the same URL.
-pub const GET_ACCESS_TOKEN_MAX_FILE_REQUESTS: u32 = 2_000;
+///
+/// `requests_served` is diagnostic only. Normal PDF range traffic must not
+/// turn into a user-visible authorization failure.
 pub const GET_ACCESS_TOKEN_MAX_TOTAL: usize = 4_096;
-pub const GET_ACCESS_TOKEN_MAX_PER_SESSION: usize = 64;
 
 #[derive(Clone)]
 pub struct AuthenticatedSession {
@@ -129,6 +129,9 @@ pub struct AppState {
     pub inner: Arc<RwLock<AppStateInner>>,
     pub rate_limiter: Arc<LoginRateLimiter>,
     pub ws_rate_limiter: Arc<LoginRateLimiter>,
+    /// Bounds simultaneous streamed raw responses by actual concurrency,
+    /// independent of how many files a user has viewed historically.
+    pub raw_read_semaphore: Arc<tokio::sync::Semaphore>,
     pub secure_cookies: bool,
 }
 
@@ -178,6 +181,10 @@ impl AppState {
             // or network partition. Keep this high enough for same-IP NATed
             // agents while still bounding unauthenticated WS auth attempts.
             ws_rate_limiter: Arc::new(LoginRateLimiter::new(300, std::time::Duration::from_secs(30))),
+            // 70 rapid PDF opens must fit without becoming a user-visible
+            // rate limit. Memory remains bounded because each stream asks the
+            // Agent for at most RAW_STREAM_CHUNK_BYTES at a time.
+            raw_read_semaphore: Arc::new(tokio::sync::Semaphore::new(96)),
             secure_cookies,
         }
     }
@@ -307,6 +314,10 @@ mod tests {
         // Verify rate limiter is initialized with default thresholds
         assert!(state.rate_limiter.check("any-ip").is_ok());
         assert!(state.ws_rate_limiter.check("any-ip").is_ok());
+        assert!(
+            state.raw_read_semaphore.available_permits() >= 70,
+            "rapidly opening 70 PDFs must fit below the raw-stream concurrency bound"
+        );
     }
 
     #[test]

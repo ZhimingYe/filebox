@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
+use tokio::task::JoinSet;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -19,6 +20,15 @@ use crate::sysinfo::StatsCache;
 /// At most one workspace search at a time — large trees are expensive and
 /// must not pile up under load. Additional requests get a fast busy error.
 const MAX_SEARCH_INFLIGHT: usize = 1;
+
+/// File reads can block indefinitely in a kernel filesystem call (notably on
+/// unhealthy NFS/FUSE mounts). Keep both the actively blocking set and the
+/// waiting set bounded so file traffic cannot consume the Tokio blocking pool
+/// or grow memory without limit. The queue accommodates a burst well above the
+/// Hub's 96 concurrent raw streams without turning normal PDF traffic into a
+/// historical/request-count quota.
+const FS_WORKER_CONCURRENCY: usize = 32;
+const FS_MAX_INFLIGHT: usize = 256;
 
 // ── Timeouts and tunables ─────────────────────────────────────────────────
 //
@@ -103,6 +113,46 @@ where
     }
 }
 
+fn try_spawn_fs_job<F>(
+    tasks: &mut JoinSet<()>,
+    admission: &Arc<Semaphore>,
+    workers: &Arc<Semaphore>,
+    tx: &mpsc::Sender<AgentMessage>,
+    job: F,
+    panic_response: AgentMessage,
+) -> bool
+where
+    F: FnOnce() -> AgentMessage + Send + 'static,
+{
+    let Ok(admission_permit) = admission.clone().try_acquire_owned() else {
+        return false;
+    };
+    let workers = workers.clone();
+    let tx = tx.clone();
+    tasks.spawn(async move {
+        let _admission_permit = admission_permit;
+        let Ok(worker_permit) = workers.acquire_owned().await else {
+            return;
+        };
+        // Move the permit into the blocking closure. If the WebSocket
+        // connection disappears and aborts this async wrapper, a kernel-stuck
+        // syscall still owns its global permit until it actually returns.
+        let blocking = tokio::task::spawn_blocking(move || {
+            let _worker_permit = worker_permit;
+            job()
+        });
+        let response = match blocking.await {
+            Ok(response) => response,
+            Err(join_error) => {
+                tracing::error!("File I/O worker failed: {}", join_error);
+                panic_response
+            }
+        };
+        let _ = tx.send(response).await;
+    });
+    true
+}
+
 pub async fn run_connection_loop(config: &AgentConfig) {
     let ws_url = build_ws_url(&config.hub_url);
     let mut backoff_secs = 1u64;
@@ -121,6 +171,21 @@ pub async fn run_connection_loop(config: &AgentConfig) {
     // both the main file list and the directory tree. Cleared on resource
     // reconfigure inside the connection loop.
     let dir_cache: Arc<DirCache> = DirCache::new();
+    let office_runtime = crate::office_convert::probe_from_env(&config.data_dir).and_then(
+        |office_config| match crate::office_convert::OfficeRuntime::new(office_config) {
+            Ok(runtime) => Some(runtime),
+            Err(error) => {
+                tracing::warn!(
+                    "Office runtime initialization failed: {} — office_pdf_preview disabled",
+                    error
+                );
+                None
+            }
+        },
+    );
+    // Shared across reconnects. A filesystem syscall left behind by a broken
+    // WebSocket must continue counting against the same global worker bound.
+    let fs_workers = Arc::new(Semaphore::new(FS_WORKER_CONCURRENCY));
 
     tracing::info!(
         "Agent ID: {}, data dir: {:?}",
@@ -138,6 +203,8 @@ pub async fn run_connection_loop(config: &AgentConfig) {
             &stable_agent_id,
             &stats_cache,
             &dir_cache,
+            office_runtime.as_ref(),
+            &fs_workers,
         )
         .await;
 
@@ -190,6 +257,8 @@ async fn run_one_connection(
     stable_agent_id: &str,
     stats_cache: &Arc<StatsCache>,
     dir_cache: &Arc<DirCache>,
+    office_runtime: Option<&Arc<crate::office_convert::OfficeRuntime>>,
+    fs_workers: &Arc<Semaphore>,
 ) {
     tracing::info!("Connecting to {}", ws_url);
 
@@ -262,6 +331,16 @@ async fn run_one_connection(
     capabilities.pinned_folders = true;
     capabilities.collections = true;
     capabilities.workspace_search = true;
+    // Temporary runtime degradation is request-scoped, not a capability
+    // change. Keeping the configured capability advertised lets a later
+    // user-triggered retry recover after Office is reinstalled, without
+    // polling or requiring another Agent reconnect.
+    capabilities.office_pdf_preview = office_runtime.is_some();
+    if let Some(runtime) = office_runtime {
+        capabilities.office_max_src_bytes = Some(runtime.config.max_src_bytes);
+        capabilities.office_max_pdf_bytes = Some(runtime.config.max_pdf_bytes);
+        capabilities.office_timeout_secs = Some(runtime.config.timeout.as_secs());
+    }
     let register = AgentMessage::Register {
         agent_id: Some(stable_agent_id.to_string()),
         name: config.agent_name.clone(),
@@ -286,13 +365,17 @@ async fn run_one_connection(
     // Step 5: Main message loop with liveness timeout.
     let mut ping_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
 
-    // Workspace search runs off the WS loop so heartbeats/liveness keep
-    // working under heavy trees. Completed responses arrive on search_rx.
+    // Workspace search / office convert run off the WS loop so heartbeats
+    // keep working. Completed responses arrive on worker_rx.
     // Capacity >1 so Progress try_send rarely drops under burst.
     let (search_tx, mut search_rx) = mpsc::channel::<AgentMessage>(32);
     let search_inflight = Arc::new(AtomicUsize::new(0));
     let search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    let (office_tx, mut office_rx) = mpsc::channel::<AgentMessage>(32);
+    let (fs_tx, mut fs_rx) = mpsc::channel::<AgentMessage>(128);
+    let fs_admission = Arc::new(Semaphore::new(FS_MAX_INFLIGHT));
+    let mut fs_tasks = JoinSet::new();
 
     loop {
         tokio::select! {
@@ -304,6 +387,25 @@ async fn run_one_connection(
                     Message::Text(serde_json::to_string(&response).unwrap().into()),
                 )
                 .await;
+            }
+            Some(response) = office_rx.recv() => {
+                let _ = send_with_timeout(
+                    &mut write,
+                    Message::Text(serde_json::to_string(&response).unwrap().into()),
+                )
+                .await;
+            }
+            Some(response) = fs_rx.recv() => {
+                let _ = send_with_timeout(
+                    &mut write,
+                    Message::Text(serde_json::to_string(&response).unwrap().into()),
+                )
+                .await;
+            }
+            Some(result) = fs_tasks.join_next(), if !fs_tasks.is_empty() => {
+                if let Err(error) = result {
+                    tracing::warn!("File I/O task ended unexpectedly: {}", error);
+                }
             }
             // Wrap read.next() in a timeout so a silent half-open TCP is
             // detected within NO_MESSAGE_TIMEOUT rather than waiting for the
@@ -436,79 +538,223 @@ async fn run_one_connection(
                                 let roots_vec = resource_mgr.roots().to_vec();
                                 let dirs_only_flag = dirs_only.unwrap_or(false);
                                 let cache_clone = dir_cache.clone();
-                                let result = tokio::task::spawn_blocking(move || {
-                                    cache_clone.list(
+                                let rid = req_id.clone();
+                                let panic_response = AgentMessage::FsListResponse {
+                                    req_id: rid,
+                                    items: vec![],
+                                    next_cursor: None,
+                                    error: Some("agent_internal_error".to_string()),
+                                };
+                                let job_req_id = req_id.clone();
+                                let accepted = try_spawn_fs_job(
+                                    &mut fs_tasks,
+                                    &fs_admission,
+                                    fs_workers,
+                                    &fs_tx,
+                                    move || match cache_clone.list(
                                         &roots_vec, &root, &path, limit as usize,
                                         cursor.as_deref(), dirs_only_flag,
+                                    ) {
+                                        Ok((items, next_cursor)) => AgentMessage::FsListResponse {
+                                            req_id: job_req_id,
+                                            items,
+                                            next_cursor,
+                                            error: None,
+                                        },
+                                        Err(e) => AgentMessage::FsListResponse {
+                                            req_id: job_req_id,
+                                            items: vec![],
+                                            next_cursor: None,
+                                            error: Some(e),
+                                        },
+                                    },
+                                    panic_response,
+                                );
+                                if !accepted {
+                                    let response = AgentMessage::FsListResponse {
+                                        req_id,
+                                        items: vec![],
+                                        next_cursor: None,
+                                        error: Some(
+                                            "agent_overloaded: file I/O queue is full".to_string(),
+                                        ),
+                                    };
+                                    let _ = send_with_timeout(
+                                        &mut write,
+                                        Message::Text(
+                                            serde_json::to_string(&response).unwrap().into(),
+                                        ),
                                     )
-                                }).await;
-                                let response = match result {
-                                    Ok(Ok((items, next_cursor))) => AgentMessage::FsListResponse {
-                                        req_id,
-                                        items,
-                                        next_cursor,
-                                        error: None,
-                                    },
-                                    Ok(Err(e)) => AgentMessage::FsListResponse {
-                                        req_id,
-                                        items: vec![],
-                                        next_cursor: None,
-                                        error: Some(e),
-                                    },
-                                    Err(join_err) => AgentMessage::FsListResponse {
-                                        req_id,
-                                        items: vec![],
-                                        next_cursor: None,
-                                        error: Some(format!("agent worker panicked: {}", join_err)),
-                                    },
-                                };
-                                let _ = send_with_timeout(&mut write, Message::Text(
-                                    serde_json::to_string(&response).unwrap().into(),
-                                )).await;
+                                    .await;
+                                }
                             }
                             Ok(HubMessage::FsStatRequest { req_id, root, path }) => {
                                 tracing::debug!("FS stat: root={}, path={}", root, path);
                                 let roots_vec = resource_mgr.roots().to_vec();
-                                let result = tokio::task::spawn_blocking(move || {
-                                    crate::fs::stat_file(&roots_vec, &root, &path)
-                                }).await;
-                                let response = match result {
-                                    Ok(Ok(stat)) => AgentMessage::FsStatResponse {
-                                        req_id, stat: Some(stat), error: None,
-                                    },
-                                    Ok(Err(e)) => AgentMessage::FsStatResponse {
-                                        req_id, stat: None, error: Some(e),
-                                    },
-                                    Err(join_err) => AgentMessage::FsStatResponse {
-                                        req_id, stat: None,
-                                        error: Some(format!("agent worker panicked: {}", join_err)),
-                                    },
+                                let runtime = office_runtime.cloned();
+                                let rid = req_id.clone();
+                                let panic_response = AgentMessage::FsStatResponse {
+                                    req_id: rid,
+                                    stat: None,
+                                    error: Some("agent_internal_error".to_string()),
                                 };
-                                let _ = send_with_timeout(&mut write, Message::Text(
-                                    serde_json::to_string(&response).unwrap().into(),
-                                )).await;
+                                let job_req_id = req_id.clone();
+                                let accepted = try_spawn_fs_job(
+                                    &mut fs_tasks,
+                                    &fs_admission,
+                                    fs_workers,
+                                    &fs_tx,
+                                    move || {
+                                        if let Some(cache) =
+                                            crate::office_convert::parse_cache_virtual_path(&path)
+                                        {
+                                            match runtime {
+                                                Some(rt) => match crate::office_convert::stat_cache(
+                                                    &rt.config.office_dir,
+                                                    &roots_vec,
+                                                    &root,
+                                                    &cache,
+                                                ) {
+                                                    Ok(size) => AgentMessage::FsStatResponse {
+                                                        req_id: job_req_id,
+                                                        stat: Some(
+                                                            filebox_protocol::resources::FileStat {
+                                                                path,
+                                                                entry_type:
+                                                                    filebox_protocol::resources::FsEntryType::File,
+                                                                size,
+                                                                modified: None,
+                                                                permissions: None,
+                                                                denied: false,
+                                                            },
+                                                        ),
+                                                        error: None,
+                                                    },
+                                                    Err(e) => AgentMessage::FsStatResponse {
+                                                        req_id: job_req_id,
+                                                        stat: None,
+                                                        error: Some(e),
+                                                    },
+                                                },
+                                                None => AgentMessage::FsStatResponse {
+                                                    req_id: job_req_id,
+                                                    stat: None,
+                                                    error: Some("office_unavailable".to_string()),
+                                                },
+                                            }
+                                        } else {
+                                            match crate::fs::stat_file(&roots_vec, &root, &path) {
+                                                Ok(stat) => AgentMessage::FsStatResponse {
+                                                    req_id: job_req_id,
+                                                    stat: Some(stat),
+                                                    error: None,
+                                                },
+                                                Err(e) => AgentMessage::FsStatResponse {
+                                                    req_id: job_req_id,
+                                                    stat: None,
+                                                    error: Some(e),
+                                                },
+                                            }
+                                        }
+                                    },
+                                    panic_response,
+                                );
+                                if !accepted {
+                                    let response = AgentMessage::FsStatResponse {
+                                        req_id,
+                                        stat: None,
+                                        error: Some(
+                                            "agent_overloaded: file I/O queue is full".to_string(),
+                                        ),
+                                    };
+                                    let _ = send_with_timeout(
+                                        &mut write,
+                                        Message::Text(
+                                            serde_json::to_string(&response).unwrap().into(),
+                                        ),
+                                    )
+                                    .await;
+                                }
                             }
                             Ok(HubMessage::FileReadRequest { req_id, root, path, offset, length }) => {
                                 tracing::debug!("FS read: root={}, path={}, offset={}, len={:?}", root, path, offset, length);
                                 let roots_vec = resource_mgr.roots().to_vec();
-                                let result = tokio::task::spawn_blocking(move || {
-                                    crate::fs::read_file_range(&roots_vec, &root, &path, offset, length)
-                                }).await;
-                                let response = match result {
-                                    Ok(Ok((data, done))) => AgentMessage::FileChunk {
-                                        req_id, offset, data, done, error: None,
-                                    },
-                                    Ok(Err(e)) => AgentMessage::FileChunk {
-                                        req_id, offset: 0, data: vec![], done: true, error: Some(e),
-                                    },
-                                    Err(join_err) => AgentMessage::FileChunk {
-                                        req_id, offset: 0, data: vec![], done: true,
-                                        error: Some(format!("agent worker panicked: {}", join_err)),
-                                    },
+                                let runtime = office_runtime.cloned();
+                                let rid = req_id.clone();
+                                let panic_response = AgentMessage::FileChunk {
+                                    req_id: rid,
+                                    offset: 0,
+                                    data: vec![],
+                                    done: true,
+                                    error: Some("agent_internal_error".to_string()),
                                 };
-                                let _ = send_with_timeout(&mut write, Message::Text(
-                                    serde_json::to_string(&response).unwrap().into(),
-                                )).await;
+                                let job_req_id = req_id.clone();
+                                let accepted = try_spawn_fs_job(
+                                    &mut fs_tasks,
+                                    &fs_admission,
+                                    fs_workers,
+                                    &fs_tx,
+                                    move || {
+                                        let read_result = if let Some(cache) =
+                                            crate::office_convert::parse_cache_virtual_path(&path)
+                                        {
+                                            match runtime {
+                                                Some(rt) => crate::office_convert::read_cache_range(
+                                                    &rt.config.office_dir,
+                                                    &roots_vec,
+                                                    &root,
+                                                    &cache,
+                                                    offset,
+                                                    length,
+                                                ),
+                                                None => Err("office_unavailable".to_string()),
+                                            }
+                                        } else {
+                                            crate::fs::read_file_range(
+                                                &roots_vec,
+                                                &root,
+                                                &path,
+                                                offset,
+                                                length,
+                                            )
+                                        };
+                                        match read_result {
+                                            Ok((data, done)) => AgentMessage::FileChunk {
+                                                req_id: job_req_id,
+                                                offset,
+                                                data,
+                                                done,
+                                                error: None,
+                                            },
+                                            Err(e) => AgentMessage::FileChunk {
+                                                req_id: job_req_id,
+                                                offset: 0,
+                                                data: vec![],
+                                                done: true,
+                                                error: Some(e),
+                                            },
+                                        }
+                                    },
+                                    panic_response,
+                                );
+                                if !accepted {
+                                    let response = AgentMessage::FileChunk {
+                                        req_id,
+                                        offset: 0,
+                                        data: vec![],
+                                        done: true,
+                                        error: Some(
+                                            "agent_overloaded: file I/O queue is full".to_string(),
+                                        ),
+                                    };
+                                    let _ = send_with_timeout(
+                                        &mut write,
+                                        Message::Text(
+                                            serde_json::to_string(&response).unwrap().into(),
+                                        ),
+                                    )
+                                    .await;
+                                }
                             }
                             Ok(HubMessage::Cancel { req_id }) => {
                                 tracing::debug!("Cancel request: {}", req_id);
@@ -516,6 +762,9 @@ async fn run_one_connection(
                                     if let Some(flag) = map.get(&req_id) {
                                         flag.store(true, Ordering::Relaxed);
                                     }
+                                }
+                                if let Some(rt) = office_runtime {
+                                    rt.request_cancel(&req_id);
                                 }
                             }
                             Ok(HubMessage::SysStatsRequest { req_id }) => {
@@ -621,18 +870,33 @@ async fn run_one_connection(
                                         total: None,
                                         message: Some("Starting search…".to_string()),
                                     });
-                                    let outcome = crate::search::run_search(&roots_vec, params);
+                                    let outcome = std::panic::catch_unwind(
+                                        std::panic::AssertUnwindSafe(|| {
+                                            crate::search::run_search(&roots_vec, params)
+                                        }),
+                                    );
                                     let response = match outcome {
-                                        Ok(result) => AgentMessage::WorkspaceSearchResponse {
+                                        Ok(Ok(result)) => AgentMessage::WorkspaceSearchResponse {
                                             req_id: rid.clone(),
                                             result: Some(result),
                                             error: None,
                                         },
-                                        Err(e) => AgentMessage::WorkspaceSearchResponse {
+                                        Ok(Err(e)) => AgentMessage::WorkspaceSearchResponse {
                                             req_id: rid.clone(),
                                             result: None,
                                             error: Some(e),
                                         },
+                                        Err(_) => {
+                                            tracing::error!(
+                                                "Workspace search worker panicked for {}",
+                                                rid
+                                            );
+                                            AgentMessage::WorkspaceSearchResponse {
+                                                req_id: rid.clone(),
+                                                result: None,
+                                                error: Some("agent_internal_error".to_string()),
+                                            }
+                                        }
                                     };
                                     if let Ok(mut map) = cancels.lock() {
                                         map.remove(&rid);
@@ -642,6 +906,148 @@ async fn run_one_connection(
                                     // returns immediately; while the loop is
                                     // alive it must deliver the terminal msg.
                                     let _ = tx.blocking_send(response);
+                                });
+                            }
+                            Ok(HubMessage::OfficeConvertRequest { req_id, root, path }) => {
+                                tracing::debug!(
+                                    "Office convert: root={} path={}",
+                                    root,
+                                    path
+                                );
+                                let Some(rt) = office_runtime.cloned() else {
+                                    let resp = AgentMessage::OfficeConvertResponse {
+                                        req_id,
+                                        cache_key: None,
+                                        size: None,
+                                        outputs: vec![],
+                                        error: Some("unsupported_feature".to_string()),
+                                    };
+                                    let _ = send_with_timeout(
+                                        &mut write,
+                                        Message::Text(
+                                            serde_json::to_string(&resp).unwrap().into(),
+                                        ),
+                                    )
+                                    .await;
+                                    continue;
+                                };
+                                let lease = match rt.reserve_job(&req_id) {
+                                    Ok(lease) => lease,
+                                    Err(error) => {
+                                        let resp = AgentMessage::OfficeConvertResponse {
+                                            req_id,
+                                            cache_key: None,
+                                            size: None,
+                                            outputs: vec![],
+                                            error: Some(error),
+                                        };
+                                        let _ = send_with_timeout(
+                                            &mut write,
+                                            Message::Text(
+                                                serde_json::to_string(&resp).unwrap().into(),
+                                            ),
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                };
+                                let roots_vec = resource_mgr.roots().to_vec();
+                                let tx = office_tx.clone();
+                                let progress_tx = office_tx.clone();
+                                let rid = req_id.clone();
+                                let rid_for_progress = req_id.clone();
+                                let on_progress: crate::office_convert::ProgressFn =
+                                    Arc::new(move |phase, processed, message| {
+                                        let msg = AgentMessage::Progress {
+                                            req_id: rid_for_progress.clone(),
+                                            phase: phase.to_string(),
+                                            processed,
+                                            // Phase index only — not a byte total.
+                                            total: None,
+                                            message,
+                                        };
+                                        let _ = progress_tx.try_send(msg);
+                                    });
+                                let worker_timeout =
+                                    rt.config.timeout.saturating_add(Duration::from_secs(5));
+                                let rt_for_timeout = rt.clone();
+                                let worker = tokio::task::spawn_blocking(move || {
+                                    let _ = tx.try_send(AgentMessage::Progress {
+                                        req_id: rid.clone(),
+                                        phase: "preparing".to_string(),
+                                        processed: 0,
+                                        total: None,
+                                        message: Some("Preparing preview…".to_string()),
+                                    });
+                                    let outcome = crate::office_convert::run_convert_reserved(
+                                        rt.as_ref(),
+                                        &roots_vec,
+                                        &rid,
+                                        &root,
+                                        &path,
+                                        lease,
+                                        Some(on_progress),
+                                    );
+                                    match outcome {
+                                        Ok(r) => {
+                                            let legacy_pdf = r
+                                                .outputs
+                                                .first()
+                                                .is_some_and(|output| output.format == "pdf");
+                                            AgentMessage::OfficeConvertResponse {
+                                                req_id: rid.clone(),
+                                                cache_key: legacy_pdf
+                                                    .then_some(r.cache_key),
+                                                size: legacy_pdf.then_some(r.size),
+                                                outputs: r.outputs,
+                                                error: None,
+                                            }
+                                        }
+                                        Err(e) => AgentMessage::OfficeConvertResponse {
+                                            req_id: rid.clone(),
+                                            cache_key: None,
+                                            size: None,
+                                            outputs: vec![],
+                                            error: Some(e),
+                                        },
+                                    }
+                                });
+                                let terminal_tx = office_tx.clone();
+                                let terminal_req_id = req_id.clone();
+                                tokio::spawn(async move {
+                                    let response =
+                                        match tokio::time::timeout(worker_timeout, worker).await {
+                                        Ok(Ok(response)) => response,
+                                        Ok(Err(join_error)) => {
+                                            tracing::error!(
+                                                "Office worker failed for {}: {}",
+                                                terminal_req_id,
+                                                join_error
+                                            );
+                                            AgentMessage::OfficeConvertResponse {
+                                                req_id: terminal_req_id,
+                                                cache_key: None,
+                                                size: None,
+                                                outputs: vec![],
+                                                error: Some("office_internal_error".to_string()),
+                                            }
+                                        }
+                                        Err(_) => {
+                                            // A kernel-stuck filesystem read cannot be force-
+                                            // cancelled in-process. Still finish the protocol
+                                            // request on time and set the cooperative flag; the
+                                            // bounded blocking pool isolates any lingering syscall.
+                                            rt_for_timeout.request_cancel(&terminal_req_id);
+                                            AgentMessage::OfficeConvertResponse {
+                                                req_id: terminal_req_id,
+                                                cache_key: None,
+                                                size: None,
+                                                outputs: vec![],
+                                                error: Some("office_timeout".to_string()),
+                                            }
+                                        }
+                                    };
+                                    let _ = terminal_tx.send(response).await;
                                 });
                             }
                             Ok(HubMessage::Error { message }) => {
@@ -675,16 +1081,22 @@ async fn run_one_connection(
         }
     }
 
-    // Abort any in-flight search workers before teardown.
+    // Abort any in-flight search / office workers before teardown.
     if let Ok(map) = search_cancels.lock() {
         for flag in map.values() {
             flag.store(true, Ordering::Relaxed);
         }
     }
+    if let Some(rt) = office_runtime {
+        rt.cancel_all();
+    }
+    fs_tasks.abort_all();
     // Drop the search result receiver so a worker blocked on
     // `blocking_send` (channel full of Progress after the read loop
     // stopped polling) unblocks immediately instead of hanging forever.
     drop(search_rx);
+    drop(office_rx);
+    drop(fs_rx);
 
     // Best-effort Close frame so the hub can run cleanup immediately instead
     // of waiting for TCP timeout. Ignore errors — we're tearing down anyway.
@@ -694,7 +1106,15 @@ async fn run_one_connection(
 
 #[cfg(test)]
 mod tests {
-    use super::build_ws_url;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use filebox_protocol::message::AgentMessage;
+    use tokio::sync::{mpsc, Semaphore};
+    use tokio::task::JoinSet;
+
+    use super::{build_ws_url, try_spawn_fs_job};
 
     #[test]
     fn translates_https_to_wss() {
@@ -735,5 +1155,99 @@ mod tests {
     #[test]
     fn falls_back_to_ws_without_scheme() {
         assert_eq!(build_ws_url("hub.example.com:3000"), "ws://hub.example.com:3000/ws/agent");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn file_jobs_bound_queue_and_blocking_concurrency() {
+        let admission = Arc::new(Semaphore::new(6));
+        let workers = Arc::new(Semaphore::new(2));
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut tasks = JoinSet::new();
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+
+        for _ in 0..6 {
+            let active = active.clone();
+            let max_active = max_active.clone();
+            assert!(try_spawn_fs_job(
+                &mut tasks,
+                &admission,
+                &workers,
+                &tx,
+                move || {
+                    let now = active.fetch_add(1, Ordering::AcqRel) + 1;
+                    max_active.fetch_max(now, Ordering::AcqRel);
+                    std::thread::sleep(Duration::from_millis(20));
+                    active.fetch_sub(1, Ordering::AcqRel);
+                    AgentMessage::Pong
+                },
+                AgentMessage::Pong,
+            ));
+        }
+        assert!(
+            !try_spawn_fs_job(
+                &mut tasks,
+                &admission,
+                &workers,
+                &tx,
+                || AgentMessage::Pong,
+                AgentMessage::Pong,
+            ),
+            "the admission bound must reject work instead of spawning an unbounded waiter"
+        );
+
+        for _ in 0..6 {
+            assert!(matches!(rx.recv().await, Some(AgentMessage::Pong)));
+        }
+        while tasks.join_next().await.is_some() {}
+        assert!(
+            max_active.load(Ordering::Acquire) <= 2,
+            "blocking filesystem concurrency exceeded its worker bound"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocked_file_job_keeps_global_worker_permit_after_wrapper_abort() {
+        let admission = Arc::new(Semaphore::new(1));
+        let workers = Arc::new(Semaphore::new(1));
+        let (tx, _rx) = mpsc::channel(1);
+        let mut tasks = JoinSet::new();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        assert!(try_spawn_fs_job(
+            &mut tasks,
+            &admission,
+            &workers,
+            &tx,
+            move || {
+                let _ = release_rx.recv();
+                AgentMessage::Pong
+            },
+            AgentMessage::Pong,
+        ));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while workers.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        assert_eq!(
+            workers.available_permits(),
+            0,
+            "aborting a connection wrapper must not forget a stuck filesystem syscall"
+        );
+
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while workers.available_permits() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 }

@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { AgentInfo } from '../api/client';
 import { RootManager } from './RootManager';
+import {
+  readOfficePdfPreviewPref,
+  writeOfficePdfPreviewPref,
+} from './previewShared';
 import { c, radius, font, shadow } from '../theme';
 
 interface Props {
@@ -42,13 +46,23 @@ function formatLastSeen(epochSec: number, nowMs: number): string {
 export function AgentSettings({ agent, onRefresh }: Props) {
   const status = statusPresentation(agent.status);
   const enabledRoots = agent.roots.filter((r) => r.enabled).length;
+  const officeCapable = !!agent.capabilities?.office_pdf_preview;
   // Local clock so "Last seen" stays honest while the page is open without a
   // hub refresh. 30s is enough for "just now" / "Xm ago" granularity.
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [officePdfPreview, setOfficePdfPreview] = useState(() => readOfficePdfPreviewPref());
   useEffect(() => {
     const id = window.setInterval(() => setNowMs(Date.now()), 30_000);
     return () => window.clearInterval(id);
   }, []);
+
+  function toggleOfficePdfPreview() {
+    // Preference is browser-local and always editable — including when this
+    // agent has no LibreOffice — so users can opt out without being nudged.
+    const next = !officePdfPreview;
+    writeOfficePdfPreviewPref(next);
+    setOfficePdfPreview(next);
+  }
 
   return (
     <div style={styles.page}>
@@ -117,6 +131,50 @@ export function AgentSettings({ agent, onRefresh }: Props) {
                 <span style={styles.bannerBody}>{agent.last_config_error}</span>
               </div>
             )}
+          </section>
+
+          {/* ── Preview preferences ────────────────────────────────────── */}
+          <section style={styles.card} aria-labelledby="settings-preview-title">
+            <div style={styles.cardHeader}>
+              <h3 id="settings-preview-title" style={styles.cardTitle}>
+                Preview
+              </h3>
+            </div>
+            <div style={styles.prefRow}>
+              <div style={styles.prefText}>
+                <div style={styles.prefLabel}>Office preview</div>
+                <p style={styles.prefHint}>
+                  {officeCapable
+                    ? 'Optional. Word and PowerPoint open as PDF; spreadsheets open as per-sheet CSV. Leave off to download originals only.'
+                    : 'Optional. This agent has no LibreOffice for conversion — download still works. The switch only affects agents that support preview.'}
+                </p>
+                {!officeCapable && (
+                  <p style={{ ...styles.prefHint, marginTop: 6, color: c.textMuted }}>
+                    Operator note: point the agent at soffice via FILEBOX_AGENT_SOFFICE if you want preview later.
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={officePdfPreview}
+                aria-label="Office preview"
+                onClick={toggleOfficePdfPreview}
+                style={{
+                  ...styles.switchTrack,
+                  ...(officePdfPreview ? styles.switchTrackOn : null),
+                  // Dim when the preference cannot apply to this agent.
+                  ...(!officeCapable ? { opacity: 0.72 } : null),
+                }}
+              >
+                <span
+                  style={{
+                    ...styles.switchThumb,
+                    ...(officePdfPreview ? styles.switchThumbOn : null),
+                  }}
+                />
+              </button>
+            </div>
           </section>
 
           {/* ── Workspace roots ────────────────────────────────────────── */}
@@ -310,5 +368,57 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.45,
     color: c.textSecondary,
     overflowWrap: 'break-word',
+  },
+  prefRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 16,
+    padding: '16px 20px 18px',
+  },
+  prefText: {
+    minWidth: 0,
+    flex: 1,
+  },
+  prefLabel: {
+    fontSize: 13.5,
+    fontWeight: 500,
+    color: c.text,
+  },
+  prefHint: {
+    margin: '6px 0 0',
+    fontSize: 12.5,
+    lineHeight: 1.45,
+    color: c.textSecondary,
+  },
+  switchTrack: {
+    position: 'relative' as const,
+    width: 40,
+    height: 22,
+    borderRadius: radius.pill,
+    border: `1px solid ${c.border}`,
+    background: c.bgSubtle,
+    cursor: 'pointer',
+    flexShrink: 0,
+    padding: 0,
+    transition: 'background 0.15s, border-color 0.15s',
+  },
+  switchTrackOn: {
+    background: c.accent,
+    borderColor: c.accent,
+  },
+  switchThumb: {
+    position: 'absolute' as const,
+    top: 2,
+    left: 2,
+    width: 16,
+    height: 16,
+    borderRadius: radius.pill,
+    background: c.surface,
+    boxShadow: shadow.xs,
+    transition: 'transform 0.15s',
+  },
+  switchThumbOn: {
+    transform: 'translateX(18px)',
   },
 };

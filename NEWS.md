@@ -5,6 +5,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 ## Unreleased
 
 ### Added
+- **Office preview** — optional Agent-side LibreOffice conversion: Word/PowerPoint reuse the PDF viewer, while `xls`/`xlsx`/`xlsm`/`ods` export every worksheet as UTF-8 CSV and reuse the existing CSV viewer. Configure `FILEBOX_AGENT_SOFFICE` (rootless tarball install supported); gated by the compatibility capability `capabilities.office_pdf_preview`. Progress + cancel, per-job sandbox/profile, process-group kill on timeout/cancel, bounded on-disk derived-file cache, and browser Settings switch (`filebox.officePdfPreview`, default on).
 - **Workspace Search** — sidebar Search view with fd-like Files mode (filename substring) and rg-like Content mode (case-insensitive regex + context). Scoped to one root and optional folder; optional extension filter. In-process on the agent (`ignore` + `regex`); path-safe, no symlink follow, denylist-aware. Progress via SSE, cancelable, one concurrent search per agent, scan/result caps for high-load trees. Gated by `capabilities.workspace_search`.
 - **Workspace Search ignore + depth** — UI fields for folder names to skip (`renv`, `venv`, `node_modules`, … by default) and max directory depth. Sent per request; prefs saved per backend in the browser. No agent.toml required.
 - **Workspace Search results UX** — virtualized hit list (`react-window`) plus a static “Filter results” box over path/context (client-side only; does not re-query the agent).
@@ -12,6 +13,8 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ### Changed
 - **Image preview** — flex stage fits tall images; wheel / pinch zoom and pointer pan; dimension downscale caps (max edge 8192, ~16M pixels); `ImagePreview` is now lazy-loaded like other heavy viewers.
+- **Preview size confirmation** — images and PDFs (including Office-converted PDFs) require explicit confirmation at 15 MiB or larger; text, Markdown, and HTML require confirmation at 2 MiB or larger. CSV and TSV require confirmation from 2 MiB through 15 MiB and stay download-only above 15 MiB.
+- **CSV preview hardening** — the table keeps only the first 100 logical records, correctly handles quoted multiline cells, and avoids expanding the full file into a line array.
 - **Login** — removed the misleading `admin` username placeholder; credentials must still be typed explicitly.
 
 ### Security
@@ -20,7 +23,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **Denylist expanded** — `shadow`/`gshadow`/`sudoers`, `.pgpass`/`.htpasswd`, `credentials.csv`/`credentials.txt`, `secrets.y{a,}ml`/`secrets.toml`, `*.tfstate`, `*.kdbx`, and related cloud credential filenames.
 - **Path validators** — pin/collection paths reject `\`; Hub WS debug logs no longer print raw post-auth frames (avoids token leakage).
 - **CSRF synchronizer token** — login issues a per-session CSRF token (JSON + non-HttpOnly `filebox_csrf` / `__Host-filebox_csrf` cookie). Protected API calls must send `X-CSRF-Token` (header only). Blocks same-site sibling pages that can send the session cookie but cannot read the CSRF cookie.
-- **GET access tokens** — `POST /api/access-tokens` mints short-lived, purpose-scoped bearers for headerless GETs (`/api/file/raw` downloads / PDF ranges, `/api/events` SSE). The CSRF secret is never placed in URLs, history, or proxy logs. File tokens TTL 15m / 2k request budget; the PDF viewer remints once on auth failure (403/429). Scope checks parse query strings with the same `form_urlencoded` decoder as axum `Query`.
+- **GET access tokens** — `POST /api/access-tokens` mints short-lived, purpose-scoped bearers for headerless GETs (`/api/file/raw` downloads / PDF ranges, `/api/events` SSE). The CSRF secret is never placed in URLs, history, or proxy logs. File tokens have a 15m TTL and path scope but no cumulative request quota; request counts are diagnostic only. The PDF viewer remints once on auth failure (403/429). Scope checks parse query strings with the same `form_urlencoded` decoder as axum `Query`.
 
 
 ---

@@ -215,7 +215,7 @@ pub async fn workspace_search_handler(
     };
 
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
-    {
+    let send_ok = {
         let mut pending = inner.pending_responses.write().await;
         pending.insert(
             req_id.clone(),
@@ -227,10 +227,13 @@ pub async fn workspace_search_handler(
                 desired_collections: None,
             },
         );
-    }
+        // Keep cancellation from observing the pending request until the
+        // search is ordered on the Agent channel.
+        inner.agents.send_to_agent(&agent_id, msg)
+    };
 
-    if !inner.agents.send_to_agent(&agent_id, msg) {
-        drop(inner);
+    drop(inner);
+    if !send_ok {
         cleanup_pending(&state, &req_id).await;
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -239,8 +242,6 @@ pub async fn workspace_search_handler(
             true,
         );
     }
-
-    drop(inner);
 
     // Publish req_id immediately so the UI can Cancel via /api/cancel without
     // waiting for the final JSON body (long searches). Echo client_nonce when
@@ -276,17 +277,25 @@ pub async fn workspace_search_handler(
             guard.disarm();
             // Compact payload + req_id so the UI can cancel via /api/cancel.
             let result = value.get("result").cloned().unwrap_or(serde_json::Value::Null);
-            let error = value.get("error").cloned().unwrap_or(serde_json::Value::Null);
+            let raw_error = value.get("error").and_then(|v| v.as_str());
             // Hub cancel injects {state:"cancelled", error:"cancelled"} without result.
             let cancelled = value
                 .get("state")
                 .and_then(|v| v.as_str())
                 == Some("cancelled")
-                || error.as_str() == Some("cancelled");
+                || raw_error == Some("cancelled");
+            let error = if cancelled {
+                serde_json::json!("cancelled")
+            } else {
+                raw_error
+                    .map(normalize_agent_search_error)
+                    .map(serde_json::Value::from)
+                    .unwrap_or(serde_json::Value::Null)
+            };
             Json(serde_json::json!({
                 "req_id": req_id,
                 "result": result,
-                "error": if cancelled { serde_json::json!("cancelled") } else { error },
+                "error": error,
             }))
             .into_response()
         }
@@ -300,6 +309,27 @@ pub async fn workspace_search_handler(
             )
         }
     }
+}
+
+fn normalize_agent_search_error(error: &str) -> &'static str {
+    if error == "agent_internal_error" {
+        return "agent_internal_error";
+    }
+    if error.starts_with("Invalid regex:") {
+        return "invalid_search_pattern";
+    }
+    if error.contains("not a directory") || error.starts_with("Path not found:") {
+        return "search_path_unavailable";
+    }
+    if error.starts_with("Root '") {
+        return "root_unavailable";
+    }
+    if error == "Content search requires a non-empty query"
+        || error == "Path must not contain NUL"
+    {
+        return "invalid_request";
+    }
+    "search_failed"
 }
 
 fn normalize_search_path(path: &str) -> String {
@@ -393,7 +423,10 @@ fn error_response(status: StatusCode, error: &str, message: &str, retryable: boo
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_ignore_names, normalize_search_path, path_has_dotdot};
+    use super::{
+        normalize_agent_search_error, normalize_ignore_names, normalize_search_path,
+        path_has_dotdot,
+    };
 
     #[test]
     fn rejects_dotdot_components_only() {
@@ -473,5 +506,21 @@ mod tests {
     fn normalize_ignore_names_rejects_too_many() {
         let names: Vec<String> = (0..129).map(|i| format!("d{i}")).collect();
         assert!(normalize_ignore_names(&names).is_err());
+    }
+
+    #[test]
+    fn agent_search_errors_are_reduced_to_stable_codes() {
+        assert_eq!(
+            normalize_agent_search_error("Invalid regex: external engine detail"),
+            "invalid_search_pattern"
+        );
+        assert_eq!(
+            normalize_agent_search_error("Root 'docs' path '/private/mount' is not accessible"),
+            "root_unavailable"
+        );
+        assert_eq!(
+            normalize_agent_search_error("unexpected OS error containing a local path"),
+            "search_failed"
+        );
     }
 }

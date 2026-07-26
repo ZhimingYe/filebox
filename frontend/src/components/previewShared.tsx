@@ -140,10 +140,37 @@ export const binaryExts = new Set([
   // Media (non-image)
   'mp3', 'mp4', 'wav', 'flac', 'ogg', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm',
   'ttf', 'otf', 'woff', 'woff2', 'eot',
-  // Other binary
-  'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp',
+  // Other binary (Office stay binary so they never fall into TextPreview)
+  'doc', 'docx', 'docm', 'xls', 'xlsx', 'xlsm', 'ppt', 'pptx', 'pptm',
+  'odt', 'ods', 'odp',
   'epub', 'mobi',
 ]);
+
+/** Extensions converted via Agent LibreOffice to PDF or per-sheet CSV. */
+export const OFFICE_PREVIEW_EXTS = new Set([
+  'doc', 'docx', 'docm', 'ppt', 'pptx', 'pptm', 'xls', 'xlsx', 'xlsm', 'ods',
+]);
+
+export function isOfficePreviewExt(ext: string): boolean {
+  return OFFICE_PREVIEW_EXTS.has(ext.toLowerCase());
+}
+
+const OFFICE_PDF_PREF_KEY = 'filebox.officePdfPreview';
+
+/** Browser preference: when false, Office files stay download-only. Default on. */
+export function readOfficePdfPreviewPref(): boolean {
+  try {
+    return localStorage.getItem(OFFICE_PDF_PREF_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+export function writeOfficePdfPreviewPref(enabled: boolean): void {
+  try {
+    localStorage.setItem(OFFICE_PDF_PREF_KEY, enabled ? 'true' : 'false');
+  } catch { /* ignore quota */ }
+}
 
 export function isTextFile(ext: string): boolean {
   if (binaryExts.has(ext)) return false;
@@ -178,13 +205,16 @@ export function LoadingOverlay({ message, onCancel }: {
 // still usable. This handles files removed after the directory was listed
 // without polling or monitoring the directory for changes.
 
+const MEDIA_PREVIEW_CONFIRM_BYTES = 15 * 1024 * 1024;
+const TEXT_PREVIEW_CONFIRM_BYTES = 2 * 1024 * 1024;
+
 export const PREVIEW_SIZE_THRESHOLDS = {
-  image: 10 * 1024 * 1024,
-  pdf: 10 * 1024 * 1024,
-  text: 2 * 1024 * 1024,
-  markdown: 2 * 1024 * 1024,
-  html: 2 * 1024 * 1024,
-  csv: 5 * 1024 * 1024,
+  image: MEDIA_PREVIEW_CONFIRM_BYTES,
+  pdf: MEDIA_PREVIEW_CONFIRM_BYTES,
+  text: TEXT_PREVIEW_CONFIRM_BYTES,
+  markdown: TEXT_PREVIEW_CONFIRM_BYTES,
+  html: TEXT_PREVIEW_CONFIRM_BYTES,
+  csv: TEXT_PREVIEW_CONFIRM_BYTES,
 } as const;
 
 export function useFileGate(opts: {
@@ -224,7 +254,7 @@ export function useFileGate(opts: {
   }, [agentId, root, path, threshold, retryToken, mounted]);
 
   const sizeUnknown = size === null && error === null;
-  const isLarge = size !== null && size > threshold;
+  const isLarge = size !== null && size >= threshold;
 
   return {
     size,

@@ -451,6 +451,7 @@ export function CollectionsView({
               onCloseAll={previewTabs.closeAll}
               onCloseLeft={previewTabs.closeLeft}
               onCloseRight={previewTabs.closeRight}
+              officeCapable={!!agent.capabilities?.office_pdf_preview}
             />
           )}
         />

@@ -66,32 +66,47 @@ export function friendlyMessage(error: any): string {
     session_expired: 'Session expired. Please log in again.',
     csrf_denied: 'Security check failed. Reload the page and try again.',
     access_token_invalid: 'Download authorization expired. Retry the download.',
-    access_token_exhausted: 'Download authorization exhausted. Retry the download.',
     invalid_credentials: 'Invalid username or password.',
     not_found: 'Resource not found.',
     backend_slow: 'Agent is responding slowly.',
     request_stalled: 'Request appears stalled. You can cancel or retry.',
     request_cancelled: 'Request was cancelled.',
-    too_many_requests: 'Too many active requests. Please wait and retry.',
+    login_rate_limited: 'Too many login attempts. Please wait and retry.',
     file_too_large: 'File is too large to preview.',
+    file_unavailable: 'The file is no longer available or cannot be accessed.',
     preview_too_large: 'Preview is too large to render.',
     permission_denied: 'Permission denied.',
     path_denied: 'Access denied — sensitive file.',
     denied_sensitive_path: 'Access denied — sensitive file.',
     hub_overloaded: 'Server is overloaded. Please retry later.',
     agent_overloaded: 'Agent is overloaded. Please retry later.',
+    agent_internal_error: 'The agent operation failed safely. Please retry.',
     invalid_root_path: 'Path does not exist or is not accessible.',
     invalid_root_name: 'Invalid root name.',
     invalid_pinned_path: 'Invalid pinned folder path.',
     invalid_collection_name: 'Invalid collection name.',
     unsupported: 'This agent does not support that feature. Upgrade the agent.',
     invalid_request: 'Invalid search request.',
-    cancelled: 'Search cancelled.',
-    agent_busy: 'Agent is busy with another search. Wait or cancel it.',
+    invalid_search_pattern: 'The search pattern is invalid.',
+    search_path_unavailable: 'The search folder is no longer available.',
+    search_failed: 'Search failed safely. Please retry.',
+    cancelled: 'Request was cancelled.',
+    agent_busy: 'Agent is busy with another request. Wait or cancel it.',
     invalid_collection_path: 'Invalid collection file path.',
     collection_name_conflict: 'A collection with this name already exists.',
     resource_rejected: 'Agent rejected this change. The folder may be missing or the root changed.',
-    unsupported_feature: 'This agent version does not support pinned folders.',
+    unsupported_feature: 'This agent does not support that feature.',
+    unsupported_format: 'This file type cannot be converted for preview.',
+    office_unavailable: 'Office preview is temporarily unavailable. You can still download the original.',
+    office_timeout: 'Office conversion timed out. You can still download the original.',
+    office_convert_failed: 'Could not convert this document for preview. You can still download the original.',
+    office_storage_error: 'The agent could not store the temporary preview.',
+    office_cache_too_small: 'The converted preview exceeds the agent’s Office cache budget. Increase FILEBOX_AGENT_OFFICE_CACHE_BYTES.',
+    office_source_unavailable: 'The source document is no longer readable.',
+    office_source_too_large: 'This document exceeds the agent’s configured conversion limit.',
+    office_output_too_large: 'The converted preview exceeds the agent’s configured output limit.',
+    office_internal_error: 'The Office preview worker failed safely. Please retry.',
+    denied: 'Access denied — sensitive file.',
   };
   if (code && map[code]) return map[code];
   return 'An unexpected error occurred.';
@@ -162,6 +177,16 @@ export async function logout() {
 
 // ── Health ───────────────────────────────────────────────────────────────────
 
+export interface AgentCapabilities {
+  office_pdf_preview: boolean;
+  office_max_src_bytes?: number | null;
+  office_max_pdf_bytes?: number | null;
+  office_timeout_secs?: number | null;
+  workspace_search: boolean;
+  pinned_folders: boolean;
+  collections: boolean;
+}
+
 export interface AgentInfo {
   id: string;
   name: string;
@@ -176,6 +201,8 @@ export interface AgentInfo {
   collections_revision: number;
   pending_collections_update: boolean;
   collections: CollectionInfo[];
+  /** Present on current hubs; treat missing fields as false for older hubs. */
+  capabilities?: Partial<AgentCapabilities>;
 }
 
 export interface CollectionItem {
@@ -592,4 +619,88 @@ export async function cancelRequest(agentId: string, reqId: string) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent_id: agentId, req_id: reqId }),
   });
+}
+
+export interface OfficePreviewOutput {
+  label: string;
+  format: 'pdf' | 'csv';
+  cache_key: string;
+  size: number;
+}
+
+/** Virtual path for a cached Office-derived preview on the agent. */
+export function officeCacheVirtualPath(cacheKey: string, format: 'pdf' | 'csv' = 'pdf'): string {
+  return `/.filebox/office-cache/${cacheKey}.${format}`;
+}
+
+export async function officeConvert(
+  agentId: string,
+  root: string,
+  path: string,
+  reqId: string,
+  clientNonce: string,
+  signal?: AbortSignal,
+): Promise<{
+  req_id?: string;
+  cache_key: string;
+  size: number;
+  outputs: OfficePreviewOutput[];
+}> {
+  const raw = await request<{
+    req_id?: string;
+    cache_key: string | null;
+    size: number | null;
+    outputs?: Array<{
+      label?: unknown;
+      format?: unknown;
+      cache_key?: unknown;
+      size?: unknown;
+    }>;
+    error: string | null;
+  }>(`/api/agents/${agentId}/office-convert`, {
+    method: 'POST',
+    body: JSON.stringify({ root, path, req_id: reqId, client_nonce: clientNonce }),
+    signal,
+  });
+  if (raw.error) {
+    throw { status: 400, error: raw.error, message: raw.error };
+  }
+  const outputs = (raw.outputs || []).flatMap((output): OfficePreviewOutput[] => {
+    if (
+      typeof output.label !== 'string'
+      || (output.format !== 'pdf' && output.format !== 'csv')
+      || typeof output.cache_key !== 'string'
+      || !/^[0-9a-f]{64}$/i.test(output.cache_key)
+      || typeof output.size !== 'number'
+      || !Number.isFinite(output.size)
+      || output.size < 0
+      || (output.format === 'pdf' && output.size === 0)
+    ) {
+      return [];
+    }
+    return [{
+      label: output.label,
+      format: output.format,
+      cache_key: output.cache_key,
+      size: output.size,
+    }];
+  });
+  if (outputs.length === 0) {
+    if (!raw.cache_key || raw.size == null || raw.size <= 0) {
+      throw { status: 502, error: 'office_convert_failed', message: 'office_convert_failed' };
+    }
+    outputs.push({
+      label: 'Document',
+      format: 'pdf',
+      cache_key: raw.cache_key,
+      size: raw.size,
+    });
+  }
+  const primary = outputs[0];
+  return {
+    req_id: raw.req_id,
+    cache_key: raw.cache_key || primary.cache_key,
+    size: raw.size ?? primary.size,
+    outputs,
+  };
 }

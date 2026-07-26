@@ -18,9 +18,9 @@ use crate::agent_registry::AgentStatus;
 use crate::net::client_ip;
 use crate::state::{
     AppState, AuthenticatedSession, GetAccessPurpose, GetAccessToken, PendingResponse,
-    PreviewSession, GET_ACCESS_TOKEN_MAX_FILE_REQUESTS, GET_ACCESS_TOKEN_MAX_PER_SESSION,
-    GET_ACCESS_TOKEN_MAX_TOTAL, GET_ACCESS_TOKEN_TTL_EVENTS, GET_ACCESS_TOKEN_TTL_FILE,
-    PREVIEW_SESSION_MAX_PER_SESSION, PREVIEW_SESSION_MAX_TOTAL, PREVIEW_SESSION_TTL,
+    PreviewSession, GET_ACCESS_TOKEN_MAX_TOTAL, GET_ACCESS_TOKEN_TTL_EVENTS,
+    GET_ACCESS_TOKEN_TTL_FILE,
+    PREVIEW_SESSION_MAX_TOTAL, PREVIEW_SESSION_TTL,
 };
 use crate::{events, fs_proxy, health, ws};
 
@@ -80,6 +80,10 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/agents/{agent_id}/workspace-search",
             post(crate::search_proxy::workspace_search_handler),
+        )
+        .route(
+            "/api/agents/{agent_id}/office-convert",
+            post(crate::office_proxy::office_convert_handler),
         )
         .route("/api/cancel", post(cancel_handler))
         .layer(axum::middleware::from_fn_with_state(
@@ -512,17 +516,6 @@ async fn claim_get_access_token(
                 )
                     .into_response());
             }
-            if record.requests_served >= GET_ACCESS_TOKEN_MAX_FILE_REQUESTS {
-                return Err((
-                    StatusCode::TOO_MANY_REQUESTS,
-                    Json(serde_json::json!({
-                        "error": "access_token_exhausted",
-                        "message": "Access token request budget exceeded",
-                        "retryable": true,
-                    })),
-                )
-                    .into_response());
-            }
             record.requests_served = record.requests_served.saturating_add(1);
         }
     }
@@ -606,7 +599,7 @@ async fn session_exchange_handler(
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({
-                "error": "too_many_requests",
+                "error": "login_rate_limited",
                 "message": format!("Too many login attempts. Try again in {} seconds.", remaining),
                 "retryable": true,
             })),
@@ -750,6 +743,42 @@ async fn access_token_create_handler(
                 )
                     .into_response();
             }
+            {
+                let inner = state.inner.read().await;
+                let Some(agent) = inner.agents.get(&agent_id) else {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(serde_json::json!({
+                            "error": "backend_offline",
+                            "message": "Agent not found or offline",
+                            "retryable": true,
+                        })),
+                    )
+                        .into_response();
+                };
+                if agent.status == AgentStatus::Offline {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(serde_json::json!({
+                            "error": "backend_offline",
+                            "message": "Agent is offline",
+                            "retryable": true,
+                        })),
+                    )
+                        .into_response();
+                }
+                if !agent.roots.iter().any(|r| r.name == root && r.enabled) {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(serde_json::json!({
+                            "error": "root_unavailable",
+                            "message": "Root is no longer available",
+                            "retryable": true,
+                        })),
+                    )
+                        .into_response();
+                }
+            }
             (
                 Some(agent_id),
                 Some(root),
@@ -760,8 +789,9 @@ async fn access_token_create_handler(
         GetAccessPurpose::Events => (None, None, None, GET_ACCESS_TOKEN_TTL_EVENTS),
     };
 
-    let token = generate_access_token();
     let now = std::time::Instant::now();
+    let reuse_until = now + std::time::Duration::from_secs(60);
+    let mut token = generate_access_token();
     let record = GetAccessToken {
         session_id: session.id.clone(),
         principal_id: session.principal_id.clone(),
@@ -780,20 +810,39 @@ async fn access_token_create_handler(
     {
         let mut map = tokens.write().await;
         map.retain(|_, t| t.expires_at > now);
-        let mine = map
-            .values()
-            .filter(|t| t.principal_id == session.principal_id)
-            .count();
-        if map.len() >= GET_ACCESS_TOKEN_MAX_TOTAL || mine >= GET_ACCESS_TOKEN_MAX_PER_SESSION {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(serde_json::json!({
-                    "error": "too_many_requests",
-                    "message": "Too many access tokens; retry later",
-                    "retryable": true,
-                })),
-            )
-                .into_response();
+
+        // Reuse an existing scoped bearer. Re-mounting a PDF, clicking the
+        // same download repeatedly, or adding another SSE subscriber must not
+        // consume a cumulative per-user budget.
+        if let Some((existing, existing_record)) = map.iter().find(|(_, existing)| {
+            existing.principal_id == record.principal_id
+                && existing.purpose == record.purpose
+                && existing.agent_id == record.agent_id
+                && existing.root == record.root
+                && existing.path == record.path
+                && existing.expires_at > reuse_until
+        }) {
+            token = existing.clone();
+            let remaining = existing_record.expires_at.saturating_duration_since(now);
+            return Json(serde_json::json!({
+                "token": token,
+                "expires_in_sec": remaining.as_secs(),
+            }))
+            .into_response();
+        }
+
+        // This is a memory bound, not a user activity quota. If the global
+        // store is full, retire the bearer nearest expiry instead of rejecting
+        // an ordinary file view/download.
+        while map.len() >= GET_ACCESS_TOKEN_MAX_TOTAL {
+            let Some(oldest) = map
+                .iter()
+                .min_by_key(|(_, existing)| existing.expires_at)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            map.remove(&oldest);
         }
         map.insert(token.clone(), record);
     }
@@ -953,7 +1002,7 @@ async fn preview_session_create_handler(
         let now = std::time::Instant::now();
         let mut previews = preview_sessions.write().await;
         previews.retain(|_, preview| preview.expires_at > now);
-        prune_preview_sessions_for_insert(&mut previews, &session.principal_id);
+        prune_preview_sessions_for_insert(&mut previews);
         previews.insert(token.clone(), preview);
     }
 
@@ -1194,13 +1243,7 @@ fn generate_preview_token() -> String {
 
 fn prune_preview_sessions_for_insert(
     previews: &mut std::collections::HashMap<String, PreviewSession>,
-    session_id: &str,
 ) {
-    prune_oldest_preview_sessions(
-        previews,
-        |preview| preview.session_id == session_id,
-        PREVIEW_SESSION_MAX_PER_SESSION.saturating_sub(1),
-    );
     prune_oldest_preview_sessions(
         previews,
         |_| true,
@@ -1238,12 +1281,12 @@ fn prune_oldest_preview_sessions<F>(
 // ── Cancel ───────────────────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
-struct CancelRequest {
-    agent_id: String,
-    req_id: String,
+pub(crate) struct CancelRequest {
+    pub agent_id: String,
+    pub req_id: String,
 }
 
-async fn cancel_handler(
+pub(crate) async fn cancel_handler(
     State(state): State<AppState>,
     Extension(session): Extension<AuthenticatedSession>,
     Json(req): Json<CancelRequest>,
@@ -2926,6 +2969,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_access_tokens_allow_seventy_distinct_pdf_views() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = {
+            let mut inner = state.inner.write().await;
+            inner.sessions.create_session("admin", false)
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        register_preview_agent(&state, tx).await;
+        let app = create_router(state.clone());
+
+        for index in 0..70 {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/access-tokens")
+                        .header(
+                            header::COOKIE,
+                            format!("filebox_session={}", session.session_id),
+                        )
+                        .header("x-csrf-token", session.csrf_token.clone())
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(format!(
+                            r#"{{"purpose":"file_raw","agent_id":"agent","root":"root","path":"/document-{index}.pdf"}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "PDF token mint {index} should not hit a cumulative user quota"
+            );
+        }
+
+        let tokens = state.inner.read().await.get_access_tokens.clone();
+        assert_eq!(tokens.read().await.len(), 70);
+    }
+
+    #[tokio::test]
     async fn file_raw_access_token_rejects_wrong_path_scope() {
         let state = AppState::new(&test_config(), false);
         let (session, _) = {
@@ -3026,7 +3111,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_raw_access_token_exhausted_after_budget() {
+    async fn file_raw_access_token_does_not_exhaust_on_range_count() {
         let state = AppState::new(&test_config(), false);
         let (session, _) = {
             let mut inner = state.inner.write().await;
@@ -3047,7 +3132,7 @@ mod tests {
                     root: Some("r".to_string()),
                     path: Some("/a.txt".to_string()),
                     expires_at: now + GET_ACCESS_TOKEN_TTL_FILE,
-                    requests_served: GET_ACCESS_TOKEN_MAX_FILE_REQUESTS,
+                    requests_served: u32::MAX,
                 },
             );
         }
@@ -3067,12 +3152,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["error"], "access_token_exhausted");
+        assert_ne!(v["error"], "access_token_exhausted");
     }
 
     #[tokio::test]
@@ -3443,25 +3528,20 @@ mod tests {
     }
 
     #[test]
-    fn preview_pruning_keeps_per_session_token_count_bounded() {
+    fn preview_pruning_is_global_memory_bound_not_user_activity_quota() {
         let base = std::time::Instant::now();
         let mut previews = std::collections::HashMap::new();
-        for i in 0..(PREVIEW_SESSION_MAX_PER_SESSION + 5) {
+        for i in 0..(PREVIEW_SESSION_MAX_TOTAL + 5) {
             previews.insert(
                 format!("s1-{}", i),
                 test_preview("s1", base + std::time::Duration::from_millis(i as u64)),
             );
         }
-        previews.insert("s2-keep".to_string(), test_preview("s2", base));
 
-        prune_preview_sessions_for_insert(&mut previews, "s1");
+        prune_preview_sessions_for_insert(&mut previews);
 
-        let s1_count = previews
-            .values()
-            .filter(|preview| preview.session_id == "s1")
-            .count();
-        assert_eq!(s1_count, PREVIEW_SESSION_MAX_PER_SESSION - 1);
-        assert!(previews.contains_key("s2-keep"));
+        assert_eq!(previews.len(), PREVIEW_SESSION_MAX_TOTAL - 1);
+        assert!(previews.contains_key(&format!("s1-{}", PREVIEW_SESSION_MAX_TOTAL + 4)));
         assert!(!previews.contains_key("s1-0"));
     }
 }
