@@ -19,7 +19,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **Login** — removed the misleading `admin` username placeholder; credentials must still be typed explicitly.
 
 ### Fixed
-- **Explorer interaction recovery** — refresh notices now finish on success, failure, or cancellation; directory chevrons update the selected refresh target; clipboard fallback verifies success, cleans up safely, and reports permission failures instead of silently claiming a copy.
+- **Explorer interaction recovery** — refresh notices now finish on success, failure, or cancellation; directory chevrons update the selected refresh target; Hub errors keep their actionable message; shared Files/Explorer clipboard copying times out into a verified fallback instead of hanging; abandoned directory/stat requests clean up their Hub wait state.
 
 ### Security
 - **Dependency CVEs** — bcrypt 0.19.1 → 0.19.2 (RUSTSEC-2026-0199 panic-DoS); crossbeam-epoch 0.9.18 → 0.9.20 (RUSTSEC-2026-0204); npm `dompurify` overridden to 3.4.12 (Monaco transitive XSS advisories).

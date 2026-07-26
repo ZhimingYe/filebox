@@ -58,7 +58,7 @@ export function friendlyMessage(error: any): string {
     ? raw.split(':')[0]
     : raw;
   const map: Record<string, string> = {
-    backend_offline: 'Agent is offline. Changes will be applied when it reconnects.',
+    backend_offline: 'Agent is offline. Reconnect it, then retry.',
     request_timeout: 'Request timed out. The agent may be slow or unreachable.',
     root_unavailable: 'This root is no longer available.',
     resource_name_conflict: 'A resource with this name already exists.',

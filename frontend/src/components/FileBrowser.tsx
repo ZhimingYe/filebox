@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { FixedSizeList as VList, type ListChildComponentProps } from 'react-window';
 import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { useIsMobile } from '../state/useIsMobile';
 import { c, radius, font, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import { AddressBar } from './AddressBar';
@@ -89,6 +90,7 @@ const PAGE_LIMIT = 200;
 export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onRootsChange, navRequest, onNavHandled, selectedRoot, currentPath, onApplyNav, onSwitchRoot, onAddToCollection }: Props) {
   const isMobile = useIsMobile();
   const ROW_HEIGHT = isMobile ? 44 : 32;
+  const { copiedPath, copyToClipboard } = useCopyToClipboard();
 
   const [entries, setEntries] = useState<api.FsEntry[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -139,7 +141,6 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   useEffect(() => {
     try { localStorage.setItem('filebox.fileNameSerif', fileNameSerif ? '1' : '0'); } catch { /* ignore */ }
   }, [fileNameSerif]);
-  const [copiedPath, setCopiedPath] = useState<string | null>(null);
   // Tree view toggle: persisted so the user keeps their preferred layout.
   const [treeOpen, setTreeOpen] = useState<boolean>(() => {
     // Desktop may restore open; mobile drawers always start closed so they
@@ -295,25 +296,6 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     onNavHandled?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navRequest?.nonce]);
-
-  // Copy to clipboard helper
-  const copyToClipboard = useCallback(async (text: string, label: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedPath(label);
-      setTimeout(() => setCopiedPath(null), 2000);
-    } catch {
-      // Fallback for older browsers
-      const textArea = document.createElement('textarea');
-      textArea.value = text;
-      document.body.appendChild(textArea);
-      textArea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textArea);
-      setCopiedPath(label);
-      setTimeout(() => setCopiedPath(null), 2000);
-    }
-  }, []);
 
   // Measure container height for virtualized list — handled by useFileListLayout.
 

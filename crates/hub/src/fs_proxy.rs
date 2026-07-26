@@ -167,9 +167,13 @@ pub async fn fs_list_handler(
         );
     }
 
+    let cleanup = PendingResponseCleanup {
+        state: state.clone(),
+        req_id: req_id.clone(),
+        active: true,
+    };
     let resp = tokio::time::timeout(Duration::from_secs(30), resp_rx.recv()).await;
-
-    cleanup_pending(&state, &req_id).await;
+    cleanup.finish().await;
 
     match resp {
         Ok(Some(value)) => Json(value).into_response(),
@@ -241,9 +245,13 @@ pub async fn fs_stat_handler(
         );
     }
 
+    let cleanup = PendingResponseCleanup {
+        state: state.clone(),
+        req_id: req_id.clone(),
+        active: true,
+    };
     let resp = tokio::time::timeout(Duration::from_secs(30), resp_rx.recv()).await;
-
-    cleanup_pending(&state, &req_id).await;
+    cleanup.finish().await;
 
     match resp {
         Ok(Some(value)) => Json(value).into_response(),
@@ -632,7 +640,7 @@ async fn request_raw_agent(
         cleanup_pending(state, &req_id).await;
         return Err("Failed to send request to agent".to_string());
     }
-    let cleanup = PendingRawCleanup {
+    let cleanup = PendingResponseCleanup {
         state: state.clone(),
         req_id: req_id.clone(),
         active: true,
@@ -645,20 +653,20 @@ async fn request_raw_agent(
     }
 }
 
-struct PendingRawCleanup {
+struct PendingResponseCleanup {
     state: AppState,
     req_id: String,
     active: bool,
 }
 
-impl PendingRawCleanup {
+impl PendingResponseCleanup {
     async fn finish(mut self) {
         cleanup_pending(&self.state, &self.req_id).await;
         self.active = false;
     }
 }
 
-impl Drop for PendingRawCleanup {
+impl Drop for PendingResponseCleanup {
     fn drop(&mut self) {
         if !self.active {
             return;
@@ -907,9 +915,13 @@ pub async fn sys_stats_handler(
         );
     }
 
+    let cleanup = PendingResponseCleanup {
+        state: state.clone(),
+        req_id: req_id.clone(),
+        active: true,
+    };
     let resp = tokio::time::timeout(Duration::from_secs(10), resp_rx.recv()).await;
-
-    cleanup_pending(&state, &req_id).await;
+    cleanup.finish().await;
 
     match resp {
         Ok(Some(value)) => Json(value).into_response(),
@@ -1246,6 +1258,38 @@ mod tests {
 
         assert!(reserve_preview_bytes(&state, &token, 1).await.is_ok());
         assert!(reserve_preview_bytes(&state, &token, 1).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn pending_response_cleanup_removes_abandoned_request() {
+        let state = AppState::new(&test_config(), true);
+        let req_id = "abandoned-request".to_string();
+        let (tx, _rx) = mpsc::channel(1);
+        let pending = state.inner.read().await.pending_responses.clone();
+        pending.write().await.insert(
+            req_id.clone(),
+            PendingResponse {
+                tx,
+                agent_id: "agent".to_string(),
+                session_id: None,
+                desired_roots: None,
+                desired_collections: None,
+            },
+        );
+
+        drop(PendingResponseCleanup {
+            state: state.clone(),
+            req_id: req_id.clone(),
+            active: true,
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while pending.read().await.contains_key(&req_id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("abandoned pending response should be cleaned up");
     }
 
     // ── file_raw_handler multi-chunk loop ───────────────────────────────────

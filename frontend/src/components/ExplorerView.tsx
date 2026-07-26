@@ -80,6 +80,23 @@ const MAX_CACHED_DIRECTORIES = 64;
 const MAX_CACHED_ENTRIES = 20_000;
 const MAX_CONCURRENT_LOADS = 2;
 
+function directoryErrorMessage(error: unknown): string {
+  const friendly = api.friendlyMessage(error);
+  if (friendly !== 'An unexpected error occurred.') return friendly;
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error.trim()) return error;
+  if (
+    typeof error === 'object'
+    && error !== null
+    && 'message' in error
+    && typeof error.message === 'string'
+    && error.message.trim()
+  ) {
+    return error.message;
+  }
+  return 'Failed to load folder.';
+}
+
 const EMPTY_DIRECTORY: DirectoryState = {
   items: [],
   nextCursor: null,
@@ -272,7 +289,7 @@ export function ExplorerView({
             ...existing,
             loading: false,
             loaded: true,
-            error: data.error,
+            error: directoryErrorMessage(data.error),
             lastUsed: ++usageTickRef.current,
           });
           return next;
@@ -298,7 +315,7 @@ export function ExplorerView({
         return;
       }
       result = 'failed';
-      const message = error instanceof Error ? error.message : 'Failed to load folder';
+      const message = directoryErrorMessage(error);
       updateNodes((previous) => {
         const next = new Map(previous);
         const existing = previous.get(task.key) ?? EMPTY_DIRECTORY;

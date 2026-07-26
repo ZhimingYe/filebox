@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+const CLIPBOARD_WRITE_TIMEOUT_MS = 800;
+
 export function useCopyToClipboard() {
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const clearTimerRef = useRef<number | null>(null);
@@ -12,9 +14,18 @@ export function useCopyToClipboard() {
 
   const copyToClipboard = useCallback(async (text: string, label: string) => {
     let copied: boolean;
+    let writeTimer: number | null = null;
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
-      await navigator.clipboard.writeText(text);
+      await Promise.race([
+        navigator.clipboard.writeText(text),
+        new Promise<never>((_, reject) => {
+          writeTimer = window.setTimeout(
+            () => reject(new Error('Clipboard write timed out')),
+            CLIPBOARD_WRITE_TIMEOUT_MS,
+          );
+        }),
+      ]);
       copied = true;
     } catch {
       const textArea = document.createElement('textarea');
@@ -34,6 +45,8 @@ export function useCopyToClipboard() {
       } finally {
         textArea.remove();
       }
+    } finally {
+      if (writeTimer !== null) window.clearTimeout(writeTimer);
     }
     if (!copied) return false;
 
