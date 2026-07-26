@@ -4,7 +4,7 @@ import { RootManager } from './RootManager';
 import {
   readOfficePdfPreviewPref,
   writeOfficePdfPreviewPref,
-} from './previewShared';
+} from './officePreviewSupport';
 import { c, radius, font, shadow } from '../theme';
 
 interface Props {
