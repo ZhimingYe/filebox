@@ -160,7 +160,7 @@ export const PreviewPane = memo(function PreviewPane({
       return (
         <Suspense fallback={<SuspenseFallback label="Loading Office preview..." />}>
           <OfficePreview
-            key={`${root}:${path}`}
+            key={`${agentId}:${root}:${path}`}
             agentId={agentId}
             root={root}
             path={path}

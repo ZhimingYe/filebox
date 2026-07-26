@@ -87,6 +87,11 @@ export function OfficePreview({ agentId, root, path }: Props) {
     setPhase({ kind: 'error', message: 'Conversion cancelled.', cancelled: true });
   }, [agentId]);
 
+  const retryConvert = useCallback(() => {
+    setPhase({ kind: 'converting', message: 'Preparing preview…' });
+    setRetryToken((n) => n + 1);
+  }, []);
+
   useSse(useCallback((evt) => {
     if (evt.event !== 'progress' || !convertingRef.current) return;
     const d = evt.data as {
@@ -120,7 +125,6 @@ export function OfficePreview({ agentId, root, path }: Props) {
     reqIdRef.current = reqId;
     const controller = new AbortController();
     abortRef.current = controller;
-    setPhase({ kind: 'converting', message: 'Preparing preview…' });
 
     officeConvert(agentId, root, path, reqId, clientNonce, controller.signal)
       .then((result) => {
@@ -179,7 +183,7 @@ export function OfficePreview({ agentId, root, path }: Props) {
             {!phase.cancelled && (
               <button
                 type="button"
-                onClick={() => setRetryToken((n) => n + 1)}
+                onClick={retryConvert}
                 style={{
                   padding: '6px 12px',
                   border: `1px solid ${c.border}`,
@@ -283,7 +287,7 @@ export function OfficePreview({ agentId, root, path }: Props) {
         root={root}
         path={derivedPath}
         downloadPath={path}
-        onRetry={() => setRetryToken((n) => n + 1)}
+        onRetry={retryConvert}
       />
     </Suspense>
   );
