@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end Office→PDF preview smoke (Hub + Agent + fake soffice).
+# End-to-end Office preview smoke (Hub + Agent + fake soffice).
 # No real LibreOffice required. Exit 0 on full pass.
 set -euo pipefail
 
@@ -58,7 +58,7 @@ printf 'plain' >"${DEMO_ROOT}/notes.txt"
 printf 'secret' >"${DEMO_ROOT}/.ssh/notes.docx"
 
 # Fake LibreOffice: honors FAKE_SOFFICE_SLEEP (seconds, float) and FAKE_SOFFICE_FAIL=1.
-# Emits a minimal pdf.js-compatible PDF (base64).
+# Emits a minimal PDF or two worksheet CSV files.
 MIN_PDF_B64='JVBERi0xLjQKMSAwIG9iajw8IC9UeXBlIC9DYXRhbG9nIC9QYWdlcyAyIDAgUiA+PmVuZG9iagoyIDAgb2JqPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj5lbmRvYmoKMyAwIG9iajw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL0NvbnRlbnRzIDQgMCBSIC9SZXNvdXJjZXM8PCAvRm9udDw8IC9GMSA1IDAgUiA+PiA+PiA+PmVuZG9iago0IDAgb2JqPDwgL0xlbmd0aCAzNiA+PnN0cmVhbQpCVCAvRjEgMjQgVGYgNzIgNzIwIFRkIChIZWxsbykgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+ZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU2IDAwMDAwIG4gCjAwMDAwMDAxMTEgMDAwMDAgbiAKMDAwMDAwMDIzMyAwMDAwMCBuIAowMDAwMDAwMzE3IDAwMDAwIG4gCnRyYWlsZXI8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgozODUKJSVFT0YK'
 cat >"${WORKDIR}/fake-soffice" <<EOS
 #!/bin/sh
@@ -69,9 +69,11 @@ if [ "\$1" = "--headless" ] && [ "\$2" = "--version" ]; then
 fi
 outdir=""
 input=""
+convert=""
 prev=""
 for a in "\$@"; do
   if [ "\$prev" = "--outdir" ]; then outdir="\$a"; fi
+  if [ "\$prev" = "--convert-to" ]; then convert="\$a"; fi
   prev="\$a"
   input="\$a"
 done
@@ -88,6 +90,13 @@ if [ "\${FAKE_SOFFICE_FAIL:-0}" = "1" ]; then
 fi
 base=\$(basename "\$input")
 name=\${base%.*}
+case "\$convert" in
+  csv:*)
+    printf 'name,value\nalpha,1\n' > "\$outdir/\$name-Sheet1.csv"
+    : > "\$outdir/\$name-Sheet2.csv"
+    exit 0
+    ;;
+esac
 echo '${MIN_PDF_B64}' | base64 -d > "\$outdir/\$name.pdf"
 exit 0
 EOS
@@ -277,7 +286,15 @@ convert "/b.pptx" "${WORKDIR}/conv_b.json" "${WORKDIR}/conv_b.code"
 convert "/c.xlsx" "${WORKDIR}/conv_c.json" "${WORKDIR}/conv_c.code"
 [[ "$(cat "${WORKDIR}/conv_b.code")" == "200" ]] || fail "E pptx failed"
 [[ "$(cat "${WORKDIR}/conv_c.code")" == "200" ]] || fail "E xlsx failed"
-pass "E pptx + xlsx"
+python3 - <<PY
+import json
+v=json.load(open("${WORKDIR}/conv_c.json"))
+outputs=v["outputs"]
+assert [o["label"] for o in outputs] == ["Sheet1", "Sheet2"], outputs
+assert all(o["format"] == "csv" and int(o["size"]) >= 0 for o in outputs), outputs
+assert int(outputs[0]["size"]) > 0 and int(outputs[1]["size"]) == 0, outputs
+PY
+pass "E pptx PDF + xlsx worksheet CSVs"
 
 # ── F: denylist ─────────────────────────────────────────────────────────────
 convert "/.ssh/notes.docx" "${WORKDIR}/conv_deny.json" "${WORKDIR}/conv_deny.code"
@@ -413,4 +430,4 @@ assert v.get("error") in ("unsupported_feature","unsupported"), v
 PY
 pass "J unsupported_feature without soffice"
 
-log "All Office→PDF e2e checks passed"
+log "All Office preview e2e checks passed"

@@ -5,7 +5,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 ## Unreleased
 
 ### Added
-- **Office → PDF preview** — optional Agent-side LibreOffice conversion for `doc`/`docx`/`docm`, `ppt`/`pptx`/`pptm`, `xls`/`xlsx`/`xlsm`. Configure `FILEBOX_AGENT_SOFFICE` (rootless tarball install supported); gated by `capabilities.office_pdf_preview`. Progress + cancel, per-job sandbox/profile, process-group kill on timeout/cancel, on-disk PDF cache, virtual path `/.filebox/office-cache/<key>.pdf` reused by the existing PDF viewer. Browser Settings switch (`filebox.officePdfPreview`, default on) can disable conversion without removing LibreOffice.
+- **Office preview** — optional Agent-side LibreOffice conversion: Word/PowerPoint reuse the PDF viewer, while `xls`/`xlsx`/`xlsm`/`ods` export every worksheet as UTF-8 CSV and reuse the existing CSV viewer. Configure `FILEBOX_AGENT_SOFFICE` (rootless tarball install supported); gated by the compatibility capability `capabilities.office_pdf_preview`. Progress + cancel, per-job sandbox/profile, process-group kill on timeout/cancel, bounded on-disk derived-file cache, and browser Settings switch (`filebox.officePdfPreview`, default on).
 - **Workspace Search** — sidebar Search view with fd-like Files mode (filename substring) and rg-like Content mode (case-insensitive regex + context). Scoped to one root and optional folder; optional extension filter. In-process on the agent (`ignore` + `regex`); path-safe, no symlink follow, denylist-aware. Progress via SSE, cancelable, one concurrent search per agent, scan/result caps for high-load trees. Gated by `capabilities.workspace_search`.
 - **Workspace Search ignore + depth** — UI fields for folder names to skip (`renv`, `venv`, `node_modules`, … by default) and max directory depth. Sent per request; prefs saved per backend in the browser. No agent.toml required.
 - **Workspace Search results UX** — virtualized hit list (`react-window`) plus a static “Filter results” box over path/context (client-side only; does not re-query the agent).
@@ -13,7 +13,8 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ### Changed
 - **Image preview** — flex stage fits tall images; wheel / pinch zoom and pointer pan; dimension downscale caps (max edge 8192, ~16M pixels); `ImagePreview` is now lazy-loaded like other heavy viewers.
-- **Preview size confirmation** — images and PDFs (including Office-converted PDFs) require explicit confirmation at 15 MiB or larger; text, Markdown, HTML, CSV, and TSV require confirmation at 2 MiB or larger.
+- **Preview size confirmation** — images and PDFs (including Office-converted PDFs) require explicit confirmation at 15 MiB or larger; text, Markdown, and HTML require confirmation at 2 MiB or larger. CSV and TSV require confirmation from 2 MiB through 15 MiB and stay download-only above 15 MiB.
+- **CSV preview hardening** — the table keeps only the first 100 logical records, correctly handles quoted multiline cells, and avoids expanding the full file into a line array.
 - **Login** — removed the misleading `admin` username placeholder; credentials must still be typed explicitly.
 
 ### Security

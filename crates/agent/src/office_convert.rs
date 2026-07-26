@@ -1,10 +1,10 @@
-//! External LibreOffice (`soffice`) Office → PDF conversion.
+//! External LibreOffice (`soffice`) Office preview conversion.
 //!
 //! Enabled only when `FILEBOX_AGENT_SOFFICE` (or `_DIR`) points at a working
 //! binary. Each convert runs in an isolated job sandbox with its own
 //! UserInstallation profile; cancel/timeout kill the process group.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -13,15 +13,19 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use filebox_protocol::message::OfficePreviewOutput;
 use filebox_protocol::resources::RootConfig;
 use sha2::{Digest, Sha256};
 
-/// Virtual path prefix for cached PDFs (not listed by fs_list).
+/// Virtual path prefix for cached derived previews (not listed by fs_list).
 pub const OFFICE_CACHE_VPATH_PREFIX: &str = "/.filebox/office-cache/";
 
 const ALLOWED_EXTS: &[&str] = &[
-    "doc", "docx", "docm", "ppt", "pptx", "pptm", "xls", "xlsx", "xlsm",
+    "doc", "docx", "docm", "ppt", "pptx", "pptm", "xls", "xlsx", "xlsm", "ods",
 ];
+const SPREADSHEET_EXTS: &[&str] = &["xls", "xlsx", "xlsm", "ods"];
+const CSV_CONVERT_SPEC: &str =
+    "csv:Text - txt - csv (StarCalc):44,34,76,1,,0,false,true,true,false,false,-1";
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_MAX_SRC_BYTES: u64 = 512 * 1024 * 1024;
@@ -29,6 +33,8 @@ const DEFAULT_MAX_PDF_BYTES: u64 = 1024 * 1024 * 1024;
 const DEFAULT_CACHE_BYTES: u64 = 1024 * 1024 * 1024;
 const DEFAULT_MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_MAX_MEMORY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_SPREADSHEET_SHEETS: usize = 2048;
+const CACHE_FILE_ACCOUNTING_FLOOR_BYTES: u64 = 4096;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEGRADED_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 static CACHE_META_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -50,6 +56,13 @@ pub struct OfficeConfig {
 pub struct OfficeConvertResult {
     pub cache_key: String,
     pub size: u64,
+    pub outputs: Vec<OfficePreviewOutput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfficeCachePath {
+    pub cache_key: String,
+    pub format: String,
 }
 
 /// Shared runtime for convert jobs (single-flight + cancel handles).
@@ -351,20 +364,26 @@ pub fn extension_of(path: &str) -> Option<String> {
         .map(|e| e.to_ascii_lowercase())
 }
 
-/// Parse `/.filebox/office-cache/<64-hex>.pdf` → cache key.
-pub fn parse_cache_virtual_path(path: &str) -> Option<String> {
+/// Parse `/.filebox/office-cache/<64-hex>.(pdf|csv)`.
+pub fn parse_cache_virtual_path(path: &str) -> Option<OfficeCachePath> {
     let rest = path.strip_prefix(OFFICE_CACHE_VPATH_PREFIX)?;
-    let key = rest.strip_suffix(".pdf")?;
+    let (key, format) = rest.rsplit_once('.')?;
+    if !matches!(format, "pdf" | "csv") {
+        return None;
+    }
     if key.len() == 64 && key.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(key.to_ascii_lowercase())
+        Some(OfficeCachePath {
+            cache_key: key.to_ascii_lowercase(),
+            format: format.to_string(),
+        })
     } else {
         None
     }
 }
 
 #[allow(dead_code)] // Used by callers / tests; keep API next to parse_cache_virtual_path.
-pub fn cache_virtual_path(cache_key: &str) -> String {
-    format!("{OFFICE_CACHE_VPATH_PREFIX}{cache_key}.pdf")
+pub fn cache_virtual_path(cache_key: &str, format: &str) -> String {
+    format!("{OFFICE_CACHE_VPATH_PREFIX}{cache_key}.{format}")
 }
 
 pub type ProgressFn = Arc<dyn Fn(&str, u64, Option<String>) + Send + Sync>;
@@ -496,11 +515,22 @@ fn run_convert_inner(
             src_size,
             on_progress.as_ref(),
         )?;
-        let cache_key = make_cache_key(root, path, &fingerprint, &cfg.version_id);
+        let spreadsheet = SPREADSHEET_EXTS.contains(&ext.as_str());
+        let conversion_key = make_cache_key(
+            root,
+            path,
+            &fingerprint,
+            &cfg.version_id,
+            if spreadsheet { "csv-sheets-v1" } else { "pdf-v1" },
+        );
 
-        if let Some(size) = cache_pdf_size(&cfg.office_dir, &cache_key) {
-            touch_cache_meta(&cfg.office_dir, &cache_key);
-            return Ok(OfficeConvertResult { cache_key, size });
+        if let Some(outputs) = load_cached_outputs(&cfg.office_dir, &conversion_key) {
+            let primary = &outputs[0];
+            return Ok(OfficeConvertResult {
+                cache_key: primary.cache_key.clone(),
+                size: primary.size,
+                outputs,
+            });
         }
 
         if cancel.load(Ordering::Relaxed) {
@@ -511,7 +541,11 @@ fn run_convert_inner(
             &on_progress,
             "converting",
             1,
-            Some("Converting to PDF…".into()),
+            Some(if spreadsheet {
+                "Converting worksheets to CSV…".into()
+            } else {
+                "Converting to PDF…".into()
+            }),
         );
 
         let log_path = job_dir.join("log.txt");
@@ -529,6 +563,7 @@ fn run_convert_inner(
             &cancel,
             &pgid_slot,
             &job_dir,
+            if spreadsheet { CSV_CONVERT_SPEC } else { "pdf" },
         )?;
 
         if cancel.load(Ordering::Relaxed) {
@@ -545,42 +580,86 @@ fn run_convert_inner(
             )),
         );
 
-        let pdf_src = find_output_pdf(&outdir)?;
-        let pdf_meta = fs::metadata(&pdf_src)
-            .map_err(|e| diagnostic("office_storage_error", format!("stat PDF: {e}")))?;
-        let pdf_size = pdf_meta.len();
-        if pdf_size == 0 {
-            return Err("office_convert_failed".to_string());
-        }
-        if pdf_size > cfg.max_pdf_bytes {
+        let derived = find_outputs(&outdir, spreadsheet)?;
+        let total_size = derived.iter().try_fold(0u64, |total, output| {
+            let size = fs::metadata(&output.path)
+                .map_err(|e| diagnostic("office_storage_error", format!("stat output: {e}")))?
+                .len();
+            if size == 0 && output.format != "csv" {
+                return Err("office_convert_failed".to_string());
+            }
+            total
+                .checked_add(size)
+                .ok_or_else(|| "office_output_too_large".to_string())
+        })?;
+        if total_size > cfg.max_pdf_bytes {
             return Err("office_output_too_large".to_string());
         }
-        if cfg.cache_bytes == 0 || pdf_size > cfg.cache_bytes {
+        if cfg.cache_bytes == 0 || total_size > cfg.cache_bytes {
             return Err(diagnostic(
                 "office_cache_too_small",
                 format!(
-                    "converted PDF ({pdf_size} bytes) exceeds Office cache budget ({} bytes)",
+                    "converted preview ({total_size} bytes) exceeds Office cache budget ({} bytes)",
                     cfg.cache_bytes
                 ),
             ));
         }
 
-        promote_to_cache(
-            &cfg.office_dir,
-            &cache_key,
-            &pdf_src,
-            root,
-            &root_canon,
-            path,
-            mtime,
-            src_size,
-            &fingerprint,
-        )?;
-        enforce_cache_budget_preserving(&cfg.office_dir, cfg.cache_bytes, &cache_key);
+        let mut outputs = Vec::with_capacity(derived.len());
+        for (index, output) in derived.iter().enumerate() {
+            let cache_key = if output.format == "pdf" {
+                conversion_key.clone()
+            } else {
+                make_output_cache_key(&conversion_key, index, &output.label, &output.format)
+            };
+            let size = fs::metadata(&output.path)
+                .map_err(|e| diagnostic("office_storage_error", format!("stat output: {e}")))?
+                .len();
+            if let Err(error) = promote_to_cache(
+                &cfg.office_dir,
+                &cache_key,
+                &output.format,
+                &output.path,
+                root,
+                &root_canon,
+                path,
+                mtime,
+                src_size,
+                &fingerprint,
+            ) {
+                remove_cached_outputs(&cfg.office_dir, &outputs);
+                return Err(error);
+            }
+            outputs.push(OfficePreviewOutput {
+                label: output.label.clone(),
+                format: output.format.clone(),
+                cache_key,
+                size,
+            });
+        }
+        if let Err(error) = write_cache_manifest(&cfg.office_dir, &conversion_key, &outputs) {
+            remove_cached_outputs(&cfg.office_dir, &outputs);
+            return Err(error);
+        }
+        let preserve_keys: Vec<String> =
+            outputs.iter().map(|output| output.cache_key.clone()).collect();
+        if !enforce_cache_budget_preserving(&cfg.office_dir, cfg.cache_bytes, &preserve_keys) {
+            let _ = fs::remove_file(cache_manifest_path(&cfg.office_dir, &conversion_key));
+            remove_cached_outputs(&cfg.office_dir, &outputs);
+            return Err(diagnostic(
+                "office_cache_too_small",
+                format!(
+                    "converted preview and cache metadata exceed Office cache budget ({} bytes)",
+                    cfg.cache_bytes
+                ),
+            ));
+        }
 
+        let primary = &outputs[0];
         Ok(OfficeConvertResult {
-            cache_key,
-            size: pdf_size,
+            cache_key: primary.cache_key.clone(),
+            size: primary.size,
+            outputs,
         })
     })();
 
@@ -593,7 +672,13 @@ fn emit(on_progress: &Option<ProgressFn>, phase: &str, processed: u64, message: 
     }
 }
 
-fn make_cache_key(root: &str, path: &str, fingerprint: &str, version_id: &str) -> String {
+fn make_cache_key(
+    root: &str,
+    path: &str,
+    fingerprint: &str,
+    version_id: &str,
+    preview_format: &str,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(root.as_bytes());
     hasher.update([0]);
@@ -602,25 +687,102 @@ fn make_cache_key(root: &str, path: &str, fingerprint: &str, version_id: &str) -
     hasher.update(fingerprint.as_bytes());
     hasher.update([0]);
     hasher.update(version_id.as_bytes());
+    if preview_format != "pdf-v1" {
+        hasher.update([0]);
+        hasher.update(preview_format.as_bytes());
+    }
     hex::encode(hasher.finalize())
 }
 
-fn cache_pdf_path(office_dir: &Path, key: &str) -> PathBuf {
-    office_dir.join("cache").join(format!("{key}.pdf"))
+fn make_output_cache_key(
+    conversion_key: &str,
+    index: usize,
+    label: &str,
+    format: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(conversion_key.as_bytes());
+    hasher.update([0]);
+    hasher.update(index.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(label.as_bytes());
+    hasher.update([0]);
+    hasher.update(format.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn cache_artifact_path(office_dir: &Path, key: &str, format: &str) -> PathBuf {
+    office_dir.join("cache").join(format!("{key}.{format}"))
 }
 
 fn cache_meta_path(office_dir: &Path, key: &str) -> PathBuf {
     office_dir.join("cache").join(format!("{key}.json"))
 }
 
-fn cache_pdf_size(office_dir: &Path, key: &str) -> Option<u64> {
-    let pdf = cache_pdf_path(office_dir, key);
-    let meta = fs::metadata(pdf).ok()?;
-    if meta.is_file() && meta.len() > 0 {
+fn cache_manifest_path(office_dir: &Path, conversion_key: &str) -> PathBuf {
+    office_dir
+        .join("cache")
+        .join(format!("{conversion_key}.manifest.json"))
+}
+
+fn cache_artifact_size(office_dir: &Path, key: &str, format: &str) -> Option<u64> {
+    let artifact = cache_artifact_path(office_dir, key, format);
+    let meta = fs::metadata(artifact).ok()?;
+    if meta.is_file() && (format == "csv" || meta.len() > 0) {
         Some(meta.len())
     } else {
         None
     }
+}
+
+fn load_cached_outputs(
+    office_dir: &Path,
+    conversion_key: &str,
+) -> Option<Vec<OfficePreviewOutput>> {
+    let manifest_path = cache_manifest_path(office_dir, conversion_key);
+    if let Ok(raw) = fs::read_to_string(&manifest_path) {
+        if let Ok(outputs) = serde_json::from_str::<Vec<OfficePreviewOutput>>(&raw) {
+            let valid = !outputs.is_empty()
+                && outputs.len() <= MAX_SPREADSHEET_SHEETS
+                && outputs.iter().all(|output| {
+                    !output.label.is_empty()
+                        && output.label.chars().count() <= 256
+                        && matches!(output.format.as_str(), "pdf" | "csv")
+                        && output.cache_key.len() == 64
+                        && output.cache_key.chars().all(|c| c.is_ascii_hexdigit())
+                        && cache_metadata_has_format(
+                            office_dir,
+                            &output.cache_key,
+                            &output.format,
+                        )
+                        && cache_artifact_size(
+                            office_dir,
+                            &output.cache_key,
+                            &output.format,
+                        ) == Some(output.size)
+                });
+            if valid {
+                for output in &outputs {
+                    touch_cache_meta(office_dir, &output.cache_key);
+                }
+                return Some(outputs);
+            }
+        }
+        let _ = fs::remove_file(manifest_path);
+    }
+
+    // A PDF created by the previous cache schema remains usable.
+    if !cache_metadata_has_format(office_dir, conversion_key, "pdf") {
+        return None;
+    }
+    let size = cache_artifact_size(office_dir, conversion_key, "pdf")?;
+    touch_cache_meta(office_dir, conversion_key);
+    Some(vec![OfficePreviewOutput {
+        label: "Document".to_string(),
+        format: "pdf".to_string(),
+        cache_key: conversion_key.to_string(),
+        size,
+    }])
 }
 
 fn touch_cache_meta(office_dir: &Path, key: &str) {
@@ -640,10 +802,18 @@ fn touch_cache_meta(office_dir: &Path, key: &str) {
     }
 }
 
+fn cache_metadata_has_format(office_dir: &Path, key: &str, format: &str) -> bool {
+    fs::read_to_string(cache_meta_path(office_dir, key))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<OfficeCacheMetadata>(&raw).ok())
+        .is_some_and(|metadata| metadata.format == format)
+}
+
 fn promote_to_cache(
     office_dir: &Path,
     key: &str,
-    pdf_src: &Path,
+    format: &str,
+    source: &Path,
     root: &str,
     root_canonical: &Path,
     path: &str,
@@ -654,13 +824,13 @@ fn promote_to_cache(
     let cache_dir = office_dir.join("cache");
     fs::create_dir_all(&cache_dir)
         .map_err(|e| diagnostic("office_storage_error", format!("mkdir cache: {e}")))?;
-    let dest = cache_pdf_path(office_dir, key);
-    let tmp = cache_dir.join(format!("{key}.pdf.tmp"));
+    let dest = cache_artifact_path(office_dir, key, format);
+    let tmp = cache_dir.join(format!("{key}.{format}.tmp"));
     let mut tmp_cleanup = FileCleanup {
         path: tmp.clone(),
         active: true,
     };
-    fs::copy(pdf_src, &tmp)
+    fs::copy(source, &tmp)
         .map_err(|e| diagnostic("office_storage_error", format!("cache copy: {e}")))?;
     fs::rename(&tmp, &dest)
         .map_err(|e| diagnostic("office_storage_error", format!("cache rename: {e}")))?;
@@ -669,6 +839,7 @@ fn promote_to_cache(
         "root": root,
         "root_identity": path_identity(root_canonical),
         "path": path,
+        "format": format,
         "mtime": mtime,
         "src_size": src_size,
         "fingerprint": fingerprint,
@@ -686,6 +857,28 @@ fn promote_to_cache(
     Ok(())
 }
 
+fn write_cache_manifest(
+    office_dir: &Path,
+    conversion_key: &str,
+    outputs: &[OfficePreviewOutput],
+) -> Result<(), String> {
+    let raw = serde_json::to_string(outputs)
+        .map_err(|e| diagnostic("office_internal_error", format!("serialize manifest: {e}")))?;
+    write_cache_meta_atomic(&cache_manifest_path(office_dir, conversion_key), &raw)
+        .map_err(|e| diagnostic("office_storage_error", format!("cache manifest: {e}")))
+}
+
+fn remove_cached_outputs(office_dir: &Path, outputs: &[OfficePreviewOutput]) {
+    for output in outputs {
+        let _ = fs::remove_file(cache_artifact_path(
+            office_dir,
+            &output.cache_key,
+            &output.format,
+        ));
+        let _ = fs::remove_file(cache_meta_path(office_dir, &output.cache_key));
+    }
+}
+
 fn write_cache_meta_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     let seq = CACHE_META_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), seq));
@@ -700,14 +893,214 @@ fn write_cache_meta_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
 }
 
 fn enforce_cache_budget(office_dir: &Path, budget: u64) {
-    enforce_cache_budget_inner(office_dir, budget, None);
+    let _ = enforce_cache_budget_inner(office_dir, budget, &[]);
 }
 
-fn enforce_cache_budget_preserving(office_dir: &Path, budget: u64, preserve_key: &str) {
-    enforce_cache_budget_inner(office_dir, budget, Some(preserve_key));
+fn enforce_cache_budget_preserving(
+    office_dir: &Path,
+    budget: u64,
+    preserve_keys: &[String],
+) -> bool {
+    enforce_cache_budget_inner(office_dir, budget, preserve_keys)
 }
 
-fn enforce_cache_budget_inner(office_dir: &Path, budget: u64, preserve_key: Option<&str>) {
+struct CacheEvictionEntry {
+    files: Vec<(PathBuf, u64)>,
+    keys: Vec<String>,
+    accounted_size: u64,
+    last_access: u64,
+}
+
+fn cache_file_accounted_size(path: &Path) -> Option<u64> {
+    let metadata = fs::metadata(path).ok()?;
+    metadata
+        .is_file()
+        .then_some(metadata.len().max(CACHE_FILE_ACCOUNTING_FLOOR_BYTES))
+}
+
+fn cache_key_is_valid(key: &str) -> bool {
+    key.len() == 64 && key.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn cache_entry(
+    files: Vec<PathBuf>,
+    keys: Vec<String>,
+    last_access: u64,
+) -> Option<CacheEvictionEntry> {
+    let files: Vec<(PathBuf, u64)> = files
+        .into_iter()
+        .map(|path| cache_file_accounted_size(&path).map(|size| (path, size)))
+        .collect::<Option<_>>()?;
+    let accounted_size = files
+        .iter()
+        .fold(0u64, |total, (_, size)| total.saturating_add(*size));
+    Some(CacheEvictionEntry {
+        files,
+        keys,
+        accounted_size,
+        last_access,
+    })
+}
+
+fn remove_cache_entry(entry: &CacheEvictionEntry) -> u64 {
+    let mut removed = 0u64;
+    for (path, accounted_size) in &entry.files {
+        match fs::remove_file(path) {
+            Ok(()) => removed = removed.saturating_add(*accounted_size),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                removed = removed.saturating_add(*accounted_size);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to evict Office cache file {}: {}",
+                    path.display(),
+                    error
+                );
+            }
+        }
+    }
+    removed
+}
+
+fn collect_cache_entries(office_dir: &Path) -> Vec<CacheEvictionEntry> {
+    let cache = office_dir.join("cache");
+    let Ok(read_dir) = fs::read_dir(&cache) else {
+        return Vec::new();
+    };
+    let paths: Vec<PathBuf> = read_dir
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect();
+    let mut entries = Vec::new();
+    let mut referenced_keys = HashSet::new();
+
+    for manifest_path in paths.iter().filter(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".manifest.json"))
+    }) {
+        let parsed = fs::read_to_string(manifest_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Vec<OfficePreviewOutput>>(&raw).ok());
+        let Some(outputs) = parsed else {
+            let _ = fs::remove_file(manifest_path);
+            continue;
+        };
+        let mut group_keys = HashSet::new();
+        let descriptors_valid = !outputs.is_empty()
+            && outputs.len() <= MAX_SPREADSHEET_SHEETS
+            && outputs.iter().all(|output| {
+                !output.label.is_empty()
+                    && output.label.chars().count() <= 256
+                    && matches!(output.format.as_str(), "pdf" | "csv")
+                    && cache_key_is_valid(&output.cache_key)
+                    && group_keys.insert(output.cache_key.clone())
+            });
+        if !descriptors_valid {
+            let _ = fs::remove_file(manifest_path);
+            continue;
+        }
+
+        let mut files = vec![manifest_path.clone()];
+        let mut last_access = 0u64;
+        let complete = outputs.iter().all(|output| {
+            let artifact = cache_artifact_path(office_dir, &output.cache_key, &output.format);
+            let metadata = cache_meta_path(office_dir, &output.cache_key);
+            if cache_file_accounted_size(&artifact).is_none()
+                || cache_file_accounted_size(&metadata).is_none()
+                || !cache_metadata_has_format(office_dir, &output.cache_key, &output.format)
+            {
+                return false;
+            }
+            files.push(artifact);
+            files.push(metadata);
+            last_access =
+                last_access.max(read_last_access(office_dir, &output.cache_key).unwrap_or(0));
+            true
+        });
+        if !complete {
+            remove_cached_outputs(office_dir, &outputs);
+            let _ = fs::remove_file(manifest_path);
+            continue;
+        }
+
+        let keys: Vec<String> = outputs
+            .iter()
+            .map(|output| output.cache_key.clone())
+            .collect();
+        if keys.iter().any(|key| referenced_keys.contains(key)) {
+            let _ = fs::remove_file(manifest_path);
+            continue;
+        }
+        referenced_keys.extend(keys.iter().cloned());
+        if let Some(entry) = cache_entry(files, keys, last_access) {
+            entries.push(entry);
+        }
+    }
+
+    let mut standalone_keys = HashSet::new();
+    for artifact in paths.iter().filter(|path| {
+        matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("pdf" | "csv")
+        )
+    }) {
+        let key = artifact
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("");
+        if !cache_key_is_valid(key) {
+            let _ = fs::remove_file(artifact);
+            continue;
+        }
+        if referenced_keys.contains(key) {
+            continue;
+        }
+        let format = artifact
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("");
+        let metadata = cache_meta_path(office_dir, key);
+        if !cache_metadata_has_format(office_dir, key, format) {
+            let _ = fs::remove_file(artifact);
+            let _ = fs::remove_file(metadata);
+            continue;
+        }
+        let key = key.to_string();
+        let last_access = read_last_access(office_dir, &key).unwrap_or(0);
+        if let Some(entry) = cache_entry(
+            vec![artifact.clone(), metadata],
+            vec![key.clone()],
+            last_access,
+        ) {
+            standalone_keys.insert(key);
+            entries.push(entry);
+        }
+    }
+
+    for metadata in paths.iter().filter(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".json") && !name.ends_with(".manifest.json"))
+    }) {
+        let key = metadata
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("");
+        if !referenced_keys.contains(key) && !standalone_keys.contains(key) {
+            let _ = fs::remove_file(metadata);
+        }
+    }
+
+    entries
+}
+
+fn enforce_cache_budget_inner(
+    office_dir: &Path,
+    budget: u64,
+    preserve_keys: &[String],
+) -> bool {
     if budget == 0 {
         // Delete all cache entries.
         let cache = office_dir.join("cache");
@@ -716,63 +1109,31 @@ fn enforce_cache_budget_inner(office_dir: &Path, budget: u64, preserve_key: Opti
                 let _ = fs::remove_file(e.path());
             }
         }
-        return;
+        return true;
     }
-    let cache = office_dir.join("cache");
-    let Ok(entries) = fs::read_dir(&cache) else {
-        return;
-    };
-    let mut pdfs: Vec<(PathBuf, u64, u64)> = Vec::new(); // path, size, last_access
-    let mut total = 0u64;
-    for e in entries.flatten() {
-        let path = e.path();
-        if path.extension().and_then(|x| x.to_str()) != Some("pdf") {
-            continue;
-        }
-        let Ok(meta) = e.metadata() else { continue };
-        let size = meta.len();
-        total = total.saturating_add(size);
-        let key = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        let last_access = read_last_access(office_dir, &key).unwrap_or(0);
-        pdfs.push((path, size, last_access));
-    }
+
+    let mut entries = collect_cache_entries(office_dir);
+    let mut total = entries.iter().fold(0u64, |sum, entry| {
+        sum.saturating_add(entry.accounted_size)
+    });
     if total <= budget {
-        return;
+        return true;
     }
-    pdfs.sort_by_key(|(_, _, last_access)| *last_access);
-    for (path, size, _) in pdfs {
+    entries.sort_by_key(|entry| entry.last_access);
+    for entry in entries {
         if total <= budget {
             break;
         }
-        let key = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        if preserve_key == Some(key.as_str()) {
+        if entry
+            .keys
+            .iter()
+            .any(|key| preserve_keys.iter().any(|preserve| preserve == key))
+        {
             continue;
         }
-        match fs::remove_file(&path) {
-            Ok(()) => {
-                let _ = fs::remove_file(cache_meta_path(office_dir, &key));
-                total = total.saturating_sub(size);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                total = total.saturating_sub(size);
-            }
-            Err(error) => {
-                tracing::warn!(
-                    "Failed to evict Office cache entry {}: {}",
-                    path.display(),
-                    error
-                );
-            }
-        }
+        total = total.saturating_sub(remove_cache_entry(&entry));
     }
+    total <= budget
 }
 
 fn read_last_access(office_dir: &Path, key: &str) -> Option<u64> {
@@ -868,19 +1229,61 @@ fn stage_and_fingerprint_source(
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn find_output_pdf(outdir: &Path) -> Result<PathBuf, String> {
-    let mut found = None;
+struct DerivedOutput {
+    path: PathBuf,
+    label: String,
+    format: String,
+}
+
+fn find_outputs(outdir: &Path, spreadsheet: bool) -> Result<Vec<DerivedOutput>, String> {
+    let expected_format = if spreadsheet { "csv" } else { "pdf" };
+    let mut found = Vec::new();
     let entries = fs::read_dir(outdir)
         .map_err(|e| diagnostic("office_storage_error", format!("read output dir: {e}")))?;
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|x| x.to_str()).map(|e| e.eq_ignore_ascii_case("pdf")) == Some(true)
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case(expected_format))
         {
-            found = Some(p);
-            break;
+            found.push(path);
+            if found.len() > MAX_SPREADSHEET_SHEETS {
+                return Err("office_output_too_large".to_string());
+            }
         }
     }
-    found.ok_or_else(|| "office_convert_failed".to_string())
+    found.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+    if found.is_empty() || (!spreadsheet && found.len() != 1) {
+        return Err("office_convert_failed".to_string());
+    }
+    Ok(found
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let label = if spreadsheet {
+                path.file_stem()
+                    .and_then(|value| value.to_str())
+                    .and_then(|value| value.strip_prefix("source-"))
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.chars().take(256).collect())
+                    .unwrap_or_else(|| format!("Sheet {}", index + 1))
+            } else {
+                "Document".to_string()
+            };
+            DerivedOutput {
+                path,
+                label,
+                format: expected_format.to_string(),
+            }
+        })
+        .collect())
 }
 
 fn diagnostic(code: &str, detail: impl std::fmt::Display) -> String {
@@ -898,6 +1301,7 @@ fn run_soffice(
     cancel: &AtomicBool,
     pgid_slot: &Mutex<Option<i32>>,
     job_dir: &Path,
+    convert_spec: &str,
 ) -> Result<(), String> {
     let profile_uri = path_to_file_uri(profile);
     let tmp_dir = job_dir.join("tmp");
@@ -918,7 +1322,7 @@ fn run_soffice(
         "--nofirststartwizard",
         &format!("-env:UserInstallation={profile_uri}"),
         "--convert-to",
-        "pdf",
+        convert_spec,
         "--outdir",
     ])
     .arg(outdir)
@@ -1207,32 +1611,42 @@ fn reap_stale_cache_temps(cache_dir: &Path) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.ends_with(".pdf.tmp") || name.contains(".json.tmp.") {
+        if name.ends_with(".tmp") || name.contains(".json.tmp.") {
             let _ = fs::remove_file(entry.path());
         }
     }
 }
 
-/// Read a cached PDF by virtual-path cache key.
+/// Read a cached derived preview by virtual path.
 pub fn read_cache_range(
     office_dir: &Path,
     roots: &[RootConfig],
     requested_root: &str,
-    cache_key: &str,
+    cache: &OfficeCachePath,
     offset: u64,
     length: Option<u64>,
 ) -> Result<(Vec<u8>, bool), String> {
-    if cache_key.len() != 64 || !cache_key.chars().all(|c| c.is_ascii_hexdigit()) {
+    if cache.cache_key.len() != 64
+        || !cache.cache_key.chars().all(|c| c.is_ascii_hexdigit())
+        || !matches!(cache.format.as_str(), "pdf" | "csv")
+    {
         return Err("invalid cache key".to_string());
     }
-    authorize_cache_source(office_dir, roots, requested_root, cache_key)?;
-    let path = cache_pdf_path(office_dir, cache_key);
+    authorize_cache_source(
+        office_dir,
+        roots,
+        requested_root,
+        &cache.cache_key,
+        &cache.format,
+    )?;
+    let path = cache_artifact_path(office_dir, &cache.cache_key, &cache.format);
     let mut file = File::open(&path).map_err(|_| "Office preview cache miss".to_string())?;
     let file_len = file
         .metadata()
         .map_err(|e| diagnostic("office_storage_error", format!("stat cache: {e}")))?
         .len();
     if offset >= file_len {
+        touch_cache_meta(office_dir, &cache.cache_key);
         return Ok((vec![], true));
     }
     file.seek(SeekFrom::Start(offset))
@@ -1243,7 +1657,7 @@ pub fn read_cache_range(
     file.read_exact(&mut buf)
         .map_err(|e| diagnostic("office_storage_error", format!("read cache: {e}")))?;
     let done = offset + to_read >= file_len;
-    touch_cache_meta(office_dir, cache_key);
+    touch_cache_meta(office_dir, &cache.cache_key);
     Ok((buf, done))
 }
 
@@ -1251,10 +1665,19 @@ pub fn stat_cache(
     office_dir: &Path,
     roots: &[RootConfig],
     requested_root: &str,
-    cache_key: &str,
+    cache: &OfficeCachePath,
 ) -> Result<u64, String> {
-    authorize_cache_source(office_dir, roots, requested_root, cache_key)?;
-    cache_pdf_size(office_dir, cache_key).ok_or_else(|| "Office preview cache miss".to_string())
+    authorize_cache_source(
+        office_dir,
+        roots,
+        requested_root,
+        &cache.cache_key,
+        &cache.format,
+    )?;
+    let size = cache_artifact_size(office_dir, &cache.cache_key, &cache.format)
+        .ok_or_else(|| "Office preview cache miss".to_string())?;
+    touch_cache_meta(office_dir, &cache.cache_key);
+    Ok(size)
 }
 
 #[derive(serde::Deserialize)]
@@ -1262,6 +1685,12 @@ struct OfficeCacheMetadata {
     root: String,
     root_identity: String,
     path: String,
+    #[serde(default = "default_pdf_format")]
+    format: String,
+}
+
+fn default_pdf_format() -> String {
+    "pdf".to_string()
 }
 
 fn authorize_cache_source(
@@ -1269,6 +1698,7 @@ fn authorize_cache_source(
     roots: &[RootConfig],
     requested_root: &str,
     cache_key: &str,
+    format: &str,
 ) -> Result<(), String> {
     let raw = fs::read_to_string(cache_meta_path(office_dir, cache_key))
         .map_err(|_| "Office preview cache miss".to_string())?;
@@ -1277,9 +1707,12 @@ fn authorize_cache_source(
     if meta.root != requested_root {
         return Err("denied".to_string());
     }
+    if meta.format != format {
+        return Err("denied".to_string());
+    }
     // Revalidate the current root identity for every cache access, but do not
-    // reopen/re-hash the Office source on every PDF Range request. The cached
-    // PDF is already immutable and was created only after canonical denylist
+    // reopen/re-hash the Office source on every Range request. The cached
+    // preview is already immutable and was created only after canonical denylist
     // checks; repeated source I/O would make large remote documents stall.
     let (_, root_canon) = crate::fs::resolve_path(roots, &meta.root, "/")
         .map_err(|_| "root_unavailable".to_string())?;
@@ -1331,9 +1764,11 @@ if [ "$1" = "--headless" ] && [ "$2" = "--version" ]; then
 fi
 outdir=""
 input=""
+convert=""
 prev=""
 for a in "$@"; do
   if [ "$prev" = "--outdir" ]; then outdir="$a"; fi
+  if [ "$prev" = "--convert-to" ]; then convert="$a"; fi
   prev="$a"
   input="$a"
 done
@@ -1345,6 +1780,13 @@ fi
 {fail_block}
 base=$(basename "$input")
 name=${{base%.*}}
+case "$convert" in
+  csv:*)
+    printf 'name,value\nalpha,1\n' > "$outdir/$name-Sheet1.csv"
+    : > "$outdir/$name-Sheet2.csv"
+    exit 0
+    ;;
+esac
 # Minimal pdf.js-compatible PDF (same bytes as scripts/e2e_office_preview.sh).
 echo 'JVBERi0xLjQKMSAwIG9iajw8IC9UeXBlIC9DYXRhbG9nIC9QYWdlcyAyIDAgUiA+PmVuZG9iagoyIDAgb2JqPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj5lbmRvYmoKMyAwIG9iajw8IC9UeXBlIC9QYWdlIC9QYXJlbnQgMiAwIFIgL01lZGlhQm94IFswIDAgNjEyIDc5Ml0gL0NvbnRlbnRzIDQgMCBSIC9SZXNvdXJjZXM8PCAvRm9udDw8IC9GMSA1IDAgUiA+PiA+PiA+PmVuZG9iago0IDAgb2JqPDwgL0xlbmd0aCAzNiA+PnN0cmVhbQpCVCAvRjEgMjQgVGYgNzIgNzIwIFRkIChIZWxsbykgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+ZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU2IDAwMDAwIG4gCjAwMDAwMDAxMTEgMDAwMDAgbiAKMDAwMDAwMDIzMyAwMDAwMCBuIAowMDAwMDAwMzE3IDAwMDAwIG4gCnRyYWlsZXI8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgozODUKJSVFT0YK' | base64 -d > "$outdir/$name.pdf"
 exit 0
@@ -1389,6 +1831,23 @@ exit 0
             .sum()
     }
 
+    fn cache_accounted_bytes(office_dir: &Path) -> u64 {
+        let cache = office_dir.join("cache");
+        let Ok(entries) = fs::read_dir(cache) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                entry
+                    .metadata()
+                    .ok()
+                    .filter(|metadata| metadata.is_file())
+                    .map(|metadata| metadata.len().max(CACHE_FILE_ACCOUNTING_FLOOR_BYTES))
+            })
+            .sum()
+    }
+
     fn cfg_with_soffice(tmp: &TempDir, soffice: PathBuf) -> OfficeConfig {
         OfficeConfig {
             soffice,
@@ -1403,11 +1862,27 @@ exit 0
         }
     }
 
+    fn cache_ref(key: &str, format: &str) -> OfficeCachePath {
+        OfficeCachePath {
+            cache_key: key.to_string(),
+            format: format.to_string(),
+        }
+    }
+
     #[test]
     fn parse_virtual_path_accepts_hex_key() {
         let key = "a".repeat(64);
         let path = format!("/.filebox/office-cache/{key}.pdf");
-        assert_eq!(parse_cache_virtual_path(&path).as_deref(), Some(key.as_str()));
+        assert_eq!(
+            parse_cache_virtual_path(&path),
+            Some(cache_ref(&key, "pdf"))
+        );
+        assert_eq!(
+            parse_cache_virtual_path(&format!(
+                "/.filebox/office-cache/{key}.csv"
+            )),
+            Some(cache_ref(&key, "csv"))
+        );
         assert!(parse_cache_virtual_path("/.filebox/office-cache/nope.pdf").is_none());
         assert!(parse_cache_virtual_path("/docs/a.docx").is_none());
     }
@@ -1432,7 +1907,7 @@ exit 0
             pinned_folders: vec![],
         }];
 
-        let runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, soffice)).unwrap();
+        let runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, soffice.clone())).unwrap();
         let result = run_convert(&runtime, &roots, "req1", "docs", "/report.docx", None)
             .expect("convert");
         assert_eq!(result.cache_key.len(), 64);
@@ -1448,13 +1923,81 @@ exit 0
                 &runtime.config.office_dir,
                 &roots,
                 "docs",
-                &result.cache_key,
+                &cache_ref(&result.cache_key, "pdf"),
                 0,
                 None,
             )
             .unwrap();
         assert!(done);
         assert!(data.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn spreadsheet_converts_every_sheet_to_cached_csv() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_fake_soffice(tmp.path(), 0, false);
+        let root_dir = tmp.path().join("root");
+        fs::create_dir_all(&root_dir).unwrap();
+        fs::write(root_dir.join("report.xlsx"), b"fake-xlsx-bytes").unwrap();
+        let roots = make_roots(&root_dir);
+        let runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, soffice.clone())).unwrap();
+
+        let result =
+            run_convert(&runtime, &roots, "sheet-1", "docs", "/report.xlsx", None).unwrap();
+        assert_eq!(result.outputs.len(), 2);
+        assert_eq!(result.outputs[0].label, "Sheet1");
+        assert_eq!(result.outputs[1].label, "Sheet2");
+        assert_eq!(result.outputs[1].size, 0);
+        assert!(result.outputs.iter().all(|output| output.format == "csv"));
+
+        let first = &result.outputs[0];
+        assert_eq!(
+            stat_cache(
+                &runtime.config.office_dir,
+                &roots,
+                "docs",
+                &cache_ref(&first.cache_key, "csv"),
+            )
+            .unwrap(),
+            first.size
+        );
+        assert_eq!(
+            stat_cache(
+                &runtime.config.office_dir,
+                &roots,
+                "docs",
+                &cache_ref(&first.cache_key, "pdf"),
+            )
+            .unwrap_err(),
+            "denied"
+        );
+        let (data, done) = read_cache_range(
+            &runtime.config.office_dir,
+            &roots,
+            "docs",
+            &cache_ref(&first.cache_key, "csv"),
+            0,
+            None,
+        )
+        .unwrap();
+        assert!(done);
+        assert_eq!(data, b"name,value\nalpha,1\n");
+        let (empty, done) = read_cache_range(
+            &runtime.config.office_dir,
+            &roots,
+            "docs",
+            &cache_ref(&result.outputs[1].cache_key, "csv"),
+            0,
+            None,
+        )
+        .unwrap();
+        assert!(done);
+        assert!(empty.is_empty());
+
+        fs::remove_file(soffice).unwrap();
+        let cached =
+            run_convert(&runtime, &roots, "sheet-2", "docs", "/report.xlsx", None).unwrap();
+        assert_eq!(cached.outputs, result.outputs);
     }
 
     #[test]
@@ -1609,7 +2152,7 @@ exit 0
                 &runtime.config.office_dir,
                 &disabled,
                 "docs",
-                &result.cache_key,
+                &cache_ref(&result.cache_key, "pdf"),
             )
             .is_err()
         );
@@ -1618,7 +2161,7 @@ exit 0
                 &runtime.config.office_dir,
                 &disabled,
                 "docs",
-                &result.cache_key,
+                &cache_ref(&result.cache_key, "pdf"),
                 0,
                 None,
             )
@@ -1654,7 +2197,7 @@ exit 0
                 &runtime.config.office_dir,
                 &replacement_roots,
                 "docs",
-                &result.cache_key,
+                &cache_ref(&result.cache_key, "pdf"),
             )
             .is_err()
         );
@@ -1690,9 +2233,31 @@ exit 0
         fs::create_dir_all(office_dir.join("cache")).unwrap();
         let miss_key = "c".repeat(64);
         let roots = make_roots(tmp.path());
-        assert!(stat_cache(&office_dir, &roots, "docs", &miss_key).is_err());
-        assert!(read_cache_range(&office_dir, &roots, "docs", &miss_key, 0, None).is_err());
-        assert!(read_cache_range(&office_dir, &roots, "docs", "short", 0, None).is_err());
+        assert!(
+            stat_cache(&office_dir, &roots, "docs", &cache_ref(&miss_key, "pdf")).is_err()
+        );
+        assert!(
+            read_cache_range(
+                &office_dir,
+                &roots,
+                "docs",
+                &cache_ref(&miss_key, "pdf"),
+                0,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            read_cache_range(
+                &office_dir,
+                &roots,
+                "docs",
+                &cache_ref("short", "pdf"),
+                0,
+                None,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1706,8 +2271,8 @@ exit 0
         }
         let roots = make_roots(&root_dir);
         let mut cfg = cfg_with_soffice(&tmp, soffice);
-        // Fake PDF is ~567 bytes; keep budget for a single entry.
-        cfg.cache_bytes = 600;
+        // Artifact + metadata + manifest each consume at least one accounting block.
+        cfg.cache_bytes = 13 * 1024;
         let runtime = OfficeRuntime::new(cfg).unwrap();
         run_convert(&runtime, &roots, "1", "docs", "/a.docx", None).unwrap();
         run_convert(&runtime, &roots, "2", "docs", "/b.docx", None).unwrap();
@@ -1715,8 +2280,8 @@ exit 0
         let total = cache_total_pdf_bytes(&runtime.config.office_dir);
         assert!(total > 0);
         assert!(
-            total <= runtime.config.cache_bytes,
-            "cache total {total} exceeds budget {}",
+            cache_accounted_bytes(&runtime.config.office_dir) <= runtime.config.cache_bytes,
+            "accounted cache exceeds budget {}",
             runtime.config.cache_bytes
         );
         assert!(
@@ -1724,11 +2289,57 @@ exit 0
                 &runtime.config.office_dir,
                 &roots,
                 "docs",
-                &latest.cache_key,
+                &cache_ref(&latest.cache_key, "pdf"),
             )
             .is_ok(),
             "budget enforcement must not evict the PDF just returned as successful"
         );
+    }
+
+    #[test]
+    fn spreadsheet_cache_budget_counts_empty_sheets_and_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_fake_soffice(tmp.path(), 0, false);
+        let root_dir = tmp.path().join("root");
+        fs::create_dir_all(&root_dir).unwrap();
+        fs::write(root_dir.join("report.xlsx"), b"fake-xlsx-bytes").unwrap();
+        let roots = make_roots(&root_dir);
+        let mut cfg = cfg_with_soffice(&tmp, soffice);
+        // Two CSVs (including one empty), two metadata files, and one manifest.
+        cfg.cache_bytes = 4 * CACHE_FILE_ACCOUNTING_FLOOR_BYTES;
+        let runtime = OfficeRuntime::new(cfg).unwrap();
+
+        let error =
+            run_convert(&runtime, &roots, "sheet-budget", "docs", "/report.xlsx", None)
+                .unwrap_err();
+        assert_eq!(error, "office_cache_too_small");
+        assert_eq!(cache_accounted_bytes(&runtime.config.office_dir), 0);
+    }
+
+    #[test]
+    fn incomplete_manifest_removes_the_whole_cached_conversion() {
+        let tmp = TempDir::new().unwrap();
+        let soffice = write_fake_soffice(tmp.path(), 0, false);
+        let root_dir = tmp.path().join("root");
+        fs::create_dir_all(&root_dir).unwrap();
+        fs::write(root_dir.join("report.xlsx"), b"fake-xlsx-bytes").unwrap();
+        let roots = make_roots(&root_dir);
+        let runtime = OfficeRuntime::new(cfg_with_soffice(&tmp, soffice)).unwrap();
+        let result =
+            run_convert(&runtime, &roots, "sheet-orphan", "docs", "/report.xlsx", None).unwrap();
+
+        fs::remove_file(cache_artifact_path(
+            &runtime.config.office_dir,
+            &result.outputs[0].cache_key,
+            "csv",
+        ))
+        .unwrap();
+        enforce_cache_budget(
+            &runtime.config.office_dir,
+            runtime.config.cache_bytes,
+        );
+
+        assert_eq!(cache_accounted_bytes(&runtime.config.office_dir), 0);
     }
 
     #[test]

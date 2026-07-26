@@ -101,10 +101,10 @@ export function friendlyMessage(error: any): string {
     office_timeout: 'Office conversion timed out. You can still download the original.',
     office_convert_failed: 'Could not convert this document for preview. You can still download the original.',
     office_storage_error: 'The agent could not store the temporary preview.',
-    office_cache_too_small: 'The converted PDF exceeds the agent’s Office cache budget. Increase FILEBOX_AGENT_OFFICE_CACHE_BYTES.',
+    office_cache_too_small: 'The converted preview exceeds the agent’s Office cache budget. Increase FILEBOX_AGENT_OFFICE_CACHE_BYTES.',
     office_source_unavailable: 'The source document is no longer readable.',
     office_source_too_large: 'This document exceeds the agent’s configured conversion limit.',
-    office_output_too_large: 'The converted PDF exceeds the agent’s configured preview limit.',
+    office_output_too_large: 'The converted preview exceeds the agent’s configured output limit.',
     office_internal_error: 'The Office preview worker failed safely. Please retry.',
     denied: 'Access denied — sensitive file.',
   };
@@ -621,9 +621,16 @@ export async function cancelRequest(agentId: string, reqId: string) {
   });
 }
 
-/** Virtual path for a cached Office→PDF preview on the agent. */
-export function officeCacheVirtualPath(cacheKey: string): string {
-  return `/.filebox/office-cache/${cacheKey}.pdf`;
+export interface OfficePreviewOutput {
+  label: string;
+  format: 'pdf' | 'csv';
+  cache_key: string;
+  size: number;
+}
+
+/** Virtual path for a cached Office-derived preview on the agent. */
+export function officeCacheVirtualPath(cacheKey: string, format: 'pdf' | 'csv' = 'pdf'): string {
+  return `/.filebox/office-cache/${cacheKey}.${format}`;
 }
 
 export async function officeConvert(
@@ -633,11 +640,22 @@ export async function officeConvert(
   reqId: string,
   clientNonce: string,
   signal?: AbortSignal,
-): Promise<{ req_id?: string; cache_key: string; size: number }> {
+): Promise<{
+  req_id?: string;
+  cache_key: string;
+  size: number;
+  outputs: OfficePreviewOutput[];
+}> {
   const raw = await request<{
     req_id?: string;
     cache_key: string | null;
     size: number | null;
+    outputs?: Array<{
+      label?: unknown;
+      format?: unknown;
+      cache_key?: unknown;
+      size?: unknown;
+    }>;
     error: string | null;
   }>(`/api/agents/${agentId}/office-convert`, {
     method: 'POST',
@@ -647,8 +665,42 @@ export async function officeConvert(
   if (raw.error) {
     throw { status: 400, error: raw.error, message: raw.error };
   }
-  if (!raw.cache_key || raw.size == null) {
-    throw { status: 502, error: 'office_convert_failed', message: 'office_convert_failed' };
+  const outputs = (raw.outputs || []).flatMap((output): OfficePreviewOutput[] => {
+    if (
+      typeof output.label !== 'string'
+      || (output.format !== 'pdf' && output.format !== 'csv')
+      || typeof output.cache_key !== 'string'
+      || !/^[0-9a-f]{64}$/i.test(output.cache_key)
+      || typeof output.size !== 'number'
+      || !Number.isFinite(output.size)
+      || output.size < 0
+      || (output.format === 'pdf' && output.size === 0)
+    ) {
+      return [];
+    }
+    return [{
+      label: output.label,
+      format: output.format,
+      cache_key: output.cache_key,
+      size: output.size,
+    }];
+  });
+  if (outputs.length === 0) {
+    if (!raw.cache_key || raw.size == null || raw.size <= 0) {
+      throw { status: 502, error: 'office_convert_failed', message: 'office_convert_failed' };
+    }
+    outputs.push({
+      label: 'Document',
+      format: 'pdf',
+      cache_key: raw.cache_key,
+      size: raw.size,
+    });
   }
-  return { req_id: raw.req_id, cache_key: raw.cache_key, size: raw.size };
+  const primary = outputs[0];
+  return {
+    req_id: raw.req_id,
+    cache_key: raw.cache_key || primary.cache_key,
+    size: raw.size ?? primary.size,
+    outputs,
+  };
 }

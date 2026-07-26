@@ -110,9 +110,10 @@ pub struct Capabilities {
     /// Defaults to `false` for rolling-upgrade safety.
     #[serde(default)]
     pub workspace_search: bool,
-    /// Whether this agent can convert Office documents to PDF via an external
-    /// LibreOffice `soffice` (env-configured). Defaults to `false` for
-    /// rolling-upgrade safety and when soffice is not configured/probed.
+    /// Whether this agent can derive Office previews via an external
+    /// LibreOffice `soffice` (env-configured). The compatibility field name
+    /// predates per-sheet CSV previews. Defaults to `false` for rolling-
+    /// upgrade safety and when soffice is not configured/probed.
     #[serde(default)]
     pub office_pdf_preview: bool,
     /// Agent-enforced Office source/output limits and conversion deadline.

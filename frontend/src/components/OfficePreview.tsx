@@ -1,9 +1,11 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
   cancelRequest,
+  fileRawUrl,
   friendlyMessage,
   officeCacheVirtualPath,
   officeConvert,
+  type OfficePreviewOutput,
 } from '../api/client';
 import { useSse } from '../state/events';
 import { c } from '../theme';
@@ -14,6 +16,7 @@ import {
 } from './previewShared';
 
 const PdfPreview = lazy(() => import('./PdfPreview').then((m) => ({ default: m.PdfPreview })));
+const CsvPreview = lazy(() => import('./CsvPreview').then((m) => ({ default: m.CsvPreview })));
 
 interface Props {
   agentId: string;
@@ -23,7 +26,7 @@ interface Props {
 
 type Phase =
   | { kind: 'converting'; message: string }
-  | { kind: 'ready'; cacheKey: string }
+  | { kind: 'ready'; outputs: OfficePreviewOutput[] }
   | { kind: 'error'; message: string; cancelled?: boolean };
 
 function createRequestUuid(): string {
@@ -68,6 +71,7 @@ async function cancelOfficeRequest(agentId: string, reqId: string): Promise<void
 export function OfficePreview({ agentId, root, path }: Props) {
   const [phase, setPhase] = useState<Phase>({ kind: 'converting', message: 'Preparing preview…' });
   const [retryToken, setRetryToken] = useState(0);
+  const [selectedOutput, setSelectedOutput] = useState(0);
   const reqIdRef = useRef<string | null>(null);
   const clientNonceRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -125,7 +129,8 @@ export function OfficePreview({ agentId, root, path }: Props) {
         reqIdRef.current = null;
         clientNonceRef.current = null;
         abortRef.current = null;
-        setPhase({ kind: 'ready', cacheKey: result.cache_key });
+        setSelectedOutput(0);
+        setPhase({ kind: 'ready', outputs: result.outputs });
       })
       .catch((e: { error?: string; message?: string; name?: string }) => {
         if (cancelled || e?.name === 'AbortError') return;
@@ -200,7 +205,69 @@ export function OfficePreview({ agentId, root, path }: Props) {
     );
   }
 
-  const derivedPath = officeCacheVirtualPath(phase.cacheKey);
+  const output = phase.outputs[selectedOutput] || phase.outputs[0];
+  const derivedPath = officeCacheVirtualPath(output.cache_key, output.format);
+
+  if (output.format === 'csv') {
+    return (
+      <div style={{
+        height: '100%',
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        background: c.bg,
+      }}>
+        {phase.outputs.length > 1 && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '8px 12px',
+            borderBottom: `1px solid ${c.border}`,
+            background: c.surface,
+            color: c.textMuted,
+            fontSize: 12,
+          }}>
+            <span>Worksheet</span>
+            <select
+              value={selectedOutput}
+              onChange={(event) => setSelectedOutput(Number(event.target.value))}
+              style={{
+                minWidth: 120,
+                maxWidth: 320,
+                padding: '4px 8px',
+                border: `1px solid ${c.border}`,
+                borderRadius: 6,
+                background: c.bg,
+                color: c.text,
+              }}
+            >
+              {phase.outputs.map((item, index) => (
+                <option key={item.cache_key} value={index}>{item.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <Suspense fallback={(
+            <div style={styles.container}>
+              <LoadingOverlay message="Loading CSV viewer..." />
+            </div>
+          )}>
+            <CsvPreview
+              key={derivedPath}
+              url={fileRawUrl(agentId, root, derivedPath)}
+              ext="csv"
+              path={derivedPath}
+              downloadPath={path}
+              agentId={agentId}
+              root={root}
+            />
+          </Suspense>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <Suspense

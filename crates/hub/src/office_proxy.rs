@@ -135,12 +135,21 @@ pub async fn office_convert_handler(
         .to_ascii_lowercase();
     if !matches!(
         ext.as_str(),
-        "doc" | "docx" | "docm" | "ppt" | "pptx" | "pptm" | "xls" | "xlsx" | "xlsm"
+        "doc"
+            | "docx"
+            | "docm"
+            | "ppt"
+            | "pptx"
+            | "pptm"
+            | "xls"
+            | "xlsx"
+            | "xlsm"
+            | "ods"
     ) {
         return error_response(
             StatusCode::BAD_REQUEST,
             "unsupported_format",
-            "File type is not supported for Office PDF preview",
+            "File type is not supported for Office preview",
             false,
         );
     }
@@ -171,7 +180,7 @@ pub async fn office_convert_handler(
         return error_response(
             StatusCode::NOT_IMPLEMENTED,
             "unsupported_feature",
-            "This agent does not support Office PDF preview — configure FILEBOX_AGENT_SOFFICE",
+            "This agent does not support Office preview — configure FILEBOX_AGENT_SOFFICE",
             false,
         );
     }
@@ -282,6 +291,10 @@ pub async fn office_convert_handler(
             guard.disarm();
             let cache_key = value.get("cache_key").cloned().unwrap_or(serde_json::Value::Null);
             let size = value.get("size").cloned().unwrap_or(serde_json::Value::Null);
+            let outputs = value
+                .get("outputs")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
             let error = value.get("error").cloned().unwrap_or(serde_json::Value::Null);
             let cancelled = value.get("state").and_then(|v| v.as_str()) == Some("cancelled")
                 || error.as_str() == Some("cancelled");
@@ -291,6 +304,7 @@ pub async fn office_convert_handler(
                     "req_id": req_id,
                     "cache_key": null,
                     "size": null,
+                    "outputs": [],
                     "error": "cancelled",
                 }))
                 .into_response();
@@ -335,15 +349,15 @@ pub async fn office_convert_handler(
                 let message = match code {
                     "agent_busy" => "Another Office preview is currently being prepared. Please retry shortly.",
                     "office_source_too_large" => "This Office document exceeds the Agent's configured conversion limit.",
-                    "office_output_too_large" => "The converted PDF exceeds the Agent's configured preview limit.",
+                    "office_output_too_large" => "The converted preview exceeds the Agent's configured output limit.",
                     "denied" => "Access denied — sensitive file.",
                     "office_timeout" => "Office conversion timed out. The original file is still available.",
                     "office_unavailable" => "Office conversion is temporarily unavailable. The original file is still available.",
                     "root_unavailable" => "This root is no longer available.",
                     "office_source_unavailable" => "The source document is no longer readable.",
                     "office_storage_error" => "The Agent could not store the temporary preview.",
-                    "office_cache_too_small" => "The converted PDF exceeds the Agent's Office cache budget. Increase FILEBOX_AGENT_OFFICE_CACHE_BYTES.",
-                    "unsupported_feature" => "Office PDF preview is not available on this Agent.",
+                    "office_cache_too_small" => "The converted preview exceeds the Agent's Office cache budget. Increase FILEBOX_AGENT_OFFICE_CACHE_BYTES.",
+                    "unsupported_feature" => "Office preview is not available on this Agent.",
                     "unsupported_format" => "This file type cannot be converted for preview.",
                     "office_internal_error" => "The Office preview worker failed safely. Please retry.",
                     _ => "Office conversion failed. The original file is still available.",
@@ -364,6 +378,7 @@ pub async fn office_convert_handler(
                 "req_id": req_id,
                 "cache_key": cache_key,
                 "size": size,
+                "outputs": outputs,
                 "error": null,
             }))
             .into_response()
@@ -520,12 +535,19 @@ mod tests {
                 req_id: req_id.to_string(),
                 cache_key: Some("a".repeat(64)),
                 size: Some(1234),
+                outputs: vec![filebox_protocol::message::OfficePreviewOutput {
+                    label: "Document".to_string(),
+                    format: "pdf".to_string(),
+                    cache_key: "a".repeat(64),
+                    size: 1234,
+                }],
                 error: None,
             },
             MockOfficeOutcome::Error(err) => AgentMessage::OfficeConvertResponse {
                 req_id: req_id.to_string(),
                 cache_key: None,
                 size: None,
+                outputs: vec![],
                 error: Some((*err).to_string()),
             },
             MockOfficeOutcome::DelayThen(_, _) => return,
@@ -659,6 +681,9 @@ mod tests {
         assert!(v["error"].is_null());
         assert_eq!(v["cache_key"].as_str().unwrap().len(), 64);
         assert_eq!(v["size"], 1234);
+        assert_eq!(v["outputs"][0]["label"], "Document");
+        assert_eq!(v["outputs"][0]["format"], "pdf");
+        assert_eq!(v["outputs"][0]["size"], 1234);
         handle.abort();
     }
 

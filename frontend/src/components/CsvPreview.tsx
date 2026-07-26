@@ -11,66 +11,30 @@ import {
   styles,
 } from './previewShared';
 import { FileDownloadLink } from './FileDownloadLink';
+import {
+  CSV_PREVIEW_ROWS,
+  detectCsvDelimiter,
+  parseCsvPreview,
+} from './csvPreviewParser';
+
+const CSV_PREVIEW_MAX_BYTES = 15 * 1024 * 1024;
 
 interface Props {
   url: string;
   ext: string;
   path: string;
+  downloadPath?: string;
   agentId: string;
   root: string;
 }
 
-const CSV_PREVIEW_ROWS = 100;
-
-function detectDelimiter(text: string, fallback: string): string {
-  const lines = text.split(/\r?\n/).filter((l) => l.length > 0).slice(0, 5);
-  if (lines.length === 0) return fallback;
-  const candidates = [',', '\t', ';', '|'];
-  let best = fallback;
-  let bestCount = 0;
-  for (const d of candidates) {
-    let total = 0;
-    for (const line of lines) {
-      let count = 0;
-      let inQuote = false;
-      for (let i = 0; i < line.length; i++) {
-        const ch = line[i];
-        if (ch === '"') inQuote = !inQuote;
-        else if (ch === d && !inQuote) count++;
-      }
-      total += count;
-    }
-    if (total > bestCount) {
-      bestCount = total;
-      best = d;
-    }
-  }
-  return best;
-}
-
-function splitCsvLine(line: string, delim: string): string[] {
-  const result: string[] = [];
-  let cur = '';
-  let inQuote = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuote && line[i + 1] === '"') { cur += '"'; i++; }
-      else inQuote = !inQuote;
-    } else if (ch === delim && !inQuote) {
-      result.push(cur);
-      cur = '';
-    } else {
-      cur += ch;
-    }
-  }
-  result.push(cur);
-  return result;
-}
-
-export function CsvPreview({ url, ext, agentId, root, path }: Props) {
+export function CsvPreview({ url, ext, agentId, root, path, downloadPath = path }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.csv });
-  const canLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
+  const isTooLarge = gate.size !== null && gate.size > CSV_PREVIEW_MAX_BYTES;
+  const canLoad = !gate.sizeUnknown
+    && !gate.error
+    && !isTooLarge
+    && (!gate.isLarge || gate.bypassed);
   const { text, error, loading, cancel, retry } = useFetchText(url, canLoad);
   const [view, setView] = useState<'table' | 'raw'>('table');
 
@@ -82,6 +46,28 @@ export function CsvPreview({ url, ext, agentId, root, path }: Props) {
     );
   }
   if (gate.error) return <FileGateError message={gate.error} onRetry={gate.retry} />;
+  if (isTooLarge) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.largeImageWarning}>
+          <p style={styles.largeImageTitle}>
+            CSV is too large to preview ({(gate.size! / (1024 * 1024)).toFixed(1)} MB)
+          </p>
+          <p style={styles.largeImageText}>
+            Files larger than 15 MB are not loaded to keep this tab responsive.
+          </p>
+          <FileDownloadLink
+            agentId={agentId}
+            root={root}
+            path={downloadPath}
+            style={styles.downloadLink}
+          >
+            Download original file
+          </FileDownloadLink>
+        </div>
+      </div>
+    );
+  }
   if (gate.isLarge && !gate.bypassed) {
     return (
       <LargeFileWarning
@@ -90,7 +76,7 @@ export function CsvPreview({ url, ext, agentId, root, path }: Props) {
         onForceLoad={gate.forceLoad}
         agentId={agentId}
         root={root}
-        path={path}
+        path={downloadPath}
       />
     );
   }
@@ -109,7 +95,12 @@ export function CsvPreview({ url, ext, agentId, root, path }: Props) {
           <p style={styles.errorText}>{error}</p>
           <div style={{ display: 'flex', gap: 12 }}>
             <button onClick={retry} style={styles.retryBtn}>Retry</button>
-            <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
+            <FileDownloadLink
+              agentId={agentId}
+              root={root}
+              path={downloadPath}
+              style={styles.downloadLink}
+            />
           </div>
         </div>
       </div>
@@ -117,16 +108,12 @@ export function CsvPreview({ url, ext, agentId, root, path }: Props) {
   }
 
   const raw = text!;
-  const allLines = raw.split(/\r?\n/);
-  while (allLines.length > 0 && allLines[allLines.length - 1] === '') allLines.pop();
-  const actualTotal = allLines.length;
-  const previewLines = allLines.slice(0, CSV_PREVIEW_ROWS);
-  const isTruncated = actualTotal > CSV_PREVIEW_ROWS;
   const defaultDelim = ext === 'tsv' ? '\t' : ',';
-  const delim = detectDelimiter(raw, defaultDelim);
+  const delim = detectCsvDelimiter(raw, defaultDelim);
   const delimLabel = delim === '\t' ? 'tab' : delim;
-
-  const rows = previewLines.map((line) => splitCsvLine(line, delim));
+  const parsed = parseCsvPreview(raw, delim);
+  const rows = parsed.rows;
+  const isTruncated = parsed.totalRecords > CSV_PREVIEW_ROWS;
   const header = rows[0] || [];
   const bodyRows = rows.slice(1);
   const maxCols = rows.reduce((m, r) => Math.max(m, r.length), 0);
@@ -135,7 +122,7 @@ export function CsvPreview({ url, ext, agentId, root, path }: Props) {
     <div style={styles.codeContainer}>
       <div style={styles.codeToolbar}>
         <span style={styles.metaInfo}>
-          {actualTotal.toLocaleString()} rows{isTruncated ? ` · showing first ${CSV_PREVIEW_ROWS}` : ''} · delim: {delimLabel}
+          {parsed.totalRecords.toLocaleString()} rows{isTruncated ? ` · showing first ${CSV_PREVIEW_ROWS}` : ''} · delim: {delimLabel}
         </span>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <button
@@ -154,7 +141,7 @@ export function CsvPreview({ url, ext, agentId, root, path }: Props) {
           whiteSpace: 'pre',
           wordBreak: 'normal',
           overflow: 'auto',
-        }}>{previewLines.join('\n')}{isTruncated ? '\n\n... (truncated)' : ''}</pre>
+        }}>{parsed.rawRecords.join('\n')}{isTruncated ? '\n\n... (truncated)' : ''}</pre>
       ) : (
         <div style={styles.csvTableWrap}>
           <table style={styles.csvTable}>

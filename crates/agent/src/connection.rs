@@ -605,7 +605,7 @@ async fn run_one_connection(
                                     fs_workers,
                                     &fs_tx,
                                     move || {
-                                        if let Some(key) =
+                                        if let Some(cache) =
                                             crate::office_convert::parse_cache_virtual_path(&path)
                                         {
                                             match runtime {
@@ -613,7 +613,7 @@ async fn run_one_connection(
                                                     &rt.config.office_dir,
                                                     &roots_vec,
                                                     &root,
-                                                    &key,
+                                                    &cache,
                                                 ) {
                                                     Ok(size) => AgentMessage::FsStatResponse {
                                                         req_id: job_req_id,
@@ -695,7 +695,7 @@ async fn run_one_connection(
                                     fs_workers,
                                     &fs_tx,
                                     move || {
-                                        let read_result = if let Some(key) =
+                                        let read_result = if let Some(cache) =
                                             crate::office_convert::parse_cache_virtual_path(&path)
                                         {
                                             match runtime {
@@ -703,7 +703,7 @@ async fn run_one_connection(
                                                     &rt.config.office_dir,
                                                     &roots_vec,
                                                     &root,
-                                                    &key,
+                                                    &cache,
                                                     offset,
                                                     length,
                                                 ),
@@ -919,6 +919,7 @@ async fn run_one_connection(
                                         req_id,
                                         cache_key: None,
                                         size: None,
+                                        outputs: vec![],
                                         error: Some("unsupported_feature".to_string()),
                                     };
                                     let _ = send_with_timeout(
@@ -937,6 +938,7 @@ async fn run_one_connection(
                                             req_id,
                                             cache_key: None,
                                             size: None,
+                                            outputs: vec![],
                                             error: Some(error),
                                         };
                                         let _ = send_with_timeout(
@@ -987,16 +989,25 @@ async fn run_one_connection(
                                         Some(on_progress),
                                     );
                                     match outcome {
-                                        Ok(r) => AgentMessage::OfficeConvertResponse {
-                                            req_id: rid.clone(),
-                                            cache_key: Some(r.cache_key),
-                                            size: Some(r.size),
-                                            error: None,
-                                        },
+                                        Ok(r) => {
+                                            let legacy_pdf = r
+                                                .outputs
+                                                .first()
+                                                .is_some_and(|output| output.format == "pdf");
+                                            AgentMessage::OfficeConvertResponse {
+                                                req_id: rid.clone(),
+                                                cache_key: legacy_pdf
+                                                    .then_some(r.cache_key),
+                                                size: legacy_pdf.then_some(r.size),
+                                                outputs: r.outputs,
+                                                error: None,
+                                            }
+                                        }
                                         Err(e) => AgentMessage::OfficeConvertResponse {
                                             req_id: rid.clone(),
                                             cache_key: None,
                                             size: None,
+                                            outputs: vec![],
                                             error: Some(e),
                                         },
                                     }
@@ -1017,6 +1028,7 @@ async fn run_one_connection(
                                                 req_id: terminal_req_id,
                                                 cache_key: None,
                                                 size: None,
+                                                outputs: vec![],
                                                 error: Some("office_internal_error".to_string()),
                                             }
                                         }
@@ -1030,6 +1042,7 @@ async fn run_one_connection(
                                                 req_id: terminal_req_id,
                                                 cache_key: None,
                                                 size: None,
+                                                outputs: vec![],
                                                 error: Some("office_timeout".to_string()),
                                             }
                                         }

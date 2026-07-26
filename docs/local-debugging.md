@@ -440,7 +440,7 @@ Set-Cookie.
 
 ---
 
-## 8. Office → PDF preview (optional LibreOffice)
+## 8. Office preview (optional LibreOffice)
 
 Office preview is **off** unless the agent can run an external `soffice`.
 The agent never bundles LibreOffice; point it at a user-installed binary
@@ -448,7 +448,7 @@ The agent never bundles LibreOffice; point it at a user-installed binary
 
 **Automated e2e (no real LibreOffice):** from the repo root run
 `./scripts/e2e_office_preview.sh`. It builds debug hub/agent, starts them
-with a fake `soffice`, and asserts capability, convert, virtual PDF raw
+with a fake `soffice`, and asserts capability, convert, virtual PDF/CSV raw
 read, cache hit, pptx/xlsx, denylist, unsupported format, `agent_busy`,
 cancel, and capability-off behavior.
 
@@ -470,14 +470,15 @@ export FILEBOX_AGENT_SOFFICE="$HOME/opt/libreoffice/opt/libreoffice26.2/program/
 # FILEBOX_AGENT_OFFICE_CACHE_BYTES=1073741824
 ```
 
-`FILEBOX_AGENT_OFFICE_CACHE_BYTES` must fit at least one converted PDF;
-otherwise conversion fails safely with `office_cache_too_small`. `RLIMIT_AS`
-is applied on Linux/Android only because macOS rejects that limit; the other
-process, output, timeout, and cleanup bounds still apply on macOS.
+`FILEBOX_AGENT_OFFICE_CACHE_BYTES` counts artifacts, metadata, manifests, and
+empty-file entries and must fit one complete converted preview; otherwise
+conversion fails safely with `office_cache_too_small`. `RLIMIT_AS` is applied
+on Linux/Android only because macOS rejects that limit; the other process,
+output, timeout, and cleanup bounds still apply on macOS.
 
 On successful probe (`soffice --headless --version`), the agent advertises
 `capabilities.office_pdf_preview: true`. The UI Settings page has an
-**Office → PDF preview** switch (browser `localStorage`, default on) to
+**Office preview** switch (browser `localStorage`, default on) to
 disable conversion without removing LibreOffice.
 
 There is no periodic Office monitor. Startup performs one bounded probe;
@@ -529,7 +530,9 @@ curl -sS -X POST "http://127.0.0.1:3000/api/agents/${AGENT_ID}/office-convert" \
   -H "Content-Type: application/json" -H "X-CSRF-Token: $CSRF" \
   -b "$COOKIE_JAR" \
   -d '{"root":"docs","path":"/report.docx"}'
-# → { "req_id":"…", "cache_key":"<64-hex>", "size":…, "error":null }
+# → { "req_id":"…", "cache_key":"<64-hex>", "size":…,
+#     "outputs":[{"label":"Document","format":"pdf","cache_key":"…","size":…}],
+#     "error":null }
 
 # Read derived PDF (virtual path; same /api/file/raw as other files)
 curl -sS -D- -o /tmp/out.pdf \
@@ -538,7 +541,8 @@ curl -sS -D- -o /tmp/out.pdf \
 ```
 
 Supported extensions: `doc`, `docx`, `docm`, `ppt`, `pptx`, `pptm`,
-`xls`, `xlsx`, `xlsm`.
+`xls`, `xlsx`, `xlsm`, `ods`. Spreadsheets return one CSV output per
+worksheet; use each output's cache key with a `.csv` virtual path.
 
 ---
 
@@ -573,14 +577,14 @@ Env vars (verified):
 | `FILEBOX_AGENT_CONFIG` | Agent toml path |
 | `FILEBOX_ALLOW_INSECURE_HUB` | Allow plaintext `ws://` / `http://` hub |
 | `FILEBOX_AGENT_STATS_TTL_SECS` | Sysinfo cache TTL (default 60) |
-| `FILEBOX_AGENT_SOFFICE` | Absolute path to LibreOffice `soffice` (enables Office→PDF) |
+| `FILEBOX_AGENT_SOFFICE` | Absolute path to LibreOffice `soffice` (enables Office preview) |
 | `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` / `program/soffice` |
 | `FILEBOX_AGENT_OFFICE_TIMEOUT_SECS` | Convert timeout (default 120) |
 | `FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES` | Max source Office file size |
-| `FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES` | Max output PDF size |
+| `FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES` | Max combined derived output size (compatibility name) |
 | `FILEBOX_AGENT_OFFICE_MAX_LOG_BYTES` | Max captured stdout/stderr per conversion |
 | `FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES` | LibreOffice address-space limit |
-| `FILEBOX_AGENT_OFFICE_CACHE_BYTES` | On-disk PDF cache budget (LRU) |
+| `FILEBOX_AGENT_OFFICE_CACHE_BYTES` | On-disk derived preview cache budget (LRU) |
 | `FILEBOX_UPDATE_BASE_URL` | `--update` mirror base URL |
 | `FILEBOX_ALLOW_INSECURE_UPDATE` | Allow `http://` update source |
 | `FILEBOX_ALLOW_DOWNGRADE` | Allow updater downgrade |

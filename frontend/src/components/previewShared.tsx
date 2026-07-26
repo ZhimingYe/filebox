@@ -146,9 +146,9 @@ export const binaryExts = new Set([
   'epub', 'mobi',
 ]);
 
-/** Extensions converted via Agent LibreOffice → PDF preview. */
+/** Extensions converted via Agent LibreOffice to PDF or per-sheet CSV. */
 export const OFFICE_PREVIEW_EXTS = new Set([
-  'doc', 'docx', 'docm', 'ppt', 'pptx', 'pptm', 'xls', 'xlsx', 'xlsm',
+  'doc', 'docx', 'docm', 'ppt', 'pptx', 'pptm', 'xls', 'xlsx', 'xlsm', 'ods',
 ]);
 
 export function isOfficePreviewExt(ext: string): boolean {

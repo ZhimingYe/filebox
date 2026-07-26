@@ -142,10 +142,10 @@ export function AgentSettings({ agent, onRefresh }: Props) {
             </div>
             <div style={styles.prefRow}>
               <div style={styles.prefText}>
-                <div style={styles.prefLabel}>Office → PDF preview</div>
+                <div style={styles.prefLabel}>Office preview</div>
                 <p style={styles.prefHint}>
                   {officeCapable
-                    ? 'Optional. When on, Word / PowerPoint / Excel open as a PDF preview. Leave off to download originals only.'
+                    ? 'Optional. Word and PowerPoint open as PDF; spreadsheets open as per-sheet CSV. Leave off to download originals only.'
                     : 'Optional. This agent has no LibreOffice for conversion — download still works. The switch only affects agents that support preview.'}
                 </p>
                 {!officeCapable && (
@@ -158,7 +158,7 @@ export function AgentSettings({ agent, onRefresh }: Props) {
                 type="button"
                 role="switch"
                 aria-checked={officePdfPreview}
-                aria-label="Office to PDF preview"
+                aria-label="Office preview"
                 onClick={toggleOfficePdfPreview}
                 style={{
                   ...styles.switchTrack,
