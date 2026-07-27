@@ -438,6 +438,7 @@ export function CollectionsView({
               emptyMessage="Empty — add from Files."
               onRowClick={(row) => handleSelectRow(row)}
               renderNameHoverActions={renderNameHoverActions}
+              allowHoverActionsWhenBlocked
             />
           )}
           preview={(

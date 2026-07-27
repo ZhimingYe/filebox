@@ -45,6 +45,8 @@ export interface FileEntryListProps {
   onRowClick: (row: FileEntryListRowModel, index: number) => void;
   /** Extra icon buttons in the name cell on hover, before "Copy full path". */
   renderNameHoverActions?: (row: FileEntryListRowModel, index: number) => ReactNode;
+  /** When true, hover actions stay visible on denied/missing rows (e.g. collection remove). */
+  allowHoverActionsWhenBlocked?: boolean;
 }
 
 function useRecentEntryClock(entries: FsEntry[]) {
@@ -115,6 +117,7 @@ export interface FileEntryListRowProps {
   nameAlignRight?: boolean;
   fileNameSerif?: boolean;
   renderNameHoverActions?: (row: FileEntryListRowModel, index: number) => ReactNode;
+  allowHoverActionsWhenBlocked?: boolean;
 }
 
 /** Single file row — shared by FileBrowser and Collections. */
@@ -137,13 +140,15 @@ export function FileEntryListRow({
   nameAlignRight = false,
   fileNameSerif = false,
   renderNameHoverActions,
+  allowHoverActionsWhenBlocked = false,
 }: FileEntryListRowProps) {
   const { entry, fullPath, rootLabel, unavailable } = row;
   const blocked = entry.denied || unavailable;
   const isRecent = !blocked && isRecentlyModified(entry.modified, nowMs);
   const copyLabel = `path-${index}`;
-  const showHoverActions = isHovered && !blocked;
+  const showHoverActions = isHovered && (!blocked || allowHoverActionsWhenBlocked);
   const nameHoverPad = showHoverActions ? hoverNamePad : 0;
+  const interactiveBlocked = blocked && !allowHoverActionsWhenBlocked;
 
   return (
     <div
@@ -153,7 +158,7 @@ export function FileEntryListRow({
         gridTemplateColumns,
         ...(isHovered ? fileListStyles.entryHover : {}),
         opacity: blocked ? 0.4 : 1,
-        cursor: blocked ? 'not-allowed' : 'pointer',
+        cursor: interactiveBlocked ? 'not-allowed' : 'pointer',
       }}
       onClick={onClick}
       onMouseEnter={onMouseEnter}
@@ -173,6 +178,9 @@ export function FileEntryListRow({
           {nameAlignRight ? <bdi dir="ltr">{entry.name}</bdi> : entry.name}
         </span>
         {entry.denied && <span style={fileListStyles.deniedBadge}>denied</span>}
+        {unavailable && !entry.denied && (
+          <span style={fileListStyles.deniedBadge}>missing</span>
+        )}
         {showHoverActions && (
           <span style={fileListStyles.entryNameHoverActions}>
             {renderNameHoverActions?.(row, index)}
@@ -229,6 +237,7 @@ interface RowItemData {
   copyToClipboard: (text: string, label: string) => void;
   onRowClick: (row: FileEntryListRowModel, index: number) => void;
   renderNameHoverActions?: (row: FileEntryListRowModel, index: number) => ReactNode;
+  allowHoverActionsWhenBlocked?: boolean;
 }
 
 const VirtualRow = ({ index, style, data }: ListChildComponentProps<RowItemData>) => {
@@ -246,6 +255,7 @@ const VirtualRow = ({ index, style, data }: ListChildComponentProps<RowItemData>
     copyToClipboard,
     onRowClick,
     renderNameHoverActions,
+    allowHoverActionsWhenBlocked,
   } = data;
   const row = rows[index];
   const blocked = row.entry.denied || row.unavailable;
@@ -270,6 +280,7 @@ const VirtualRow = ({ index, style, data }: ListChildComponentProps<RowItemData>
       copiedPath={copiedPath}
       copyToClipboard={copyToClipboard}
       renderNameHoverActions={renderNameHoverActions}
+      allowHoverActionsWhenBlocked={allowHoverActionsWhenBlocked}
     />
   );
 };
@@ -283,6 +294,7 @@ export function FileEntryList({
   emptyMessage = 'Empty',
   onRowClick,
   renderNameHoverActions,
+  allowHoverActionsWhenBlocked = false,
 }: FileEntryListProps) {
   const isMobile = useIsMobile();
   const rowHeight = isMobile ? FILE_LIST_ROW_HEIGHT_MOBILE : FILE_LIST_ROW_HEIGHT_DESKTOP;
@@ -329,11 +341,13 @@ export function FileEntryList({
       copyToClipboard,
       onRowClick,
       renderNameHoverActions,
+      allowHoverActionsWhenBlocked,
     }),
     [
       rows, hoveredIdx, gridTemplateColumns, hoverNamePad, isMobile, nowMs,
       layoutShowRoot, layoutShowSize,
       copiedPath, copyToClipboard, onRowClick, renderNameHoverActions,
+      allowHoverActionsWhenBlocked,
     ],
   );
 

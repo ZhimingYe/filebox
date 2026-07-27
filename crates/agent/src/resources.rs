@@ -112,7 +112,12 @@ impl ResourceManager {
 
         let mut seen_names = std::collections::HashSet::new();
         for coll in &collections {
-            validate_collection(coll, &self.config.roots)?;
+            let existing = self
+                .config
+                .collections
+                .iter()
+                .find(|c| c.name == coll.name);
+            validate_collection(coll, &self.config.roots, existing)?;
             if !seen_names.insert(coll.name.clone()) {
                 return Err(format!("Duplicate collection name '{}'", coll.name));
             }
@@ -212,7 +217,11 @@ fn normalize_item_path(p: &str) -> String {
     s
 }
 
-fn validate_collection(collection: &CollectionConfig, roots: &[RootConfig]) -> Result<(), String> {
+fn validate_collection(
+    collection: &CollectionConfig,
+    roots: &[RootConfig],
+    existing: Option<&CollectionConfig>,
+) -> Result<(), String> {
     validate_collection_name(&collection.name)?;
 
     let mut seen = std::collections::HashSet::new();
@@ -228,10 +237,18 @@ fn validate_collection(collection: &CollectionConfig, roots: &[RootConfig]) -> R
         }
 
         if !roots.iter().any(|r| r.name == item.root) {
-            return Err(format!(
-                "Collection '{}': unknown root '{}'",
-                collection.name, item.root
-            ));
+            let carried = existing.is_some_and(|ex| {
+                ex.items.iter().any(|e| {
+                    e.root == item.root
+                        && normalize_item_path(&e.path) == normalize_item_path(&item.path)
+                })
+            });
+            if !carried {
+                return Err(format!(
+                    "Collection '{}': unknown root '{}'",
+                    collection.name, item.root
+                ));
+            }
         }
 
         let key = (item.root.clone(), normalize_item_path(&item.path));
@@ -341,7 +358,7 @@ fn is_sensitive_virtual_root(_path: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::config_store::PersistedConfig;
-    use filebox_protocol::resources::RootConfig;
+    use filebox_protocol::resources::{CollectionItem, RootConfig};
     use std::fs;
     use tempfile::tempdir;
 
@@ -1094,5 +1111,130 @@ mod tests {
             Path::new(stored).canonicalize().unwrap(),
             docs.canonicalize().unwrap()
         );
+    }
+
+    #[test]
+    fn collections_reject_new_item_with_unknown_root() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+        let root_dir = tempdir().unwrap();
+        mgr.apply_desired(
+            1,
+            vec![RootConfig {
+                name: "docs".to_string(),
+                path: root_dir.path().to_str().unwrap().to_string(),
+                enabled: true,
+                pinned_folders: vec![],
+            }],
+        )
+        .unwrap();
+
+        let err = mgr
+            .apply_collections_desired(
+                1,
+                vec![CollectionConfig {
+                    name: "mine".to_string(),
+                    items: vec![CollectionItem {
+                        root: "gone".to_string(),
+                        path: "/a.txt".to_string(),
+                        label: None,
+                    }],
+                }],
+            )
+            .unwrap_err();
+        assert!(err.contains("unknown root"));
+    }
+
+    #[test]
+    fn collections_allow_orphaned_root_on_carried_item_and_removal() {
+        let dir = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+        let docs_dir = tempdir().unwrap();
+        let archive_dir = tempdir().unwrap();
+        mgr.apply_desired(
+            1,
+            vec![
+                RootConfig {
+                    name: "docs".to_string(),
+                    path: docs_dir.path().to_str().unwrap().to_string(),
+                    enabled: true,
+                    pinned_folders: vec![],
+                },
+                RootConfig {
+                    name: "archive".to_string(),
+                    path: archive_dir.path().to_str().unwrap().to_string(),
+                    enabled: true,
+                    pinned_folders: vec![],
+                },
+            ],
+        )
+        .unwrap();
+
+        mgr.apply_collections_desired(
+            1,
+            vec![CollectionConfig {
+                name: "mine".to_string(),
+                items: vec![
+                    CollectionItem {
+                        root: "docs".to_string(),
+                        path: "/keep.txt".to_string(),
+                        label: None,
+                    },
+                    CollectionItem {
+                        root: "archive".to_string(),
+                        path: "/stale.txt".to_string(),
+                        label: None,
+                    },
+                ],
+            }],
+        )
+        .unwrap();
+
+        // Drop the archive root; the collection item becomes orphaned but must
+        // remain editable so the user can remove it from the collection.
+        mgr.apply_desired(
+            2,
+            vec![RootConfig {
+                name: "docs".to_string(),
+                path: docs_dir.path().to_str().unwrap().to_string(),
+                enabled: true,
+                pinned_folders: vec![],
+            }],
+        )
+        .unwrap();
+
+        mgr.apply_collections_desired(
+            2,
+            vec![CollectionConfig {
+                name: "mine".to_string(),
+                items: vec![
+                    CollectionItem {
+                        root: "docs".to_string(),
+                        path: "/keep.txt".to_string(),
+                        label: None,
+                    },
+                    CollectionItem {
+                        root: "archive".to_string(),
+                        path: "/stale.txt".to_string(),
+                        label: None,
+                    },
+                ],
+            }],
+        )
+        .expect("carried orphaned item should not block collection apply");
+
+        mgr.apply_collections_desired(
+            3,
+            vec![CollectionConfig {
+                name: "mine".to_string(),
+                items: vec![CollectionItem {
+                    root: "docs".to_string(),
+                    path: "/keep.txt".to_string(),
+                    label: None,
+                }],
+            }],
+        )
+        .expect("removing orphaned item should succeed");
+        assert_eq!(mgr.collections()[0].items.len(), 1);
     }
 }
