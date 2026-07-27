@@ -105,6 +105,8 @@ export function friendlyMessage(error: any): string {
     office_source_unavailable: 'The source document is no longer readable.',
     office_source_too_large: 'This document exceeds the agent’s configured conversion limit.',
     office_output_too_large: 'The converted preview exceeds the agent’s configured output limit.',
+    office_memory_limit: 'Office conversion exceeded its memory limit. Increase FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES or retry on a larger machine.',
+    office_invalid_pdf: 'Office produced an invalid PDF. Retry to rebuild the preview.',
     office_internal_error: 'The Office preview worker failed safely. Please retry.',
     denied: 'Access denied — sensitive file.',
   };
@@ -648,6 +650,7 @@ export async function officeConvert(
   path: string,
   reqId: string,
   clientNonce: string,
+  force = false,
   signal?: AbortSignal,
 ): Promise<{
   req_id?: string;
@@ -668,7 +671,13 @@ export async function officeConvert(
     error: string | null;
   }>(`/api/agents/${agentId}/office-convert`, {
     method: 'POST',
-    body: JSON.stringify({ root, path, req_id: reqId, client_nonce: clientNonce }),
+    body: JSON.stringify({
+      root,
+      path,
+      req_id: reqId,
+      client_nonce: clientNonce,
+      force,
+    }),
     signal,
   });
   if (raw.error) {

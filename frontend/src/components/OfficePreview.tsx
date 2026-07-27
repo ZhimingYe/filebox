@@ -24,10 +24,21 @@ interface Props {
   path: string;
 }
 
+interface ForceRetryTarget {
+  agentId: string;
+  root: string;
+  path: string;
+}
+
 type Phase =
   | { kind: 'converting'; message: string }
   | { kind: 'ready'; outputs: OfficePreviewOutput[] }
-  | { kind: 'error'; message: string; cancelled?: boolean };
+  | {
+      kind: 'error';
+      message: string;
+      cancelled?: boolean;
+      forceReconvert?: boolean;
+    };
 
 const OFFICE_START_DEBOUNCE_MS = 200;
 const OFFICE_BUSY_RETRY_DELAYS_MS = [100, 200, 400, 800, 1_200, 1_600, 2_000] as const;
@@ -97,9 +108,13 @@ export function OfficePreview({ agentId, root, path }: Props) {
   const clientNonceRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const convertingRef = useRef(false);
+  // Keep the intent through React StrictMode's development-only effect
+  // replay, and bind it to the file that actually failed decoding.
+  const forceRetryTargetRef = useRef<ForceRetryTarget | null>(null);
 
   const cancelConvert = useCallback(() => {
     convertingRef.current = false;
+    forceRetryTargetRef.current = null;
     const req = reqIdRef.current;
     reqIdRef.current = null;
     if (req) void cancelOfficeRequest(agentId, req);
@@ -108,10 +123,13 @@ export function OfficePreview({ agentId, root, path }: Props) {
     setPhase({ kind: 'error', message: 'Conversion cancelled.', cancelled: true });
   }, [agentId]);
 
-  const retryConvert = useCallback(() => {
+  const retryConvert = useCallback((options?: { forceReconvert?: boolean }) => {
+    forceRetryTargetRef.current = options?.forceReconvert === true
+      ? { agentId, root, path }
+      : null;
     setPhase({ kind: 'converting', message: 'Preparing preview…' });
     setRetryToken((n) => n + 1);
-  }, []);
+  }, [agentId, root, path]);
 
   useSse(useCallback((evt) => {
     if (evt.event !== 'progress' || !convertingRef.current) return;
@@ -140,6 +158,13 @@ export function OfficePreview({ agentId, root, path }: Props) {
     reqIdRef.current = null;
     const controller = new AbortController();
     abortRef.current = controller;
+    const forceTarget = forceRetryTargetRef.current;
+    const forceReconvert = forceTarget?.agentId === agentId
+      && forceTarget.root === root
+      && forceTarget.path === path;
+    if (forceTarget && !forceReconvert) {
+      forceRetryTargetRef.current = null;
+    }
 
     const run = async () => {
       try {
@@ -162,10 +187,12 @@ export function OfficePreview({ agentId, root, path }: Props) {
               path,
               reqId,
               clientNonce,
+              forceReconvert,
               controller.signal,
             );
             if (cancelled) return;
             convertingRef.current = false;
+            forceRetryTargetRef.current = null;
             reqIdRef.current = null;
             clientNonceRef.current = null;
             abortRef.current = null;
@@ -187,6 +214,7 @@ export function OfficePreview({ agentId, root, path }: Props) {
               continue;
             }
             convertingRef.current = false;
+            forceRetryTargetRef.current = null;
             abortRef.current = null;
             if (e?.error === 'cancelled') {
               setPhase({ kind: 'error', message: 'Conversion cancelled.', cancelled: true });
@@ -195,6 +223,7 @@ export function OfficePreview({ agentId, root, path }: Props) {
             setPhase({
               kind: 'error',
               message: friendlyMessage(e) || e?.message || 'Conversion failed.',
+              forceReconvert,
             });
             return;
           }
@@ -202,8 +231,9 @@ export function OfficePreview({ agentId, root, path }: Props) {
       } catch (error: unknown) {
         if (!cancelled && (error as { name?: string })?.name !== 'AbortError') {
           convertingRef.current = false;
+          forceRetryTargetRef.current = null;
           abortRef.current = null;
-          setPhase({ kind: 'error', message: 'Conversion failed.' });
+          setPhase({ kind: 'error', message: 'Conversion failed.', forceReconvert });
         }
       }
     };
@@ -240,7 +270,9 @@ export function OfficePreview({ agentId, root, path }: Props) {
             {!phase.cancelled && (
               <button
                 type="button"
-                onClick={retryConvert}
+                onClick={() => retryConvert({
+                  forceReconvert: phase.forceReconvert,
+                })}
                 style={{
                   padding: '6px 12px',
                   border: `1px solid ${c.border}`,

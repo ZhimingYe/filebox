@@ -466,15 +466,20 @@ export FILEBOX_AGENT_SOFFICE="$HOME/opt/libreoffice/opt/libreoffice26.2/program/
 # FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES=536870912
 # FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES=1073741824
 # FILEBOX_AGENT_OFFICE_MAX_LOG_BYTES=8388608
-# FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES=2147483648
+# FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES=2147483648 # resident process-tree bytes on Linux
 # FILEBOX_AGENT_OFFICE_CACHE_BYTES=1073741824
 ```
 
 `FILEBOX_AGENT_OFFICE_CACHE_BYTES` counts artifacts, metadata, manifests, and
 empty-file entries and must fit one complete converted preview; otherwise
-conversion fails safely with `office_cache_too_small`. `RLIMIT_AS` is applied
-on Linux/Android only because macOS rejects that limit; the other process,
-output, timeout, and cleanup bounds still apply on macOS.
+conversion fails safely with `office_cache_too_small`. Linux checks the active
+LibreOffice process tree's resident memory against
+`FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES`; it does not use `RLIMIT_AS`, because
+Impress commonly reserves much more virtual address space than resident
+memory. The other process, output, timeout, and cleanup bounds remain portable.
+Converted PDFs are checked for a complete header/trailer/xref before caching,
+and a browser decode failure can force regeneration instead of reusing the
+same artifact.
 
 On successful probe (`soffice --headless --version`), the agent advertises
 `capabilities.office_pdf_preview: true`. The UI Settings page has an
@@ -583,7 +588,7 @@ Env vars (verified):
 | `FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES` | Max source Office file size |
 | `FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES` | Max combined derived output size (compatibility name) |
 | `FILEBOX_AGENT_OFFICE_MAX_LOG_BYTES` | Max captured stdout/stderr per conversion |
-| `FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES` | LibreOffice address-space limit |
+| `FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES` | LibreOffice resident process-tree limit on Linux |
 | `FILEBOX_AGENT_OFFICE_CACHE_BYTES` | On-disk derived preview cache budget (LRU) |
 | `FILEBOX_UPDATE_BASE_URL` | `--update` mirror base URL |
 | `FILEBOX_ALLOW_INSECURE_UPDATE` | Allow `http://` update source |

@@ -15,6 +15,9 @@ use crate::state::{AppState, AuthenticatedSession, PendingResponse};
 pub struct OfficeConvertBody {
     pub root: String,
     pub path: String,
+    /// Force regeneration after a derived preview failed browser-side decode.
+    #[serde(default)]
+    pub force: bool,
     /// Optional client-generated ID so Cancel never depends on SSE delivery.
     /// Must be `office_convert_<uuid>`.
     #[serde(default)]
@@ -212,6 +215,7 @@ pub async fn office_convert_handler(
         req_id: req_id.clone(),
         root,
         path,
+        force: body.force,
     };
 
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
@@ -325,6 +329,8 @@ pub async fn office_convert_handler(
                     | "office_source_unavailable"
                     | "office_storage_error"
                     | "office_cache_too_small"
+                    | "office_memory_limit"
+                    | "office_invalid_pdf"
                     | "unsupported_feature"
                     | "unsupported_format"
                     | "office_internal_error"
@@ -339,6 +345,7 @@ pub async fn office_convert_handler(
                     "denied" => StatusCode::FORBIDDEN,
                     "office_timeout" => StatusCode::GATEWAY_TIMEOUT,
                     "office_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                    "office_memory_limit" => StatusCode::SERVICE_UNAVAILABLE,
                     "root_unavailable" | "office_source_unavailable" => StatusCode::NOT_FOUND,
                     "office_storage_error" | "office_cache_too_small" => {
                         StatusCode::INSUFFICIENT_STORAGE
@@ -357,6 +364,8 @@ pub async fn office_convert_handler(
                     "office_source_unavailable" => "The source document is no longer readable.",
                     "office_storage_error" => "The Agent could not store the temporary preview.",
                     "office_cache_too_small" => "The converted preview exceeds the Agent's Office cache budget. Increase FILEBOX_AGENT_OFFICE_CACHE_BYTES.",
+                    "office_memory_limit" => "Office conversion exceeded the Agent's resident-memory limit. Increase FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES or retry on a larger machine.",
+                    "office_invalid_pdf" => "Office produced an invalid or incomplete PDF. Retry to rebuild the preview.",
                     "unsupported_feature" => "Office preview is not available on this Agent.",
                     "unsupported_format" => "This file type cannot be converted for preview.",
                     "office_internal_error" => "The Office preview worker failed safely. Please retry.",
@@ -368,6 +377,8 @@ pub async fn office_convert_handler(
                         | "office_timeout"
                         | "office_unavailable"
                         | "office_storage_error"
+                        | "office_memory_limit"
+                        | "office_invalid_pdf"
                         | "office_internal_error"
                         | "office_convert_failed"
                 );
@@ -577,6 +588,7 @@ mod tests {
             Json(OfficeConvertBody {
                 root: "docs".into(),
                 path: path.into(),
+                force: false,
                 req_id,
                 client_nonce: None,
             }),
@@ -685,6 +697,41 @@ mod tests {
         assert_eq!(v["outputs"][0]["format"], "pdf");
         assert_eq!(v["outputs"][0]["size"], 1234);
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn office_convert_forwards_force_regeneration_to_agent() {
+        let state = AppState::new(&test_config(), true);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        register_agent(&state, "a1", tx, true).await;
+        let agent_state = state.clone();
+        let (force_tx, force_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(async move {
+            if let Some(HubMessage::OfficeConvertRequest {
+                req_id, force, ..
+            }) = rx.recv().await
+            {
+                let _ = force_tx.send(force);
+                deliver_office_response(&agent_state, &req_id, &MockOfficeOutcome::Success).await;
+            }
+        });
+
+        let response = office_convert_handler(
+            State(state),
+            test_session(),
+            Path("a1".to_string()),
+            Json(OfficeConvertBody {
+                root: "docs".into(),
+                path: "/report.pptx".into(),
+                force: true,
+                req_id: None,
+                client_nonce: None,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(force_rx.await.unwrap());
+        handle.await.unwrap();
     }
 
     #[tokio::test]
@@ -803,6 +850,14 @@ mod tests {
         let (s, e) = one("office_cache_too_small").await;
         assert_eq!(s, StatusCode::INSUFFICIENT_STORAGE);
         assert_eq!(e, "office_cache_too_small");
+
+        let (s, e) = one("office_memory_limit").await;
+        assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(e, "office_memory_limit");
+
+        let (s, e) = one("office_invalid_pdf").await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY);
+        assert_eq!(e, "office_invalid_pdf");
     }
 
     #[tokio::test]
