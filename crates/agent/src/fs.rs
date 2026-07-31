@@ -3,8 +3,9 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use filebox_protocol::resources::{FileStat, FsEntry, FsEntryType, RootConfig};
 use filebox_protocol::denylist;
+use filebox_protocol::message::FILE_CHUNK_MAX_BYTES;
+use filebox_protocol::resources::{FileStat, FsEntry, FsEntryType, RootConfig};
 
 /// Resolve a root name + relative path to an absolute, canonical path.
 ///
@@ -487,8 +488,8 @@ pub fn read_file_range(
 
     let remaining = file_len - offset;
     let to_read = length.unwrap_or(remaining).min(remaining);
-    // Cap at 4MB per chunk
-    let to_read = to_read.min(4 * 1024 * 1024);
+    // Cap per WS FileChunk so slow/jittery links don't stall a single write.
+    let to_read = to_read.min(FILE_CHUNK_MAX_BYTES);
 
     let mut buf = vec![0u8; to_read as usize];
     let bytes_read = file
@@ -743,16 +744,15 @@ mod tests {
     }
 
     #[test]
-    fn read_file_range_caps_at_4mb_per_chunk() {
+    fn read_file_range_caps_at_file_chunk_max_per_chunk() {
         let sb = Sandbox::new();
-        // Create a 5MB file
-        let big = vec![0xAAu8; 5 * 1024 * 1024];
+        // Create a file larger than one chunk so the cap is observable.
+        let big = vec![0xAAu8; (FILE_CHUNK_MAX_BYTES as usize) + 1024];
         sb.write_file("big.bin", &big);
         let roots = vec![sb.root()];
 
         let (data, done) = read_file_range(&roots, "test", "big.bin", 0, None).unwrap();
-        // Capped at 4MB
-        assert_eq!(data.len(), 4 * 1024 * 1024);
+        assert_eq!(data.len(), FILE_CHUNK_MAX_BYTES as usize);
         assert!(!done, "done must be false when capped mid-file");
     }
 

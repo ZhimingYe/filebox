@@ -276,7 +276,10 @@ struct RawFileTarget {
     preview_token: Option<String>,
 }
 
-const RAW_STREAM_CHUNK_BYTES: u64 = 2 * 1024 * 1024;
+/// Bytes requested per Agent round-trip while proxying a raw/preview stream.
+/// Matches [`filebox_protocol::message::FILE_CHUNK_MAX_BYTES`] so hub asks and
+/// agent clamps stay aligned on slow or jittery links.
+const RAW_STREAM_CHUNK_BYTES: u64 = filebox_protocol::message::FILE_CHUNK_MAX_BYTES;
 
 pub async fn file_raw_handler(
     State(state): State<AppState>,
@@ -1468,12 +1471,13 @@ mod tests {
 
     #[tokio::test]
     async fn file_raw_handler_accumulates_multi_chunk_responses() {
-        // 5MB file with 4MB agent-side cap → must produce 2 chunks
-        // (4MB + 1MB) that the handler should coalesce into one body.
+        // File larger than one chunk → agent returns multiple FileChunks that
+        // the handler must coalesce into one HTTP body.
         let state = AppState::new(&test_config(), true);
-        let file_total: u64 = 5 * 1024 * 1024;
+        let chunk = filebox_protocol::message::FILE_CHUNK_MAX_BYTES;
+        let file_total: u64 = chunk * 2 + chunk / 2;
         let (tx, agent_handle) =
-            spawn_mock_file_agent(state.clone(), "a1", file_total, 4 * 1024 * 1024);
+            spawn_mock_file_agent(state.clone(), "a1", file_total, chunk);
         register_mock_agent(&state, "a1", tx).await;
 
         let params = FileRawParams {
@@ -1506,7 +1510,12 @@ mod tests {
         // handler should truncate and return PARTIAL_CONTENT.
         let state = AppState::new(&test_config(), true);
         let (tx, agent_handle) =
-            spawn_mock_file_agent(state.clone(), "a1", 1024 * 1024, 4 * 1024 * 1024);
+            spawn_mock_file_agent(
+                state.clone(),
+                "a1",
+                1024 * 1024,
+                filebox_protocol::message::FILE_CHUNK_MAX_BYTES,
+            );
         register_mock_agent(&state, "a1", tx).await;
 
         let params = FileRawParams {
@@ -1543,7 +1552,12 @@ mod tests {
     async fn seventy_concurrent_pdf_ranges_stream_without_activity_quota() {
         let state = AppState::new(&test_config(), true);
         let (tx, agent_handle) =
-            spawn_mock_file_agent(state.clone(), "a1", 1024 * 1024, 4 * 1024 * 1024);
+            spawn_mock_file_agent(
+                state.clone(),
+                "a1",
+                1024 * 1024,
+                filebox_protocol::message::FILE_CHUNK_MAX_BYTES,
+            );
         register_mock_agent(&state, "a1", tx).await;
         let mut requests = JoinSet::new();
 
@@ -1588,7 +1602,12 @@ mod tests {
     async fn file_raw_handler_serves_active_content_as_attachment_with_csp() {
         let state = AppState::new(&test_config(), true);
         let (tx, agent_handle) =
-            spawn_mock_file_agent(state.clone(), "a1", 128, 4 * 1024 * 1024);
+            spawn_mock_file_agent(
+                state.clone(),
+                "a1",
+                128,
+                filebox_protocol::message::FILE_CHUNK_MAX_BYTES,
+            );
         register_mock_agent(&state, "a1", tx).await;
 
         let params = FileRawParams {
@@ -1627,7 +1646,12 @@ mod tests {
     async fn file_raw_handler_returns_416_for_empty_range_body() {
         let state = AppState::new(&test_config(), true);
         let (tx, agent_handle) =
-            spawn_mock_file_agent(state.clone(), "a1", 2, 4 * 1024 * 1024);
+            spawn_mock_file_agent(
+                state.clone(),
+                "a1",
+                2,
+                filebox_protocol::message::FILE_CHUNK_MAX_BYTES,
+            );
         register_mock_agent(&state, "a1", tx).await;
 
         let params = FileRawParams {
@@ -1654,8 +1678,12 @@ mod tests {
         // allocation and must not be rejected by the old 256 MiB buffer cap.
         let state = AppState::new(&test_config(), true);
         let file_total: u64 = 257 * 1024 * 1024;
-        let (tx, agent_handle) =
-            spawn_mock_file_agent(state.clone(), "a1", file_total, 4 * 1024 * 1024);
+        let (tx, agent_handle) = spawn_mock_file_agent(
+            state.clone(),
+            "a1",
+            file_total,
+            filebox_protocol::message::FILE_CHUNK_MAX_BYTES,
+        );
         register_mock_agent(&state, "a1", tx).await;
 
         let params = FileRawParams {

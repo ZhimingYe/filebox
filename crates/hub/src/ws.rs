@@ -29,9 +29,9 @@ const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Slow→Offline threshold in update_heartbeats so the registry view and
 /// the actual socket close stay in sync.
 const NO_AGENT_MESSAGE_TIMEOUT: Duration = Duration::from_secs(90);
-// Agent FileChunk payloads are capped at 4MiB raw bytes and serialize as
-// base64, so normal file chunks stay well below this. Keep a generous bound
-// for protocol overhead and rolling upgrades while still capping hostile
+// Current agents cap FileChunk at FILE_CHUNK_MAX_BYTES (512KiB) raw, then
+// base64. Keep a generous bound so older agents still sending up to 4MiB
+// during rolling upgrades are accepted, while still capping hostile
 // agent->hub messages.
 const MAX_AGENT_WS_MESSAGE_SIZE: usize = 24 * 1024 * 1024;
 
@@ -792,22 +792,30 @@ mod tests {
 
     #[test]
     fn max_ws_message_size_allows_worst_case_agent_file_chunk() {
-        let chunk = AgentMessage::FileChunk {
-            req_id: "file_test".to_string(),
-            offset: 0,
-            data: vec![255; 4 * 1024 * 1024],
-            done: false,
-            error: None,
-        };
+        // Current agents send ≤ FILE_CHUNK_MAX_BYTES; also verify a legacy
+        // 4MiB chunk from a rolling-upgrade peer still fits under the limit.
+        for raw_len in [
+            filebox_protocol::message::FILE_CHUNK_MAX_BYTES as usize,
+            4 * 1024 * 1024,
+        ] {
+            let chunk = AgentMessage::FileChunk {
+                req_id: "file_test".to_string(),
+                offset: 0,
+                data: vec![255; raw_len],
+                done: false,
+                error: None,
+            };
 
-        let serialized = serde_json::to_string(&chunk).unwrap();
+            let serialized = serde_json::to_string(&chunk).unwrap();
 
-        assert!(
-            serialized.len() < MAX_AGENT_WS_MESSAGE_SIZE,
-            "serialized 4MiB FileChunk was {} bytes; WS limit is {}",
-            serialized.len(),
-            MAX_AGENT_WS_MESSAGE_SIZE
-        );
+            assert!(
+                serialized.len() < MAX_AGENT_WS_MESSAGE_SIZE,
+                "serialized {}-byte FileChunk was {} bytes; WS limit is {}",
+                raw_len,
+                serialized.len(),
+                MAX_AGENT_WS_MESSAGE_SIZE
+            );
+        }
     }
 
     #[test]
