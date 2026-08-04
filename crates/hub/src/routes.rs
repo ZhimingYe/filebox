@@ -984,6 +984,29 @@ async fn preview_session_create_handler(
     }
 
     let now = std::time::Instant::now();
+    {
+        let mut previews = preview_sessions.write().await;
+        previews.retain(|_, preview| preview.expires_at > now);
+        if let Some((token, preview)) = previews.iter().find(|(_, preview)| {
+            preview.session_id == session.principal_id
+                && preview.agent_id == req.agent_id
+                && preview.root == req.root
+                && preview.base_path == base_path
+        }) {
+            let token = token.clone();
+            let expires_in_sec = preview
+                .expires_at
+                .saturating_duration_since(now)
+                .as_secs()
+                .max(1);
+            return Json(PreviewSessionCreateResponse {
+                base_url: preview_base_url(&token, &base_path),
+                expires_in_sec,
+            })
+            .into_response();
+        }
+    }
+
     let token = generate_preview_token();
     let expires_at = now + PREVIEW_SESSION_TTL;
     let preview = PreviewSession {
@@ -1069,12 +1092,25 @@ async fn request_agent_once(
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
     let send_ok = {
         let inner = state.inner.read().await;
+        let Some(agent) = inner.agents.get(agent_id) else {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "backend_offline",
+                    "message": format!("Agent {} not found or offline", agent_id),
+                    "retryable": true,
+                })),
+            )
+                .into_response());
+        };
+        let connection_id = agent.connection_id;
         let mut pending = inner.pending_responses.write().await;
         pending.insert(
             req_id.clone(),
             PendingResponse {
                 tx: resp_tx,
                 agent_id: agent_id.to_string(),
+                connection_id,
                 session_id: Some(session_id.to_string()),
                 desired_roots: None,
                 desired_collections: None,
@@ -2274,6 +2310,7 @@ async fn apply_collections_state(
     };
 
     let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel(1);
+    let connection_id = agent.connection_id;
     {
         let mut pending = inner.pending_responses.write().await;
         pending.insert(
@@ -2281,6 +2318,7 @@ async fn apply_collections_state(
             PendingResponse {
                 tx: resp_tx,
                 agent_id: agent_id.clone(),
+                connection_id,
                 session_id: Some(session_id),
                 desired_roots: None,
                 desired_collections: Some(desired_collections),
@@ -2445,6 +2483,7 @@ async fn apply_desired_state(
     };
 
     let (resp_tx, mut resp_rx) = tokio::sync::mpsc::channel(1);
+    let connection_id = agent.connection_id;
     {
         let mut pending = inner.pending_responses.write().await;
         pending.insert(
@@ -2452,6 +2491,7 @@ async fn apply_desired_state(
             PendingResponse {
                 tx: resp_tx,
                 agent_id: agent_id.clone(),
+                connection_id,
                 session_id: Some(session_id),
                 desired_roots: Some(desired_roots),
                 desired_collections: None,

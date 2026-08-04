@@ -51,14 +51,14 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
 
     void (async () => {
       try {
-        const response = await fetchWithRetry(url, withCsrf({ signal: controller.signal }), {
-          maxAttempts: 2,
+        const body = await fetchWithRetry(url, withCsrf({ signal: controller.signal }), {
+          maxAttempts: 3,
           agentId,
+          consume: (res) => res.text(),
           onRetry: () => {
             if (!cancelled) setRetrying(true);
           },
         });
-        const body = await response.text();
         if (cancelled) return;
         setText(body);
         setLoading(false);

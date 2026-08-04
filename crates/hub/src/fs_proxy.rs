@@ -149,6 +149,7 @@ pub async fn fs_list_handler(
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
             agent_id: params.agent_id.clone(),
+            connection_id: agent.connection_id,
             session_id: Some(session.principal_id.clone()),
             desired_roots: None,
             desired_collections: None,
@@ -229,6 +230,7 @@ pub async fn fs_stat_handler(
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
             agent_id: params.agent_id.clone(),
+            connection_id: agent.connection_id,
             session_id: Some(session.principal_id.clone()),
             desired_roots: None,
             desired_collections: None,
@@ -553,11 +555,15 @@ async fn request_raw_file_size(
     })?;
     if let Some(err) = value["error"].as_str() {
         tracing::warn!("Agent rejected raw file stat: {}", err);
-        if err.starts_with("agent_overloaded") {
+        if err == "backend_offline"
+            || value["retryable"].as_bool() == Some(true)
+            || err.starts_with("agent_overloaded")
+        {
+            let code = err.split(':').next().unwrap_or(err);
             return Err(error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "agent_overloaded",
-                "The agent is busy with file requests. Please retry shortly.",
+                code,
+                "Could not check the file before streaming",
                 true,
             ));
         }
@@ -602,18 +608,34 @@ async fn request_raw_chunk_with_retry(
 ) -> Result<(Vec<u8>, bool), String> {
     let deadline = tokio::time::Instant::now() + RAW_CHUNK_RETRY_BUDGET;
     let mut attempt = 0u32;
+    let mut last_err: Option<String> = None;
     loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(last_err.unwrap_or_else(|| {
+                "Raw chunk retry budget exhausted".to_string()
+            }));
+        }
         attempt += 1;
         match request_raw_chunk(state, target, offset, length).await {
             Ok(chunk) => return Ok(chunk),
-            Err(err) if is_raw_chunk_retryable(&err) && tokio::time::Instant::now() < deadline => {
+            Err(err) if is_raw_chunk_retryable(&err) => {
+                last_err = Some(err.clone());
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(last_err.unwrap());
+                }
+                let base_delay = if err.starts_with("agent_overloaded") {
+                    RAW_CHUNK_RETRY_DELAY.saturating_mul(2u32.saturating_pow(attempt.min(4) - 1))
+                } else {
+                    RAW_CHUNK_RETRY_DELAY
+                };
                 tracing::warn!(
                     "raw chunk offset={} attempt={} failed: {}, retrying",
                     offset,
                     attempt,
                     err
                 );
-                tokio::time::sleep(RAW_CHUNK_RETRY_DELAY).await;
+                tokio::time::sleep(base_delay.min(remaining)).await;
             }
             Err(err) => return Err(err),
         }
@@ -672,12 +694,14 @@ async fn request_raw_agent(
         if agent.status == crate::agent_registry::AgentStatus::Offline {
             return Err("Agent is offline".to_string());
         }
+        let connection_id = agent.connection_id;
         let mut pending = inner.pending_responses.write().await;
         pending.insert(
             req_id.clone(),
             PendingResponse {
                 tx: resp_tx,
                 agent_id: target.agent_id.clone(),
+                connection_id,
                 session_id: target.session_id.clone(),
                 desired_roots: None,
                 desired_collections: None,
@@ -959,6 +983,7 @@ pub async fn sys_stats_handler(
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
             agent_id: agent_id.clone(),
+            connection_id: agent.connection_id,
             session_id: Some(session.principal_id.clone()),
             desired_roots: None,
             desired_collections: None,
@@ -1344,6 +1369,7 @@ mod tests {
             PendingResponse {
                 tx,
                 agent_id: "agent".to_string(),
+                connection_id: 1,
                 session_id: None,
                 desired_roots: None,
                 desired_collections: None,
@@ -1379,6 +1405,7 @@ mod tests {
             PendingResponse {
                 tx,
                 agent_id: "a1".to_string(),
+                connection_id: 1,
                 session_id: None,
                 desired_roots: None,
                 desired_collections: None,

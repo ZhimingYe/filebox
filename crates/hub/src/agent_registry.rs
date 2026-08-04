@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,9 +18,15 @@ pub enum AgentStatus {
     Offline,
 }
 
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
 pub struct AgentConnection {
     pub agent_id: String,
     pub name: String,
+    /// Monotonic id assigned at register time. Pending requests store this so
+    /// disconnect cleanup only fails waiters owned by the dying connection,
+    /// not a newer reconnect for the same agent_id.
+    pub connection_id: u64,
     pub sender: mpsc::UnboundedSender<HubMessage>,
     /// One-shot signal used to tell this connection's read loop to exit
     /// when a newer connection for the same agent_id replaces it. Without
@@ -183,6 +190,7 @@ impl AgentRegistry {
         let agent = AgentConnection {
             agent_id: agent_id.clone(),
             name,
+            connection_id: NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed),
             sender,
             abort_notify,
             status: AgentStatus::Online,

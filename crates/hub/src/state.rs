@@ -12,6 +12,9 @@ use crate::config::HubConfig;
 pub struct PendingResponse {
     pub tx: mpsc::Sender<serde_json::Value>,
     pub agent_id: String,
+    /// Connection that accepted this request. Disconnect cleanup matches on
+    /// this id so a superseded socket cannot fail a newer connection's waiters.
+    pub connection_id: u64,
     pub session_id: Option<String>,
     pub desired_roots: Option<Vec<RootConfig>>,
     pub desired_collections: Option<Vec<CollectionConfig>>,
@@ -214,9 +217,14 @@ impl AppState {
         }
     }
 
-    /// Fail every pending response owned by `agent_id`. Used when a connection
-    /// closes so HTTP handlers stop waiting on their own 30–60s timeouts.
-    pub async fn fail_pending_for_agent(&self, agent_id: &str) -> usize {
+    /// Fail pending responses owned by a specific agent connection. Used when
+    /// a socket closes so HTTP handlers stop waiting on their own 30–60s
+    /// timeouts without touching waiters accepted by a newer reconnect.
+    pub async fn fail_pending_for_connection(
+        &self,
+        agent_id: &str,
+        connection_id: u64,
+    ) -> usize {
         let pending_arc = {
             let inner = self.inner.read().await;
             inner.pending_responses.clone()
@@ -225,7 +233,9 @@ impl AppState {
         let mut pending = pending_arc.write().await;
         let keys: Vec<String> = pending
             .iter()
-            .filter(|(_, resp)| resp.agent_id == agent_id)
+            .filter(|(_, resp)| {
+                resp.agent_id == agent_id && resp.connection_id == connection_id
+            })
             .map(|(key, _)| key.clone())
             .collect();
         let mut victims = Vec::with_capacity(keys.len());
@@ -238,9 +248,10 @@ impl AppState {
         drop(pending);
         for (req_id, resp) in victims {
             tracing::debug!(
-                "Failing pending request {} because agent {} disconnected",
+                "Failing pending request {} because agent {} connection {} disconnected",
                 req_id,
-                agent_id
+                agent_id,
+                connection_id
             );
             let _ = resp.tx.send(error.clone()).await;
         }
@@ -402,7 +413,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fail_pending_for_agent_notifies_only_matching_waiters() {
+    async fn fail_pending_for_connection_notifies_only_matching_waiters() {
         let config = crate::config::HubConfig {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
@@ -419,6 +430,7 @@ mod tests {
                 PendingResponse {
                     tx: tx_a1,
                     agent_id: "a1".to_string(),
+                    connection_id: 10,
                     session_id: None,
                     desired_roots: None,
                     desired_collections: None,
@@ -429,6 +441,7 @@ mod tests {
                 PendingResponse {
                     tx: tx_a2,
                     agent_id: "a2".to_string(),
+                    connection_id: 20,
                     session_id: None,
                     desired_roots: None,
                     desired_collections: None,
@@ -436,7 +449,7 @@ mod tests {
             );
         }
 
-        assert_eq!(state.fail_pending_for_agent("a1").await, 1);
+        assert_eq!(state.fail_pending_for_connection("a1", 10).await, 1);
 
         let value = rx_a1.recv().await.expect("a1 waiter should be notified");
         assert_eq!(value["error"], "backend_offline");
@@ -447,6 +460,51 @@ mod tests {
         let map = pending.read().await;
         assert!(map.contains_key("req-a2"));
         assert!(!map.contains_key("req-a1"));
+    }
+
+    #[tokio::test]
+    async fn fail_pending_for_connection_skips_newer_reconnect_waiters() {
+        let config = crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            agent_token_hash: "fake-hash".to_string(),
+            users: vec![],
+        };
+        let state = AppState::new(&config, false);
+        let (tx_old, mut rx_old) = mpsc::channel(1);
+        let (tx_new, mut rx_new) = mpsc::channel(1);
+        {
+            let pending = state.inner.read().await.pending_responses.clone();
+            let mut map = pending.write().await;
+            map.insert(
+                "req-old".to_string(),
+                PendingResponse {
+                    tx: tx_old,
+                    agent_id: "a1".to_string(),
+                    connection_id: 10,
+                    session_id: None,
+                    desired_roots: None,
+                    desired_collections: None,
+                },
+            );
+            map.insert(
+                "req-new".to_string(),
+                PendingResponse {
+                    tx: tx_new,
+                    agent_id: "a1".to_string(),
+                    connection_id: 11,
+                    session_id: None,
+                    desired_roots: None,
+                    desired_collections: None,
+                },
+            );
+        }
+
+        assert_eq!(state.fail_pending_for_connection("a1", 10).await, 1);
+        assert_eq!(
+            rx_old.recv().await.expect("old waiter notified")["error"],
+            "backend_offline"
+        );
+        assert!(rx_new.try_recv().is_err(), "new connection waiters must survive");
     }
 
     #[tokio::test]

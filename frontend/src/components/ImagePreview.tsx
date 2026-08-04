@@ -217,16 +217,18 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
 
     void (async () => {
       try {
-        const response = await fetchWithRetry(url, withCsrf({ signal: controller.signal }), {
-          maxAttempts: 2,
+        const blob = await fetchWithRetry(url, withCsrf({ signal: controller.signal }), {
+          maxAttempts: 3,
           agentId,
+          consume: async (res) => (
+            isTiff
+              ? await decodeTiff(await res.arrayBuffer())
+              : await res.blob()
+          ),
           onRetry: () => {
             if (mounted.current) setImgRetrying(true);
           },
         });
-        const blob = isTiff
-          ? await decodeTiff(await response.arrayBuffer())
-          : await response.blob();
         const scaled = await maybeDownscaleBlob(blob, isTiff ? 'png' : ext);
         if (!mounted.current || controller.signal.aborted) return;
         const objURL = URL.createObjectURL(scaled);

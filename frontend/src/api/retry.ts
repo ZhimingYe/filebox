@@ -145,19 +145,35 @@ export async function parseHttpErrorBody(res: Response): Promise<RetryableErrorS
   }
 }
 
-export async function fetchWithRetry(
+export async function fetchWithRetry<T = Response>(
   url: string,
   init: RequestInit,
-  opts: { maxAttempts?: number; agentId?: string; onRetry?: (attempt: number) => void } = {},
-): Promise<Response> {
+  opts: {
+    maxAttempts?: number;
+    agentId?: string;
+    onRetry?: (attempt: number) => void;
+    consume?: (res: Response, signal: AbortSignal) => Promise<T>;
+  } = {},
+): Promise<T> {
   const maxAttempts = opts.maxAttempts ?? 2;
+  const consume = opts.consume ?? (async (res) => res as T);
   return retryAsync(async (_attempt, attemptSignal) => {
     const res = await fetch(url, { ...init, signal: attemptSignal });
     if (!res.ok) {
       const body = await parseHttpErrorBody(res);
       throw body;
     }
-    return res;
+    try {
+      return await consume(res, attemptSignal);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw error;
+      }
+      if (error instanceof TypeError || isRetryableError(error)) {
+        throw error;
+      }
+      throw error;
+    }
   }, {
     maxAttempts,
     agentId: opts.agentId,

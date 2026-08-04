@@ -9,7 +9,7 @@ import {
 import { FixedSizeList, type ListChildComponentProps } from 'react-window';
 import * as api from '../api/client';
 import type { FsEntry, RootInfo } from '../api/client';
-import { retryAsync, throwIfAgentError } from '../api/retry';
+import { isRetryableError, retryAsync, throwIfAgentError } from '../api/retry';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { useIsMobile } from '../state/useIsMobile';
 import { c, font, radius } from '../theme';
@@ -33,6 +33,7 @@ interface DirectoryState {
   loadMode: 'replace' | 'append' | null;
   loaded: boolean;
   error: string | null;
+  errorRetryable: boolean;
   errorAppend: boolean;
   lastUsed: number;
 }
@@ -144,6 +145,7 @@ const EMPTY_DIRECTORY: DirectoryState = {
   loadMode: null,
   loaded: false,
   error: null,
+  errorRetryable: false,
   errorAppend: false,
   lastUsed: 0,
 };
@@ -499,7 +501,7 @@ export function ExplorerView({
       controller.abort();
     }, DIRECTORY_LOAD_TIMEOUT_MS);
 
-    const setFailure = (message: string) => {
+    const setFailure = (message: string, retryable = false) => {
       updateNodes((previous) => {
         const next = new Map(previous);
         const existing = previous.get(task.key) ?? EMPTY_DIRECTORY;
@@ -510,6 +512,7 @@ export function ExplorerView({
           loadMode: null,
           loaded: true,
           error: message,
+          errorRetryable: retryable,
           errorAppend: task.append,
           lastUsed: ++usageTickRef.current,
         });
@@ -559,6 +562,7 @@ export function ExplorerView({
           loadMode: null,
           loaded: true,
           error: null,
+          errorRetryable: false,
           errorAppend: false,
           lastUsed: ++usageTickRef.current,
         });
@@ -580,7 +584,7 @@ export function ExplorerView({
         return;
       }
       result = 'failed';
-      setFailure(directoryErrorMessage(error));
+      setFailure(directoryErrorMessage(error), isRetryableError(error));
     }).finally(() => {
       window.clearTimeout(slowTimer);
       window.clearTimeout(timeoutTimer);
@@ -656,6 +660,7 @@ export function ExplorerView({
         loadPhase: 'queued',
         loadMode: append ? 'append' : 'replace',
         error: null,
+        errorRetryable: false,
         errorAppend: false,
         lastUsed: ++usageTickRef.current,
       });
@@ -814,7 +819,7 @@ export function ExplorerView({
           parentPath: path,
           depth,
           message: state.error,
-          retryable: true,
+          retryable: state.errorRetryable,
           append: state.errorAppend,
         });
       }

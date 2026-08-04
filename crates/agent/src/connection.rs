@@ -548,9 +548,10 @@ async fn run_one_connection(
                                             resource_revision: new_rev,
                                             roots: resource_mgr.roots().to_vec(),
                                         };
-                                        let _ = send_with_timeout(&mut write, Message::Text(
-                                            serde_json::to_string(&update).unwrap().into(),
-                                        )).await;
+                                        if !send_agent_message(&mut write, &update).await {
+                                            tracing::warn!("Failed to send ResourcesUpdated, reconnecting");
+                                            break;
+                                        }
 
                                         AgentMessage::ResourcesApplied {
                                             req_id: req_id.clone(),
@@ -570,9 +571,10 @@ async fn run_one_connection(
                                     }
                                 };
 
-                                let _ = send_with_timeout(&mut write, Message::Text(
-                                    serde_json::to_string(&response).unwrap().into(),
-                                )).await;
+                                if !send_agent_message(&mut write, &response).await {
+                                    tracing::warn!("Failed to send resource response, reconnecting");
+                                    break;
+                                }
                             }
                             Ok(HubMessage::CollectionsSetDesired {
                                 req_id,
@@ -595,9 +597,10 @@ async fn run_one_connection(
                                             collections_revision: new_rev,
                                             collections: resource_mgr.collections().to_vec(),
                                         };
-                                        let _ = send_with_timeout(&mut write, Message::Text(
-                                            serde_json::to_string(&update).unwrap().into(),
-                                        )).await;
+                                        if !send_agent_message(&mut write, &update).await {
+                                            tracing::warn!("Failed to send CollectionsUpdated, reconnecting");
+                                            break;
+                                        }
 
                                         AgentMessage::CollectionsApplied {
                                             req_id: req_id.clone(),
@@ -618,9 +621,10 @@ async fn run_one_connection(
                                     }
                                 };
 
-                                let _ = send_with_timeout(&mut write, Message::Text(
-                                    serde_json::to_string(&response).unwrap().into(),
-                                )).await;
+                                if !send_agent_message(&mut write, &response).await {
+                                    tracing::warn!("Failed to send collections response, reconnecting");
+                                    break;
+                                }
                             }
                             Ok(HubMessage::FsListRequest { req_id, root, path, limit, cursor, dirs_only }) => {
                                 tracing::debug!("FS list: root={}, path={}, dirs_only={:?}", root, path, dirs_only);
@@ -910,9 +914,10 @@ async fn run_one_connection(
                                 let response = AgentMessage::SysStatsResponse {
                                     req_id, stats: Some((*stats).clone()), error: None,
                                 };
-                                let _ = send_with_timeout(&mut write, Message::Text(
-                                    serde_json::to_string(&response).unwrap().into(),
-                                )).await;
+                                if !send_agent_message(&mut write, &response).await {
+                                    tracing::warn!("Failed to send sys stats response, reconnecting");
+                                    break;
+                                }
                             }
                             Ok(HubMessage::WorkspaceSearchRequest {
                                 req_id,
@@ -946,13 +951,10 @@ async fn run_one_connection(
                                                 .to_string(),
                                         ),
                                     };
-                                    let _ = send_with_timeout(
-                                        &mut write,
-                                        Message::Text(
-                                            serde_json::to_string(&busy).unwrap().into(),
-                                        ),
-                                    )
-                                    .await;
+                                    if !send_agent_message(&mut write, &busy).await {
+                                        tracing::warn!("Failed to send search busy response, reconnecting");
+                                        break;
+                                    }
                                     continue;
                                 }
 
@@ -1064,13 +1066,10 @@ async fn run_one_connection(
                                         outputs: vec![],
                                         error: Some("unsupported_feature".to_string()),
                                     };
-                                    let _ = send_with_timeout(
-                                        &mut write,
-                                        Message::Text(
-                                            serde_json::to_string(&resp).unwrap().into(),
-                                        ),
-                                    )
-                                    .await;
+                                    if !send_agent_message(&mut write, &resp).await {
+                                        tracing::warn!("Failed to send office unsupported response, reconnecting");
+                                        break;
+                                    }
                                     continue;
                                 };
                                 let lease = match rt.reserve_job(&req_id) {
@@ -1083,13 +1082,10 @@ async fn run_one_connection(
                                             outputs: vec![],
                                             error: Some(error),
                                         };
-                                        let _ = send_with_timeout(
-                                            &mut write,
-                                            Message::Text(
-                                                serde_json::to_string(&resp).unwrap().into(),
-                                            ),
-                                        )
-                                        .await;
+                                        if !send_agent_message(&mut write, &resp).await {
+                                            tracing::warn!("Failed to send office overload response, reconnecting");
+                                            break;
+                                        }
                                         continue;
                                     }
                                 };

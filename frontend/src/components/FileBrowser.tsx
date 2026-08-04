@@ -224,6 +224,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   // new subdirectories). Mirrors the pinned-folders navRequest nonce pattern.
   const [treeRefreshNonce, setTreeRefreshNonce] = useState(0);
   const loadSeq = useRef(0); // request versioning — discard stale responses
+  const loadAbortRef = useRef<AbortController | null>(null);
 
   const enabledRoots = useMemo(() => roots.filter((r) => r.enabled), [roots]);
 
@@ -344,6 +345,9 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     if (!selectedRoot) return;
 
     const seq = ++loadSeq.current;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
 
     if (append) {
       setLoadingMore(true);
@@ -358,16 +362,17 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
       const cursor = append && nextCursor ? nextCursor : undefined;
       const data = await retryAsync(
         async () => throwIfAgentError(
-          await api.fsList(agentId, selectedRoot, currentPath, PAGE_LIMIT, cursor),
+          await api.fsList(agentId, selectedRoot, currentPath, PAGE_LIMIT, cursor, false, controller.signal),
         ),
-        { maxAttempts: 3, agentId },
+        { maxAttempts: 3, agentId, signal: controller.signal },
       );
       if (seq !== loadSeq.current) return; // stale response — discard
       setEntries((prev) => append ? [...prev, ...data.items] : data.items);
       setNextCursor(data.next_cursor);
     } catch (e: unknown) {
       if (seq !== loadSeq.current) return; // stale response — discard
-      const err = e as { message?: string; error?: string };
+      const err = e as { name?: string; message?: string; error?: string };
+      if (err?.name === 'AbortError') return;
       setError(err.message || err.error || friendlyMessage(e) || 'Failed to list directory');
       if (!append) setEntries([]);
     } finally {
@@ -380,6 +385,9 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
 
   useEffect(() => {
     loadDir(false);
+    return () => {
+      loadAbortRef.current?.abort();
+    };
   }, [agentId, selectedRoot, currentPath]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const navigateTo = useCallback((entry: api.FsEntry) => {
