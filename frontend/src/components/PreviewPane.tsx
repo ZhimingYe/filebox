@@ -8,9 +8,9 @@ import {
   styles,
 } from './previewShared';
 import {
-  isOfficePreviewExt,
-  readOfficePdfPreviewPref,
-} from './officePreviewSupport';
+  isUniverPreviewExt,
+  readUniverPreviewPref,
+} from './univerPreviewSupport';
 
 // Heavy preview components are lazy-loaded so their deps only download when
 // the user actually opens that file type. The biggest is TextPreview
@@ -24,7 +24,7 @@ const TextPreview = lazy(() => import('./TextPreview').then(m => ({ default: m.T
 const MarkdownPreview = lazy(() => import('./MarkdownPreview').then(m => ({ default: m.MarkdownPreview })));
 const HtmlPreview = lazy(() => import('./HtmlPreview').then(m => ({ default: m.HtmlPreview })));
 const CsvPreview = lazy(() => import('./CsvPreview').then(m => ({ default: m.CsvPreview })));
-const OfficePreview = lazy(() => import('./OfficePreview').then(m => ({ default: m.OfficePreview })));
+const UniverPreview = lazy(() => import('./UniverPreview').then(m => ({ default: m.UniverPreview })));
 
 interface Props {
   agentId: string;
@@ -32,8 +32,6 @@ interface Props {
   path: string;
   entryType: string;
   denied: boolean;
-  /** Agent advertised office_pdf_preview capability. */
-  officeCapable?: boolean;
 }
 
 function SuspenseFallback({ label }: { label: string }) {
@@ -87,7 +85,7 @@ function DownloadFallback({
 // frame) does not re-render the preview subtree. Props are all primitives
 // that only change when the selected file changes.
 export const PreviewPane = memo(function PreviewPane({
-  agentId, root, path, entryType, denied, officeCapable = false,
+  agentId, root, path, entryType, denied,
 }: Props) {
   if (denied) {
     return (
@@ -156,12 +154,11 @@ export const PreviewPane = memo(function PreviewPane({
     );
   }
 
-  if (isOfficePreviewExt(ext)) {
-    const prefOn = readOfficePdfPreviewPref();
-    if (officeCapable && prefOn) {
+  if (isUniverPreviewExt(ext)) {
+    if (readUniverPreviewPref()) {
       return (
-        <Suspense fallback={<SuspenseFallback label="Loading Office preview..." />}>
-          <OfficePreview
+        <Suspense fallback={<SuspenseFallback label="Loading Univer preview..." />}>
+          <UniverPreview
             key={`${agentId}:${root}:${path}`}
             agentId={agentId}
             root={root}
@@ -170,26 +167,27 @@ export const PreviewPane = memo(function PreviewPane({
         </Suspense>
       );
     }
-    if (!prefOn) {
-      return (
-        <DownloadFallback
-          agentId={agentId}
-          root={root}
-          path={path}
-          ext={ext}
-          title="Office preview is off"
-          hint="This browser downloads Office files instead of converting them. Turn preview on in Settings anytime — or keep it off and download."
-        />
-      );
-    }
     return (
       <DownloadFallback
         agentId={agentId}
         root={root}
         path={path}
         ext={ext}
-        title="Preview not available on this agent"
-        hint="In-browser Office preview is optional and needs LibreOffice on the agent. Browsing and download still work as usual."
+        title="Univer preview is off"
+        hint="This browser downloads Office files instead of opening them in Univer. Turn preview on in Settings anytime."
+      />
+    );
+  }
+
+  if (['doc', 'docm', 'ppt', 'pptm', 'pptx', 'xls', 'xlsm', 'ods'].includes(ext)) {
+    return (
+      <DownloadFallback
+        agentId={agentId}
+        root={root}
+        path={path}
+        ext={ext}
+        title="Univer preview unavailable"
+        hint="This format is not supported by the browser-side Univer importer yet. Download the original file instead."
       />
     );
   }

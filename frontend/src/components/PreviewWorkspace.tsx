@@ -32,8 +32,6 @@ interface Props {
   onCloseAll: () => void;
   onCloseLeft: (tabId: string) => void;
   onCloseRight: (tabId: string) => void;
-  /** Agent `capabilities.office_pdf_preview`. */
-  officeCapable?: boolean;
 }
 
 /** Scroll `el` into view inside a horizontal scroller without touching ancestors. */
@@ -75,7 +73,6 @@ function scrollChildIntoList(list: HTMLElement, el: HTMLElement) {
 export const PreviewWorkspace = memo(function PreviewWorkspace({
   agentId, tabs, activeTab, activeTabId,
   onActivate, onClose, onCloseAll, onCloseLeft, onCloseRight,
-  officeCapable = false,
 }: Props) {
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const [hoveredMenuItem, setHoveredMenuItem] = useState<string | null>(null);
@@ -496,7 +493,6 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
                 path={activeTab.path}
                 entryType={activeTab.entry.entry_type}
                 denied={activeTab.entry.denied}
-                officeCapable={officeCapable}
               />
             </PreviewErrorBoundary>
           </div>

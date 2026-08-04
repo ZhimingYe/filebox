@@ -110,21 +110,6 @@ pub struct Capabilities {
     /// Defaults to `false` for rolling-upgrade safety.
     #[serde(default)]
     pub workspace_search: bool,
-    /// Whether this agent can derive Office previews via an external
-    /// LibreOffice `soffice` (env-configured). The compatibility field name
-    /// predates per-sheet CSV previews. Defaults to `false` for rolling-
-    /// upgrade safety and when soffice is not configured/probed.
-    #[serde(default)]
-    pub office_pdf_preview: bool,
-    /// Agent-enforced Office source/output limits and conversion deadline.
-    /// Optional for rolling upgrades; absence means the Hub/UI must use
-    /// conservative legacy behavior.
-    #[serde(default)]
-    pub office_max_src_bytes: Option<u64>,
-    #[serde(default)]
-    pub office_max_pdf_bytes: Option<u64>,
-    #[serde(default)]
-    pub office_timeout_secs: Option<u64>,
 }
 
 impl Default for Capabilities {
@@ -141,10 +126,6 @@ impl Default for Capabilities {
             pinned_folders: false,
             collections: false,
             workspace_search: false,
-            office_pdf_preview: false,
-            office_max_src_bytes: None,
-            office_max_pdf_bytes: None,
-            office_timeout_secs: None,
         }
     }
 }
@@ -377,10 +358,6 @@ mod tests {
             !caps.workspace_search,
             "workspace_search must default to false (legacy-detection sentinel)"
         );
-        assert!(
-            !caps.office_pdf_preview,
-            "office_pdf_preview must default to false (legacy-detection sentinel)"
-        );
     }
 
     #[test]
@@ -400,7 +377,6 @@ mod tests {
         }"#;
         let caps: Capabilities = serde_json::from_str(legacy_json).unwrap();
         assert!(!caps.pinned_folders);
-        assert!(!caps.office_pdf_preview);
         assert!(caps.fs_list);
     }
 

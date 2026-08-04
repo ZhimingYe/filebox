@@ -11,14 +11,6 @@ use crate::search::{SearchMode, SearchResult};
 /// also clamps reads to this size when `length` is omitted or oversized.
 pub const FILE_CHUNK_MAX_BYTES: u64 = 512 * 1024;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OfficePreviewOutput {
-    pub label: String,
-    pub format: String,
-    pub cache_key: String,
-    pub size: u64,
-}
-
 // ── Agent → Hub ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,17 +105,6 @@ pub enum AgentMessage {
     WorkspaceSearchResponse {
         req_id: String,
         result: Option<SearchResult>,
-        error: Option<String>,
-    },
-    /// Office conversion result. `cache_key` / `size` retain the primary
-    /// output for rolling-upgrade compatibility; `outputs` contains every
-    /// derived PDF or per-sheet CSV.
-    OfficeConvertResponse {
-        req_id: String,
-        cache_key: Option<String>,
-        size: Option<u64>,
-        #[serde(default)]
-        outputs: Vec<OfficePreviewOutput>,
         error: Option<String>,
     },
 }
@@ -262,16 +243,6 @@ pub enum HubMessage {
         /// `None` / `0` = unlimited.
         #[serde(default)]
         max_depth: Option<u32>,
-    },
-    /// Convert an Office document under a root to PDF via external LibreOffice.
-    OfficeConvertRequest {
-        req_id: String,
-        root: String,
-        path: String,
-        /// Ignore and replace an existing derived preview for this source.
-        /// Used after the browser proves that a cached PDF cannot be decoded.
-        #[serde(default)]
-        force: bool,
     },
 }
 
@@ -506,119 +477,6 @@ mod tests {
                 assert_eq!(stats.unwrap().cpu_usage_percent, 10.0);
             }
             _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn office_convert_request_response_round_trips() {
-        let req = HubMessage::OfficeConvertRequest {
-            req_id: "oc1".into(),
-            root: "docs".into(),
-            path: "/report.docx".into(),
-            force: false,
-        };
-        let back = round_trip_hub(&req);
-        match back {
-            HubMessage::OfficeConvertRequest {
-                root,
-                path,
-                force,
-                ..
-            } => {
-                assert_eq!(root, "docs");
-                assert_eq!(path, "/report.docx");
-                assert!(!force);
-            }
-            _ => panic!("wrong variant"),
-        }
-
-        let resp = AgentMessage::OfficeConvertResponse {
-            req_id: "oc1".into(),
-            cache_key: Some("abc123".into()),
-            size: Some(4096),
-            outputs: vec![OfficePreviewOutput {
-                label: "Document".into(),
-                format: "pdf".into(),
-                cache_key: "abc123".into(),
-                size: 4096,
-            }],
-            error: None,
-        };
-        let back = round_trip_agent(&resp);
-        match back {
-            AgentMessage::OfficeConvertResponse {
-                cache_key,
-                size,
-                outputs,
-                error,
-                ..
-            } => {
-                assert_eq!(cache_key.as_deref(), Some("abc123"));
-                assert_eq!(size, Some(4096));
-                assert_eq!(outputs.len(), 1);
-                assert_eq!(outputs[0].format, "pdf");
-                assert!(error.is_none());
-            }
-            _ => panic!("wrong variant"),
-        }
-
-        let legacy: AgentMessage = serde_json::from_value(serde_json::json!({
-            "type": "office_convert_response",
-            "req_id": "oc-old",
-            "cache_key": "abc123",
-            "size": 4096,
-            "error": null
-        }))
-        .unwrap();
-        match legacy {
-            AgentMessage::OfficeConvertResponse { outputs, .. } => {
-                assert!(outputs.is_empty());
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn office_convert_request_defaults_force_for_older_hubs() {
-        let raw = r#"{
-            "type": "office_convert_request",
-            "req_id": "oc-old",
-            "root": "docs",
-            "path": "/report.pptx"
-        }"#;
-        let message: HubMessage = serde_json::from_str(raw).unwrap();
-        match message {
-            HubMessage::OfficeConvertRequest { force, .. } => assert!(!force),
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn older_agents_ignore_the_new_office_force_field() {
-        #[derive(serde::Deserialize)]
-        #[serde(tag = "type", rename_all = "snake_case")]
-        enum LegacyHubMessage {
-            OfficeConvertRequest {
-                req_id: String,
-                root: String,
-                path: String,
-            },
-        }
-
-        let request = HubMessage::OfficeConvertRequest {
-            req_id: "oc-new".into(),
-            root: "docs".into(),
-            path: "/report.pptx".into(),
-            force: true,
-        };
-        let raw = serde_json::to_string(&request).unwrap();
-        let legacy: LegacyHubMessage = serde_json::from_str(&raw).unwrap();
-        match legacy {
-            LegacyHubMessage::OfficeConvertRequest { req_id, root, path } => {
-                assert_eq!(req_id, "oc-new");
-                assert_eq!(root, "docs");
-                assert_eq!(path, "/report.pptx");
-            }
         }
     }
 

@@ -28,8 +28,6 @@ filebox-updater = { path = "../updater" }
 # In-process fd/rg substitutes — no system binaries required.
 ignore = "0.4"
 regex = "1"
-sha2 = { workspace = true }
-hex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

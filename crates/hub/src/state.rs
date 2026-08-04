@@ -23,7 +23,7 @@ pub struct PendingResponse {
 
 /// Upper bound for requests waiting on an Agent response. The outbound Agent
 /// queue is bounded too, but HTTP requests can outlive a queued message while
-/// a filesystem or Office operation is blocked.
+/// a filesystem or long-running operation is blocked.
 pub const MAX_PENDING_RESPONSES: usize = 4096;
 const CANCELLED_REQUEST_TTL: Duration = Duration::from_secs(5 * 60);
 
@@ -167,7 +167,7 @@ pub struct AppStateInner {
     /// Pending responses from agents keyed by req_id
     pub pending_responses: Arc<RwLock<std::collections::HashMap<String, PendingResponse>>>,
     /// Tombstones prevent a late response for a cancelled request id from
-    /// being delivered to a new Office request that reuses the id.
+    /// being delivered to a new request that reuses the id.
     pub cancelled_request_ids: Arc<std::sync::Mutex<HashMap<String, Instant>>>,
     /// Short-lived, directory-scoped bearer tokens for sandboxed HTML previews.
     pub preview_sessions: Arc<RwLock<std::collections::HashMap<String, PreviewSession>>>,

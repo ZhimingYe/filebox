@@ -257,18 +257,6 @@ pub async fn run_connection_loop(config: &AgentConfig) {
     // both the main file list and the directory tree. Cleared on resource
     // reconfigure inside the connection loop.
     let dir_cache: Arc<DirCache> = DirCache::new();
-    let office_runtime = crate::office_convert::probe_from_env(&config.data_dir).and_then(
-        |office_config| match crate::office_convert::OfficeRuntime::new(office_config) {
-            Ok(runtime) => Some(runtime),
-            Err(error) => {
-                tracing::warn!(
-                    "Office runtime initialization failed: {} — office_pdf_preview disabled",
-                    error
-                );
-                None
-            }
-        },
-    );
     // Shared across reconnects. A filesystem syscall left behind by a broken
     // WebSocket must continue counting against the same global worker bound.
     let fs_workers = Arc::new(Semaphore::new(FS_WORKER_CONCURRENCY));
@@ -293,7 +281,6 @@ pub async fn run_connection_loop(config: &AgentConfig) {
             &stable_agent_id,
             &stats_cache,
             &dir_cache,
-            office_runtime.as_ref(),
             &fs_workers,
             &dir_list_workers,
             &search_inflight,
@@ -350,7 +337,6 @@ async fn run_one_connection(
     stable_agent_id: &str,
     stats_cache: &Arc<StatsCache>,
     dir_cache: &Arc<DirCache>,
-    office_runtime: Option<&Arc<crate::office_convert::OfficeRuntime>>,
     fs_workers: &Arc<Semaphore>,
     dir_list_workers: &Arc<Semaphore>,
     search_inflight: &Arc<AtomicUsize>,
@@ -427,16 +413,6 @@ async fn run_one_connection(
     capabilities.pinned_folders = true;
     capabilities.collections = true;
     capabilities.workspace_search = true;
-    // Temporary runtime degradation is request-scoped, not a capability
-    // change. Keeping the configured capability advertised lets a later
-    // user-triggered retry recover after Office is reinstalled, without
-    // polling or requiring another Agent reconnect.
-    capabilities.office_pdf_preview = office_runtime.is_some();
-    if let Some(runtime) = office_runtime {
-        capabilities.office_max_src_bytes = Some(runtime.config.max_src_bytes);
-        capabilities.office_max_pdf_bytes = Some(runtime.config.max_pdf_bytes);
-        capabilities.office_timeout_secs = Some(runtime.config.timeout.as_secs());
-    }
     let register = AgentMessage::Register {
         agent_id: Some(stable_agent_id.to_string()),
         name: config.agent_name.clone(),
@@ -461,11 +437,8 @@ async fn run_one_connection(
     // Step 5: Main message loop with liveness timeout.
     let mut ping_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
 
-    // Workspace search / office convert run off the WS loop so heartbeats
-    // keep working. Completed responses arrive on worker_rx.
-    // Capacity >1 so Progress try_send rarely drops under burst.
+    // Workspace search runs off the WS loop so heartbeats keep working.
     let (search_tx, mut search_rx) = mpsc::channel::<AgentMessage>(32);
-    let (office_tx, mut office_rx) = mpsc::channel::<AgentMessage>(32);
     let (stats_tx, mut stats_rx) = mpsc::channel::<AgentMessage>(8);
     let (fs_tx, mut fs_rx) = mpsc::channel::<AgentMessage>(128);
     let fs_admission = Arc::new(Semaphore::new(FS_MAX_INFLIGHT));
@@ -480,12 +453,6 @@ async fn run_one_connection(
             Some(response) = search_rx.recv() => {
                 if !send_agent_message(&mut write, &response).await {
                     tracing::warn!("Failed to send search response, reconnecting");
-                    break;
-                }
-            }
-            Some(response) = office_rx.recv() => {
-                if !send_agent_message(&mut write, &response).await {
-                    tracing::warn!("Failed to send office response, reconnecting");
                     break;
                 }
             }
@@ -701,7 +668,6 @@ async fn run_one_connection(
                             Ok(HubMessage::FsStatRequest { req_id, root, path }) => {
                                 tracing::debug!("FS stat: root={}, path={}", root, path);
                                 let roots_vec = resource_mgr.roots().to_vec();
-                                let runtime = office_runtime.cloned();
                                 let rid = req_id.clone();
                                 let panic_response = AgentMessage::FsStatResponse {
                                     req_id: rid,
@@ -729,56 +695,17 @@ async fn run_one_connection(
                                                 error: Some("request_cancelled".to_string()),
                                             };
                                         }
-                                        if let Some(cache) =
-                                            crate::office_convert::parse_cache_virtual_path(&path)
-                                        {
-                                            match runtime {
-                                                Some(rt) => match crate::office_convert::stat_cache(
-                                                    &rt.config.office_dir,
-                                                    &roots_vec,
-                                                    &root,
-                                                    &cache,
-                                                ) {
-                                                    Ok(size) => AgentMessage::FsStatResponse {
-                                                        req_id: job_req_id,
-                                                        stat: Some(
-                                                            filebox_protocol::resources::FileStat {
-                                                                path,
-                                                                entry_type:
-                                                                    filebox_protocol::resources::FsEntryType::File,
-                                                                size,
-                                                                modified: None,
-                                                                permissions: None,
-                                                                denied: false,
-                                                            },
-                                                        ),
-                                                        error: None,
-                                                    },
-                                                    Err(e) => AgentMessage::FsStatResponse {
-                                                        req_id: job_req_id,
-                                                        stat: None,
-                                                        error: Some(e),
-                                                    },
-                                                },
-                                                None => AgentMessage::FsStatResponse {
-                                                    req_id: job_req_id,
-                                                    stat: None,
-                                                    error: Some("office_unavailable".to_string()),
-                                                },
-                                            }
-                                        } else {
-                                            match crate::fs::stat_file(&roots_vec, &root, &path) {
-                                                Ok(stat) => AgentMessage::FsStatResponse {
-                                                    req_id: job_req_id,
-                                                    stat: Some(stat),
-                                                    error: None,
-                                                },
-                                                Err(e) => AgentMessage::FsStatResponse {
-                                                    req_id: job_req_id,
-                                                    stat: None,
-                                                    error: Some(e),
-                                                },
-                                            }
+                                        match crate::fs::stat_file(&roots_vec, &root, &path) {
+                                            Ok(stat) => AgentMessage::FsStatResponse {
+                                                req_id: job_req_id,
+                                                stat: Some(stat),
+                                                error: None,
+                                            },
+                                            Err(e) => AgentMessage::FsStatResponse {
+                                                req_id: job_req_id,
+                                                stat: None,
+                                                error: Some(e),
+                                            },
                                         }
                                     },
                                     cancelled_response,
@@ -801,7 +728,6 @@ async fn run_one_connection(
                             Ok(HubMessage::FileReadRequest { req_id, root, path, offset, length }) => {
                                 tracing::debug!("FS read: root={}, path={}, offset={}, len={:?}", root, path, offset, length);
                                 let roots_vec = resource_mgr.roots().to_vec();
-                                let runtime = office_runtime.cloned();
                                 let rid = req_id.clone();
                                 let panic_response = AgentMessage::FileChunk {
                                     req_id: rid,
@@ -841,35 +767,13 @@ async fn run_one_connection(
                                                 modified: None,
                                             };
                                         }
-                                        let read_result = if let Some(cache) =
-                                            crate::office_convert::parse_cache_virtual_path(&path)
-                                        {
-                                            match runtime {
-                                                Some(rt) => crate::office_convert::read_cache_range(
-                                                    &rt.config.office_dir,
-                                                    &roots_vec,
-                                                    &root,
-                                                    &cache,
-                                                    offset,
-                                                    length,
-                                                )
-                                                .map(|(data, done)| crate::fs::FileReadRange {
-                                                    data,
-                                                    done,
-                                                    file_size: None,
-                                                    modified: None,
-                                                }),
-                                                None => Err("office_unavailable".to_string()),
-                                            }
-                                        } else {
-                                            crate::fs::read_file_range_with_metadata(
-                                                &roots_vec,
-                                                &root,
-                                                &path,
-                                                offset,
-                                                length,
-                                            )
-                                        };
+                                        let read_result = crate::fs::read_file_range_with_metadata(
+                                            &roots_vec,
+                                            &root,
+                                            &path,
+                                            offset,
+                                            length,
+                                        );
                                         if cancelled.load(Ordering::Acquire) {
                                             return AgentMessage::FileChunk {
                                                 req_id: job_req_id.clone(),
@@ -934,9 +838,6 @@ async fn run_one_connection(
                                     if let Some(flag) = map.get(&req_id) {
                                         flag.store(true, Ordering::Relaxed);
                                     }
-                                }
-                                if let Some(rt) = office_runtime {
-                                    rt.request_cancel(&req_id);
                                 }
                             }
                             Ok(HubMessage::SysStatsRequest { req_id }) => {
@@ -1081,149 +982,6 @@ async fn run_one_connection(
                                     let _ = tx.blocking_send(response);
                                 });
                             }
-                            Ok(HubMessage::OfficeConvertRequest {
-                                req_id,
-                                root,
-                                path,
-                                force,
-                            }) => {
-                                tracing::debug!(
-                                    "Office convert: root={} path={}",
-                                    root,
-                                    path
-                                );
-                                let Some(rt) = office_runtime.cloned() else {
-                                    let resp = AgentMessage::OfficeConvertResponse {
-                                        req_id,
-                                        cache_key: None,
-                                        size: None,
-                                        outputs: vec![],
-                                        error: Some("unsupported_feature".to_string()),
-                                    };
-                                    if !send_agent_message(&mut write, &resp).await {
-                                        tracing::warn!("Failed to send office unsupported response, reconnecting");
-                                        break;
-                                    }
-                                    continue;
-                                };
-                                let lease = match rt.reserve_job(&req_id) {
-                                    Ok(lease) => lease,
-                                    Err(error) => {
-                                        let resp = AgentMessage::OfficeConvertResponse {
-                                            req_id,
-                                            cache_key: None,
-                                            size: None,
-                                            outputs: vec![],
-                                            error: Some(error),
-                                        };
-                                        if !send_agent_message(&mut write, &resp).await {
-                                            tracing::warn!("Failed to send office overload response, reconnecting");
-                                            break;
-                                        }
-                                        continue;
-                                    }
-                                };
-                                let roots_vec = resource_mgr.roots().to_vec();
-                                let tx = office_tx.clone();
-                                let progress_tx = office_tx.clone();
-                                let rid = req_id.clone();
-                                let rid_for_progress = req_id.clone();
-                                let on_progress: crate::office_convert::ProgressFn =
-                                    Arc::new(move |phase, processed, message| {
-                                        let msg = AgentMessage::Progress {
-                                            req_id: rid_for_progress.clone(),
-                                            phase: phase.to_string(),
-                                            processed,
-                                            // Phase index only — not a byte total.
-                                            total: None,
-                                            message,
-                                        };
-                                        let _ = progress_tx.try_send(msg);
-                                    });
-                                let worker_timeout =
-                                    rt.config.timeout.saturating_add(Duration::from_secs(5));
-                                let rt_for_timeout = rt.clone();
-                                let worker = tokio::task::spawn_blocking(move || {
-                                    let _ = tx.try_send(AgentMessage::Progress {
-                                        req_id: rid.clone(),
-                                        phase: "preparing".to_string(),
-                                        processed: 0,
-                                        total: None,
-                                        message: Some("Preparing preview…".to_string()),
-                                    });
-                                    let outcome =
-                                        crate::office_convert::run_convert_reserved_with_options(
-                                            rt.as_ref(),
-                                            &roots_vec,
-                                            &rid,
-                                            &root,
-                                            &path,
-                                            lease,
-                                            force,
-                                            Some(on_progress),
-                                        );
-                                    match outcome {
-                                        Ok(r) => {
-                                            let legacy_pdf = r
-                                                .outputs
-                                                .first()
-                                                .is_some_and(|output| output.format == "pdf");
-                                            AgentMessage::OfficeConvertResponse {
-                                                req_id: rid.clone(),
-                                                cache_key: legacy_pdf
-                                                    .then_some(r.cache_key),
-                                                size: legacy_pdf.then_some(r.size),
-                                                outputs: r.outputs,
-                                                error: None,
-                                            }
-                                        }
-                                        Err(e) => AgentMessage::OfficeConvertResponse {
-                                            req_id: rid.clone(),
-                                            cache_key: None,
-                                            size: None,
-                                            outputs: vec![],
-                                            error: Some(e),
-                                        },
-                                    }
-                                });
-                                let terminal_tx = office_tx.clone();
-                                let terminal_req_id = req_id.clone();
-                                tokio::spawn(async move {
-                                    let response =
-                                        match tokio::time::timeout(worker_timeout, worker).await {
-                                        Ok(Ok(response)) => response,
-                                        Ok(Err(join_error)) => {
-                                            tracing::error!(
-                                                "Office worker failed for {}: {}",
-                                                terminal_req_id,
-                                                join_error
-                                            );
-                                            AgentMessage::OfficeConvertResponse {
-                                                req_id: terminal_req_id,
-                                                cache_key: None,
-                                                size: None,
-                                                outputs: vec![],
-                                                error: Some("office_internal_error".to_string()),
-                                            }
-                                        }
-                                        Err(_) => {
-                                            // A kernel-stuck filesystem read cannot be force-
-                                            // cancelled in-process. Still finish the protocol
-                                            // request on time and set the cooperative flag; the
-                                            // bounded blocking pool isolates any lingering syscall.
-                                            rt_for_timeout.request_cancel(&terminal_req_id);
-                                            AgentMessage::OfficeConvertResponse {
-                                                req_id: terminal_req_id,
-                                                cache_key: None,
-                                                size: None,
-                                                outputs: vec![],
-                                                error: Some("office_timeout".to_string()),
-                                            }
-                                        }
-                                    };
-                                    let _ = terminal_tx.send(response).await;
-                                });
-                            }
                             Ok(HubMessage::Error { message }) => {
                                 tracing::warn!("Hub error: {}", message);
                             }
@@ -1258,21 +1016,17 @@ async fn run_one_connection(
         }
     }
 
-    // Abort any in-flight search / office workers before teardown.
+    // Abort any in-flight search workers before teardown.
     if let Ok(map) = search_cancels.lock() {
         for flag in map.values() {
             flag.store(true, Ordering::Relaxed);
         }
-    }
-    if let Some(rt) = office_runtime {
-        rt.cancel_all();
     }
     fs_tasks.abort_all();
     // Drop the search result receiver so a worker blocked on
     // `blocking_send` (channel full of Progress after the read loop
     // stopped polling) unblocks immediately instead of hanging forever.
     drop(search_rx);
-    drop(office_rx);
     drop(stats_rx);
     drop(fs_rx);
 

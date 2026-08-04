@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import type { AgentInfo } from '../api/client';
 import { RootManager } from './RootManager';
 import {
-  readOfficePdfPreviewPref,
-  writeOfficePdfPreviewPref,
-} from './officePreviewSupport';
+  readUniverPreviewPref,
+  writeUniverPreviewPref,
+} from './univerPreviewSupport';
 import { c, radius, font, shadow } from '../theme';
 
 interface Props {
@@ -46,22 +46,19 @@ function formatLastSeen(epochSec: number, nowMs: number): string {
 export function AgentSettings({ agent, onRefresh }: Props) {
   const status = statusPresentation(agent.status);
   const enabledRoots = agent.roots.filter((r) => r.enabled).length;
-  const officeCapable = !!agent.capabilities?.office_pdf_preview;
   // Local clock so "Last seen" stays honest while the page is open without a
   // hub refresh. 30s is enough for "just now" / "Xm ago" granularity.
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [officePdfPreview, setOfficePdfPreview] = useState(() => readOfficePdfPreviewPref());
+  const [univerPreview, setUniverPreview] = useState(() => readUniverPreviewPref());
   useEffect(() => {
     const id = window.setInterval(() => setNowMs(Date.now()), 30_000);
     return () => window.clearInterval(id);
   }, []);
 
-  function toggleOfficePdfPreview() {
-    // Preference is browser-local and always editable — including when this
-    // agent has no LibreOffice — so users can opt out without being nudged.
-    const next = !officePdfPreview;
-    writeOfficePdfPreviewPref(next);
-    setOfficePdfPreview(next);
+  function toggleUniverPreview() {
+    const next = !univerPreview;
+    writeUniverPreviewPref(next);
+    setUniverPreview(next);
   }
 
   return (
@@ -142,35 +139,26 @@ export function AgentSettings({ agent, onRefresh }: Props) {
             </div>
             <div style={styles.prefRow}>
               <div style={styles.prefText}>
-                <div style={styles.prefLabel}>Office preview</div>
+                <div style={styles.prefLabel}>Univer preview</div>
                 <p style={styles.prefHint}>
-                  {officeCapable
-                    ? 'Optional. Word and PowerPoint open as PDF; spreadsheets open as per-sheet CSV. Leave off to download originals only.'
-                    : 'Optional. This agent has no LibreOffice for conversion — download still works. The switch only affects agents that support preview.'}
+                  Browser-side preview for supported DOCX and XLSX files. Unsupported Office formats remain download-only.
                 </p>
-                {!officeCapable && (
-                  <p style={{ ...styles.prefHint, marginTop: 6, color: c.textMuted }}>
-                    Operator note: point the agent at soffice via FILEBOX_AGENT_SOFFICE if you want preview later.
-                  </p>
-                )}
               </div>
               <button
                 type="button"
                 role="switch"
-                aria-checked={officePdfPreview}
-                aria-label="Office preview"
-                onClick={toggleOfficePdfPreview}
+                aria-checked={univerPreview}
+                aria-label="Univer preview"
+                onClick={toggleUniverPreview}
                 style={{
                   ...styles.switchTrack,
-                  ...(officePdfPreview ? styles.switchTrackOn : null),
-                  // Dim when the preference cannot apply to this agent.
-                  ...(!officeCapable ? { opacity: 0.72 } : null),
+                  ...(univerPreview ? styles.switchTrackOn : null),
                 }}
               >
                 <span
                   style={{
                     ...styles.switchThumb,
-                    ...(officePdfPreview ? styles.switchThumbOn : null),
+                    ...(univerPreview ? styles.switchThumbOn : null),
                   }}
                 />
               </button>

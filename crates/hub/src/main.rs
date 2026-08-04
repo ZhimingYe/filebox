@@ -7,7 +7,6 @@ mod events;
 mod fs_proxy;
 mod health;
 mod net;
-mod office_proxy;
 mod routes;
 mod search_proxy;
 mod state;

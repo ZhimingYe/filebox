@@ -81,10 +81,6 @@ pub fn create_router(state: AppState) -> Router {
             "/api/agents/{agent_id}/workspace-search",
             post(crate::search_proxy::workspace_search_handler),
         )
-        .route(
-            "/api/agents/{agent_id}/office-convert",
-            post(crate::office_proxy::office_convert_handler),
-        )
         .route("/api/cancel", post(cancel_handler))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
