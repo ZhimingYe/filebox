@@ -39,7 +39,7 @@ const READ_ONLY_KEYS = new Set([
 ]);
 
 export function UniverPreview({ agentId, root, path }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const univerContainerRef = useRef<HTMLDivElement>(null);
   const runtimeRef = useRef<UniverRuntime | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const [phase, setPhase] = useState<Phase>({
@@ -50,7 +50,6 @@ export function UniverPreview({ agentId, root, path }: Props) {
   const disposeRuntime = useCallback(() => {
     runtimeRef.current?.dispose();
     runtimeRef.current = null;
-    if (containerRef.current) containerRef.current.replaceChildren();
   }, []);
 
   useEffect(() => {
@@ -75,7 +74,7 @@ export function UniverPreview({ agentId, root, path }: Props) {
         if (cancelled) return;
 
         setPhase({ kind: 'loading', message: 'Parsing source document…' });
-        const runtime = await createRuntime(kind, file, containerRef.current);
+        const runtime = await createRuntime(kind, file, univerContainerRef.current);
         if (cancelled) {
           runtime.dispose();
           return;
@@ -114,11 +113,17 @@ export function UniverPreview({ agentId, root, path }: Props) {
         display: 'block',
         overflow: 'hidden',
         background: c.bg,
+        position: 'relative',
       }}
     >
+      {/* Univer container - always mounted */}
       <div
-        ref={containerRef}
-        style={{ width: '100%', height: '100%', minHeight: 0 }}
+        ref={univerContainerRef}
+        style={{
+          width: '100%',
+          height: '100%',
+          minHeight: 0,
+        }}
         onBeforeInputCapture={(event) => event.preventDefault()}
         onPasteCapture={(event) => event.preventDefault()}
         onCutCapture={(event) => event.preventDefault()}
@@ -128,19 +133,34 @@ export function UniverPreview({ agentId, root, path }: Props) {
             event.preventDefault();
           }
         }}
-      >
-        {phase.kind === 'loading' && (
-          <LoadingOverlay
-            message={phase.message}
-            onCancel={cancelPreview}
-          />
-        )}
-        {phase.kind === 'error' && (
-          <div style={styles.download}>
-            <p style={styles.downloadText}>{phase.message}</p>
-          </div>
-        )}
-      </div>
+      />
+      {/* Overlay container - shown on top when loading or error */}
+      {phase.kind !== 'ready' && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {phase.kind === 'loading' && (
+            <LoadingOverlay
+              message={phase.message}
+              onCancel={cancelPreview}
+            />
+          )}
+          {phase.kind === 'error' && (
+            <div style={styles.download}>
+              <p style={styles.downloadText}>{phase.message}</p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
