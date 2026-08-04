@@ -11,6 +11,8 @@ import {
   PREVIEW_SIZE_THRESHOLDS,
   CopyButton,
   LoadingOverlay,
+  gateLoadingMessage,
+  previewLoadingMessage,
   wrapPref,
   setWrapPref,
   extToLang,
@@ -31,7 +33,7 @@ interface Props {
 export function TextPreview({ url, ext, agentId, root, path }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.text });
   const canLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
-  const { text, error, loading, cancel, retry } = useFetchText(url, canLoad);
+  const { text, error, loading, retrying, cancel, retry } = useFetchText(url, canLoad, agentId);
   const [wrap, setWrap] = useState(wrapPref);
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
 
@@ -43,7 +45,7 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
   if (gate.sizeUnknown) {
     return (
       <div style={styles.container}>
-        <LoadingOverlay message="Checking file size..." />
+        <LoadingOverlay message={gateLoadingMessage(gate.retrying)} />
       </div>
     );
   }
@@ -70,7 +72,7 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
   if (loading) {
     return (
       <div style={styles.container}>
-        <LoadingOverlay message="Loading file..." onCancel={cancel} />
+        <LoadingOverlay message={previewLoadingMessage(retrying)} onCancel={cancel} />
       </div>
     );
   }

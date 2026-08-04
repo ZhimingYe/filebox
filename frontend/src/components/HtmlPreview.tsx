@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import { createPreviewSession } from '../api/client';
+import { retryAsync } from '../api/retry';
 import { c } from '../theme';
 
 import {
@@ -11,6 +12,8 @@ import {
   PREVIEW_SIZE_THRESHOLDS,
   useMounted,
   LoadingOverlay,
+  gateLoadingMessage,
+  previewLoadingMessage,
   styles,
 } from './previewShared';
 import { FileDownloadLink } from './FileDownloadLink';
@@ -142,7 +145,7 @@ const toggleBtn: CSSProperties = {
 export function HtmlPreview({ agentId, root, path, url }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.html });
   const shouldLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
-  const { text, error, loading, cancel, retry } = useFetchText(url, shouldLoad);
+  const { text, error, loading, retrying, cancel, retry } = useFetchText(url, shouldLoad, agentId);
   const previewShouldLoad = shouldLoad && text !== null && !error;
   const [previewBaseUrl, setPreviewBaseUrl] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -209,22 +212,34 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
     previewSetupTimerRef.current = setTimeout(() => {
       if (mounted.current) setSlowPreviewSetup(true);
     }, 8000);
-    createPreviewSession(agentId, root, path, controller.signal)
-      .then((session) => {
+    void (async () => {
+      try {
+        const session = await retryAsync(
+          () => createPreviewSession(agentId, root, path, controller.signal),
+          {
+            maxAttempts: 3,
+            agentId,
+            signal: controller.signal,
+            onRetry: () => {
+              if (!cancelled && mounted.current) setSlowPreviewSetup(true);
+            },
+          },
+        );
         if (cancelled || !mounted.current) return;
         setPreviewBaseUrl(new URL(session.base_url, window.location.href).href);
         setPreviewLoading(false);
         setSlowPreviewSetup(false);
         if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
-      })
-      .catch((e) => {
-        if (e?.name === 'AbortError') return;
+      } catch (e: unknown) {
+        const err = e as { name?: string; message?: string; error?: string };
+        if (err?.name === 'AbortError') return;
         if (cancelled || !mounted.current) return;
-        setPreviewError(e?.message || e?.error || 'Failed to prepare HTML preview');
+        setPreviewError(err?.message || err?.error || 'Failed to prepare HTML preview');
         setPreviewLoading(false);
         setSlowPreviewSetup(false);
         if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
-      });
+      }
+    })();
 
     return () => {
       cancelled = true;
@@ -314,7 +329,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   if (gate.sizeUnknown) {
     return (
       <div style={styles.container}>
-        <LoadingOverlay message="Checking file size..." />
+        <LoadingOverlay message={gateLoadingMessage(gate.retrying)} />
       </div>
     );
   }
@@ -335,7 +350,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   if (loading) {
     return (
       <div style={styles.container}>
-        <LoadingOverlay message="Loading HTML..." onCancel={cancel} />
+        <LoadingOverlay message={previewLoadingMessage(retrying, 'Loading HTML...')} onCancel={cancel} />
       </div>
     );
   }

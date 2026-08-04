@@ -9,6 +9,7 @@ import {
 import { FixedSizeList, type ListChildComponentProps } from 'react-window';
 import * as api from '../api/client';
 import type { FsEntry, RootInfo } from '../api/client';
+import { retryAsync, throwIfAgentError } from '../api/retry';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { useIsMobile } from '../state/useIsMobile';
 import { c, font, radius } from '../theme';
@@ -516,14 +517,21 @@ export function ExplorerView({
       });
     };
 
-    void api.fsList(
-      agentId,
-      task.root,
-      task.path,
-      PAGE_LIMIT,
-      task.cursor,
-      false,
-      controller.signal,
+    void retryAsync(
+      async () => throwIfAgentError(await api.fsList(
+        agentId,
+        task.root,
+        task.path,
+        PAGE_LIMIT,
+        task.cursor,
+        false,
+        controller.signal,
+      )),
+      {
+        maxAttempts: 3,
+        agentId,
+        signal: controller.signal,
+      },
     ).then((data) => {
       if (timedOut) {
         result = 'failed';
@@ -538,23 +546,9 @@ export function ExplorerView({
         result = 'cancelled';
         return;
       }
-      if (data.error) result = 'failed';
       updateNodes((previous) => {
         const next = new Map(previous);
         const existing = previous.get(task.key) ?? EMPTY_DIRECTORY;
-        if (data.error) {
-          next.set(task.key, {
-            ...existing,
-            loading: false,
-            loadPhase: null,
-            loadMode: null,
-            loaded: true,
-            error: directoryErrorMessage(data.error),
-            errorAppend: task.append,
-            lastUsed: ++usageTickRef.current,
-          });
-          return next;
-        }
         next.set(task.key, {
           items: task.append
             ? appendExplorerEntries(existing.items, data.items)
