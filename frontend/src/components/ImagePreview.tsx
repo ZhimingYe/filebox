@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef, useCallback, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { withCsrf } from '../api/client';
+import { fetchWithRetry } from '../api/retry';
 import {
   useMounted,
   useFileGate,
   FileGateError,
   LargeFileWarning,
   LoadingOverlay,
+  gateLoadingMessage,
   PREVIEW_SIZE_THRESHOLDS,
   styles,
 } from './previewShared';
@@ -121,17 +123,12 @@ async function maybeDownscaleBlob(blob: Blob, ext: string): Promise<Blob> {
   }
 }
 
-function httpErrorMessage(status: number): string {
-  if (status === 413) return 'File exceeds hub-side preview size limit (256MB)';
-  if (status === 401 || status === 403) return 'Authentication required';
-  return `HTTP ${status}`;
-}
-
 export function ImagePreview({ agentId, root, path, url, ext }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.image });
   const fileSize = gate.size;
   const [objectURL, setObjectURL] = useState<string | null>(null);
   const [imgLoading, setImgLoading] = useState(false);
+  const [imgRetrying, setImgRetrying] = useState(false);
   const [slowLoading, setSlowLoading] = useState(false);
   const [imgError, setImgError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
@@ -205,6 +202,7 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
     decodingRef.current = false;
 
     setImgLoading(true);
+    setImgRetrying(false);
     setSlowLoading(false);
     setImgError(null);
 
@@ -217,39 +215,40 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
       }
     }, 8000);
 
-    // TIFF: arrayBuffer → UTIF decode → canvas → PNG blob. Everything else:
-    // straight blob (browser decodes natively), then optional dimension cap.
-    const blobPromise = (isTiff
-      ? fetch(url, withCsrf({ signal: controller.signal }))
-          .then(async (r) => {
-            if (!r.ok) throw new Error(httpErrorMessage(r.status));
-            return decodeTiff(await r.arrayBuffer());
-          })
-      : fetch(url, withCsrf({ signal: controller.signal }))
-          .then(async (r) => {
-            if (!r.ok) throw new Error(httpErrorMessage(r.status));
-            return r.blob();
-          })
-    ).then((blob) => maybeDownscaleBlob(blob, isTiff ? 'png' : ext));
-
-    blobPromise
-      .then((blob) => {
+    void (async () => {
+      try {
+        const blob = await fetchWithRetry(url, withCsrf({ signal: controller.signal }), {
+          maxAttempts: 3,
+          agentId,
+          consume: async (res) => (
+            isTiff
+              ? await decodeTiff(await res.arrayBuffer())
+              : await res.blob()
+          ),
+          onRetry: () => {
+            if (mounted.current) setImgRetrying(true);
+          },
+        });
+        const scaled = await maybeDownscaleBlob(blob, isTiff ? 'png' : ext);
         if (!mounted.current || controller.signal.aborted) return;
-        const objURL = URL.createObjectURL(blob);
+        const objURL = URL.createObjectURL(scaled);
         objectURLRef.current = objURL;
         decodingRef.current = true;
         setObjectURL(objURL);
-      })
-      .catch((e) => {
-        if (e?.name === 'AbortError') return;
+        setImgRetrying(false);
+      } catch (e: unknown) {
+        const err = e as { name?: string; message?: string };
+        if (err?.name === 'AbortError') return;
         if (!mounted.current) return;
         decodingRef.current = false;
         clearSlowTimer();
         setImgLoading(false);
         setSlowLoading(false);
-        setImgError(e?.message || 'Failed to load image');
-      });
-  }, [mounted, releaseObjectURL, clearSlowTimer, url, isTiff, ext]);
+        setImgRetrying(false);
+        setImgError(err?.message || 'Failed to load image');
+      }
+    })();
+  }, [mounted, releaseObjectURL, clearSlowTimer, url, isTiff, ext, agentId]);
 
   const cancelLoad = useCallback(() => {
     abortRef.current?.abort();
@@ -486,7 +485,7 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
   if (gate.sizeUnknown) {
     return (
       <div style={styles.imageViewer}>
-        <LoadingOverlay message="Checking image size..." />
+        <LoadingOverlay message={gateLoadingMessage(gate.retrying)} />
       </div>
     );
   }
@@ -515,7 +514,9 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
     <div style={styles.imageViewer}>
       {imgLoading && (
         <LoadingOverlay
-          message={slowLoading
+          message={imgRetrying
+            ? 'Connection interrupted, retrying…'
+            : slowLoading
             ? (fileSize ? `Image is large (${(fileSize / (1024 * 1024)).toFixed(1)} MB), still loading...` : 'Image is large, still loading...')
             : (fileSize ? `Loading image (${(fileSize / (1024 * 1024)).toFixed(1)} MB)...` : 'Loading image...')
           }

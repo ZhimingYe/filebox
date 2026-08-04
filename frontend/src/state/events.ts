@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { eventsAccessUrl } from '../api/client';
+import { markAgentConnected, markAgentDisconnected } from './agentReconnect';
 
 export interface SseEvent {
   event: string;
@@ -182,6 +183,12 @@ class SseManager {
   private dispatch(event: string, rawData: string) {
     try {
       const data = JSON.parse(rawData);
+      if (event === 'agent_connected' && typeof data.agent_id === 'string') {
+        markAgentConnected(data.agent_id);
+      }
+      if (event === 'agent_disconnected' && typeof data.agent_id === 'string') {
+        markAgentDisconnected(data.agent_id);
+      }
       const evt: SseEvent = { event, data };
       for (const listener of this.listeners) {
         listener(evt);

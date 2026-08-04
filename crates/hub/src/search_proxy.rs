@@ -222,6 +222,7 @@ pub async fn workspace_search_handler(
             PendingResponse {
                 tx: resp_tx,
                 agent_id: agent_id.clone(),
+                connection_id: agent.connection_id,
                 session_id: Some(session.principal_id.clone()),
                 desired_roots: None,
                 desired_collections: None,

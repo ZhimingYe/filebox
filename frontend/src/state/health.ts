@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import * as api from '../api/client';
+import { syncAgentOnlineStatus } from './agentReconnect';
 
 export function useHealth(enabled: boolean, intervalMs = 5000) {
   const [health, setHealth] = useState<api.HealthResponse | null>(null);
@@ -19,6 +20,7 @@ export function useHealth(enabled: boolean, intervalMs = 5000) {
       const agentKey = JSON.stringify(agentData);
       if (agentKey !== prevAgentIdsRef.current) {
         prevAgentIdsRef.current = agentKey;
+        syncAgentOnlineStatus(agentData);
         setAgents(agentData);
       }
       const healthKey = JSON.stringify(healthData);

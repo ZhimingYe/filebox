@@ -8,6 +8,8 @@ import {
   PREVIEW_SIZE_THRESHOLDS,
   CopyButton,
   LoadingOverlay,
+  gateLoadingMessage,
+  previewLoadingMessage,
   styles,
 } from './previewShared';
 import { FileDownloadLink } from './FileDownloadLink';
@@ -35,13 +37,13 @@ export function CsvPreview({ url, ext, agentId, root, path, downloadPath = path 
     && !gate.error
     && !isTooLarge
     && (!gate.isLarge || gate.bypassed);
-  const { text, error, loading, cancel, retry } = useFetchText(url, canLoad);
+  const { text, error, loading, retrying, cancel, retry } = useFetchText(url, canLoad, agentId);
   const [view, setView] = useState<'table' | 'raw'>('table');
 
   if (gate.sizeUnknown) {
     return (
       <div style={styles.container}>
-        <LoadingOverlay message="Checking file size..." />
+        <LoadingOverlay message={gateLoadingMessage(gate.retrying)} />
       </div>
     );
   }
@@ -84,7 +86,7 @@ export function CsvPreview({ url, ext, agentId, root, path, downloadPath = path 
   if (loading) {
     return (
       <div style={styles.container}>
-        <LoadingOverlay message="Loading CSV..." onCancel={cancel} />
+        <LoadingOverlay message={previewLoadingMessage(retrying, 'Loading CSV...')} onCancel={cancel} />
       </div>
     );
   }

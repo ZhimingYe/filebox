@@ -192,6 +192,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
     })).await;
 
     // Register in agent registry (replaces existing entry if agent reconnects)
+    let connection_id;
     {
         let mut inner = state.inner.write().await;
 
@@ -304,6 +305,11 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                 }
             }
         }
+        connection_id = inner
+            .agents
+            .get(&agent_id)
+            .map(|agent| agent.connection_id)
+            .unwrap_or(0);
     }
 
     // Spawn task to forward channel messages to WebSocket. Each write is
@@ -674,6 +680,19 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
 
     // Cleanup
     send_task.abort();
+
+    if !exited_via_abort {
+        let failed = state
+            .fail_pending_for_connection(&agent_id, connection_id)
+            .await;
+        if failed > 0 {
+            tracing::info!(
+                "Failed {} pending request(s) for disconnected agent {}",
+                failed,
+                agent_id
+            );
+        }
+    }
 
     let mut inner = state.inner.write().await;
     // Only mark offline if the registry entry still belongs to THIS

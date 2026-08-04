@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { c, radius, font, shadow } from '../theme';
 import { fsStat, withCsrf } from '../api/client';
+import { fetchWithRetry, retryAsync, throwIfAgentError } from '../api/retry';
 import { FileDownloadLink } from './FileDownloadLink';
 
 // ── useMounted ────────────────────────────────────────────────────────────
@@ -21,10 +22,11 @@ export function useMounted() {
 // Shared fetch hook with cancel + retry. Uses credentials: 'include' so the
 // hub's session cookie is sent for /api/file/raw.
 
-export function useFetchText(url: string, enabled = true) {
+export function useFetchText(url: string, enabled = true, agentId?: string) {
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [retrying, setRetrying] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
   const cancelRef = useRef<AbortController | null>(null);
 
@@ -35,6 +37,7 @@ export function useFetchText(url: string, enabled = true) {
       setText(null);
       setError(null);
       setLoading(false);
+      setRetrying(false);
       return;
     }
 
@@ -44,32 +47,44 @@ export function useFetchText(url: string, enabled = true) {
     setLoading(true);
     setError(null);
     setText(null);
-    fetch(url, withCsrf({ signal: controller.signal }))
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.text();
-      })
-      .then((t) => {
+    setRetrying(false);
+
+    void (async () => {
+      try {
+        const body = await fetchWithRetry(url, withCsrf({ signal: controller.signal }), {
+          maxAttempts: 3,
+          agentId,
+          consume: (res) => res.text(),
+          onRetry: () => {
+            if (!cancelled) setRetrying(true);
+          },
+        });
         if (cancelled) return;
-        setText(t);
+        setText(body);
         setLoading(false);
-      })
-      .catch((e) => {
-        if (cancelled || e.name === 'AbortError') return;
-        setError(e.message);
+        setRetrying(false);
+      } catch (e: unknown) {
+        if (cancelled) return;
+        const err = e as { name?: string; message?: string };
+        if (err?.name === 'AbortError') return;
+        setError(err?.message || 'Failed to load file');
         setLoading(false);
-      });
+        setRetrying(false);
+      }
+    })();
+
     return () => {
       cancelled = true;
       controller.abort();
       cancelRef.current = null;
     };
-  }, [url, retryToken, enabled]);
+  }, [url, retryToken, enabled, agentId]);
 
   const cancel = useCallback(() => {
     cancelRef.current?.abort();
     cancelRef.current = null;
     setLoading(false);
+    setRetrying(false);
     setError('Cancelled');
   }, []);
 
@@ -81,7 +96,7 @@ export function useFetchText(url: string, enabled = true) {
   // back to true. Treat an enabled request with neither text nor an error as
   // pending so consumers never render a null payload during that gap.
   const requestLoading = enabled && (loading || (text === null && error === null));
-  return { text, error, loading: requestLoading, cancel, retry };
+  return { text, error, loading: requestLoading, retrying, cancel, retry };
 }
 
 // ── wrap preference ───────────────────────────────────────────────────────
@@ -146,6 +161,14 @@ export const binaryExts = new Set([
   'epub', 'mobi',
 ]);
 
+export function previewLoadingMessage(retrying: boolean, fallback = 'Loading file...'): string {
+  return retrying ? 'Connection interrupted, retrying…' : fallback;
+}
+
+export function gateLoadingMessage(retrying: boolean): string {
+  return retrying ? 'Connection interrupted, retrying…' : 'Checking file size...';
+}
+
 export function isTextFile(ext: string): boolean {
   if (binaryExts.has(ext)) return false;
   return ext in extToLang;
@@ -200,6 +223,7 @@ export function useFileGate(opts: {
   const { agentId, root, path, threshold } = opts;
   const [size, setSize] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const [bypassed, setBypassed] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
   const mounted = useMounted();
@@ -209,18 +233,36 @@ export function useFileGate(opts: {
     const controller = new AbortController();
     setSize(null);
     setError(null);
+    setRetrying(false);
     setBypassed(false);
-    fsStat(agentId, root, path, controller.signal).then((data) => {
-      if (cancelled || !mounted.current) return;
-      if (!data.stat) {
-        setError(fileStatErrorMessage(data.error));
-        return;
+    void (async () => {
+      try {
+        const data = await retryAsync(
+          async () => throwIfAgentError(await fsStat(agentId, root, path, controller.signal)),
+          {
+            maxAttempts: 3,
+            agentId,
+            signal: controller.signal,
+            onRetry: () => {
+              if (!cancelled && mounted.current) setRetrying(true);
+            },
+          },
+        );
+        if (cancelled || !mounted.current) return;
+        if (!data.stat) {
+          setError(fileStatErrorMessage(data.error));
+          return;
+        }
+        setSize(data.stat.size ?? 0);
+        setRetrying(false);
+      } catch (cause) {
+        if (cancelled || !mounted.current) return;
+        const err = cause as { name?: string };
+        if (err?.name === 'AbortError') return;
+        setError(fileStatErrorMessage(cause));
+        setRetrying(false);
       }
-      setSize(data.stat.size ?? 0);
-    }).catch((cause) => {
-      if (cancelled || cause?.name === 'AbortError' || !mounted.current) return;
-      setError(fileStatErrorMessage(cause));
-    });
+    })();
     return () => {
       cancelled = true;
       controller.abort();
@@ -233,6 +275,7 @@ export function useFileGate(opts: {
   return {
     size,
     error,
+    retrying,
     sizeUnknown,
     isLarge,
     bypassed,

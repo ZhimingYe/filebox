@@ -149,6 +149,7 @@ pub async fn fs_list_handler(
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
             agent_id: params.agent_id.clone(),
+            connection_id: agent.connection_id,
             session_id: Some(session.principal_id.clone()),
             desired_roots: None,
             desired_collections: None,
@@ -229,6 +230,7 @@ pub async fn fs_stat_handler(
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
             agent_id: params.agent_id.clone(),
+            connection_id: agent.connection_id,
             session_id: Some(session.principal_id.clone()),
             desired_roots: None,
             desired_collections: None,
@@ -280,6 +282,23 @@ struct RawFileTarget {
 /// Matches [`filebox_protocol::message::FILE_CHUNK_MAX_BYTES`] so hub asks and
 /// agent clamps stay aligned on slow or jittery links.
 const RAW_STREAM_CHUNK_BYTES: u64 = filebox_protocol::message::FILE_CHUNK_MAX_BYTES;
+
+/// Pause between raw-chunk retries while waiting for a flaky agent to recover.
+const RAW_CHUNK_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// Total wall-clock budget for retrying one raw chunk at the same offset.
+const RAW_CHUNK_RETRY_BUDGET: Duration = Duration::from_secs(90);
+
+fn is_raw_chunk_retryable(err: &str) -> bool {
+    matches!(
+        err,
+        "Agent not found or offline"
+            | "Agent is offline"
+            | "Failed to send request to agent"
+            | "Agent did not respond in time"
+            | "backend_offline"
+    ) || err.starts_with("agent_overloaded")
+}
 
 pub async fn file_raw_handler(
     State(state): State<AppState>,
@@ -428,7 +447,7 @@ async fn serve_raw_file(
         let mut sent = 0u64;
         while sent < body_len {
             let remaining = body_len - sent;
-            match request_raw_chunk(
+            match request_raw_chunk_with_retry(
                 &stream_state,
                 &target,
                 offset_start + sent,
@@ -536,11 +555,15 @@ async fn request_raw_file_size(
     })?;
     if let Some(err) = value["error"].as_str() {
         tracing::warn!("Agent rejected raw file stat: {}", err);
-        if err.starts_with("agent_overloaded") {
+        if err == "backend_offline"
+            || value["retryable"].as_bool() == Some(true)
+            || err.starts_with("agent_overloaded")
+        {
+            let code = err.split(':').next().unwrap_or(err);
             return Err(error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "agent_overloaded",
-                "The agent is busy with file requests. Please retry shortly.",
+                code,
+                "Could not check the file before streaming",
                 true,
             ));
         }
@@ -575,6 +598,48 @@ async fn request_raw_file_size(
             true,
         )
     })
+}
+
+async fn request_raw_chunk_with_retry(
+    state: &AppState,
+    target: &RawFileTarget,
+    offset: u64,
+    length: u64,
+) -> Result<(Vec<u8>, bool), String> {
+    let deadline = tokio::time::Instant::now() + RAW_CHUNK_RETRY_BUDGET;
+    let mut attempt = 0u32;
+    let mut last_err: Option<String> = None;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(last_err.unwrap_or_else(|| {
+                "Raw chunk retry budget exhausted".to_string()
+            }));
+        }
+        attempt += 1;
+        match request_raw_chunk(state, target, offset, length).await {
+            Ok(chunk) => return Ok(chunk),
+            Err(err) if is_raw_chunk_retryable(&err) => {
+                last_err = Some(err.clone());
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(last_err.unwrap());
+                }
+                let base_delay = if err.starts_with("agent_overloaded") {
+                    RAW_CHUNK_RETRY_DELAY.saturating_mul(2u32.saturating_pow(attempt.min(4) - 1))
+                } else {
+                    RAW_CHUNK_RETRY_DELAY
+                };
+                tracing::warn!(
+                    "raw chunk offset={} attempt={} failed: {}, retrying",
+                    offset,
+                    attempt,
+                    err
+                );
+                tokio::time::sleep(base_delay.min(remaining)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 async fn request_raw_chunk(
@@ -629,12 +694,14 @@ async fn request_raw_agent(
         if agent.status == crate::agent_registry::AgentStatus::Offline {
             return Err("Agent is offline".to_string());
         }
+        let connection_id = agent.connection_id;
         let mut pending = inner.pending_responses.write().await;
         pending.insert(
             req_id.clone(),
             PendingResponse {
                 tx: resp_tx,
                 agent_id: target.agent_id.clone(),
+                connection_id,
                 session_id: target.session_id.clone(),
                 desired_roots: None,
                 desired_collections: None,
@@ -916,6 +983,7 @@ pub async fn sys_stats_handler(
         pending.insert(req_id.clone(), PendingResponse {
             tx: resp_tx,
             agent_id: agent_id.clone(),
+            connection_id: agent.connection_id,
             session_id: Some(session.principal_id.clone()),
             desired_roots: None,
             desired_collections: None,
@@ -1301,6 +1369,7 @@ mod tests {
             PendingResponse {
                 tx,
                 agent_id: "agent".to_string(),
+                connection_id: 1,
                 session_id: None,
                 desired_roots: None,
                 desired_collections: None,
@@ -1336,6 +1405,7 @@ mod tests {
             PendingResponse {
                 tx,
                 agent_id: "a1".to_string(),
+                connection_id: 1,
                 session_id: None,
                 desired_roots: None,
                 desired_collections: None,
@@ -1365,6 +1435,58 @@ mod tests {
     // from the channel and injects matching FileChunk values through
     // pending_responses, mirroring ws.rs:341-355. Lets us test the
     // accumulate-until-done loop without a real WebSocket.
+
+    #[test]
+    fn is_raw_chunk_retryable_classifies_transport_errors() {
+        assert!(is_raw_chunk_retryable("Agent is offline"));
+        assert!(is_raw_chunk_retryable("backend_offline"));
+        assert!(is_raw_chunk_retryable("agent_overloaded: queue full"));
+        assert!(!is_raw_chunk_retryable("Access denied: sensitive file"));
+        assert!(!is_raw_chunk_retryable(
+            "Agent returned a mismatched file chunk offset"
+        ));
+    }
+
+    #[tokio::test]
+    async fn file_raw_handler_retries_transient_chunk_failure_at_same_offset() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Mutex};
+
+        let state = AppState::new(&test_config(), true);
+        let chunk = filebox_protocol::message::FILE_CHUNK_MAX_BYTES;
+        let file_total = chunk * 2;
+        let fail_once = Arc::new(Mutex::new(HashSet::from([chunk])));
+        let (tx, agent_handle) = spawn_flaky_file_agent(
+            state.clone(),
+            "a1",
+            file_total,
+            chunk,
+            fail_once,
+        );
+        register_mock_agent(&state, "a1", tx).await;
+
+        let params = FileRawParams {
+            agent_id: "a1".to_string(),
+            root: "test".to_string(),
+            path: "flaky.bin".to_string(),
+        };
+        let response = file_raw_handler(
+            State(state.clone()),
+            test_session(),
+            Query(params),
+            build_raw_request(None),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), file_total as usize + 1024)
+            .await
+            .unwrap();
+        assert_eq!(bytes.len(), file_total as usize);
+        assert!(bytes.iter().all(|&b| b == 0xAB));
+
+        agent_handle.abort();
+    }
 
     fn test_config() -> crate::config::HubConfig {
         crate::config::HubConfig {
@@ -1433,6 +1555,87 @@ mod tests {
                 }
             }
             let _ = agent_id_owned; // silence unused warning
+        });
+        (tx, handle)
+    }
+
+    fn spawn_flaky_file_agent(
+        state: AppState,
+        agent_id: &str,
+        file_total: u64,
+        chunk_cap: u64,
+        fail_once_offsets: Arc<std::sync::Mutex<std::collections::HashSet<u64>>>,
+    ) -> (mpsc::UnboundedSender<HubMessage>, tokio::task::JoinHandle<()>) {
+        let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+        let agent_id_owned = agent_id.to_string();
+        let handle = tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if let HubMessage::FsStatRequest { req_id, path, .. } = msg {
+                    let stat = AgentMessage::FsStatResponse {
+                        req_id: req_id.clone(),
+                        stat: Some(FileStat {
+                            path,
+                            entry_type: FsEntryType::File,
+                            size: file_total,
+                            modified: None,
+                            permissions: None,
+                            denied: false,
+                        }),
+                        error: None,
+                    };
+                    let value = serde_json::to_value(&stat).unwrap();
+                    let pending_arc = state.inner.read().await.pending_responses.clone();
+                    let mut pending = pending_arc.write().await;
+                    if let Some(p) = pending.remove(&req_id) {
+                        let _ = p.tx.send(value).await;
+                    }
+                    continue;
+                }
+                let HubMessage::FileReadRequest { req_id, offset, length, .. } = msg else {
+                    continue;
+                };
+                let should_fail_once = fail_once_offsets
+                    .lock()
+                    .ok()
+                    .is_some_and(|mut offsets| offsets.remove(&offset));
+                if should_fail_once {
+                    let chunk = AgentMessage::FileChunk {
+                        req_id: req_id.clone(),
+                        offset,
+                        data: vec![],
+                        done: true,
+                        error: Some("backend_offline".to_string()),
+                    };
+                    let value = serde_json::to_value(&chunk).unwrap();
+                    let pending_arc = state.inner.read().await.pending_responses.clone();
+                    let mut pending = pending_arc.write().await;
+                    if let Some(p) = pending.remove(&req_id) {
+                        let _ = p.tx.send(value).await;
+                    }
+                    continue;
+                }
+                let remaining = file_total.saturating_sub(offset);
+                let to_read = length
+                    .unwrap_or(chunk_cap)
+                    .min(chunk_cap)
+                    .min(remaining);
+                let data = vec![0xABu8; to_read as usize];
+                let done = offset + to_read >= file_total;
+                let chunk = AgentMessage::FileChunk {
+                    req_id: req_id.clone(),
+                    offset,
+                    data,
+                    done,
+                    error: None,
+                };
+                let value = serde_json::to_value(&chunk).unwrap();
+                let pending_arc = state.inner.read().await.pending_responses.clone();
+                let mut pending = pending_arc.write().await;
+                if let Some(p) = pending.remove(&req_id) {
+                    let _ = p.tx.send(value).await;
+                }
+            }
+            let _ = agent_id_owned;
         });
         (tx, handle)
     }

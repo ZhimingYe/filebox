@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { FixedSizeList as VList, type ListChildComponentProps } from 'react-window';
 import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
+import { retryAsync, throwIfAgentError } from '../api/retry';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { useIsMobile } from '../state/useIsMobile';
 import { c, radius, font, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
@@ -223,6 +224,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   // new subdirectories). Mirrors the pinned-folders navRequest nonce pattern.
   const [treeRefreshNonce, setTreeRefreshNonce] = useState(0);
   const loadSeq = useRef(0); // request versioning — discard stale responses
+  const loadAbortRef = useRef<AbortController | null>(null);
 
   const enabledRoots = useMemo(() => roots.filter((r) => r.enabled), [roots]);
 
@@ -343,6 +345,9 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     if (!selectedRoot) return;
 
     const seq = ++loadSeq.current;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
 
     if (append) {
       setLoadingMore(true);
@@ -355,18 +360,20 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
 
     try {
       const cursor = append && nextCursor ? nextCursor : undefined;
-      const data = await api.fsList(agentId, selectedRoot, currentPath, PAGE_LIMIT, cursor);
+      const data = await retryAsync(
+        async () => throwIfAgentError(
+          await api.fsList(agentId, selectedRoot, currentPath, PAGE_LIMIT, cursor, false, controller.signal),
+        ),
+        { maxAttempts: 3, agentId, signal: controller.signal },
+      );
       if (seq !== loadSeq.current) return; // stale response — discard
-      if (data.error) {
-        setError(data.error);
-        if (!append) setEntries([]);
-      } else {
-        setEntries((prev) => append ? [...prev, ...data.items] : data.items);
-        setNextCursor(data.next_cursor);
-      }
-    } catch (e: any) {
+      setEntries((prev) => append ? [...prev, ...data.items] : data.items);
+      setNextCursor(data.next_cursor);
+    } catch (e: unknown) {
       if (seq !== loadSeq.current) return; // stale response — discard
-      setError(e.message || 'Failed to list directory');
+      const err = e as { name?: string; message?: string; error?: string };
+      if (err?.name === 'AbortError') return;
+      setError(err.message || err.error || friendlyMessage(e) || 'Failed to list directory');
       if (!append) setEntries([]);
     } finally {
       if (seq === loadSeq.current) {
@@ -378,6 +385,9 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
 
   useEffect(() => {
     loadDir(false);
+    return () => {
+      loadAbortRef.current?.abort();
+    };
   }, [agentId, selectedRoot, currentPath]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const navigateTo = useCallback((entry: api.FsEntry) => {
