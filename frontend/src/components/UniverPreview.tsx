@@ -333,7 +333,9 @@ function writeDebugLog(hypothesisId: string, location: string, message: string, 
     data,
     timestamp: Date.now(),
   };
+  // #region agent log
   console.warn(`[filebox-debug] ${JSON.stringify(payload)}`);
+  // #endregion
 }
 
 function formatBytes(bytes: number): string {
