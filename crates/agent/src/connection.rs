@@ -273,6 +273,9 @@ pub async fn run_connection_loop(config: &AgentConfig) {
     // WebSocket must continue counting against the same global worker bound.
     let fs_workers = Arc::new(Semaphore::new(FS_WORKER_CONCURRENCY));
     let dir_list_workers = Arc::new(Semaphore::new(DIR_LIST_WORKER_CONCURRENCY));
+    let search_inflight = Arc::new(AtomicUsize::new(0));
+    let search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     tracing::info!(
         "Agent ID: {}, data dir: {:?}",
@@ -293,6 +296,8 @@ pub async fn run_connection_loop(config: &AgentConfig) {
             office_runtime.as_ref(),
             &fs_workers,
             &dir_list_workers,
+            &search_inflight,
+            &search_cancels,
         )
         .await;
 
@@ -348,6 +353,8 @@ async fn run_one_connection(
     office_runtime: Option<&Arc<crate::office_convert::OfficeRuntime>>,
     fs_workers: &Arc<Semaphore>,
     dir_list_workers: &Arc<Semaphore>,
+    search_inflight: &Arc<AtomicUsize>,
+    search_cancels: &Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 ) {
     tracing::info!("Connecting to {}", ws_url);
 
@@ -458,10 +465,8 @@ async fn run_one_connection(
     // keep working. Completed responses arrive on worker_rx.
     // Capacity >1 so Progress try_send rarely drops under burst.
     let (search_tx, mut search_rx) = mpsc::channel::<AgentMessage>(32);
-    let search_inflight = Arc::new(AtomicUsize::new(0));
-    let search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
     let (office_tx, mut office_rx) = mpsc::channel::<AgentMessage>(32);
+    let (stats_tx, mut stats_rx) = mpsc::channel::<AgentMessage>(8);
     let (fs_tx, mut fs_rx) = mpsc::channel::<AgentMessage>(128);
     let fs_admission = Arc::new(Semaphore::new(FS_MAX_INFLIGHT));
     let dir_list_admission = Arc::new(Semaphore::new(DIR_LIST_MAX_INFLIGHT));
@@ -481,6 +486,12 @@ async fn run_one_connection(
             Some(response) = office_rx.recv() => {
                 if !send_agent_message(&mut write, &response).await {
                     tracing::warn!("Failed to send office response, reconnecting");
+                    break;
+                }
+            }
+            Some(response) = stats_rx.recv() => {
+                if !send_agent_message(&mut write, &response).await {
+                    tracing::warn!("Failed to send stats response, reconnecting");
                     break;
                 }
             }
@@ -798,6 +809,8 @@ async fn run_one_connection(
                                     data: vec![],
                                     done: true,
                                     error: Some("agent_internal_error".to_string()),
+                                    file_size: None,
+                                    modified: None,
                                 };
                                 let cancelled_response = AgentMessage::FileChunk {
                                     req_id: req_id.clone(),
@@ -805,6 +818,8 @@ async fn run_one_connection(
                                     data: vec![],
                                     done: true,
                                     error: Some("request_cancelled".to_string()),
+                                    file_size: None,
+                                    modified: None,
                                 };
                                 let job_req_id = req_id.clone();
                                 let accepted = try_spawn_fs_job(
@@ -822,6 +837,8 @@ async fn run_one_connection(
                                                 data: vec![],
                                                 done: true,
                                                 error: Some("request_cancelled".to_string()),
+                                                file_size: None,
+                                                modified: None,
                                             };
                                         }
                                         let read_result = if let Some(cache) =
@@ -835,11 +852,17 @@ async fn run_one_connection(
                                                     &cache,
                                                     offset,
                                                     length,
-                                                ),
+                                                )
+                                                .map(|(data, done)| crate::fs::FileReadRange {
+                                                    data,
+                                                    done,
+                                                    file_size: None,
+                                                    modified: None,
+                                                }),
                                                 None => Err("office_unavailable".to_string()),
                                             }
                                         } else {
-                                            crate::fs::read_file_range(
+                                            crate::fs::read_file_range_with_metadata(
                                                 &roots_vec,
                                                 &root,
                                                 &path,
@@ -854,15 +877,19 @@ async fn run_one_connection(
                                                 data: vec![],
                                                 done: true,
                                                 error: Some("request_cancelled".to_string()),
+                                                file_size: None,
+                                                modified: None,
                                             };
                                         }
                                         match read_result {
-                                            Ok((data, done)) => AgentMessage::FileChunk {
+                                            Ok(result) => AgentMessage::FileChunk {
                                                 req_id: job_req_id,
                                                 offset,
-                                                data,
-                                                done,
+                                                data: result.data,
+                                                done: result.done,
                                                 error: None,
+                                                file_size: result.file_size,
+                                                modified: result.modified,
                                             },
                                             Err(e) => AgentMessage::FileChunk {
                                                 req_id: job_req_id,
@@ -870,6 +897,8 @@ async fn run_one_connection(
                                                 data: vec![],
                                                 done: true,
                                                 error: Some(e),
+                                                file_size: None,
+                                                modified: None,
                                             },
                                         }
                                     },
@@ -885,6 +914,8 @@ async fn run_one_connection(
                                         error: Some(
                                             "agent_overloaded: file I/O queue is full".to_string(),
                                         ),
+                                        file_size: None,
+                                        modified: None,
                                     };
                                     if !send_agent_message(&mut write, &response).await {
                                         tracing::warn!("Failed to send file read overload response, reconnecting");
@@ -910,14 +941,17 @@ async fn run_one_connection(
                             }
                             Ok(HubMessage::SysStatsRequest { req_id }) => {
                                 tracing::debug!("Sys stats request");
-                                let stats = stats_cache.get().await;
-                                let response = AgentMessage::SysStatsResponse {
-                                    req_id, stats: Some((*stats).clone()), error: None,
-                                };
-                                if !send_agent_message(&mut write, &response).await {
-                                    tracing::warn!("Failed to send sys stats response, reconnecting");
-                                    break;
-                                }
+                                let stats_cache = Arc::clone(stats_cache);
+                                let tx = stats_tx.clone();
+                                tokio::spawn(async move {
+                                    let stats = stats_cache.get().await;
+                                    let response = AgentMessage::SysStatsResponse {
+                                        req_id,
+                                        stats: Some((*stats).clone()),
+                                        error: None,
+                                    };
+                                    let _ = tx.send(response).await;
+                                });
                             }
                             Ok(HubMessage::WorkspaceSearchRequest {
                                 req_id,
@@ -1239,6 +1273,7 @@ async fn run_one_connection(
     // stopped polling) unblocks immediately instead of hanging forever.
     drop(search_rx);
     drop(office_rx);
+    drop(stats_rx);
     drop(fs_rx);
 
     // Best-effort Close frame so the hub can run cleanup immediately instead

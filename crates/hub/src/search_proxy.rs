@@ -10,7 +10,9 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::state::{AppState, AuthenticatedSession, PendingResponse};
+use crate::state::{
+    AppState, AuthenticatedSession, PendingResponse, MAX_PENDING_RESPONSES,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct WorkspaceSearchBody {
@@ -217,20 +219,24 @@ pub async fn workspace_search_handler(
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
     let send_ok = {
         let mut pending = inner.pending_responses.write().await;
-        pending.insert(
-            req_id.clone(),
-            PendingResponse {
-                tx: resp_tx,
-                agent_id: agent_id.clone(),
-                connection_id: agent.connection_id,
-                session_id: Some(session.principal_id.clone()),
-                desired_roots: None,
-                desired_collections: None,
-            },
-        );
-        // Keep cancellation from observing the pending request until the
-        // search is ordered on the Agent channel.
-        inner.agents.send_to_agent(&agent_id, msg)
+        if pending.len() >= MAX_PENDING_RESPONSES {
+            false
+        } else {
+            pending.insert(
+                req_id.clone(),
+                PendingResponse {
+                    tx: resp_tx,
+                    agent_id: agent_id.clone(),
+                    connection_id: agent.connection_id,
+                    session_id: Some(session.principal_id.clone()),
+                    desired_roots: None,
+                    desired_collections: None,
+                },
+            );
+            // Keep cancellation from observing the pending request until the
+            // search is ordered on the Agent channel.
+            inner.agents.send_to_agent(&agent_id, msg)
+        }
     };
 
     drop(inner);

@@ -19,7 +19,7 @@ use crate::net::client_ip;
 use crate::state::{
     AppState, AuthenticatedSession, GetAccessPurpose, GetAccessToken, PendingResponse,
     PreviewSession, GET_ACCESS_TOKEN_MAX_TOTAL, GET_ACCESS_TOKEN_TTL_EVENTS,
-    GET_ACCESS_TOKEN_TTL_FILE,
+    GET_ACCESS_TOKEN_TTL_FILE, MAX_PENDING_RESPONSES,
     PREVIEW_SESSION_MAX_TOTAL, PREVIEW_SESSION_TTL,
 };
 use crate::{events, fs_proxy, health, ws};
@@ -161,6 +161,18 @@ pub fn create_router(state: AppState) -> Router {
         .layer(axum::middleware::from_fn(security_headers))
         .layer(axum::middleware::from_fn(cache_headers))
         .with_state(state)
+}
+
+fn hub_overloaded_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "error": "hub_overloaded",
+            "message": "The Hub is busy waiting for Agent responses. Retry shortly.",
+            "retryable": true,
+        })),
+    )
+        .into_response()
 }
 
 async fn security_headers(
@@ -1105,6 +1117,9 @@ async fn request_agent_once(
         };
         let connection_id = agent.connection_id;
         let mut pending = inner.pending_responses.write().await;
+        if pending.len() >= MAX_PENDING_RESPONSES {
+            return Err(hub_overloaded_response());
+        }
         pending.insert(
             req_id.clone(),
             PendingResponse {
@@ -1133,9 +1148,13 @@ async fn request_agent_once(
         .into_response());
     }
 
-    let cleanup = PendingRequestCleanup::new(state.clone(), req_id.clone());
+    let cleanup = PendingRequestCleanup::new(
+        state.clone(),
+        agent_id.to_string(),
+        req_id.clone(),
+    );
     let resp = tokio::time::timeout(std::time::Duration::from_secs(30), resp_rx.recv()).await;
-    cleanup.cleanup().await;
+    cleanup.cleanup(!matches!(resp, Ok(Some(_)))).await;
     match resp {
         Ok(Some(value)) => Ok(value),
         _ => Err((
@@ -1156,22 +1175,37 @@ async fn cleanup_pending_request(state: &AppState, req_id: &str) {
     pending.remove(req_id);
 }
 
+async fn send_agent_cancel(state: &AppState, agent_id: &str, req_id: &str) {
+    let inner = state.inner.read().await;
+    let _ = inner.agents.send_to_agent(
+        agent_id,
+        HubMessage::Cancel {
+            req_id: req_id.to_string(),
+        },
+    );
+}
+
 struct PendingRequestCleanup {
     state: AppState,
+    agent_id: String,
     req_id: String,
     active: bool,
 }
 
 impl PendingRequestCleanup {
-    fn new(state: AppState, req_id: String) -> Self {
+    fn new(state: AppState, agent_id: String, req_id: String) -> Self {
         Self {
             state,
+            agent_id,
             req_id,
             active: true,
         }
     }
 
-    async fn cleanup(mut self) {
+    async fn cleanup(mut self, cancel: bool) {
+        if cancel {
+            send_agent_cancel(&self.state, &self.agent_id, &self.req_id).await;
+        }
         cleanup_pending_request(&self.state, &self.req_id).await;
         self.active = false;
     }
@@ -1183,8 +1217,10 @@ impl Drop for PendingRequestCleanup {
             return;
         }
         let state = self.state.clone();
+        let agent_id = self.agent_id.clone();
         let req_id = self.req_id.clone();
         tokio::spawn(async move {
+            send_agent_cancel(&state, &agent_id, &req_id).await;
             cleanup_pending_request(&state, &req_id).await;
         });
     }
@@ -1331,6 +1367,7 @@ pub(crate) async fn cancel_handler(
         let inner = state.inner.read().await;
         inner.pending_responses.clone()
     };
+    let owner_connection_id;
     {
         let pending = pending_arc.read().await;
         let Some(pending_resp) = pending.get(&req.req_id) else {
@@ -1366,28 +1403,40 @@ pub(crate) async fn cancel_handler(
             )
                 .into_response();
         }
+        owner_connection_id = pending_resp.connection_id;
     }
 
+    state.mark_request_cancelled(&req.req_id).await;
     let inner = state.inner.read().await;
     let msg = filebox_protocol::message::HubMessage::Cancel {
         req_id: req.req_id.clone(),
     };
     // Best-effort notify the agent. Always tear down the HTTP waiter so a
     // dead/offline agent cannot leave the client blocked for the full timeout.
-    let agent_notified = inner.agents.send_to_agent(&req.agent_id, msg);
+    let agent_notified = inner
+        .agents
+        .is_current_connection(&req.agent_id, owner_connection_id)
+        && inner.agents.send_to_agent(&req.agent_id, msg);
     drop(inner);
 
     let mut pending = pending_arc.write().await;
-    if let Some(p) = pending.remove(&req.req_id) {
-        let _ = p
-            .tx
-            .send(serde_json::json!({
-                "ok": false,
-                "state": "cancelled",
-                "error": "cancelled",
-                "message": "Request cancelled by user",
-            }))
-            .await;
+    if let Some(p) = pending.get(&req.req_id) {
+        if p.connection_id == owner_connection_id
+            && p.agent_id == req.agent_id
+            && p.session_id.as_deref() == Some(session.principal_id.as_str())
+        {
+            if let Some(p) = pending.remove(&req.req_id) {
+                let _ = p
+                    .tx
+                    .send(serde_json::json!({
+                        "ok": false,
+                        "state": "cancelled",
+                        "error": "cancelled",
+                        "message": "Request cancelled by user",
+                    }))
+                    .await;
+            }
+        }
     }
 
     Json(serde_json::json!({
@@ -2237,6 +2286,7 @@ async fn apply_collections_state(
     desired: DesiredCollections,
     session_id: String,
 ) -> Response {
+    let _collection_update_guard = state.lock_resource_update(&agent_id).await;
     let inner = state.inner.read().await;
     let agent = match inner.agents.get(&agent_id) {
         Some(a) => a,
@@ -2313,6 +2363,11 @@ async fn apply_collections_state(
     let connection_id = agent.connection_id;
     {
         let mut pending = inner.pending_responses.write().await;
+        if pending.len() >= MAX_PENDING_RESPONSES {
+            drop(pending);
+            drop(inner);
+            return hub_overloaded_response();
+        }
         pending.insert(
             req_id.clone(),
             PendingResponse {
@@ -2486,6 +2541,11 @@ async fn apply_desired_state(
     let connection_id = agent.connection_id;
     {
         let mut pending = inner.pending_responses.write().await;
+        if pending.len() >= MAX_PENDING_RESPONSES {
+            drop(pending);
+            drop(inner);
+            return hub_overloaded_response();
+        }
         pending.insert(
             req_id.clone(),
             PendingResponse {
@@ -2600,7 +2660,7 @@ mod tests {
 
     async fn register_preview_agent(
         state: &AppState,
-        tx: mpsc::UnboundedSender<HubMessage>,
+        tx: mpsc::Sender<HubMessage>,
     ) {
         let mut inner = state.inner.write().await;
         inner.agents.register(
@@ -3032,7 +3092,7 @@ mod tests {
             let mut inner = state.inner.write().await;
             inner.sessions.create_session("admin", false)
         };
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(256);
         register_preview_agent(&state, tx).await;
         let app = create_router(state.clone());
 
@@ -3367,7 +3427,7 @@ mod tests {
         // and assert a pin_add returns the gated error.
         let state = AppState::new(&test_config(), true);
         {
-            let (tx, _rx) = mpsc::unbounded_channel::<HubMessage>();
+            let (tx, _rx) = mpsc::channel::<HubMessage>(256);
             let mut inner = state.inner.write().await;
             inner.agents.register(
                 "legacy-agent".to_string(),
@@ -3418,7 +3478,7 @@ mod tests {
         // NON-empty array triggers the gate.
         let state = AppState::new(&test_config(), true);
         {
-            let (tx, _rx) = mpsc::unbounded_channel::<HubMessage>();
+            let (tx, _rx) = mpsc::channel::<HubMessage>(256);
             let mut inner = state.inner.write().await;
             inner.agents.register(
                 "legacy-agent".to_string(),
@@ -3484,7 +3544,7 @@ mod tests {
     #[tokio::test]
     async fn preview_session_create_requires_agent_stat_success() {
         let state = AppState::new(&test_config(), true);
-        let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+        let (tx, mut rx) = mpsc::channel::<HubMessage>(256);
         let state_for_agent = state.clone();
         let agent_handle = tokio::spawn(async move {
             if let Some(HubMessage::FsStatRequest { req_id, .. }) = rx.recv().await {
@@ -3519,7 +3579,7 @@ mod tests {
     #[tokio::test]
     async fn preview_session_create_verifies_read_before_issuing_token() {
         let state = AppState::new(&test_config(), true);
-        let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+        let (tx, mut rx) = mpsc::channel::<HubMessage>(256);
         let state_for_agent = state.clone();
         let agent_handle = tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
@@ -3540,6 +3600,8 @@ mod tests {
                             data: vec![],
                             done: true,
                             error: None,
+                            file_size: None,
+                            modified: None,
                         };
                         send_agent_value(&state_for_agent, &req_id, serde_json::to_value(response).unwrap()).await;
                         break;

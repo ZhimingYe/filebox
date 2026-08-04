@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, RwLock};
 
-use filebox_protocol::resources::{CollectionConfig, RootConfig};
+use filebox_protocol::resources::{CollectionConfig, DesiredResources, RootConfig};
 
 use crate::agent_registry::AgentRegistry;
 use crate::auth::SessionStore;
@@ -19,6 +20,12 @@ pub struct PendingResponse {
     pub desired_roots: Option<Vec<RootConfig>>,
     pub desired_collections: Option<Vec<CollectionConfig>>,
 }
+
+/// Upper bound for requests waiting on an Agent response. The outbound Agent
+/// queue is bounded too, but HTTP requests can outlive a queued message while
+/// a filesystem or Office operation is blocked.
+pub const MAX_PENDING_RESPONSES: usize = 4096;
+const CANCELLED_REQUEST_TTL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug)]
 pub struct PreviewSession {
@@ -148,6 +155,7 @@ pub struct AppState {
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct SseEvent {
+    pub id: u64,
     pub event: String,
     pub data: serde_json::Value,
 }
@@ -158,12 +166,17 @@ pub struct AppStateInner {
     pub start_time: Instant,
     /// Pending responses from agents keyed by req_id
     pub pending_responses: Arc<RwLock<std::collections::HashMap<String, PendingResponse>>>,
+    /// Tombstones prevent a late response for a cancelled request id from
+    /// being delivered to a new Office request that reuses the id.
+    pub cancelled_request_ids: Arc<std::sync::Mutex<HashMap<String, Instant>>>,
     /// Short-lived, directory-scoped bearer tokens for sandboxed HTML previews.
     pub preview_sessions: Arc<RwLock<std::collections::HashMap<String, PreviewSession>>>,
     /// Short-lived GET bearers for `/api/file/raw` and `/api/events` (no CSRF in URLs).
     pub get_access_tokens: Arc<RwLock<std::collections::HashMap<String, GetAccessToken>>>,
     /// Broadcast channel for SSE events
     pub sse_tx: broadcast::Sender<SseEvent>,
+    pub sse_history: Arc<RwLock<VecDeque<SseEvent>>>,
+    pub sse_next_id: Arc<AtomicU64>,
 }
 
 impl AppState {
@@ -183,10 +196,20 @@ impl AppState {
 
     pub async fn emit_sse(&self, event: &str, data: serde_json::Value) {
         let inner = self.inner.read().await;
-        let _ = inner.sse_tx.send(SseEvent {
+        let id = inner.sse_next_id.fetch_add(1, Ordering::Relaxed);
+        let sse_event = SseEvent {
+            id,
             event: event.to_string(),
             data,
-        });
+        };
+        {
+            let mut history = inner.sse_history.write().await;
+            history.push_back(sse_event.clone());
+            while history.len() > 256 {
+                history.pop_front();
+            }
+        }
+        let _ = inner.sse_tx.send(sse_event);
     }
 
     pub fn new(config: &HubConfig, secure_cookies: bool) -> Self {
@@ -197,9 +220,12 @@ impl AppState {
                 agents: AgentRegistry::new(),
                 start_time: Instant::now(),
                 pending_responses: Arc::new(RwLock::new(std::collections::HashMap::new())),
+                cancelled_request_ids: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 preview_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
                 get_access_tokens: Arc::new(RwLock::new(std::collections::HashMap::new())),
                 sse_tx,
+                sse_history: Arc::new(RwLock::new(VecDeque::with_capacity(256))),
+                sse_next_id: Arc::new(AtomicU64::new(1)),
             })),
             rate_limiter: Arc::new(LoginRateLimiter::new(5, std::time::Duration::from_secs(30))),
             // Agent fleets commonly reconnect in cohorts after a hub restart
@@ -246,6 +272,9 @@ impl AppState {
         }
         let count = victims.len();
         drop(pending);
+        for (_, resp) in &victims {
+            self.requeue_pending_response(resp).await;
+        }
         for (req_id, resp) in victims {
             tracing::debug!(
                 "Failing pending request {} because agent {} connection {} disconnected",
@@ -256,6 +285,49 @@ impl AppState {
             let _ = resp.tx.send(error.clone()).await;
         }
         count
+    }
+
+    pub async fn requeue_pending_response(&self, resp: &PendingResponse) {
+        let mut inner = self.inner.write().await;
+        if let Some(desired) = &resp.desired_roots {
+            inner.agents.set_pending_update(
+                &resp.agent_id,
+                DesiredResources {
+                    roots: desired.clone(),
+                },
+            );
+        }
+        if let Some(desired) = &resp.desired_collections {
+            inner.agents.set_pending_collections_update(
+                &resp.agent_id,
+                filebox_protocol::resources::DesiredCollections {
+                    collections: desired.clone(),
+                },
+            );
+        }
+    }
+
+    pub async fn mark_request_cancelled(&self, req_id: &str) {
+        let inner = self.inner.read().await;
+        let result = inner.cancelled_request_ids.lock();
+        if let Ok(mut ids) = result {
+            let now = Instant::now();
+            ids.retain(|_, marked_at| now.duration_since(*marked_at) < CANCELLED_REQUEST_TTL);
+            ids.insert(req_id.to_string(), now);
+        };
+    }
+
+    pub async fn was_request_recently_cancelled(&self, req_id: &str) -> bool {
+        let inner = self.inner.read().await;
+        let result = inner.cancelled_request_ids.lock();
+        match result {
+            Ok(mut ids) => {
+                let now = Instant::now();
+                ids.retain(|_, marked_at| now.duration_since(*marked_at) < CANCELLED_REQUEST_TTL);
+                ids.contains_key(req_id)
+            }
+            Err(_) => false,
+        }
     }
 }
 
@@ -505,6 +577,69 @@ mod tests {
             "backend_offline"
         );
         assert!(rx_new.try_recv().is_err(), "new connection waiters must survive");
+    }
+
+    #[tokio::test]
+    async fn disconnect_requeues_desired_resource_update_for_reconnect() {
+        let config = crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            agent_token_hash: "fake-hash".to_string(),
+            users: vec![],
+        };
+        let state = AppState::new(&config, false);
+        let (agent_tx, _agent_rx) = mpsc::channel(8);
+        {
+            let mut inner = state.inner.write().await;
+            inner.agents.register(
+                "a1".to_string(),
+                "agent".to_string(),
+                agent_tx,
+                std::sync::Arc::new(tokio::sync::Notify::new()),
+                0,
+                vec![],
+                0,
+                vec![],
+                filebox_protocol::resources::Capabilities::default(),
+            );
+        }
+        let connection_id = {
+            let inner = state.inner.read().await;
+            inner.agents.get("a1").unwrap().connection_id
+        };
+        let (tx, mut rx) = mpsc::channel(1);
+        let desired = RootConfig {
+            name: "workspace".to_string(),
+            path: "/workspace".to_string(),
+            enabled: true,
+            pinned_folders: vec![],
+        };
+        {
+            let pending = state.inner.read().await.pending_responses.clone();
+            pending.write().await.insert(
+                "resource-request".to_string(),
+                PendingResponse {
+                    tx,
+                    agent_id: "a1".to_string(),
+                    connection_id,
+                    session_id: None,
+                    desired_roots: Some(vec![desired.clone()]),
+                    desired_collections: None,
+                },
+            );
+        }
+
+        assert_eq!(
+            state
+                .fail_pending_for_connection("a1", connection_id)
+                .await,
+            1
+        );
+        assert_eq!(rx.recv().await.unwrap()["error"], "backend_offline");
+        let inner = state.inner.read().await;
+        assert_eq!(
+            inner.agents.get("a1").unwrap().pending_update.as_ref().unwrap().roots,
+            vec![desired]
+        );
     }
 
     #[tokio::test]

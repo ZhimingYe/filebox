@@ -93,6 +93,10 @@ pub enum AgentMessage {
         data: Vec<u8>,
         done: bool,
         error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_size: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modified: Option<String>,
     },
     Progress {
         req_id: String,
@@ -360,6 +364,8 @@ mod tests {
             data: vec![0xde, 0xad, 0xbe, 0xef],
             done: false,
             error: None,
+            file_size: Some(100),
+            modified: Some("2025-01-01T00:00:00Z".to_string()),
         };
         let back = round_trip_agent(&msg);
         match back {
@@ -369,12 +375,16 @@ mod tests {
                 data,
                 done,
                 error,
+                file_size,
+                modified,
             } => {
                 assert_eq!(req_id, "req_1");
                 assert_eq!(offset, 4096);
                 assert_eq!(data, vec![0xde, 0xad, 0xbe, 0xef]);
                 assert!(!done);
                 assert!(error.is_none());
+                assert_eq!(file_size, Some(100));
+                assert_eq!(modified.as_deref(), Some("2025-01-01T00:00:00Z"));
             }
             _ => panic!("wrong variant"),
         }
@@ -388,6 +398,8 @@ mod tests {
             data: vec![0xde, 0xad, 0xbe, 0xef],
             done: true,
             error: None,
+            file_size: None,
+            modified: None,
         };
 
         let json = serde_json::to_value(&msg).unwrap();

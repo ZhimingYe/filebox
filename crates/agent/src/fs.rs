@@ -451,13 +451,20 @@ pub fn stat_file(
     })
 }
 
-pub fn read_file_range(
+pub struct FileReadRange {
+    pub data: Vec<u8>,
+    pub done: bool,
+    pub file_size: Option<u64>,
+    pub modified: Option<String>,
+}
+
+pub fn read_file_range_with_metadata(
     roots: &[RootConfig],
     root_name: &str,
     path: &str,
     offset: u64,
     length: Option<u64>,
-) -> Result<(Vec<u8>, bool), String> {
+) -> Result<FileReadRange, String> {
     let (abs_path, root_canonical) = resolve_path(roots, root_name, path)?;
 
     let rel_path = abs_path
@@ -478,9 +485,18 @@ pub fn read_file_range(
     }
 
     let file_len = file_metadata.len();
+    let modified = file_metadata.modified().ok().and_then(|t| {
+        let dt: chrono::DateTime<chrono::Local> = t.into();
+        Some(dt.to_rfc3339())
+    });
 
     if offset >= file_len {
-        return Ok((vec![], true));
+        return Ok(FileReadRange {
+            data: vec![],
+            done: true,
+            file_size: Some(file_len),
+            modified,
+        });
     }
 
     file.seek(SeekFrom::Start(offset))
@@ -499,7 +515,23 @@ pub fn read_file_range(
     buf.truncate(bytes_read);
     let done = offset + bytes_read as u64 >= file_len;
 
-    Ok((buf, done))
+    Ok(FileReadRange {
+        data: buf,
+        done,
+        file_size: Some(file_len),
+        modified,
+    })
+}
+
+pub fn read_file_range(
+    roots: &[RootConfig],
+    root_name: &str,
+    path: &str,
+    offset: u64,
+    length: Option<u64>,
+) -> Result<(Vec<u8>, bool), String> {
+    let result = read_file_range_with_metadata(roots, root_name, path, offset, length)?;
+    Ok((result.data, result.done))
 }
 
 #[cfg(test)]

@@ -2008,7 +2008,6 @@ pub fn read_cache_range(
         .map_err(|e| diagnostic("office_storage_error", format!("stat cache: {e}")))?
         .len();
     if offset >= file_len {
-        touch_cache_meta(office_dir, &cache.cache_key);
         return Ok((vec![], true));
     }
     file.seek(SeekFrom::Start(offset))
@@ -2022,7 +2021,6 @@ pub fn read_cache_range(
     file.read_exact(&mut buf)
         .map_err(|e| diagnostic("office_storage_error", format!("read cache: {e}")))?;
     let done = offset + to_read >= file_len;
-    touch_cache_meta(office_dir, &cache.cache_key);
     Ok((buf, done))
 }
 

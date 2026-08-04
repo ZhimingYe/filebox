@@ -11,6 +11,10 @@ use filebox_protocol::resources::{
 };
 use filebox_protocol::message::HubMessage;
 
+pub const AGENT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
+
+pub type AgentSender = mpsc::Sender<HubMessage>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentStatus {
     Online,
@@ -27,7 +31,7 @@ pub struct AgentConnection {
     /// disconnect cleanup only fails waiters owned by the dying connection,
     /// not a newer reconnect for the same agent_id.
     pub connection_id: u64,
-    pub sender: mpsc::UnboundedSender<HubMessage>,
+    pub sender: AgentSender,
     /// One-shot signal used to tell this connection's read loop to exit
     /// when a newer connection for the same agent_id replaces it. Without
     /// this, the old read loop would block on `ws_stream.next()` for the
@@ -173,7 +177,7 @@ impl AgentRegistry {
         &mut self,
         agent_id: String,
         name: String,
-        sender: mpsc::UnboundedSender<HubMessage>,
+        sender: AgentSender,
         abort_notify: Arc<Notify>,
         resource_revision: u64,
         roots: Vec<RootConfig>,
@@ -233,7 +237,7 @@ impl AgentRegistry {
     pub fn unregister(
         &mut self,
         agent_id: &str,
-        caller_sender: &mpsc::UnboundedSender<HubMessage>,
+        caller_sender: &AgentSender,
     ) {
         if let Some(agent) = self.agents.get(agent_id) {
             if agent.sender.same_channel(caller_sender) {
@@ -250,6 +254,12 @@ impl AgentRegistry {
 
     pub fn get_mut(&mut self, agent_id: &str) -> Option<&mut AgentConnection> {
         self.agents.get_mut(agent_id)
+    }
+
+    pub fn is_current_connection(&self, agent_id: &str, connection_id: u64) -> bool {
+        self.agents
+            .get(agent_id)
+            .is_some_and(|agent| agent.connection_id == connection_id)
     }
 
     pub fn list_all(&self) -> Vec<AgentInfoResponse> {
@@ -284,9 +294,10 @@ impl AgentRegistry {
     pub fn send_ping(&mut self, agent_id: &str) -> bool {
         if let Some(agent) = self.agents.get_mut(agent_id) {
             if agent.status != AgentStatus::Offline {
-                agent.ping_sent_at = Some(Instant::now());
-                let _ = agent.sender.send(HubMessage::Ping);
-                return true;
+                if agent.sender.try_send(HubMessage::Ping).is_ok() {
+                    agent.ping_sent_at = Some(Instant::now());
+                    return true;
+                }
             }
         }
         false
@@ -302,6 +313,14 @@ impl AgentRegistry {
         }
     }
 
+    pub fn record_pong_for_connection(&mut self, agent_id: &str, connection_id: u64) -> bool {
+        if !self.is_current_connection(agent_id, connection_id) {
+            return false;
+        }
+        self.record_pong(agent_id);
+        true
+    }
+
     pub fn update_resources(
         &mut self,
         agent_id: &str,
@@ -309,11 +328,28 @@ impl AgentRegistry {
         roots: Vec<RootConfig>,
     ) {
         if let Some(agent) = self.agents.get_mut(agent_id) {
+            if revision < agent.resource_revision {
+                return;
+            }
             agent.resource_revision = revision;
             agent.roots = roots;
             agent.pending_update = None;
             agent.last_config_error = None;
         }
+    }
+
+    pub fn update_resources_for_connection(
+        &mut self,
+        agent_id: &str,
+        connection_id: u64,
+        revision: u64,
+        roots: Vec<RootConfig>,
+    ) -> bool {
+        if !self.is_current_connection(agent_id, connection_id) {
+            return false;
+        }
+        self.update_resources(agent_id, revision, roots);
+        true
     }
 
     pub fn set_pending_update(&mut self, agent_id: &str, desired: DesiredResources) {
@@ -330,11 +366,28 @@ impl AgentRegistry {
         collections: Vec<CollectionConfig>,
     ) {
         if let Some(agent) = self.agents.get_mut(agent_id) {
+            if revision < agent.collections_revision {
+                return;
+            }
             agent.collections_revision = revision;
             agent.collections = collections;
             agent.pending_collections_update = None;
             agent.last_config_error = None;
         }
+    }
+
+    pub fn update_collections_for_connection(
+        &mut self,
+        agent_id: &str,
+        connection_id: u64,
+        revision: u64,
+        collections: Vec<CollectionConfig>,
+    ) -> bool {
+        if !self.is_current_connection(agent_id, connection_id) {
+            return false;
+        }
+        self.update_collections(agent_id, revision, collections);
+        true
     }
 
     pub fn set_pending_collections_update(
@@ -364,7 +417,7 @@ impl AgentRegistry {
 
     pub fn send_to_agent(&self, agent_id: &str, msg: HubMessage) -> bool {
         if let Some(agent) = self.agents.get(agent_id) {
-            agent.sender.send(msg).is_ok()
+            agent.sender.try_send(msg).is_ok()
         } else {
             false
         }
@@ -380,13 +433,13 @@ mod tests {
     // Keep the receiver alive for the lifetime of the test by leaking it.
     // The sender returned here always has a live consumer, so send_to_agent
     // reports success until the receiver is explicitly dropped.
-    fn make_sender() -> mpsc::UnboundedSender<HubMessage> {
-        let (tx, rx) = mpsc::unbounded_channel();
+    fn make_sender() -> AgentSender {
+        let (tx, rx) = mpsc::channel(AGENT_OUTBOUND_QUEUE_CAPACITY);
         std::mem::forget(rx);
         tx
     }
 
-    fn register_simple(reg: &mut AgentRegistry, id: &str) -> mpsc::UnboundedSender<HubMessage> {
+    fn register_simple(reg: &mut AgentRegistry, id: &str) -> AgentSender {
         let tx = make_sender();
         let notify = Arc::new(Notify::new());
         reg.register(
@@ -1021,7 +1074,7 @@ mod tests {
     #[test]
     fn send_to_agent_detects_dropped_receiver() {
         let mut reg = AgentRegistry::new();
-        let (tx, rx) = mpsc::unbounded_channel::<HubMessage>();
+        let (tx, rx) = mpsc::channel::<HubMessage>(AGENT_OUTBOUND_QUEUE_CAPACITY);
         reg.register(
             "a1".to_string(),
             "test".to_string(),
@@ -1042,5 +1095,28 @@ mod tests {
             },
         );
         assert!(!sent, "must report false when receiver is gone");
+    }
+
+    #[test]
+    fn send_to_agent_rejects_when_outbound_queue_is_full() {
+        let mut reg = AgentRegistry::new();
+        let (tx, _rx) = mpsc::channel::<HubMessage>(1);
+        reg.register(
+            "a1".to_string(),
+            "test".to_string(),
+            tx,
+            Arc::new(Notify::new()),
+            0,
+            vec![],
+            0,
+            vec![],
+            Capabilities::default(),
+        );
+
+        assert!(reg.send_to_agent("a1", HubMessage::Ping));
+        assert!(
+            !reg.send_to_agent("a1", HubMessage::Ping),
+            "a bounded queue must fail fast instead of growing without limit"
+        );
     }
 }

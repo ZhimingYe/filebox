@@ -74,6 +74,7 @@ use filebox_protocol::message::HubMessage;
 
 use crate::state::{
     AppState, AuthenticatedSession, PendingResponse, PreviewSession,
+    MAX_PENDING_RESPONSES,
 };
 
 #[derive(Debug, serde::Deserialize)]
@@ -146,15 +147,19 @@ pub async fn fs_list_handler(
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
     let send_ok = {
         let mut pending = inner.pending_responses.write().await;
-        pending.insert(req_id.clone(), PendingResponse {
-            tx: resp_tx,
-            agent_id: params.agent_id.clone(),
-            connection_id: agent.connection_id,
-            session_id: Some(session.principal_id.clone()),
-            desired_roots: None,
-            desired_collections: None,
-        });
-        inner.agents.send_to_agent(&params.agent_id, msg)
+        if pending.len() >= MAX_PENDING_RESPONSES {
+            false
+        } else {
+            pending.insert(req_id.clone(), PendingResponse {
+                tx: resp_tx,
+                agent_id: params.agent_id.clone(),
+                connection_id: agent.connection_id,
+                session_id: Some(session.principal_id.clone()),
+                desired_roots: None,
+                desired_collections: None,
+            });
+            inner.agents.send_to_agent(&params.agent_id, msg)
+        }
     };
 
     drop(inner);
@@ -227,15 +232,19 @@ pub async fn fs_stat_handler(
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
     let send_ok = {
         let mut pending = inner.pending_responses.write().await;
-        pending.insert(req_id.clone(), PendingResponse {
-            tx: resp_tx,
-            agent_id: params.agent_id.clone(),
-            connection_id: agent.connection_id,
-            session_id: Some(session.principal_id.clone()),
-            desired_roots: None,
-            desired_collections: None,
-        });
-        inner.agents.send_to_agent(&params.agent_id, msg)
+        if pending.len() >= MAX_PENDING_RESPONSES {
+            false
+        } else {
+            pending.insert(req_id.clone(), PendingResponse {
+                tx: resp_tx,
+                agent_id: params.agent_id.clone(),
+                connection_id: agent.connection_id,
+                session_id: Some(session.principal_id.clone()),
+                desired_roots: None,
+                desired_collections: None,
+            });
+            inner.agents.send_to_agent(&params.agent_id, msg)
+        }
     };
 
     drop(inner);
@@ -270,6 +279,7 @@ pub async fn fs_stat_handler(
     }
 }
 
+#[derive(Clone)]
 struct RawFileTarget {
     agent_id: String,
     root: String,
@@ -288,6 +298,11 @@ const RAW_CHUNK_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 /// Total wall-clock budget for retrying one raw chunk at the same offset.
 const RAW_CHUNK_RETRY_BUDGET: Duration = Duration::from_secs(90);
+const RAW_CHUNK_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// A bounded body queue prevents a client that stopped reading from retaining
+/// a raw-stream permit forever. The producer fails the body if the consumer
+/// does not accept the next item within this interval.
+const RAW_DOWNSTREAM_SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn is_raw_chunk_retryable(err: &str) -> bool {
     matches!(
@@ -298,6 +313,16 @@ fn is_raw_chunk_retryable(err: &str) -> bool {
             | "Agent did not respond in time"
             | "backend_offline"
     ) || err.starts_with("agent_overloaded")
+}
+
+async fn send_raw_body_item(
+    tx: &mpsc::Sender<Result<axum::body::Bytes, std::io::Error>>,
+    item: Result<axum::body::Bytes, std::io::Error>,
+) -> bool {
+    matches!(
+        tokio::time::timeout(RAW_DOWNSTREAM_SEND_TIMEOUT, tx.send(item)).await,
+        Ok(Ok(()))
+    )
 }
 
 pub async fn file_raw_handler(
@@ -416,10 +441,14 @@ async fn serve_raw_file(
             );
         }
     };
-    let file_size = match request_raw_file_size(&state, &target).await {
+    let (file_size, initial_modified) = match request_raw_file_size(&state, &target).await {
         Ok(size) => size,
         Err(resp) => return resp,
     };
+    // The semaphore bounds Agent round-trips, not the lifetime of an HTTP
+    // response. A slow browser must not occupy one of the 96 slots while it
+    // is merely pausing between body reads.
+    drop(raw_permit);
     let range = match resolve_byte_range(req.headers().get(header::RANGE), file_size) {
         Ok(range) => range,
         Err(()) => {
@@ -441,65 +470,152 @@ async fn serve_raw_file(
     let safe_filename: String = filename.chars().filter(|c| *c != '"' && *c != '\\' && *c != '\n' && *c != '\r').collect();
     let is_partial = range.is_some();
     let is_head = req.method() == axum::http::Method::HEAD;
-    let stream_state = state.clone();
-    let stream = async_stream::stream! {
-        let _raw_permit = raw_permit;
-        let mut sent = 0u64;
-        while sent < body_len {
-            let remaining = body_len - sent;
-            match request_raw_chunk_with_retry(
-                &stream_state,
-                &target,
-                offset_start + sent,
-                remaining.min(RAW_STREAM_CHUNK_BYTES),
-            )
-            .await
-            {
-                Ok((chunk, done)) => {
-                    if chunk.is_empty() {
-                        if !done {
-                            tracing::warn!("file_raw_handler: agent returned an empty non-terminal chunk");
-                        }
-                        break;
-                    }
-                    let allowed = std::cmp::min(chunk.len() as u64, remaining) as usize;
-                    let chunk = if allowed == chunk.len() {
-                        chunk
-                    } else {
-                        chunk[..allowed].to_vec()
-                    };
-                    if let Some(token) = target.preview_token.as_deref() {
-                        if reserve_preview_bytes(&stream_state, token, chunk.len() as u64).await.is_err() {
-                            yield Err::<axum::body::Bytes, std::io::Error>(
-                                std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    "HTML preview byte budget exceeded",
-                                ),
-                            );
-                            return;
-                        }
-                    }
-                    sent = sent.saturating_add(chunk.len() as u64);
-                    yield Ok::<axum::body::Bytes, std::io::Error>(
-                        axum::body::Bytes::from(chunk),
-                    );
-                    if done {
-                        break;
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!("file_raw_handler stream failed: {}", err);
-                    yield Err::<axum::body::Bytes, std::io::Error>(
-                        std::io::Error::new(std::io::ErrorKind::Other, err),
-                    );
-                    return;
-                }
-            }
-        }
-    };
     let body = if is_head {
         axum::body::Body::empty()
     } else {
+        let (body_tx, body_rx) = mpsc::channel(1);
+        let producer_state = state.clone();
+        let producer_target = target.clone();
+        tokio::spawn(async move {
+            let mut sent = 0u64;
+            let expected_modified = initial_modified;
+            while sent < body_len {
+                let permit = match tokio::time::timeout(
+                    Duration::from_secs(30),
+                    producer_state.raw_read_semaphore.clone().acquire_owned(),
+                )
+                .await
+                {
+                    Ok(Ok(permit)) => permit,
+                    _ => {
+                        let _ = send_raw_body_item(
+                            &body_tx,
+                            Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "Hub raw stream concurrency limit reached",
+                            )),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                let remaining = body_len - sent;
+                let chunk_result = request_raw_chunk_with_retry(
+                    &producer_state,
+                    &producer_target,
+                    offset_start + sent,
+                    remaining.min(RAW_STREAM_CHUNK_BYTES),
+                )
+                .await;
+                drop(permit);
+
+                let (chunk, done, chunk_file_size, chunk_modified) = match chunk_result {
+                    Ok(chunk) => chunk,
+                    Err(err) => {
+                        let _ = send_raw_body_item(
+                            &body_tx,
+                            Err(std::io::Error::new(std::io::ErrorKind::Other, err)),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                if let Some(chunk_file_size) = chunk_file_size {
+                    if chunk_file_size != file_size {
+                        let _ = send_raw_body_item(
+                            &body_tx,
+                            Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "File changed while it was being streamed",
+                            )),
+                        )
+                        .await;
+                        return;
+                    }
+                }
+                if expected_modified.is_some() && chunk_modified != expected_modified {
+                    let _ = send_raw_body_item(
+                        &body_tx,
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "File changed while it was being streamed",
+                        )),
+                    )
+                    .await;
+                    return;
+                }
+                if chunk.is_empty() {
+                    let _ = send_raw_body_item(
+                        &body_tx,
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "Agent returned an empty raw file chunk",
+                        )),
+                    )
+                    .await;
+                    return;
+                }
+                if chunk.len() as u64 > remaining {
+                    let _ = send_raw_body_item(
+                        &body_tx,
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Agent returned more bytes than requested",
+                        )),
+                    )
+                    .await;
+                    return;
+                }
+                if let Some(token) = producer_target.preview_token.as_deref() {
+                    if reserve_preview_bytes(&producer_state, token, chunk.len() as u64)
+                        .await
+                        .is_err()
+                    {
+                        let _ = send_raw_body_item(
+                            &body_tx,
+                            Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "HTML preview byte budget exceeded",
+                            )),
+                        )
+                        .await;
+                        return;
+                    }
+                }
+                sent = sent.saturating_add(chunk.len() as u64);
+                let done_early = done && sent != body_len;
+                if !send_raw_body_item(
+                    &body_tx,
+                    Ok(axum::body::Bytes::from(chunk)),
+                )
+                .await
+                {
+                    return;
+                }
+                if done_early {
+                    let _ = send_raw_body_item(
+                        &body_tx,
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "Agent ended the raw file before the advertised size",
+                        )),
+                    )
+                    .await;
+                    return;
+                }
+            }
+            if sent != body_len {
+                let _ = send_raw_body_item(
+                    &body_tx,
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "Raw file stream ended before Content-Length",
+                    )),
+                )
+                .await;
+            }
+        });
+        let stream = tokio_stream::wrappers::ReceiverStream::new(body_rx);
         axum::body::Body::from_stream(stream)
     };
     let mut builder = Response::builder()
@@ -530,7 +646,7 @@ async fn serve_raw_file(
 async fn request_raw_file_size(
     state: &AppState,
     target: &RawFileTarget,
-) -> Result<u64, Response> {
+) -> Result<(u64, Option<String>), Response> {
     let req_id = format!("file_stat_{}", Uuid::new_v4());
     let value = request_raw_agent(
         state,
@@ -590,14 +706,15 @@ async fn request_raw_file_size(
             false,
         ));
     }
-    value["stat"]["size"].as_u64().ok_or_else(|| {
+    let size = value["stat"]["size"].as_u64().ok_or_else(|| {
         error_response(
             StatusCode::BAD_GATEWAY,
             "file_stat_error",
             "Agent returned an invalid file size",
             true,
         )
-    })
+    })?;
+    Ok((size, value["stat"]["modified"].as_str().map(str::to_string)))
 }
 
 async fn request_raw_chunk_with_retry(
@@ -605,7 +722,7 @@ async fn request_raw_chunk_with_retry(
     target: &RawFileTarget,
     offset: u64,
     length: u64,
-) -> Result<(Vec<u8>, bool), String> {
+) -> Result<(Vec<u8>, bool, Option<u64>, Option<String>), String> {
     let deadline = tokio::time::Instant::now() + RAW_CHUNK_RETRY_BUDGET;
     let mut attempt = 0u32;
     let mut last_err: Option<String> = None;
@@ -616,7 +733,9 @@ async fn request_raw_chunk_with_retry(
             }));
         }
         attempt += 1;
-        match request_raw_chunk(state, target, offset, length).await {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let attempt_timeout = remaining.min(RAW_CHUNK_REQUEST_TIMEOUT);
+        match request_raw_chunk(state, target, offset, length, attempt_timeout).await {
             Ok(chunk) => return Ok(chunk),
             Err(err) if is_raw_chunk_retryable(&err) => {
                 last_err = Some(err.clone());
@@ -629,13 +748,20 @@ async fn request_raw_chunk_with_retry(
                 } else {
                     RAW_CHUNK_RETRY_DELAY
                 };
+                let jitter = if base_delay > Duration::from_millis(1) {
+                    Duration::from_millis(
+                        rand::random::<u64>() % (base_delay.as_millis() as u64 / 2).max(1),
+                    )
+                } else {
+                    Duration::ZERO
+                };
                 tracing::warn!(
                     "raw chunk offset={} attempt={} failed: {}, retrying",
                     offset,
                     attempt,
                     err
                 );
-                tokio::time::sleep(base_delay.min(remaining)).await;
+                tokio::time::sleep((base_delay + jitter).min(remaining)).await;
             }
             Err(err) => return Err(err),
         }
@@ -647,7 +773,8 @@ async fn request_raw_chunk(
     target: &RawFileTarget,
     offset: u64,
     length: u64,
-) -> Result<(Vec<u8>, bool), String> {
+    timeout: Duration,
+) -> Result<(Vec<u8>, bool, Option<u64>, Option<String>), String> {
     let req_id = format!("file_{}", Uuid::new_v4());
     let value = request_raw_agent(
         state,
@@ -660,7 +787,7 @@ async fn request_raw_chunk(
             offset,
             length: Some(length),
         },
-        Duration::from_secs(60),
+        timeout,
     )
     .await?;
     if let Some(err) = value["error"].as_str() {
@@ -672,9 +799,22 @@ async fn request_raw_chunk(
     if returned_offset != offset {
         return Err("Agent returned a mismatched file chunk offset".to_string());
     }
+    let data = decode_file_chunk_data(&value["data"])?;
+    // Keep rolling upgrades compatible with the historical 4 MiB agent
+    // limit, but reject arbitrary payloads before they can be accepted into
+    // the raw response path. Current agents and Hub requests use 512 KiB.
+    const MAX_ACCEPTED_AGENT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+    if data.len() > MAX_ACCEPTED_AGENT_CHUNK_BYTES {
+        return Err("Agent returned an oversized file chunk".to_string());
+    }
+    if data.len() as u64 > length {
+        return Err("Agent returned more bytes than requested".to_string());
+    }
     Ok((
-        decode_file_chunk_data(&value["data"])?,
+        data,
         value["done"].as_bool().unwrap_or(true),
+        value["file_size"].as_u64(),
+        value["modified"].as_str().map(str::to_string),
     ))
 }
 
@@ -696,6 +836,9 @@ async fn request_raw_agent(
         }
         let connection_id = agent.connection_id;
         let mut pending = inner.pending_responses.write().await;
+        if pending.len() >= MAX_PENDING_RESPONSES {
+            return Err("Hub pending request limit reached".to_string());
+        }
         pending.insert(
             req_id.clone(),
             PendingResponse {
@@ -980,15 +1123,19 @@ pub async fn sys_stats_handler(
     let (resp_tx, mut resp_rx) = mpsc::channel(1);
     let send_ok = {
         let mut pending = inner.pending_responses.write().await;
-        pending.insert(req_id.clone(), PendingResponse {
-            tx: resp_tx,
-            agent_id: agent_id.clone(),
-            connection_id: agent.connection_id,
-            session_id: Some(session.principal_id.clone()),
-            desired_roots: None,
-            desired_collections: None,
-        });
-        inner.agents.send_to_agent(&agent_id, msg)
+        if pending.len() >= MAX_PENDING_RESPONSES {
+            false
+        } else {
+            pending.insert(req_id.clone(), PendingResponse {
+                tx: resp_tx,
+                agent_id: agent_id.clone(),
+                connection_id: agent.connection_id,
+                session_id: Some(session.principal_id.clone()),
+                desired_roots: None,
+                desired_collections: None,
+            });
+            inner.agents.send_to_agent(&agent_id, msg)
+        }
     };
 
     drop(inner);
@@ -1395,7 +1542,7 @@ mod tests {
     #[tokio::test]
     async fn pending_response_cleanup_cancels_abandoned_agent_work() {
         let state = AppState::new(&test_config(), true);
-        let (agent_tx, mut agent_rx) = mpsc::unbounded_channel();
+        let (agent_tx, mut agent_rx) = mpsc::channel(256);
         register_mock_agent(&state, "a1", agent_tx).await;
         let req_id = "abandoned-fs-request".to_string();
         let (tx, _rx) = mpsc::channel(1);
@@ -1504,8 +1651,8 @@ mod tests {
         agent_id: &str,
         file_total: u64,
         chunk_cap: u64,
-    ) -> (mpsc::UnboundedSender<HubMessage>, tokio::task::JoinHandle<()>) {
-        let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+    ) -> (mpsc::Sender<HubMessage>, tokio::task::JoinHandle<()>) {
+        let (tx, mut rx) = mpsc::channel::<HubMessage>(256);
         let agent_id_owned = agent_id.to_string();
         let handle = tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
@@ -1546,6 +1693,8 @@ mod tests {
                     data,
                     done,
                     error: None,
+                    file_size: None,
+                    modified: None,
                 };
                 let value = serde_json::to_value(&chunk).unwrap();
                 let pending_arc = state.inner.read().await.pending_responses.clone();
@@ -1565,8 +1714,8 @@ mod tests {
         file_total: u64,
         chunk_cap: u64,
         fail_once_offsets: Arc<std::sync::Mutex<std::collections::HashSet<u64>>>,
-    ) -> (mpsc::UnboundedSender<HubMessage>, tokio::task::JoinHandle<()>) {
-        let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+    ) -> (mpsc::Sender<HubMessage>, tokio::task::JoinHandle<()>) {
+        let (tx, mut rx) = mpsc::channel::<HubMessage>(256);
         let agent_id_owned = agent_id.to_string();
         let handle = tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
@@ -1605,6 +1754,8 @@ mod tests {
                         data: vec![],
                         done: true,
                         error: Some("backend_offline".to_string()),
+                        file_size: None,
+                        modified: None,
                     };
                     let value = serde_json::to_value(&chunk).unwrap();
                     let pending_arc = state.inner.read().await.pending_responses.clone();
@@ -1627,6 +1778,8 @@ mod tests {
                     data,
                     done,
                     error: None,
+                    file_size: None,
+                    modified: None,
                 };
                 let value = serde_json::to_value(&chunk).unwrap();
                 let pending_arc = state.inner.read().await.pending_responses.clone();
@@ -1640,7 +1793,7 @@ mod tests {
         (tx, handle)
     }
 
-    async fn register_mock_agent(state: &AppState, agent_id: &str, tx: mpsc::UnboundedSender<HubMessage>) {
+    async fn register_mock_agent(state: &AppState, agent_id: &str, tx: mpsc::Sender<HubMessage>) {
         let mut inner = state.inner.write().await;
         inner.agents.register(
             agent_id.to_string(),
@@ -1922,7 +2075,7 @@ mod tests {
         // Dead-loop defense: if agent returns empty data + done=false, the
         // handler must stop instead of infinitely re-requesting.
         let state = AppState::new(&test_config(), true);
-        let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+        let (tx, mut rx) = mpsc::channel::<HubMessage>(256);
         let state_for_agent = state.clone();
         let agent_handle = tokio::spawn(async move {
             // First answer the mandatory stat, then reply once with an empty
@@ -1955,6 +2108,8 @@ mod tests {
                         data: vec![],
                         done: false,
                         error: None,
+                        file_size: None,
+                        modified: None,
                     };
                     let value = serde_json::to_value(&chunk).unwrap();
                     let pending_arc = state_for_agent.inner.read().await.pending_responses.clone();
@@ -1981,10 +2136,11 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), 1024)
-            .await
-            .unwrap();
-        assert!(bytes.is_empty(), "expected empty body after dead-loop break");
+        let body_result = axum::body::to_bytes(response.into_body(), 1024).await;
+        assert!(
+            body_result.is_err(),
+            "an incomplete raw stream must fail instead of returning a successful truncated body"
+        );
 
         agent_handle.abort();
     }

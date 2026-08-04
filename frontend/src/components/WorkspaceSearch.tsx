@@ -481,15 +481,12 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
     setSlow(false);
     setProgressText(null);
     setError('Cancelled');
-    // Prefer hub cancel (stops agent worker) then abort the HTTP wait.
-    if (reqId) {
-      try {
-        await cancelRequest(agent.id, reqId);
-      } catch {
-        /* best-effort */
-      }
-    }
+    // Abort the browser wait immediately. The Hub cancel is best effort and
+    // must never block the UI or leave the original search request alive.
     abortRef.current?.abort();
+    if (reqId) {
+      void cancelRequest(agent.id, reqId).catch(() => {});
+    }
   }
 
   const parsedExts = useMemo(

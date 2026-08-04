@@ -364,7 +364,12 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
         async () => throwIfAgentError(
           await api.fsList(agentId, selectedRoot, currentPath, PAGE_LIMIT, cursor, false, controller.signal),
         ),
-        { maxAttempts: 3, agentId, signal: controller.signal },
+        {
+          maxAttempts: 3,
+          maxDurationMs: 60_000,
+          agentId,
+          signal: controller.signal,
+        },
       );
       if (seq !== loadSeq.current) return; // stale response — discard
       setEntries((prev) => append ? [...prev, ...data.items] : data.items);

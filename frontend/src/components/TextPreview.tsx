@@ -45,7 +45,10 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
   if (gate.sizeUnknown) {
     return (
       <div style={styles.container}>
-        <LoadingOverlay message={gateLoadingMessage(gate.retrying)} />
+        <LoadingOverlay
+          message={gateLoadingMessage(gate.retrying)}
+          onCancel={gate.cancel}
+        />
       </div>
     );
   }

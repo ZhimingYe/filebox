@@ -329,7 +329,10 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   if (gate.sizeUnknown) {
     return (
       <div style={styles.container}>
-        <LoadingOverlay message={gateLoadingMessage(gate.retrying)} />
+        <LoadingOverlay
+          message={gateLoadingMessage(gate.retrying)}
+          onCancel={gate.cancel}
+        />
       </div>
     );
   }

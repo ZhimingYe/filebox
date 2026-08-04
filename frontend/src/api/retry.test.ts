@@ -3,6 +3,7 @@ import {
   extractErrorCode,
   isRetryableError,
   retryDelayMs,
+  retryAsync,
   throwIfAgentError,
 } from './retry';
 
@@ -65,5 +66,30 @@ describe('retryDelayMs', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.99);
     expect(retryDelayMs(0, 500, 4000)).toBeLessThanOrEqual(4000);
     expect(retryDelayMs(3, 500, 4000)).toBeLessThanOrEqual(4000);
+  });
+});
+
+describe('retryAsync deadlines', () => {
+  it('turns a stalled attempt into a structured retryable error', async () => {
+    vi.useFakeTimers();
+    const pending = retryAsync(
+      (_attempt, signal) =>
+        new Promise<never>((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+          }, { once: true });
+        }),
+      { maxAttempts: 2, maxDurationMs: 100 },
+    );
+    const assertion = expect(pending).rejects.toMatchObject({
+      error: 'request_stalled',
+      retryable: true,
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(100);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -7,11 +7,19 @@ const waiters = new Map<string, Set<Waiter>>();
 const onlineAgents = new Set<string>();
 
 export function syncAgentOnlineStatus(agents: { id: string; status: string }[]) {
-  onlineAgents.clear();
+  const nextOnline = new Set<string>();
   for (const agent of agents) {
     if (agent.status === 'online' || agent.status === 'slow') {
-      onlineAgents.add(agent.id);
+      nextOnline.add(agent.id);
     }
+  }
+  const newlyOnline = [...nextOnline].filter((id) => !onlineAgents.has(id));
+  onlineAgents.clear();
+  for (const id of nextOnline) {
+    onlineAgents.add(id);
+  }
+  for (const id of newlyOnline) {
+    notifyAgentConnected(id);
   }
 }
 

@@ -9,7 +9,9 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::state::{AppState, AuthenticatedSession, PendingResponse};
+use crate::state::{
+    AppState, AuthenticatedSession, PendingResponse, MAX_PENDING_RESPONSES,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct OfficeConvertBody {
@@ -211,6 +213,14 @@ pub async fn office_convert_handler(
         .req_id
         .clone()
         .unwrap_or_else(|| format!("office_convert_{}", Uuid::new_v4()));
+    if state.was_request_recently_cancelled(&req_id).await {
+        return error_response(
+            StatusCode::CONFLICT,
+            "invalid_request",
+            "This Office request id was recently cancelled; use a new id.",
+            false,
+        );
+    }
     let msg = HubMessage::OfficeConvertRequest {
         req_id: req_id.clone(),
         root,
@@ -223,6 +233,9 @@ pub async fn office_convert_handler(
     let send_ok = {
         let mut pending = inner.pending_responses.write().await;
         if pending.contains_key(&req_id) {
+            duplicate_req_id = true;
+            false
+        } else if pending.len() >= MAX_PENDING_RESPONSES {
             duplicate_req_id = true;
             false
         } else {
@@ -483,7 +496,7 @@ mod tests {
     async fn register_agent(
         state: &AppState,
         agent_id: &str,
-        tx: mpsc::UnboundedSender<HubMessage>,
+        tx: mpsc::Sender<HubMessage>,
         office: bool,
     ) {
         let mut inner = state.inner.write().await;
@@ -509,8 +522,8 @@ mod tests {
     fn spawn_mock_office_agent(
         state: AppState,
         outcome: MockOfficeOutcome,
-    ) -> (mpsc::UnboundedSender<HubMessage>, tokio::task::JoinHandle<()>) {
-        let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+    ) -> (mpsc::Sender<HubMessage>, tokio::task::JoinHandle<()>) {
+        let (tx, mut rx) = mpsc::channel::<HubMessage>(256);
         let handle = tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
                 match msg {
@@ -648,7 +661,7 @@ mod tests {
     #[tokio::test]
     async fn office_convert_rejects_without_capability() {
         let state = AppState::new(&test_config(), true);
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(256);
         register_agent(&state, "a1", tx, false).await;
         let (status, v) = body_json(call_convert(state, "a1", "/a.docx").await).await;
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
@@ -658,7 +671,7 @@ mod tests {
     #[tokio::test]
     async fn office_convert_rejects_offline_agent() {
         let state = AppState::new(&test_config(), true);
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(256);
         register_agent(&state, "a1", tx, true).await;
         {
             let mut inner = state.inner.write().await;
@@ -672,7 +685,7 @@ mod tests {
     #[tokio::test]
     async fn office_convert_rejects_bad_extension_and_dotdot() {
         let state = AppState::new(&test_config(), true);
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(256);
         register_agent(&state, "a1", tx, true).await;
 
         let (status, v) = body_json(call_convert(state.clone(), "a1", "/notes.txt").await).await;
@@ -703,7 +716,7 @@ mod tests {
     #[tokio::test]
     async fn office_convert_forwards_force_regeneration_to_agent() {
         let state = AppState::new(&test_config(), true);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(256);
         register_agent(&state, "a1", tx, true).await;
         let agent_state = state.clone();
         let (force_tx, force_rx) = tokio::sync::oneshot::channel();

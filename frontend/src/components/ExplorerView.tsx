@@ -538,7 +538,7 @@ export function ExplorerView({
     ).then((data) => {
       if (timedOut) {
         result = 'failed';
-        setFailure('Folder loading timed out. Check the connection and retry.');
+        setFailure('Folder loading timed out. Check the connection and retry.', true);
         return;
       }
       if (
@@ -571,7 +571,7 @@ export function ExplorerView({
     }).catch((error: unknown) => {
       if (timedOut && mountedRef.current) {
         result = 'failed';
-        setFailure('Folder loading timed out. Check the connection and retry.');
+        setFailure('Folder loading timed out. Check the connection and retry.', true);
         return;
       }
       if (
