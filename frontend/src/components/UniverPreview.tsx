@@ -31,6 +31,8 @@ interface UniverRuntime {
   dispose: () => void;
 }
 
+type DebugData = Record<string, unknown>;
+
 const READ_ONLY_KEYS = new Set([
   'Backspace',
   'Delete',
@@ -48,6 +50,17 @@ export function UniverPreview({ agentId, root, path }: Props) {
     kind: 'loading',
     message: 'Preparing Univer preview…',
   });
+
+  useEffect(() => {
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const error = describeDebugError(event.reason);
+      // #region agent log
+      writeDebugLog('C', 'UniverPreview.tsx:59', 'unhandled rejection observed while preview is mounted', error);
+      // #endregion
+    };
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    return () => window.removeEventListener('unhandledrejection', onUnhandledRejection);
+  }, []);
 
   const disposeRuntime = useCallback(() => {
     runtimeRef.current?.dispose();
@@ -84,6 +97,12 @@ export function UniverPreview({ agentId, root, path }: Props) {
         runtimeRef.current = runtime;
         setPhase({ kind: 'ready' });
       } catch (error: unknown) {
+        // #region agent log
+        writeDebugLog('E', 'UniverPreview.tsx:100', 'preview run rejected', {
+          cancelled,
+          ...describeDebugError(error),
+        });
+        // #endregion
         if (cancelled || (error instanceof DOMException && error.name === 'AbortError')) return;
         setPhase({
           kind: 'error',
@@ -172,6 +191,13 @@ async function createRuntime(
   file: File,
   container: HTMLDivElement | null,
 ): Promise<UniverRuntime> {
+  // #region agent log
+  writeDebugLog('E', 'UniverPreview.tsx:188', 'createRuntime entry', {
+    kind,
+    fileBytes: file.size,
+    containerPresent: Boolean(container),
+  });
+  // #endregion
   if (!container) throw new Error('Univer container is unavailable.');
 
   const [
@@ -186,50 +212,128 @@ async function createRuntime(
   const { createUniver, LocaleType } = presets;
   const { UniverDocsCorePreset } = docsPreset;
   const { UniverSheetsCorePreset } = sheetsPreset;
+  // #region agent log
+  writeDebugLog('B', 'UniverPreview.tsx:210', 'Univer modules loaded', {
+    kind,
+    presetsExports: Object.keys(presets).filter((key) => key !== 'default').sort(),
+    docsPresetPresent: typeof UniverDocsCorePreset === 'function',
+    sheetsPresetPresent: typeof UniverSheetsCorePreset === 'function',
+  });
+  // #endregion
   const locales = {
     [LocaleType.EN_US]: kind === 'document' ? docsEnUS : sheetsEnUS,
   };
 
   if (kind === 'document') {
     const snapshot = await importDocxSnapshot(file);
+    const preset = UniverDocsCorePreset({
+      container,
+      header: false,
+      footer: false,
+      toolbar: false,
+      contextMenu: false,
+      disableAutoFocus: true,
+    });
+    // #region agent log
+    writeDebugLog('A', 'UniverPreview.tsx:227', 'document preset and snapshot prepared', {
+      pluginNames: describePresetPlugins(preset),
+      dataStreamLength: snapshot.body?.dataStream?.length ?? 0,
+      paragraphCount: snapshot.body?.paragraphs?.length ?? 0,
+      textRunCount: snapshot.body?.textRuns?.length ?? 0,
+    });
+    // #endregion
     const { univer, univerAPI } = createUniver({
       locale: LocaleType.EN_US,
       locales,
-      presets: [
-        UniverDocsCorePreset({
-          container,
-          header: false,
-          footer: false,
-          toolbar: false,
-          contextMenu: false,
-          disableAutoFocus: true,
-        }),
-      ],
+      presets: [preset],
     });
-    univerAPI.createUniverDoc(snapshot);
+    const createDocumentResult = univerAPI.createUniverDoc(snapshot);
+    // #region agent log
+    writeDebugLog('C', 'UniverPreview.tsx:247', 'document createUniver and API call returned', {
+      apiMethods: Object.keys(univerAPI).sort(),
+      univerMethods: Object.keys(univer).filter((key) => key !== 'injector').sort(),
+      returnType: describeDebugValue(createDocumentResult),
+    });
+    // #endregion
     return { dispose: () => univer.dispose() };
   }
 
   const snapshot = await importXlsxSnapshot(file);
+  const preset = UniverSheetsCorePreset({
+    container,
+    header: false,
+    toolbar: false,
+    formulaBar: false,
+    footer: false,
+    contextMenu: false,
+    disableAutoFocus: true,
+  });
+  // #region agent log
+  writeDebugLog('D', 'UniverPreview.tsx:270', 'spreadsheet preset and snapshot prepared', {
+    pluginNames: describePresetPlugins(preset),
+    sheetCount: snapshot.sheetOrder?.length ?? 0,
+    sheetIds: snapshot.sheetOrder?.slice(0, 20) ?? [],
+    workbookStyleCount: Object.keys(snapshot.styles ?? {}).length,
+  });
+  // #endregion
   const { univer, univerAPI } = createUniver({
     locale: LocaleType.EN_US,
     locales,
-    presets: [
-      UniverSheetsCorePreset({
-        container,
-        header: false,
-        toolbar: false,
-        formulaBar: false,
-        footer: false,
-        contextMenu: false,
-        disableAutoFocus: true,
-      }),
-    ],
+    presets: [preset],
   });
   const workbook = univerAPI.createWorkbook(snapshot);
+  // #region agent log
+  writeDebugLog('C', 'UniverPreview.tsx:286', 'spreadsheet createUniver and createWorkbook returned', {
+    apiMethods: Object.keys(univerAPI).sort(),
+    univerMethods: Object.keys(univer).filter((key) => key !== 'injector').sort(),
+    returnType: describeDebugValue(workbook),
+  });
+  // #endregion
   await workbook.getWorkbookPermission().setReadOnly();
   workbook.disableSelection();
   return { dispose: () => univer.dispose() };
+}
+
+function describePresetPlugins(preset: unknown): string[] {
+  if (!preset || typeof preset !== 'object') return [];
+  const plugins = (preset as { plugins?: unknown }).plugins;
+  if (!Array.isArray(plugins)) return [];
+  return plugins.map((entry) => {
+    const plugin = Array.isArray(entry) ? entry[0] : entry;
+    if (typeof plugin !== 'function') return 'unknown';
+    const namedPlugin = plugin as { pluginName?: unknown };
+    return typeof namedPlugin.pluginName === 'string'
+      ? namedPlugin.pluginName
+      : plugin.name || 'anonymous';
+  });
+}
+
+function describeDebugValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'object') return value?.constructor?.name || 'object';
+  return typeof value;
+}
+
+function describeDebugError(error: unknown): DebugData {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      name: error.name,
+      stack: error.stack || '',
+    };
+  }
+  return { reasonType: typeof error, reason: String(error) };
+}
+
+function writeDebugLog(hypothesisId: string, location: string, message: string, data: DebugData): void {
+  const payload = {
+    hypothesisId,
+    location,
+    message,
+    data,
+    timestamp: Date.now(),
+  };
+  console.warn(`[filebox-debug] ${JSON.stringify(payload)}`);
 }
 
 function formatBytes(bytes: number): string {
