@@ -12,6 +12,7 @@ use uuid::Uuid;
 use filebox_protocol::message::{AgentMessage, HubMessage};
 use filebox_protocol::resources::Capabilities;
 
+use crate::agent_registry::AGENT_OUTBOUND_QUEUE_CAPACITY;
 use crate::net::client_ip;
 use crate::state::{AppState, PendingResponse};
 
@@ -60,7 +61,7 @@ pub async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
     let (mut ws_sink, mut ws_stream) = socket.split();
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<HubMessage>();
+    let (tx, mut rx) = mpsc::channel::<HubMessage>(AGENT_OUTBOUND_QUEUE_CAPACITY);
     let abort_notify = Arc::new(Notify::new());
 
     // Step 1: Wait for Auth
@@ -96,13 +97,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
         success: true,
         agent_id: Some(temp_id.clone()),
     };
-    if ws_sink
-        .send(Message::Text(
-            serde_json::to_string(&auth_result).unwrap().into(),
-        ))
-        .await
-        .is_err()
-    {
+    if !send_hub_frame(&mut ws_sink, &auth_result).await {
         return;
     }
 
@@ -272,7 +267,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                     } else {
                         strip_pinned_folders(&pending.roots)
                     };
-                    let _ = tx.send(HubMessage::ResourcesSetDesired {
+                    let _ = tx.try_send(HubMessage::ResourcesSetDesired {
                         req_id,
                         desired_revision,
                         roots: pushed_roots,
@@ -291,7 +286,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                 if agent.capabilities.collections {
                     if let Some(desired_revision) = agent.collections_revision.checked_add(1) {
                         let req_id = format!("pending_col_{}", Uuid::new_v4());
-                        let _ = tx.send(HubMessage::CollectionsSetDesired {
+                        let _ = tx.try_send(HubMessage::CollectionsSetDesired {
                             req_id,
                             desired_revision,
                             collections: pending.collections.clone(),
@@ -315,24 +310,14 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
     // Spawn task to forward channel messages to WebSocket. Each write is
     // bounded by WS_WRITE_TIMEOUT so a half-open agent TCP can't stall this
     // task indefinitely.
-    let send_task = tokio::spawn(async move {
+    let mut send_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            let text = serde_json::to_string(&msg).unwrap();
-            let send_result = tokio::time::timeout(
-                WS_WRITE_TIMEOUT,
-                ws_sink.send(Message::Text(text.into())),
-            )
-            .await;
-            match send_result {
-                Ok(Ok(_)) => {}
-                Ok(Err(_)) => break,
-                Err(_) => {
-                    tracing::warn!(
-                        "WS write to agent timed out after {}s, closing connection",
-                        WS_WRITE_TIMEOUT.as_secs()
-                    );
-                    break;
-                }
+            if !send_hub_frame(&mut ws_sink, &msg).await {
+                tracing::warn!(
+                    "WS write to agent failed or timed out after {}s, closing connection",
+                    WS_WRITE_TIMEOUT.as_secs()
+                );
+                break;
             }
         }
     });
@@ -357,6 +342,14 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                 exited_via_abort = true;
                 break;
             }
+            send_result = &mut send_task => {
+                if let Err(error) = send_result {
+                    tracing::debug!("Hub WS sender task ended: {}", error);
+                } else {
+                    tracing::info!("Hub WS sender task ended; closing connection");
+                }
+                break;
+            }
             msg = tokio::time::timeout(NO_AGENT_MESSAGE_TIMEOUT, ws_stream.next()) => {
                 match msg {
                     Err(_) => {
@@ -375,17 +368,24 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                         match serde_json::from_str::<AgentMessage>(&text) {
                             Ok(AgentMessage::Pong) | Ok(AgentMessage::Heartbeat) => {
                                 let mut inner = state.inner.write().await;
-                                inner.agents.record_pong(&agent_id_for_msgs);
+                                inner
+                                    .agents
+                                    .record_pong_for_connection(&agent_id_for_msgs, connection_id);
                             }
                             Ok(AgentMessage::ResourcesApplied {
                                 req_id,
                                 agent_id: _aid,
                                 resource_revision,
                             }) => {
-                                let pending_resp =
-                                    take_pending_for_agent(&state, &req_id, &agent_id_for_msgs).await;
+                                let pending_resp = take_pending_for_connection(
+                                    &state,
+                                    &req_id,
+                                    &agent_id_for_msgs,
+                                    connection_id,
+                                )
+                                .await;
                                 if let Some(pending_resp) = pending_resp {
-                                    {
+                                    let applied = {
                                         let mut inner = state.inner.write().await;
                                         // ResourcesUpdated (sent just before Applied) already
                                         // installed agent-authoritative roots, including
@@ -397,7 +397,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                         // pin data that a legacy agent stripped on the wire.
                                         // Paths come from the current registry (post-Updated)
                                         // whenever the root name matches.
-                                        let roots = match pending_resp.desired_roots {
+                                        let roots = match pending_resp.desired_roots.clone() {
                                             Some(desired) => {
                                                 let agent_paths = inner
                                                     .agents
@@ -412,25 +412,33 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                                 .map(|a| a.roots.clone())
                                                 .unwrap_or_default(),
                                         };
-                                        inner.agents.update_resources(
+                                        inner.agents.update_resources_for_connection(
                                             &agent_id_for_msgs,
+                                            connection_id,
                                             resource_revision,
                                             roots,
-                                        );
-                                    }
-                                    let _ = pending_resp.tx
-                                        .send(serde_json::json!({
-                                            "ok": true,
-                                            "state": "applied",
-                                            "resource_revision": resource_revision,
-                                        }))
-                                        .await;
+                                        )
+                                    };
+                                    if applied {
+                                        let _ = pending_resp.tx
+                                            .send(serde_json::json!({
+                                                "ok": true,
+                                                "state": "applied",
+                                                "resource_revision": resource_revision,
+                                            }))
+                                            .await;
 
-                                    state.emit_sse("resources_updated", serde_json::json!({
-                                        "agent_id": agent_id_for_msgs,
-                                        "resource_revision": resource_revision,
-                                        "state": "applied",
-                                    })).await;
+                                        state.emit_sse("resources_updated", serde_json::json!({
+                                            "agent_id": agent_id_for_msgs,
+                                            "resource_revision": resource_revision,
+                                            "state": "applied",
+                                        })).await;
+                                    } else {
+                                        state.requeue_pending_response(&pending_resp).await;
+                                        let _ = pending_resp.tx
+                                            .send(crate::state::agent_disconnect_pending_error())
+                                            .await;
+                                    }
                                 } else {
                                     // The matching HTTP request may have already timed out and
                                     // dropped the pending response entry, but the agent still
@@ -443,19 +451,22 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                             .map(|a| a.roots.clone())
                                             .unwrap_or_default()
                                     };
-                                    {
+                                    let applied = {
                                         let mut inner = state.inner.write().await;
-                                        inner.agents.update_resources(
+                                        inner.agents.update_resources_for_connection(
                                             &agent_id_for_msgs,
+                                            connection_id,
                                             resource_revision,
                                             roots,
-                                        );
+                                        )
+                                    };
+                                    if applied {
+                                        state.emit_sse("resources_updated", serde_json::json!({
+                                            "agent_id": agent_id_for_msgs,
+                                            "resource_revision": resource_revision,
+                                            "state": "applied",
+                                        })).await;
                                     }
-                                    state.emit_sse("resources_updated", serde_json::json!({
-                                        "agent_id": agent_id_for_msgs,
-                                        "resource_revision": resource_revision,
-                                        "state": "applied",
-                                    })).await;
                                 }
                             }
                             Ok(AgentMessage::ResourcesRejected {
@@ -465,57 +476,89 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                 message,
                                 ..
                             }) => {
-                                let pending_resp =
-                                    take_pending_for_agent(&state, &req_id, &agent_id_for_msgs).await;
-                                {
+                                let pending_resp = take_pending_for_connection(
+                                    &state,
+                                    &req_id,
+                                    &agent_id_for_msgs,
+                                    connection_id,
+                                )
+                                .await;
+                                let current = {
                                     let mut inner = state.inner.write().await;
                                     let err_msg = if message.is_empty() { error.clone() } else { message.clone() };
-                                    inner.agents.set_config_error(&agent_id_for_msgs, err_msg);
-                                }
+                                    if inner
+                                        .agents
+                                        .is_current_connection(&agent_id_for_msgs, connection_id)
+                                    {
+                                        inner.agents.set_config_error(&agent_id_for_msgs, err_msg);
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                };
                                 if let Some(pending_resp) = pending_resp {
-                                    let _ = pending_resp.tx
-                                        .send(serde_json::json!({
-                                            "ok": false,
-                                            "state": "rejected",
-                                            "error": error,
-                                            "message": message,
-                                        }))
-                                        .await;
+                                    if current {
+                                        let _ = pending_resp.tx
+                                            .send(serde_json::json!({
+                                                "ok": false,
+                                                "state": "rejected",
+                                                "error": error,
+                                                "message": message,
+                                            }))
+                                            .await;
+                                    } else {
+                                        state.requeue_pending_response(&pending_resp).await;
+                                        let _ = pending_resp.tx
+                                            .send(crate::state::agent_disconnect_pending_error())
+                                            .await;
+                                    }
                                 }
 
-                                state.emit_sse("resources_updated", serde_json::json!({
-                                    "agent_id": agent_id_for_msgs,
-                                    "state": "rejected",
-                                })).await;
+                                if current {
+                                    state.emit_sse("resources_updated", serde_json::json!({
+                                        "agent_id": agent_id_for_msgs,
+                                        "state": "rejected",
+                                    })).await;
+                                }
                             }
                             Ok(AgentMessage::ResourcesUpdated {
                                 agent_id: _aid,
                                 resource_revision,
                                 roots,
                             }) => {
-                                {
+                                let applied = {
                                     let mut inner = state.inner.write().await;
-                                    inner
-                                        .agents
-                                        .update_resources(&agent_id_for_msgs, resource_revision, roots);
+                                    inner.agents.update_resources_for_connection(
+                                        &agent_id_for_msgs,
+                                        connection_id,
+                                        resource_revision,
+                                        roots,
+                                    )
+                                };
+                                if applied {
+                                    state.emit_sse("resources_updated", serde_json::json!({
+                                        "agent_id": agent_id_for_msgs,
+                                        "resource_revision": resource_revision,
+                                        "state": "applied",
+                                    })).await;
                                 }
-                                state.emit_sse("resources_updated", serde_json::json!({
-                                    "agent_id": agent_id_for_msgs,
-                                    "resource_revision": resource_revision,
-                                    "state": "applied",
-                                })).await;
                             }
                             Ok(AgentMessage::CollectionsApplied {
                                 req_id,
                                 agent_id: _aid,
                                 collections_revision,
                             }) => {
-                                let pending_resp =
-                                    take_pending_for_agent(&state, &req_id, &agent_id_for_msgs).await;
+                                let pending_resp = take_pending_for_connection(
+                                    &state,
+                                    &req_id,
+                                    &agent_id_for_msgs,
+                                    connection_id,
+                                )
+                                .await;
                                 if let Some(pending_resp) = pending_resp {
-                                    {
+                                    let applied = {
                                         let mut inner = state.inner.write().await;
-                                        let collections = match pending_resp.desired_collections {
+                                        let collections = match pending_resp.desired_collections.clone() {
                                             Some(desired) => desired,
                                             None => inner
                                                 .agents
@@ -523,25 +566,33 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                                 .map(|a| a.collections.clone())
                                                 .unwrap_or_default(),
                                         };
-                                        inner.agents.update_collections(
+                                        inner.agents.update_collections_for_connection(
                                             &agent_id_for_msgs,
+                                            connection_id,
                                             collections_revision,
                                             collections,
-                                        );
-                                    }
-                                    let _ = pending_resp.tx
-                                        .send(serde_json::json!({
-                                            "ok": true,
-                                            "state": "applied",
-                                            "collections_revision": collections_revision,
-                                        }))
-                                        .await;
+                                        )
+                                    };
+                                    if applied {
+                                        let _ = pending_resp.tx
+                                            .send(serde_json::json!({
+                                                "ok": true,
+                                                "state": "applied",
+                                                "collections_revision": collections_revision,
+                                            }))
+                                            .await;
 
-                                    state.emit_sse("collections_updated", serde_json::json!({
-                                        "agent_id": agent_id_for_msgs,
-                                        "collections_revision": collections_revision,
-                                        "state": "applied",
-                                    })).await;
+                                        state.emit_sse("collections_updated", serde_json::json!({
+                                            "agent_id": agent_id_for_msgs,
+                                            "collections_revision": collections_revision,
+                                            "state": "applied",
+                                        })).await;
+                                    } else {
+                                        state.requeue_pending_response(&pending_resp).await;
+                                        let _ = pending_resp.tx
+                                            .send(crate::state::agent_disconnect_pending_error())
+                                            .await;
+                                    }
                                 } else {
                                     let collections = {
                                         let inner = state.inner.read().await;
@@ -550,19 +601,22 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                             .map(|a| a.collections.clone())
                                             .unwrap_or_default()
                                     };
-                                    {
+                                    let applied = {
                                         let mut inner = state.inner.write().await;
-                                        inner.agents.update_collections(
+                                        inner.agents.update_collections_for_connection(
                                             &agent_id_for_msgs,
+                                            connection_id,
                                             collections_revision,
                                             collections,
-                                        );
+                                        )
+                                    };
+                                    if applied {
+                                        state.emit_sse("collections_updated", serde_json::json!({
+                                            "agent_id": agent_id_for_msgs,
+                                            "collections_revision": collections_revision,
+                                            "state": "applied",
+                                        })).await;
                                     }
-                                    state.emit_sse("collections_updated", serde_json::json!({
-                                        "agent_id": agent_id_for_msgs,
-                                        "collections_revision": collections_revision,
-                                        "state": "applied",
-                                    })).await;
                                 }
                             }
                             Ok(AgentMessage::CollectionsRejected {
@@ -572,49 +626,74 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                 message,
                                 ..
                             }) => {
-                                let pending_resp =
-                                    take_pending_for_agent(&state, &req_id, &agent_id_for_msgs).await;
-                                {
+                                let pending_resp = take_pending_for_connection(
+                                    &state,
+                                    &req_id,
+                                    &agent_id_for_msgs,
+                                    connection_id,
+                                )
+                                .await;
+                                let current = {
                                     let mut inner = state.inner.write().await;
-                                    let err_msg = if message.is_empty() { error.clone() } else { message.clone() };
-                                    inner
+                                    if inner
                                         .agents
-                                        .reject_pending_collections_update(&agent_id_for_msgs, err_msg);
-                                }
+                                        .is_current_connection(&agent_id_for_msgs, connection_id)
+                                    {
+                                        let err_msg = if message.is_empty() { error.clone() } else { message.clone() };
+                                        inner
+                                            .agents
+                                            .reject_pending_collections_update(&agent_id_for_msgs, err_msg);
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                };
                                 if let Some(pending_resp) = pending_resp {
-                                    let _ = pending_resp.tx
-                                        .send(serde_json::json!({
-                                            "ok": false,
-                                            "state": "rejected",
-                                            "error": error,
-                                            "message": message,
-                                        }))
-                                        .await;
+                                    if current {
+                                        let _ = pending_resp.tx
+                                            .send(serde_json::json!({
+                                                "ok": false,
+                                                "state": "rejected",
+                                                "error": error,
+                                                "message": message,
+                                            }))
+                                            .await;
+                                    } else {
+                                        state.requeue_pending_response(&pending_resp).await;
+                                        let _ = pending_resp.tx
+                                            .send(crate::state::agent_disconnect_pending_error())
+                                            .await;
+                                    }
                                 }
 
-                                state.emit_sse("collections_updated", serde_json::json!({
-                                    "agent_id": agent_id_for_msgs,
-                                    "state": "rejected",
-                                })).await;
+                                if current {
+                                    state.emit_sse("collections_updated", serde_json::json!({
+                                        "agent_id": agent_id_for_msgs,
+                                        "state": "rejected",
+                                    })).await;
+                                }
                             }
                             Ok(AgentMessage::CollectionsUpdated {
                                 agent_id: _aid,
                                 collections_revision,
                                 collections,
                             }) => {
-                                {
+                                let applied = {
                                     let mut inner = state.inner.write().await;
-                                    inner.agents.update_collections(
+                                    inner.agents.update_collections_for_connection(
                                         &agent_id_for_msgs,
+                                        connection_id,
                                         collections_revision,
                                         collections,
-                                    );
+                                    )
+                                };
+                                if applied {
+                                    state.emit_sse("collections_updated", serde_json::json!({
+                                        "agent_id": agent_id_for_msgs,
+                                        "collections_revision": collections_revision,
+                                        "state": "applied",
+                                    })).await;
                                 }
-                                state.emit_sse("collections_updated", serde_json::json!({
-                                    "agent_id": agent_id_for_msgs,
-                                    "collections_revision": collections_revision,
-                                    "state": "applied",
-                                })).await;
                             }
                             Ok(AgentMessage::FsListResponse { req_id, .. })
                             | Ok(AgentMessage::FsStatResponse { req_id, .. })
@@ -622,8 +701,13 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                             | Ok(AgentMessage::SysStatsResponse { req_id, .. })
                             | Ok(AgentMessage::WorkspaceSearchResponse { req_id, .. })
                             | Ok(AgentMessage::OfficeConvertResponse { req_id, .. }) => {
-                                let pending_resp =
-                                    take_pending_for_agent(&state, &req_id, &agent_id_for_msgs).await;
+                                let pending_resp = take_pending_for_connection(
+                                    &state,
+                                    &req_id,
+                                    &agent_id_for_msgs,
+                                    connection_id,
+                                )
+                                .await;
                                 if let Some(pending_resp) = pending_resp {
                                     let parsed: serde_json::Value =
                                         serde_json::from_str(&text).unwrap_or_default();
@@ -666,7 +750,10 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                     Message::Ping(_data) => {
                         let inner = state.inner.read().await;
                         if let Some(agent) = inner.agents.get(&agent_id_for_msgs) {
-                            let _ = agent.sender.send(HubMessage::Ping);
+                            if agent.connection_id != connection_id {
+                                continue;
+                            }
+                            let _ = agent.sender.try_send(HubMessage::Ping);
                         }
                     }
                     Message::Close(_) => break,
@@ -681,17 +768,15 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
     // Cleanup
     send_task.abort();
 
-    if !exited_via_abort {
-        let failed = state
-            .fail_pending_for_connection(&agent_id, connection_id)
-            .await;
-        if failed > 0 {
-            tracing::info!(
-                "Failed {} pending request(s) for disconnected agent {}",
-                failed,
-                agent_id
-            );
-        }
+    let failed = state
+        .fail_pending_for_connection(&agent_id, connection_id)
+        .await;
+    if failed > 0 {
+        tracing::info!(
+            "Failed {} pending request(s) for disconnected agent {}",
+            failed,
+            agent_id
+        );
     }
 
     let mut inner = state.inner.write().await;
@@ -752,19 +837,24 @@ fn strip_pinned_folders(roots: &[filebox_protocol::resources::RootConfig]) -> Ve
         .collect()
 }
 
-async fn take_pending_for_agent(
+async fn take_pending_for_connection(
     state: &AppState,
     req_id: &str,
     agent_id: &str,
+    connection_id: u64,
 ) -> Option<PendingResponse> {
-    let pending_arc = {
-        let inner = state.inner.read().await;
-        inner.pending_responses.clone()
-    };
+    let inner = state.inner.read().await;
+    if !inner
+        .agents
+        .is_current_connection(agent_id, connection_id)
+    {
+        return None;
+    }
+    let pending_arc = inner.pending_responses.clone();
     let mut pending = pending_arc.write().await;
     match pending.remove(req_id) {
         Some(resp) => {
-            if resp.agent_id == agent_id {
+            if resp.agent_id == agent_id && resp.connection_id == connection_id {
                 Some(resp)
             } else {
                 let owner = resp.agent_id.clone();
@@ -783,16 +873,35 @@ async fn take_pending_for_agent(
 }
 
 async fn send_auth_fail(ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>) {
-    let _ = ws_sink
-        .send(Message::Text(
-            serde_json::to_string(&HubMessage::AuthResult {
-                success: false,
-                agent_id: None,
-            })
-            .unwrap()
-            .into(),
-        ))
-        .await;
+    let _ = send_hub_frame(
+        ws_sink,
+        &HubMessage::AuthResult {
+            success: false,
+            agent_id: None,
+        },
+    )
+    .await;
+}
+
+async fn send_hub_frame(
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    message: &HubMessage,
+) -> bool {
+    let text = match serde_json::to_string(message) {
+        Ok(text) => text,
+        Err(error) => {
+            tracing::error!("Failed to serialize Hub WS message: {}", error);
+            return false;
+        }
+    };
+    matches!(
+        tokio::time::timeout(
+            WS_WRITE_TIMEOUT,
+            ws_sink.send(Message::Text(text.into())),
+        )
+        .await,
+        Ok(Ok(()))
+    )
 }
 
 #[cfg(test)]
@@ -823,6 +932,8 @@ mod tests {
                 data: vec![255; raw_len],
                 done: false,
                 error: None,
+                file_size: None,
+                modified: None,
             };
 
             let serialized = serde_json::to_string(&chunk).unwrap();

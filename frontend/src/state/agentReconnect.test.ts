@@ -25,6 +25,12 @@ describe('agentReconnect', () => {
     await expect(waitForAgentOnline('agent-1')).resolves.toBeUndefined();
   });
 
+  it('wakes a waiter when health polling observes a reconnect', async () => {
+    const pending = waitForAgentOnline('agent-1', undefined, 5_000);
+    syncAgentOnlineStatus([{ id: 'agent-1', status: 'slow' }]);
+    await expect(pending).resolves.toBeUndefined();
+  });
+
   it('rejects immediately when the abort signal is already set', async () => {
     const controller = new AbortController();
     controller.abort();

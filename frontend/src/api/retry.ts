@@ -97,6 +97,7 @@ export async function retryAsync<T>(
   fn: (attempt: number, signal: AbortSignal) => Promise<T>,
   opts: {
     maxAttempts: number;
+    maxDurationMs?: number;
     agentId?: string;
     signal?: AbortSignal;
     shouldRetry?: (error: unknown, attempt: number) => boolean;
@@ -105,18 +106,49 @@ export async function retryAsync<T>(
 ): Promise<T> {
   const shouldRetry = opts.shouldRetry ?? isRetryableError;
   let lastError: unknown;
+  const deadline = opts.maxDurationMs == null
+    ? null
+    : Date.now() + opts.maxDurationMs;
   for (let attempt = 0; attempt < opts.maxAttempts; attempt += 1) {
     if (opts.signal?.aborted) {
       throw new DOMException('Aborted', 'AbortError');
     }
+    if (deadline != null && Date.now() >= deadline) {
+      throw {
+        error: 'request_stalled',
+        message: 'The request exceeded its overall time budget.',
+        retryable: true,
+      };
+    }
     const attemptController = new AbortController();
     const onParentAbort = () => attemptController.abort();
     opts.signal?.addEventListener('abort', onParentAbort);
+    let attemptTimedOut = false;
+    const remaining = deadline == null ? null : Math.max(1, deadline - Date.now());
+    const attemptTimer = remaining == null
+      ? null
+      : window.setTimeout(() => {
+        attemptTimedOut = true;
+        attemptController.abort();
+      }, remaining);
     try {
       return await fn(attempt, attemptController.signal);
     } catch (error) {
+      if (attemptTimedOut) {
+        error = {
+          error: 'request_stalled',
+          message: 'The request exceeded its overall time budget.',
+          retryable: true,
+        };
+        lastError = error;
+        throw error;
+      }
       lastError = error;
-      if (error instanceof DOMException && error.name === 'AbortError') {
+      if (
+        error instanceof DOMException
+        && error.name === 'AbortError'
+        && !attemptTimedOut
+      ) {
         throw error;
       }
       const hasAttemptsLeft = attempt + 1 < opts.maxAttempts;
@@ -126,6 +158,9 @@ export async function retryAsync<T>(
       opts.onRetry?.(error, attempt);
       await waitBeforeRetry(error, attempt, opts.agentId, opts.signal);
     } finally {
+      if (attemptTimer != null) {
+        window.clearTimeout(attemptTimer);
+      }
       opts.signal?.removeEventListener('abort', onParentAbort);
     }
   }
@@ -150,15 +185,25 @@ export async function fetchWithRetry<T = Response>(
   init: RequestInit,
   opts: {
     maxAttempts?: number;
+    maxDurationMs?: number;
     agentId?: string;
     onRetry?: (attempt: number) => void;
+    /** Recreate one-shot request bodies for every attempt. */
+    initFactory?: () => RequestInit;
     consume?: (res: Response, signal: AbortSignal) => Promise<T>;
   } = {},
 ): Promise<T> {
-  const maxAttempts = opts.maxAttempts ?? 2;
+  const oneShotBody = typeof ReadableStream !== 'undefined'
+    && init.body instanceof ReadableStream;
+  // A ReadableStream is consumed by the first fetch. Do not replay it unless
+  // the caller explicitly provides a fresh RequestInit for each attempt.
+  const maxAttempts = oneShotBody && !opts.initFactory
+    ? 1
+    : (opts.maxAttempts ?? 2);
   const consume = opts.consume ?? (async (res) => res as T);
   return retryAsync(async (_attempt, attemptSignal) => {
-    const res = await fetch(url, { ...init, signal: attemptSignal });
+    const attemptInit = opts.initFactory?.() ?? init;
+    const res = await fetch(url, { ...attemptInit, signal: attemptSignal });
     if (!res.ok) {
       const body = await parseHttpErrorBody(res);
       throw body;
@@ -176,6 +221,7 @@ export async function fetchWithRetry<T = Response>(
     }
   }, {
     maxAttempts,
+    maxDurationMs: opts.maxDurationMs ?? 120_000,
     agentId: opts.agentId,
     signal: init.signal ?? undefined,
     onRetry: (_error, attempt) => opts.onRetry?.(attempt + 1),

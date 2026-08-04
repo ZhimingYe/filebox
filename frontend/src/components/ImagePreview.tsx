@@ -41,13 +41,22 @@ function clampZoom(z: number): number {
 
 // Decode TIFF ArrayBuffer into a PNG blob via UTIF + canvas. UTIF is
 // dynamically imported so non-TIFF previews never pay the cost.
-async function decodeTiff(buffer: ArrayBuffer): Promise<Blob> {
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+}
+
+async function decodeTiff(buffer: ArrayBuffer, signal?: AbortSignal): Promise<Blob> {
+  throwIfAborted(signal);
   const UTIF = (await import('utif')).default;
+  throwIfAborted(signal);
   const ifds = UTIF.decode(buffer);
   if (!ifds || ifds.length === 0) throw new Error('No image data in TIFF');
   const ifd = ifds[0]; // multi-page TIFF: show first page
   UTIF.decodeImage(buffer, ifd);
   const rgba: Uint8Array = UTIF.toRGBA8(ifd);
+  throwIfAborted(signal);
   const width: number = ifd.width;
   const height: number = ifd.height;
   if (!width || !height) throw new Error('TIFF has no dimensions');
@@ -75,7 +84,12 @@ function shouldDownscale(ext: string, blob: Blob): boolean {
 }
 
 /** Downscale oversized rasters; returns the original blob when under budget. */
-async function maybeDownscaleBlob(blob: Blob, ext: string): Promise<Blob> {
+async function maybeDownscaleBlob(
+  blob: Blob,
+  ext: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  throwIfAborted(signal);
   if (!shouldDownscale(ext, blob) || typeof createImageBitmap !== 'function') {
     return blob;
   }
@@ -85,6 +99,7 @@ async function maybeDownscaleBlob(blob: Blob, ext: string): Promise<Blob> {
   } catch {
     return blob;
   }
+  throwIfAborted(signal);
   const { width, height } = bitmap;
   const pixels = width * height;
   const edge = Math.max(width, height);
@@ -116,6 +131,7 @@ async function maybeDownscaleBlob(blob: Blob, ext: string): Promise<Blob> {
     const out = await new Promise<Blob | null>((resolve) => {
       canvas.toBlob((b) => resolve(b), mime, quality);
     });
+    throwIfAborted(signal);
     return out ?? blob;
   } catch {
     bitmap.close();
@@ -222,14 +238,20 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
           agentId,
           consume: async (res) => (
             isTiff
-              ? await decodeTiff(await res.arrayBuffer())
+              ? await decodeTiff(await res.arrayBuffer(), controller.signal)
               : await res.blob()
           ),
           onRetry: () => {
             if (mounted.current) setImgRetrying(true);
           },
         });
-        const scaled = await maybeDownscaleBlob(blob, isTiff ? 'png' : ext);
+        throwIfAborted(controller.signal);
+        const scaled = await maybeDownscaleBlob(
+          blob,
+          isTiff ? 'png' : ext,
+          controller.signal,
+        );
+        throwIfAborted(controller.signal);
         if (!mounted.current || controller.signal.aborted) return;
         const objURL = URL.createObjectURL(scaled);
         objectURLRef.current = objURL;
@@ -485,7 +507,10 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
   if (gate.sizeUnknown) {
     return (
       <div style={styles.imageViewer}>
-        <LoadingOverlay message={gateLoadingMessage(gate.retrying)} />
+        <LoadingOverlay
+          message={gateLoadingMessage(gate.retrying)}
+          onCancel={gate.cancel}
+        />
       </div>
     );
   }

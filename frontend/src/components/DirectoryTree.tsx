@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useLayoutEffect, memo } from 'react';
 import * as api from '../api/client';
+import { retryAsync, throwIfAgentError } from '../api/retry';
 import { c, radius, font, shadow } from '../theme';
 
 interface Props {
@@ -72,6 +73,7 @@ export function DirectoryTree({
   // inflightRef tracks which paths currently have a load in progress, so two
   // concurrent loads for the SAME path don't duplicate the request.
   const inflightRef = useRef<Set<string>>(new Set());
+  const controllersRef = useRef<Map<string, AbortController>>(new Map());
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeRowRef = useRef<HTMLDivElement | null>(null);
 
@@ -85,6 +87,8 @@ export function DirectoryTree({
     // Append (load-more) is gated by the disabled button, so it can't double up.
     if (!append && inflightRef.current.has(path)) return;
     inflightRef.current.add(path);
+    const controller = new AbortController();
+    controllersRef.current.set(path, controller);
 
     const cur = nodesRef.current.get(path);
     const cursor = append && cur?.nextCursor ? cur.nextCursor : undefined;
@@ -96,7 +100,17 @@ export function DirectoryTree({
     });
 
     try {
-      const data = await api.fsList(agentId, rootName, path, PAGE_LIMIT, cursor, true);
+      const data = await retryAsync(
+        async () => throwIfAgentError(
+          await api.fsList(agentId, rootName, path, PAGE_LIMIT, cursor, true, controller.signal),
+        ),
+        {
+          maxAttempts: 3,
+          maxDurationMs: 30_000,
+          agentId,
+          signal: controller.signal,
+        },
+      );
       if (!mountedRef.current) return;
 
       if (data.error) {
@@ -126,6 +140,7 @@ export function DirectoryTree({
       });
     } catch (e: unknown) {
       if (!mountedRef.current) return;
+      if ((e as { name?: string })?.name === 'AbortError') return;
       const message = e instanceof Error ? e.message : 'Failed to load';
       setNodes((prev) => {
         const next = new Map(prev);
@@ -137,6 +152,9 @@ export function DirectoryTree({
       });
     } finally {
       inflightRef.current.delete(path);
+      if (controllersRef.current.get(path) === controller) {
+        controllersRef.current.delete(path);
+      }
     }
   }, [agentId, rootName]);
 
@@ -144,6 +162,12 @@ export function DirectoryTree({
   // root changes, so this covers both initial load and root switches.
   useEffect(() => {
     loadChildren('/');
+    return () => {
+      for (const controller of controllersRef.current.values()) {
+        controller.abort();
+      }
+      controllersRef.current.clear();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

@@ -401,7 +401,10 @@ export function PdfPreview({
     <div style={styles.shell}>
       <div ref={scrollRef} style={styles.scroll}>
         {gate.sizeUnknown && (
-          <LoadingOverlay message="Checking PDF size..." />
+          <LoadingOverlay
+            message="Checking PDF size..."
+            onCancel={gate.cancel}
+          />
         )}
 
         {gate.error && (

@@ -114,7 +114,14 @@ export function friendlyMessage(error: any): string {
   return 'An unexpected error occurred.';
 }
 
-async function request<T>(path: string, init?: RequestInit, retried = false): Promise<T> {
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  retried = false,
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
@@ -123,37 +130,68 @@ async function request<T>(path: string, init?: RequestInit, retried = false): Pr
   if (csrf) {
     headers.set('X-CSRF-Token', csrf);
   }
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    credentials: 'include',
-    headers,
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    // Another tab may have rotated the CSRF cookie while this tab still had
-    // a stale in-memory value. Drop memory, re-read cookie, retry once.
-    if (
-      !retried
-      && res.status === 403
-      && (body as { error?: string }).error === 'csrf_denied'
-    ) {
-      setCsrfToken(null);
-      const refreshed = getCsrfToken();
-      if (refreshed && refreshed !== csrf) {
-        return request<T>(path, init, true);
-      }
-    }
-    const errCode = (body as { error?: string }).error;
-    if (
-      res.status === 401
-      && (errCode === 'session_expired' || errCode === 'unauthorized')
-      && typeof window !== 'undefined'
-    ) {
-      window.dispatchEvent(new CustomEvent('filebox:session-expired'));
-    }
-    throw { status: res.status, ...body };
+  const controller = new AbortController();
+  let timedOut = false;
+  const onAbort = () => controller.abort();
+  if (init.signal?.aborted) {
+    controller.abort();
+  } else {
+    init.signal?.addEventListener('abort', onAbort, { once: true });
   }
-  return res.json();
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      ...init,
+      credentials: 'include',
+      headers,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      // Another tab may have rotated the CSRF cookie while this tab still had
+      // a stale in-memory value. Drop memory, re-read cookie, retry once.
+      if (
+        !retried
+        && !(
+          typeof ReadableStream !== 'undefined'
+          && init.body instanceof ReadableStream
+        )
+        && res.status === 403
+        && (body as { error?: string }).error === 'csrf_denied'
+      ) {
+        setCsrfToken(null);
+        const refreshed = getCsrfToken();
+        if (refreshed && refreshed !== csrf) {
+          return request<T>(path, init, true, timeoutMs);
+        }
+      }
+      const errCode = (body as { error?: string }).error;
+      if (
+        res.status === 401
+        && (errCode === 'session_expired' || errCode === 'unauthorized')
+        && typeof window !== 'undefined'
+      ) {
+        window.dispatchEvent(new CustomEvent('filebox:session-expired'));
+      }
+      throw { status: res.status, ...body };
+    }
+    return await res.json();
+  } catch (error) {
+    if (timedOut) {
+      throw {
+        error: 'request_stalled',
+        message: 'The request stalled before completing.',
+        retryable: true,
+      };
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+    init.signal?.removeEventListener('abort', onAbort);
+  }
 }
 
 // ── Session ──────────────────────────────────────────────────────────────────
@@ -231,14 +269,14 @@ export interface HealthResponse {
   hub: { status: string; version: string; uptime_sec: number };
 }
 
-export async function getHealth() {
-  return request<HealthResponse>('/api/health');
+export async function getHealth(signal?: AbortSignal) {
+  return request<HealthResponse>('/api/health', { signal }, false, 10_000);
 }
 
 // ── Agents ───────────────────────────────────────────────────────────────────
 
-export async function getAgents() {
-  return request<AgentInfo[]>('/api/agents');
+export async function getAgents(signal?: AbortSignal) {
+  return request<AgentInfo[]>('/api/agents', { signal }, false, 10_000);
 }
 
 export async function getAgent(agentId: string) {
@@ -353,7 +391,7 @@ export async function workspaceSearch(
       ...body,
     }),
     signal,
-  });
+  }, false, 10 * 60_000);
   if (raw.error) return { result: null, error: raw.error, req_id: raw.req_id };
   if (!raw.result) return { result: null, req_id: raw.req_id };
   return {
@@ -624,12 +662,13 @@ export async function createPreviewSession(agentId: string, root: string, path: 
   });
 }
 
-export async function cancelRequest(agentId: string, reqId: string) {
+export async function cancelRequest(agentId: string, reqId: string, signal?: AbortSignal) {
   return request<{ ok: boolean }>('/api/cancel', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent_id: agentId, req_id: reqId }),
-  });
+    signal,
+  }, false, 10_000);
 }
 
 export interface OfficePreviewOutput {

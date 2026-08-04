@@ -226,11 +226,13 @@ export function useFileGate(opts: {
   const [retrying, setRetrying] = useState(false);
   const [bypassed, setBypassed] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
+  const cancelRef = useRef<AbortController | null>(null);
   const mounted = useMounted();
 
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
+    cancelRef.current = controller;
     setSize(null);
     setError(null);
     setRetrying(false);
@@ -241,6 +243,7 @@ export function useFileGate(opts: {
           async () => throwIfAgentError(await fsStat(agentId, root, path, controller.signal)),
           {
             maxAttempts: 3,
+            maxDurationMs: 90_000,
             agentId,
             signal: controller.signal,
             onRetry: () => {
@@ -266,6 +269,7 @@ export function useFileGate(opts: {
     return () => {
       cancelled = true;
       controller.abort();
+      if (cancelRef.current === controller) cancelRef.current = null;
     };
   }, [agentId, root, path, threshold, retryToken, mounted]);
 
@@ -279,6 +283,15 @@ export function useFileGate(opts: {
     sizeUnknown,
     isLarge,
     bypassed,
+    cancel: useCallback(() => {
+      cancelRef.current?.abort();
+      cancelRef.current = null;
+      if (mounted.current) {
+        setSize(null);
+        setRetrying(false);
+        setError('Cancelled');
+      }
+    }, [mounted]),
     forceLoad: useCallback(() => setBypassed(true), []),
     retry: useCallback(() => setRetryToken((token) => token + 1), []),
   };
