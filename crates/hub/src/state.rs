@@ -321,18 +321,6 @@ impl AppState {
         };
     }
 
-    pub async fn was_request_recently_cancelled(&self, req_id: &str) -> bool {
-        let inner = self.inner.read().await;
-        let result = inner.cancelled_request_ids.lock();
-        match result {
-            Ok(mut ids) => {
-                let now = Instant::now();
-                ids.retain(|_, marked_at| now.duration_since(*marked_at) < CANCELLED_REQUEST_TTL);
-                ids.contains_key(req_id)
-            }
-            Err(_) => false,
-        }
-    }
 }
 
 /// Error delivered to waiters when an agent disconnects while a request is
