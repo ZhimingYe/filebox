@@ -195,7 +195,11 @@ impl AppState {
     }
 
     pub async fn emit_sse(&self, event: &str, data: serde_json::Value) {
-        let inner = self.inner.read().await;
+        // Serialize history snapshotting with EventSource subscription setup:
+        // a reader must not subscribe between the history snapshot and the
+        // broadcast send, otherwise it can receive a duplicate or miss an
+        // event during reconnect.
+        let inner = self.inner.write().await;
         let id = inner.sse_next_id.fetch_add(1, Ordering::Relaxed);
         let sse_event = SseEvent {
             id,
