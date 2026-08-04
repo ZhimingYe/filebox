@@ -205,7 +205,7 @@ impl AppState {
             ws_rate_limiter: Arc::new(LoginRateLimiter::new(300, std::time::Duration::from_secs(30))),
             // 70 rapid PDF opens must fit without becoming a user-visible
             // rate limit. Memory remains bounded because each stream asks the
-            // Agent for at most RAW_STREAM_CHUNK_BYTES at a time.
+            // Agent for at most FILE_CHUNK_MAX_BYTES at a time.
             raw_read_semaphore: Arc::new(tokio::sync::Semaphore::new(96)),
             resource_update_locks: Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),

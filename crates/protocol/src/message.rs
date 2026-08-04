@@ -3,6 +3,14 @@ use serde::de::{Error as DeError, SeqAccess, Visitor};
 use crate::resources::{Capabilities, CollectionConfig, FileStat, FsEntry, RootConfig, SysStats};
 use crate::search::{SearchMode, SearchResult};
 
+/// Max raw bytes per `FileChunk` over the Hub↔Agent WebSocket.
+///
+/// Kept well below the historical 4 MiB cap so a single frame is less likely
+/// to stall a WS write past `WS_WRITE_TIMEOUT` on slow or jittery links.
+/// Hub raw streams request at most this many bytes per round-trip; the agent
+/// also clamps reads to this size when `length` is omitted or oversized.
+pub const FILE_CHUNK_MAX_BYTES: u64 = 512 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficePreviewOutput {
     pub label: String,
