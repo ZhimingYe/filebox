@@ -155,7 +155,7 @@ export const binaryExts = new Set([
   // Media (non-image)
   'mp3', 'mp4', 'wav', 'flac', 'ogg', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm',
   'ttf', 'otf', 'woff', 'woff2', 'eot',
-  // Other binary (Office stay binary so they never fall into TextPreview)
+  // Other binary Office formats stay binary so they never fall into TextPreview.
   'doc', 'docx', 'docm', 'xls', 'xlsx', 'xlsm', 'ppt', 'pptx', 'pptm',
   'odt', 'ods', 'odp',
   'epub', 'mobi',

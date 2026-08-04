@@ -440,114 +440,38 @@ Set-Cookie.
 
 ---
 
-## 8. Office preview (optional LibreOffice)
+## 8. Univer browser preview
 
-Office preview is **off** unless the agent can run an external `soffice`.
-The agent never bundles LibreOffice; point it at a user-installed binary
-(rootless-friendly).
+There is no Office runtime to install on the Agent. The browser loads
+supported `docx` and `xlsx` files through the ordinary authenticated raw-file
+endpoint, converts them to Univer snapshots locally, and renders them in
+read-only mode.
 
-**Automated e2e (no real LibreOffice):** from the repo root run
-`./scripts/e2e_office_preview.sh`. It builds debug hub/agent, starts them
-with a fake `soffice`, and asserts capability, convert, virtual PDF/CSV raw
-read, cache hit, pptx/xlsx, denylist, unsupported format, `agent_busy`,
-cancel, and capability-off behavior.
-
-### Configure the agent
+The frontend build includes a browser-side smoke test for the format registry
+and XLSX-to-snapshot adapter:
 
 ```bash
-# Absolute path to the soffice executable (preferred)
-export FILEBOX_AGENT_SOFFICE="$HOME/opt/libreoffice/opt/libreoffice26.2/program/soffice"
-
-# Or a directory containing soffice / program/soffice
-# export FILEBOX_AGENT_SOFFICE_DIR="$HOME/opt/libreoffice/opt/libreoffice26.2/program"
-
-# Optional knobs
-# FILEBOX_AGENT_OFFICE_TIMEOUT_SECS=120
-# FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES=536870912
-# FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES=1073741824
-# FILEBOX_AGENT_OFFICE_MAX_LOG_BYTES=8388608
-# FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES=2147483648 # resident process-tree bytes on Linux
-# FILEBOX_AGENT_OFFICE_CACHE_BYTES=1073741824
+cd frontend && npm test
 ```
 
-`FILEBOX_AGENT_OFFICE_CACHE_BYTES` counts artifacts, metadata, manifests, and
-empty-file entries and must fit one complete converted preview; otherwise
-conversion fails safely with `office_cache_too_small`. Linux checks the active
-LibreOffice process tree's resident memory against
-`FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES`; it does not use `RLIMIT_AS`, because
-Impress commonly reserves much more virtual address space than resident
-memory. The other process, output, timeout, and cleanup bounds remain portable.
-Converted PDFs are checked for a complete header/trailer/xref before caching,
-and a browser decode failure can force regeneration instead of reusing the
-same artifact.
+### Raw-file probe
 
-On successful probe (`soffice --headless --version`), the agent advertises
-`capabilities.office_pdf_preview: true`. The UI Settings page has an
-**Office preview** switch (browser `localStorage`, default on) to
-disable conversion without removing LibreOffice.
-
-There is no periodic Office monitor. Startup performs one bounded probe;
-later checks happen only when a user requests a conversion. Removing Office
-or making the configured binary non-executable mid-run yields a retryable
-`office_unavailable` result without stopping the agent or blocking file
-browsing and other preview types.
-
-### Rootless install (no sudo)
-
-**Debian/Ubuntu-style hosts** — download the official deb tarball, extract
-packages into your home directory:
+After login and with a connected Agent, prove that the original file can be
+read before investigating the browser:
 
 ```bash
-VERSION=26.2.5
-PREFIX="$HOME/opt/libreoffice"
-mkdir -p /tmp/lo-dl "$PREFIX" && cd /tmp/lo-dl
-curl -L -O \
-  "https://download.documentfoundation.org/libreoffice/stable/${VERSION}/deb/x86_64/LibreOffice_${VERSION}_Linux_x86-64_deb.tar.gz"
-tar -xzf "LibreOffice_${VERSION}_Linux_x86-64_deb.tar.gz"
-cd LibreOffice_*_Linux_x86-64_deb/DEBS
-for deb in *.deb; do dpkg-deb -x "$deb" "$PREFIX"; done
-ls "$PREFIX"/opt/libreoffice*/program/soffice
+curl -sS -b /tmp/fb.cookie --noproxy '*' \
+  "http://127.0.0.1:3000/api/fs/stat?agent_id=${AGENT_ID}&root=docs&path=/report.docx"
+
+curl -sS -D- -o /tmp/report.docx --noproxy '*' \
+  "http://127.0.0.1:3000/api/file/raw?agent_id=${AGENT_ID}&root=docs&path=/report.docx" \
+  -H "X-CSRF-Token: $CSRF" -b /tmp/fb.cookie
 ```
 
-**Rocky / RHEL-style hosts** — same idea with the rpm tarball:
-
-```bash
-VERSION=26.2.5
-PREFIX="$HOME/opt/libreoffice"
-mkdir -p /tmp/lo-dl "$PREFIX" && cd /tmp/lo-dl
-curl -L -O \
-  "https://download.documentfoundation.org/libreoffice/stable/${VERSION}/rpm/x86_64/LibreOffice_${VERSION}_Linux_x86-64_rpm.tar.gz"
-tar -xzf "LibreOffice_${VERSION}_Linux_x86-64_rpm.tar.gz"
-cd LibreOffice_*_Linux_x86-64_rpm/RPMS
-for rpm in *.rpm; do rpm2cpio "$rpm" | (cd "$PREFIX" && cpio -idm); done
-ls "$PREFIX"/opt/libreoffice*/program/soffice
-```
-
-Do **not** use `sudo apt` / `sudo dnf` as the primary path for rootless agents.
-
-### Curl probe
-
-After login (cookie + CSRF) and with a connected agent that has the capability:
-
-```bash
-# Convert (long request; cancel via POST /api/cancel with returned/SSE req_id)
-curl -sS -X POST "http://127.0.0.1:3000/api/agents/${AGENT_ID}/office-convert" \
-  -H "Content-Type: application/json" -H "X-CSRF-Token: $CSRF" \
-  -b "$COOKIE_JAR" \
-  -d '{"root":"docs","path":"/report.docx"}'
-# → { "req_id":"…", "cache_key":"<64-hex>", "size":…,
-#     "outputs":[{"label":"Document","format":"pdf","cache_key":"…","size":…}],
-#     "error":null }
-
-# Read derived PDF (virtual path; same /api/file/raw as other files)
-curl -sS -D- -o /tmp/out.pdf \
-  "http://127.0.0.1:3000/api/file/raw?agent_id=${AGENT_ID}&root=docs&path=/.filebox/office-cache/${CACHE_KEY}.pdf" \
-  -H "X-CSRF-Token: $CSRF" -b "$COOKIE_JAR"
-```
-
-Supported extensions: `doc`, `docx`, `docm`, `ppt`, `pptx`, `pptm`,
-`xls`, `xlsx`, `xlsm`, `ods`. Spreadsheets return one CSV output per
-worksheet; use each output's cache key with a `.csv` virtual path.
+Then open `http://localhost:3000`, select the document, and verify that the
+Univer toolbar, editing commands, paste, save, and export controls are absent.
+`pptx`, `xls`, `ods`, and other formats without a verified browser importer
+show a download-only fallback.
 
 ---
 
@@ -582,14 +506,6 @@ Env vars (verified):
 | `FILEBOX_AGENT_CONFIG` | Agent toml path |
 | `FILEBOX_ALLOW_INSECURE_HUB` | Allow plaintext `ws://` / `http://` hub |
 | `FILEBOX_AGENT_STATS_TTL_SECS` | Sysinfo cache TTL (default 60) |
-| `FILEBOX_AGENT_SOFFICE` | Absolute path to LibreOffice `soffice` (enables Office preview) |
-| `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` / `program/soffice` |
-| `FILEBOX_AGENT_OFFICE_TIMEOUT_SECS` | Convert timeout (default 120) |
-| `FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES` | Max source Office file size |
-| `FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES` | Max combined derived output size (compatibility name) |
-| `FILEBOX_AGENT_OFFICE_MAX_LOG_BYTES` | Max captured stdout/stderr per conversion |
-| `FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES` | LibreOffice resident process-tree limit on Linux |
-| `FILEBOX_AGENT_OFFICE_CACHE_BYTES` | On-disk derived preview cache budget (LRU) |
 | `FILEBOX_UPDATE_BASE_URL` | `--update` mirror base URL |
 | `FILEBOX_ALLOW_INSECURE_UPDATE` | Allow `http://` update source |
 | `FILEBOX_ALLOW_DOWNGRADE` | Allow updater downgrade |

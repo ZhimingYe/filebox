@@ -58,7 +58,6 @@ export function UniverPreview({ agentId, root, path }: Props) {
     abortRef.current = controller;
     let cancelled = false;
     disposeRuntime();
-    setPhase({ kind: 'loading', message: 'Loading source document…' });
 
     const updateProgress = ({ loaded, total }: RawFileLoadProgress) => {
       const suffix = total ? ` (${formatBytes(loaded)} / ${formatBytes(total)})` : ` (${formatBytes(loaded)})`;

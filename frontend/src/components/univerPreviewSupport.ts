@@ -1,4 +1,10 @@
-import type { IDocumentData, IWorkbookData } from '@univerjs/core';
+import type {
+  ICellData,
+  IDocumentData,
+  IWorkbookData,
+  IWorksheetData,
+} from '@univerjs/core';
+import type * as Xlsx from 'xlsx';
 
 export type UniverPreviewKind = 'document' | 'spreadsheet';
 
@@ -147,14 +153,66 @@ export async function loadRawFile(
 }
 
 export async function importXlsxSnapshot(file: File): Promise<IWorkbookData> {
-  const { LuckyExcel } = await import('@mertdeveci55/univer-import-export');
-  return new Promise<IWorkbookData>((resolve, reject) => {
-    LuckyExcel.transformExcelToUniver(
-      file,
-      (snapshot) => resolve(snapshot),
-      (error) => reject(error instanceof Error ? error : new Error('XLSX import failed.')),
-    );
+  const xlsx = await import('xlsx');
+  const workbook = xlsx.read(await file.arrayBuffer(), {
+    cellFormula: true,
+    cellStyles: true,
+    cellDates: true,
   });
+  const sheetOrder: string[] = [];
+  const sheets: Record<string, Partial<IWorksheetData>> = {};
+
+  for (const [index, name] of workbook.SheetNames.entries()) {
+    const source = workbook.Sheets[name];
+    const range = xlsx.utils.decode_range(source['!ref'] || 'A1:A1');
+    const sheetId = `sheet-${index}-${name.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    const cellData: Record<string, Record<string, ICellData>> = {};
+
+    for (const address of Object.keys(source)) {
+      if (address.startsWith('!')) continue;
+      const cell = source[address] as Xlsx.CellObject;
+      const position = xlsx.utils.decode_cell(address);
+      const value = cellValue(cell);
+      if (value === undefined && !cell.f) continue;
+      const row = String(position.r);
+      const column = String(position.c);
+      (cellData[row] ||= {})[column] = {
+        ...(value === undefined ? {} : { v: value }),
+        ...(cell.f ? { f: cell.f.startsWith('=') ? cell.f : `=${cell.f}` } : {}),
+      };
+    }
+
+    sheetOrder.push(sheetId);
+    sheets[sheetId] = {
+      id: sheetId,
+      name,
+      rowCount: Math.max(range.e.r + 1, 1),
+      columnCount: Math.max(range.e.c + 1, 1),
+      cellData,
+      rowData: {},
+      columnData: {},
+      mergeData: [],
+      showGridlines: 1,
+    };
+  }
+
+  return {
+    id: `filebox-sheet-${crypto.randomUUID()}`,
+    name: file.name,
+    appVersion: '0.25.1',
+    locale: 'enUS' as IWorkbookData['locale'],
+    styles: {},
+    sheetOrder,
+    sheets,
+  };
+}
+
+function cellValue(cell: Xlsx.CellObject): string | number | boolean | undefined {
+  if (cell.v === undefined || cell.v === null) return undefined;
+  if (typeof cell.v === 'string' || typeof cell.v === 'number' || typeof cell.v === 'boolean') {
+    return cell.v;
+  }
+  return cell.w || String(cell.v);
 }
 
 export async function importDocxSnapshot(file: File): Promise<IDocumentData> {

@@ -12,7 +12,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mertdeveci55/univer-import-export": "^0.2.1",
     "@monaco-editor/react": "^4.7.0",
     "@univerjs/preset-docs-core": "^0.25.1",
     "@univerjs/preset-sheets-core": "^0.25.1",
@@ -29,7 +28,7 @@
     "react-window": "^1.8.11",
     "remark-gfm": "^4.0.1",
     "utif": "^3.1.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "npm:@e965/xlsx@^0.20.3"
   },
   "overrides": {
     "dompurify": "3.4.12"
