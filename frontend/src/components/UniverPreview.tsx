@@ -13,6 +13,8 @@ import { LoadingOverlay, styles } from './previewShared';
 
 import '@univerjs/preset-docs-core/lib/index.css';
 import '@univerjs/preset-sheets-core/lib/index.css';
+import docsEnUS from '@univerjs/preset-docs-core/locales/en-US';
+import sheetsEnUS from '@univerjs/preset-sheets-core/locales/en-US';
 
 interface Props {
   agentId: string;
@@ -184,11 +186,15 @@ async function createRuntime(
   const { createUniver, LocaleType } = presets;
   const { UniverDocsCorePreset } = docsPreset;
   const { UniverSheetsCorePreset } = sheetsPreset;
+  const locales = {
+    [LocaleType.EN_US]: kind === 'document' ? docsEnUS : sheetsEnUS,
+  };
 
   if (kind === 'document') {
     const snapshot = await importDocxSnapshot(file);
     const { univer, univerAPI } = createUniver({
       locale: LocaleType.EN_US,
+      locales,
       presets: [
         UniverDocsCorePreset({
           container,
@@ -207,6 +213,7 @@ async function createRuntime(
   const snapshot = await importXlsxSnapshot(file);
   const { univer, univerAPI } = createUniver({
     locale: LocaleType.EN_US,
+    locales,
     presets: [
       UniverSheetsCorePreset({
         container,
