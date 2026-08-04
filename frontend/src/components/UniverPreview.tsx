@@ -107,46 +107,41 @@ export function UniverPreview({ agentId, root, path }: Props) {
     setPhase({ kind: 'error', message: 'Preview cancelled.' });
   }, [disposeRuntime]);
 
-  if (phase.kind === 'loading') {
-    return (
-      <div style={styles.container}>
-        <LoadingOverlay
-          message={phase.message}
-          onCancel={cancelPreview}
-        />
-      </div>
-    );
-  }
-
-  if (phase.kind === 'error') {
-    return (
-      <div style={styles.container}>
-        <div style={styles.download}>
-          <p style={styles.downloadText}>{phase.message}</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div
-      ref={containerRef}
       style={{
         ...styles.container,
         display: 'block',
         overflow: 'hidden',
         background: c.bg,
       }}
-      onBeforeInputCapture={(event) => event.preventDefault()}
-      onPasteCapture={(event) => event.preventDefault()}
-      onCutCapture={(event) => event.preventDefault()}
-      onDropCapture={(event) => event.preventDefault()}
-      onKeyDownCapture={(event) => {
-        if (READ_ONLY_KEYS.has(event.key) || event.ctrlKey || event.metaKey || event.altKey) {
-          event.preventDefault();
-        }
-      }}
-    />
+    >
+      <div
+        ref={containerRef}
+        style={{ width: '100%', height: '100%', minHeight: 0 }}
+        onBeforeInputCapture={(event) => event.preventDefault()}
+        onPasteCapture={(event) => event.preventDefault()}
+        onCutCapture={(event) => event.preventDefault()}
+        onDropCapture={(event) => event.preventDefault()}
+        onKeyDownCapture={(event) => {
+          if (READ_ONLY_KEYS.has(event.key) || event.ctrlKey || event.metaKey || event.altKey) {
+            event.preventDefault();
+          }
+        }}
+      >
+        {phase.kind === 'loading' && (
+          <LoadingOverlay
+            message={phase.message}
+            onCancel={cancelPreview}
+          />
+        )}
+        {phase.kind === 'error' && (
+          <div style={styles.download}>
+            <p style={styles.downloadText}>{phase.message}</p>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
