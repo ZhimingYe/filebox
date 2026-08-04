@@ -140,6 +140,23 @@ where
     }
 }
 
+/// Serialize and send an agent message. Returns false when the write fails
+/// or times out — the connection loop must reconnect instead of continuing
+/// as if the hub received the response.
+async fn send_agent_message<W>(write: &mut W, msg: &AgentMessage) -> bool
+where
+    W: SinkExt<Message> + Unpin,
+{
+    let text = match serde_json::to_string(msg) {
+        Ok(text) => text,
+        Err(error) => {
+            tracing::error!("Failed to serialize agent message: {}", error);
+            return false;
+        }
+    };
+    send_with_timeout(write, Message::Text(text.into())).await
+}
+
 fn try_spawn_fs_job<F>(
     tasks: &mut JoinSet<()>,
     admission: &Arc<Semaphore>,
@@ -456,25 +473,22 @@ async fn run_one_connection(
             // Completed (or failed) workspace search — never block the read loop
             // waiting on spawn_blocking for these.
             Some(response) = search_rx.recv() => {
-                let _ = send_with_timeout(
-                    &mut write,
-                    Message::Text(serde_json::to_string(&response).unwrap().into()),
-                )
-                .await;
+                if !send_agent_message(&mut write, &response).await {
+                    tracing::warn!("Failed to send search response, reconnecting");
+                    break;
+                }
             }
             Some(response) = office_rx.recv() => {
-                let _ = send_with_timeout(
-                    &mut write,
-                    Message::Text(serde_json::to_string(&response).unwrap().into()),
-                )
-                .await;
+                if !send_agent_message(&mut write, &response).await {
+                    tracing::warn!("Failed to send office response, reconnecting");
+                    break;
+                }
             }
             Some(response) = fs_rx.recv() => {
-                let _ = send_with_timeout(
-                    &mut write,
-                    Message::Text(serde_json::to_string(&response).unwrap().into()),
-                )
-                .await;
+                if !send_agent_message(&mut write, &response).await {
+                    tracing::warn!("Failed to send file I/O response, reconnecting");
+                    break;
+                }
             }
             Some(result) = fs_tasks.join_next(), if !fs_tasks.is_empty() => {
                 if let Err(error) = result {
@@ -504,9 +518,10 @@ async fn run_one_connection(
                     Ok(Some(Ok(Message::Text(text)))) => {
                         match serde_json::from_str::<HubMessage>(&text) {
                             Ok(HubMessage::Ping) => {
-                                let _ = send_with_timeout(&mut write, Message::Text(
-                                    serde_json::to_string(&AgentMessage::Pong).unwrap().into(),
-                                )).await;
+                                if !send_agent_message(&mut write, &AgentMessage::Pong).await {
+                                    tracing::warn!("Failed to send pong, reconnecting");
+                                    break;
+                                }
                             }
                             Ok(HubMessage::ResourcesSetDesired {
                                 req_id,
@@ -662,13 +677,10 @@ async fn run_one_connection(
                                             "agent_overloaded: file I/O queue is full".to_string(),
                                         ),
                                     };
-                                    let _ = send_with_timeout(
-                                        &mut write,
-                                        Message::Text(
-                                            serde_json::to_string(&response).unwrap().into(),
-                                        ),
-                                    )
-                                    .await;
+                                    if !send_agent_message(&mut write, &response).await {
+                                        tracing::warn!("Failed to send fs list overload response, reconnecting");
+                                        break;
+                                    }
                                 }
                             }
                             Ok(HubMessage::FsStatRequest { req_id, root, path }) => {
@@ -765,13 +777,10 @@ async fn run_one_connection(
                                             "agent_overloaded: file I/O queue is full".to_string(),
                                         ),
                                     };
-                                    let _ = send_with_timeout(
-                                        &mut write,
-                                        Message::Text(
-                                            serde_json::to_string(&response).unwrap().into(),
-                                        ),
-                                    )
-                                    .await;
+                                    if !send_agent_message(&mut write, &response).await {
+                                        tracing::warn!("Failed to send fs stat overload response, reconnecting");
+                                        break;
+                                    }
                                 }
                             }
                             Ok(HubMessage::FileReadRequest { req_id, root, path, offset, length }) => {
@@ -873,13 +882,10 @@ async fn run_one_connection(
                                             "agent_overloaded: file I/O queue is full".to_string(),
                                         ),
                                     };
-                                    let _ = send_with_timeout(
-                                        &mut write,
-                                        Message::Text(
-                                            serde_json::to_string(&response).unwrap().into(),
-                                        ),
-                                    )
-                                    .await;
+                                    if !send_agent_message(&mut write, &response).await {
+                                        tracing::warn!("Failed to send file read overload response, reconnecting");
+                                        break;
+                                    }
                                 }
                             }
                             Ok(HubMessage::Cancel { req_id }) => {
@@ -1198,7 +1204,10 @@ async fn run_one_connection(
                         }
                     }
                     Ok(Some(Ok(Message::Ping(data)))) => {
-                        let _ = send_with_timeout(&mut write, Message::Pong(data)).await;
+                        if !send_with_timeout(&mut write, Message::Pong(data)).await {
+                            tracing::warn!("Failed to send protocol pong, reconnecting");
+                            break;
+                        }
                     }
                     Ok(Some(Ok(Message::Close(_)))) => {
                         tracing::info!("Hub closed connection");

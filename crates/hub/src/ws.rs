@@ -675,6 +675,17 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
     // Cleanup
     send_task.abort();
 
+    if !exited_via_abort {
+        let failed = state.fail_pending_for_agent(&agent_id).await;
+        if failed > 0 {
+            tracing::info!(
+                "Failed {} pending request(s) for disconnected agent {}",
+                failed,
+                agent_id
+            );
+        }
+    }
+
     let mut inner = state.inner.write().await;
     // Only mark offline if the registry entry still belongs to THIS
     // connection. A reconnect may have already replaced the entry with a

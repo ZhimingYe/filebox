@@ -213,6 +213,49 @@ impl AppState {
             secure_cookies,
         }
     }
+
+    /// Fail every pending response owned by `agent_id`. Used when a connection
+    /// closes so HTTP handlers stop waiting on their own 30–60s timeouts.
+    pub async fn fail_pending_for_agent(&self, agent_id: &str) -> usize {
+        let pending_arc = {
+            let inner = self.inner.read().await;
+            inner.pending_responses.clone()
+        };
+        let error = agent_disconnect_pending_error();
+        let mut pending = pending_arc.write().await;
+        let keys: Vec<String> = pending
+            .iter()
+            .filter(|(_, resp)| resp.agent_id == agent_id)
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut victims = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(resp) = pending.remove(&key) {
+                victims.push((key, resp));
+            }
+        }
+        let count = victims.len();
+        drop(pending);
+        for (req_id, resp) in victims {
+            tracing::debug!(
+                "Failing pending request {} because agent {} disconnected",
+                req_id,
+                agent_id
+            );
+            let _ = resp.tx.send(error.clone()).await;
+        }
+        count
+    }
+}
+
+/// Error delivered to waiters when an agent disconnects while a request is
+/// still pending. Matches the retryable shape used by HTTP handlers.
+pub fn agent_disconnect_pending_error() -> serde_json::Value {
+    serde_json::json!({
+        "error": "backend_offline",
+        "message": "Agent disconnected",
+        "retryable": true,
+    })
 }
 
 #[cfg(test)]
@@ -356,6 +399,54 @@ mod tests {
         let pending = state.inner.blocking_read().pending_responses.clone();
         let map = pending.blocking_read();
         assert!(map.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fail_pending_for_agent_notifies_only_matching_waiters() {
+        let config = crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            agent_token_hash: "fake-hash".to_string(),
+            users: vec![],
+        };
+        let state = AppState::new(&config, false);
+        let (tx_a1, mut rx_a1) = mpsc::channel(1);
+        let (tx_a2, mut rx_a2) = mpsc::channel(1);
+        {
+            let pending = state.inner.read().await.pending_responses.clone();
+            let mut map = pending.write().await;
+            map.insert(
+                "req-a1".to_string(),
+                PendingResponse {
+                    tx: tx_a1,
+                    agent_id: "a1".to_string(),
+                    session_id: None,
+                    desired_roots: None,
+                    desired_collections: None,
+                },
+            );
+            map.insert(
+                "req-a2".to_string(),
+                PendingResponse {
+                    tx: tx_a2,
+                    agent_id: "a2".to_string(),
+                    session_id: None,
+                    desired_roots: None,
+                    desired_collections: None,
+                },
+            );
+        }
+
+        assert_eq!(state.fail_pending_for_agent("a1").await, 1);
+
+        let value = rx_a1.recv().await.expect("a1 waiter should be notified");
+        assert_eq!(value["error"], "backend_offline");
+        assert_eq!(value["retryable"], true);
+        assert!(rx_a2.try_recv().is_err(), "other agents' pending requests must remain");
+
+        let pending = state.inner.read().await.pending_responses.clone();
+        let map = pending.read().await;
+        assert!(map.contains_key("req-a2"));
+        assert!(!map.contains_key("req-a1"));
     }
 
     #[tokio::test]
