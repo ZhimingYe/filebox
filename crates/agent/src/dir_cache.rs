@@ -296,8 +296,9 @@ impl DirCache {
             return Err("request_cancelled".to_string());
         }
         // Cheap validity probe — O(1) stat. Also enforces path security even
-        // on a cache hit (resolve + sensitive-fs check live in dir_mtime), so
-        // serving from cache never bypasses the safety checks.
+        // on a cache hit (resolve + sensitive-fs check live in
+        // resolve_dir_mtime), so serving from cache never bypasses the safety
+        // checks.
         let (abs_path, current_mtime) = resolve_dir_mtime(roots, root_name, path)?;
 
         let key = CacheKey {
@@ -570,8 +571,7 @@ mod tests {
         let modified_before = p1
             .iter()
             .find(|e| e.name == "a.txt")
-            .map(|e| e.modified.clone())
-            .flatten();
+            .and_then(|e| e.modified.clone());
         assert!(modified_before.is_some(), "scan must report a modified time");
 
         // Ensure the in-place write lands >1s after the scan so coarse mtime
@@ -585,8 +585,7 @@ mod tests {
         let modified_after = p2
             .iter()
             .find(|e| e.name == "a.txt")
-            .map(|e| e.modified.clone())
-            .flatten();
+            .and_then(|e| e.modified.clone());
         assert_ne!(
             modified_after, modified_before,
             "cache hit must re-stat the page and surface the in-place edit"
