@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentInfo, CollectionInfo, CollectionItem } from '../api/client';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { AgentInfo, CollectionInfo, CollectionItem, FsEntry } from '../api/client';
 import * as api from '../api/client';
 import { statToFsEntry } from '../api/client';
 import { c, radius, font } from '../theme';
@@ -31,6 +31,33 @@ interface ItemMeta {
   modified: string | null;
 }
 
+// Item metadata cache lives at module scope, not in component state: the
+// view unmounts whenever the user switches to another sidebar view, so a
+// component-held cache is wiped on every re-entry — forcing a full re-probe
+// of every item (one fsStat round trip each, over the hub→agent WS channel).
+// Keeping it here makes re-entry instant and limits probes to stale entries.
+const META_TTL_MS = 60_000;
+
+interface CachedMeta {
+  meta: ItemMeta;
+  ts: number;
+}
+
+const metaStore = new Map<string, CachedMeta>();
+
+function metaKey(agentId: string, root: string, path: string): string {
+  return `${agentId}::${root}::${path}`;
+}
+
+function getMeta(key: string): ItemMeta | null {
+  return metaStore.get(key)?.meta ?? null;
+}
+
+function isMetaFresh(key: string): boolean {
+  const hit = metaStore.get(key);
+  return !!hit && Date.now() - hit.ts < META_TTL_MS;
+}
+
 function basenameFromPath(path: string): string {
   const p = path.endsWith('/') && path.length > 1 ? path.replace(/\/+$/, '') : path;
   const idx = p.lastIndexOf('/');
@@ -57,7 +84,6 @@ export function CollectionsView({
   const [metaVersion, setMetaVersion] = useState(0);
   const [sortBy, setSortBy] = useState<FileListSortKey>('name');
   const [sortAsc, setSortAsc] = useState(true);
-  const metaCache = useRef<Map<string, ItemMeta>>(new Map());
 
   const toggleSort = useCallback((key: FileListSortKey) => {
     if (sortBy === key) setSortAsc((a) => !a);
@@ -66,11 +92,6 @@ export function CollectionsView({
       setSortAsc(true);
     }
   }, [sortBy]);
-
-  useEffect(() => {
-    metaCache.current.clear();
-    setMetaVersion((v) => v + 1);
-  }, [selectedName]);
 
   useEffect(() => {
     if (collections.length === 0) {
@@ -111,8 +132,8 @@ export function CollectionsView({
   const rawListRows: FileEntryListRowModel[] = useMemo(() => {
     if (!selected) return [];
     return selected.items.map((item) => {
-      const key = `${item.root}::${item.path}`;
-      const meta = metaCache.current.get(key);
+      const key = metaKey(agent.id, item.root, item.path);
+      const meta = getMeta(key);
       const name = item.label?.trim() || basenameFromPath(item.path);
       const status = meta?.status ?? 'unknown';
       return {
@@ -129,7 +150,7 @@ export function CollectionsView({
         data: item,
       };
     });
-  }, [selected, metaVersion]);
+  }, [selected, metaVersion, agent.id]);
 
   const listRows = useMemo(
     () => sortFileListRows(rawListRows, sortBy, sortAsc),
@@ -137,36 +158,55 @@ export function CollectionsView({
   );
 
   // Probe file metadata for status badges, size, and modified columns.
+  // Only entries missing from the module cache or past TTL are probed, and
+  // probes run with bounded concurrency instead of serially — N sequential
+  // hub→agent round trips made large collections feel slow on every visit.
   useEffect(() => {
     if (selectedItems.length === 0 || agent.status !== 'online') return;
     let cancelled = false;
     const abort = new AbortController();
 
+    const toProbe = selectedItems.filter((item) => {
+      const key = metaKey(agent.id, item.root, item.path);
+      return !isMetaFresh(key);
+    });
+    if (toProbe.length === 0) return;
+
+    const CONCURRENCY = 8;
+    let next = 0;
+
     (async () => {
-      for (const item of selectedItems) {
-        if (cancelled) return;
-        const key = `${item.root}::${item.path}`;
-        try {
-          const res = await api.fsStat(agent.id, item.root, item.path, abort.signal);
-          let status: ItemStatus = 'ok';
-          let size: number | null = null;
-          let modified: string | null = null;
-          if (res.error || !res.stat) {
-            status = 'missing';
-          } else if (res.stat.denied) {
-            status = 'denied';
-          } else if (res.stat.entry_type !== 'file') {
-            status = 'missing';
-          } else {
-            size = res.stat.size;
-            modified = res.stat.modified;
+      const workers = Array.from(
+        { length: Math.min(CONCURRENCY, toProbe.length) },
+        async () => {
+          while (!cancelled) {
+            const item = toProbe[next++];
+            if (!item) return;
+            const key = metaKey(agent.id, item.root, item.path);
+            try {
+              const res = await api.fsStat(agent.id, item.root, item.path, abort.signal);
+              let status: ItemStatus = 'ok';
+              let size: number | null = null;
+              let modified: string | null = null;
+              if (res.error || !res.stat) {
+                status = 'missing';
+              } else if (res.stat.denied) {
+                status = 'denied';
+              } else if (res.stat.entry_type !== 'file') {
+                status = 'missing';
+              } else {
+                size = res.stat.size;
+                modified = res.stat.modified;
+              }
+              metaStore.set(key, { meta: { status, size, modified }, ts: Date.now() });
+              if (!cancelled) setMetaVersion((v) => v + 1);
+            } catch {
+              /* offline / aborted — leave unknown */
+            }
           }
-          metaCache.current.set(key, { status, size, modified });
-          if (!cancelled) setMetaVersion((v) => v + 1);
-        } catch {
-          /* offline / aborted — leave unknown */
-        }
-      }
+        },
+      );
+      await Promise.all(workers);
     })();
 
     return () => {
@@ -178,8 +218,8 @@ export function CollectionsView({
   const openItem = useCallback(
     async (item: CollectionItem) => {
       setError(null);
-      const key = `${item.root}::${item.path}`;
-      const cached = metaCache.current.get(key);
+      const key = metaKey(agent.id, item.root, item.path);
+      const cached = getMeta(key);
       if (cached?.status === 'missing') {
         setError('File not found');
         return;
@@ -189,20 +229,32 @@ export function CollectionsView({
         return;
       }
       try {
-        const res = await api.fsStat(agent.id, item.root, item.path);
-        if (res.error || !res.stat) {
-          setError('File not found');
-          return;
+        let entry: FsEntry;
+        if (cached && isMetaFresh(key) && cached.status === 'ok') {
+          // Fresh cached stat — open without another round trip.
+          entry = {
+            name: basenameFromPath(item.path),
+            entry_type: 'file',
+            size: cached.size,
+            modified: cached.modified,
+            denied: false,
+          };
+        } else {
+          const res = await api.fsStat(agent.id, item.root, item.path);
+          if (res.error || !res.stat) {
+            setError('File not found');
+            return;
+          }
+          if (res.stat.denied) {
+            setError('Access denied');
+            return;
+          }
+          if (res.stat.entry_type !== 'file') {
+            setError('Not a file');
+            return;
+          }
+          entry = statToFsEntry(res.stat, item.path);
         }
-        if (res.stat.denied) {
-          setError('Access denied');
-          return;
-        }
-        if (res.stat.entry_type !== 'file') {
-          setError('Not a file');
-          return;
-        }
-        const entry = statToFsEntry(res.stat, item.path);
         const input = {
           agentId: agent.id,
           root: item.root,
