@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -20,6 +21,14 @@ interface Props {
   agentId: string;
   roots: RootInfo[];
   active: boolean;
+  /** Shared browse position owned by App (the same source FileBrowser is
+   *  controlled by). When it changes, Explorer reveals that directory in the
+   *  tree: expands its ancestors, selects the node, and scrolls to it. */
+  currentDir: { root: string; path: string } | null;
+  /** Report the directory the user is browsing in the tree (expanding a
+   *  folder or opening a file) so the shared position — and thus the Files
+   *  view — follows the Explorer selection. */
+  onNavigateDir: (root: string, path: string) => void;
   onFileSelect: (root: string, path: string, entry: FsEntry) => void;
   onAddToCollection?: (root: string, path: string, anchor: HTMLElement) => void;
   onRootsChange?: () => void | Promise<void>;
@@ -336,6 +345,8 @@ export function ExplorerView({
   agentId,
   roots,
   active,
+  currentDir,
+  onNavigateDir,
   onFileSelect,
   onAddToCollection,
   onRootsChange,
@@ -399,6 +410,30 @@ export function ExplorerView({
   const refreshCancelledRef = useRef(false);
   const noticeTimerRef = useRef<number | null>(null);
   const pumpRef = useRef<() => void>(() => {});
+  // Scroll position of the virtual list, preserved across hide/show (the
+  // panel is display:none'd when another view is active, which zeroes the
+  // viewport and would otherwise reset the tree's scroll on return).
+  const scrollOffsetRef = useRef(0);
+  const viewportHiddenRef = useRef(true);
+  // A reveal that completed while the panel was hidden defers its scroll here
+  // (stored as the target row's id, resolved to an index at restore time so
+  // late-arriving loads that shift rows can't scroll to a stale index); the
+  // show-transition effect performs it once the viewport is measurable.
+  const pendingRevealScrollRef = useRef<string | null>(null);
+  // Files → Explorer sync: the directory currently being revealed (expanded +
+  // selected + scrolled into view), and the key of the last finished reveal.
+  // The done-key guards the attempt loop so it only acts while a reveal is
+  // outstanding and never re-fires for a target that already resolved.
+  const revealTargetRef = useRef<{ root: string; path: string } | null>(null);
+  const revealDoneKeyRef = useRef<string | null>(null);
+  // When the user manually collapses a branch the reveal was walking toward,
+  // the reveal stands down for that exact directory (telemetry refreshes hand
+  // App a fresh `currentDir` object with the same key — without this flag they
+  // would re-arm the reveal and re-expand what the user just collapsed). A
+  // genuine navigation (key change) clears the flag and re-arms. `lastDirKey`
+  // distinguishes genuine navigation from identity-only churn.
+  const revealCancelledKeyRef = useRef<string | null>(null);
+  const lastDirKeyRef = useRef<string | null>(null);
   const { copiedPath, copyToClipboard } = useCopyToClipboard();
   useEffect(() => {
     try {
@@ -759,6 +794,19 @@ export function ExplorerView({
   }, [scheduleLoad, showNotice, updateNodes]);
 
   const toggleDirectory = useCallback((root: string, path: string) => {
+    // A manual expand/collapse takes over from any pending Files→Explorer
+    // reveal targeting this branch, so the reveal never re-expands a folder
+    // the user just collapsed (or fights a collapse-all).
+    const target = revealTargetRef.current;
+    if (target && isSameOrDescendant(
+      nodeKey(target.root, target.path),
+      root,
+      path,
+    )) {
+      revealTargetRef.current = null;
+      revealDoneKeyRef.current = null;
+      revealCancelledKeyRef.current = nodeKey(target.root, target.path);
+    }
     const key = nodeKey(root, path);
     if (expandedRef.current.has(key)) {
       collapseDirectory(root, path);
@@ -865,6 +913,115 @@ export function ExplorerView({
     [nodeRows, selectedId],
   );
 
+  // Files → Explorer sync: walk the tree toward the reveal target. Expands
+  // every ancestor that isn't expanded (scheduling loads as needed), then once
+  // the target's own row exists — i.e. all ancestors finished loading —
+  // selects it and scrolls it into view. Re-runs on every rows change until
+  // the target resolves; the done-key makes it a no-op afterwards. Ancestors
+  // are added monotonically, so it terminates even if a level fails to load
+  // (the deepest reachable node is selected instead).
+  //
+  // The reveal target is derived from the shared browse position (currentDir)
+  // right here rather than in a separate effect, so an agent switch (which
+  // wipes the target in the layout effect above) re-arms the reveal in the
+  // same commit instead of one render late.
+  useEffect(() => {
+    if (!currentDir) {
+      revealTargetRef.current = null;
+      revealDoneKeyRef.current = null;
+      revealCancelledKeyRef.current = null;
+      lastDirKeyRef.current = null;
+      return;
+    }
+    const targetKey = nodeKey(currentDir.root, currentDir.path);
+    if (lastDirKeyRef.current !== targetKey) {
+      // Genuine navigation (or first run) — allow re-arming a cancelled reveal.
+      lastDirKeyRef.current = targetKey;
+      revealCancelledKeyRef.current = null;
+    }
+    if (revealCancelledKeyRef.current === targetKey) {
+      // The user manually collapsed this directory's branch — stand down.
+      return;
+    }
+    if (revealDoneKeyRef.current !== targetKey) {
+      revealTargetRef.current = { root: currentDir.root, path: currentDir.path };
+      revealDoneKeyRef.current = null;
+    }
+
+    const target = revealTargetRef.current;
+    if (!target) return;
+    if (revealDoneKeyRef.current === targetKey) return;
+
+    const root = enabledRoots.find((r) => r.name === target.root);
+    if (!root) {
+      // Target root is disabled/removed — nothing to reveal.
+      revealDoneKeyRef.current = targetKey;
+      revealTargetRef.current = null;
+      revealCancelledKeyRef.current = null;
+      return;
+    }
+
+    const parts = target.path.split('/').filter(Boolean);
+    const chain: string[] = ['/'];
+    let acc = '';
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : `/${part}`;
+      chain.push(acc);
+    }
+
+    for (let i = 0; i < chain.length; i++) {
+      const path = chain[i];
+      const key = nodeKey(target.root, path);
+      if (expandedRef.current.has(key)) continue;
+      if (expandedRef.current.size >= MAX_EXPANDED_DIRECTORIES) {
+        // Expansion cap reached: select the deepest reachable ancestor and
+        // stop — don't fight the cap (and don't surface the cap notice for
+        // an automated reveal).
+        revealDoneKeyRef.current = targetKey;
+        revealTargetRef.current = null;
+        revealCancelledKeyRef.current = null;
+        setSelectedId(nodeKey(target.root, chain[Math.max(0, i - 1)]));
+        return;
+      }
+      const state = nodesRef.current.get(key);
+      if (state?.loaded && state.error) {
+        // This ancestor failed to load — can't go deeper. Select it and stop.
+        revealDoneKeyRef.current = targetKey;
+        revealTargetRef.current = null;
+        revealCancelledKeyRef.current = null;
+        setSelectedId(key);
+        return;
+      }
+      const next = new Set(expandedRef.current);
+      next.add(key);
+      expandedRef.current = next;
+      setExpanded(next);
+      if (!state?.loaded && !state?.loading) {
+        scheduleLoad(target.root, path);
+      }
+    }
+
+    // The target's own row only exists once its parent's listing loaded.
+    const targetIndex = nodeRows.findIndex(({ row }) => row.id === targetKey);
+    if (targetIndex === -1) return; // ancestors still loading — retry on change
+
+    const rowIndex = nodeRows[targetIndex].index;
+    revealDoneKeyRef.current = targetKey;
+    revealTargetRef.current = null;
+    revealCancelledKeyRef.current = null;
+    setSelectedId(targetKey);
+    if (viewportHeight > 0) {
+      // Drop any stale deferred scroll from a hidden completion — the
+      // immediate scroll wins. scrollToItem fires onScroll, which re-stashes
+      // the resulting offset, so a later hide/show restores this position.
+      pendingRevealScrollRef.current = null;
+      listRef.current?.scrollToItem(rowIndex, 'smart');
+    } else {
+      // Panel hidden: defer the scroll to the show-transition effect.
+      pendingRevealScrollRef.current = targetKey;
+    }
+  }, [currentDir, enabledRoots, nodeRows, scheduleLoad, viewportHeight]);
+
   const selectNodeAt = useCallback((index: number) => {
     const candidate = rows[index];
     if (!candidate || candidate.kind !== 'node') return;
@@ -876,11 +1033,20 @@ export function ExplorerView({
     setSelectedId(row.id);
     if (row.denied) return;
     if (row.isDirectory) {
+      const wasExpanded = row.expanded;
       toggleDirectory(row.root, row.path);
+      // Directory sync: expanding a folder makes it the shared current
+      // directory (the Files view follows). Collapsing does not move the
+      // position — the user is just tucking the branch away.
+      if (!wasExpanded) onNavigateDir(row.root, row.path);
     } else if (row.entry) {
+      // Opening a file also moves the shared position to its parent
+      // directory, so switching to Files shows the file in the list (and the
+      // preview ←/→ keyboard navigation works there).
+      onNavigateDir(row.root, parentPath(row.path));
       onFileSelect(row.root, row.path, row.entry);
     }
-  }, [onFileSelect, toggleDirectory]);
+  }, [onFileSelect, onNavigateDir, toggleDirectory]);
 
   const handleTreeKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
@@ -910,6 +1076,8 @@ export function ExplorerView({
       event.preventDefault();
       if (!row.expanded) {
         expandDirectory(row.root, row.path);
+        // Directory sync: keyboard expansion moves the shared position too.
+        onNavigateDir(row.root, row.path);
       } else {
         const child = rows[selectedNode.index + 1];
         if (child?.kind === 'node' && child.depth === row.depth + 1) {
@@ -937,6 +1105,7 @@ export function ExplorerView({
     collapseDirectory,
     expandDirectory,
     nodeRows,
+    onNavigateDir,
     rows,
     selectNodeAt,
     selectedNode,
@@ -1047,8 +1216,16 @@ export function ExplorerView({
     updateNodes((previous) => trimCollapsedCache(new Map(previous), new Set()));
     const firstRoot = enabledRoots[0];
     setSelectedId(firstRoot ? nodeKey(firstRoot.name, '/') : null);
+    // Collapse-all is a deliberate user reset — don't let a pending reveal
+    // re-expand everything.
+    revealTargetRef.current = null;
+    revealDoneKeyRef.current = null;
+    pendingRevealScrollRef.current = null;
+    revealCancelledKeyRef.current = currentDir
+      ? nodeKey(currentDir.root, currentDir.path)
+      : null;
     showNotice(null);
-  }, [cancelLoads, enabledRoots, showNotice, updateNodes]);
+  }, [cancelLoads, currentDir, enabledRoots, showNotice, updateNodes]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1071,6 +1248,71 @@ export function ExplorerView({
       active.clear();
     };
   }, []);
+
+  // Agent switch: the `key={explorerStructureKey}` remount that used to reset
+  // the tree on agent changes is gone (Explorer stays mounted across view
+  // switches so expansion/scroll survive), so the reset happens in place.
+  // Everything belonging to the previous agent must be discarded before the
+  // new agent's tree renders. useLayoutEffect so the stale tree never paints
+  // (a passive effect would flash the old agent's cached nodes for a frame).
+  const prevAgentIdRef = useRef(agentId);
+  useLayoutEffect(() => {
+    if (prevAgentIdRef.current === agentId) return;
+    prevAgentIdRef.current = agentId;
+    queueRef.current = [];
+    activeRef.current.forEach(({ controller }) => controller.abort());
+    activeRef.current.clear();
+    scheduledRef.current.clear();
+    reservedEntriesRef.current.clear();
+    refreshSeqsRef.current.clear();
+    refreshFailedRef.current = false;
+    refreshCancelledRef.current = false;
+    const rootKey = firstRootKey;
+    const initial = new Set<string>(rootKey ? [rootKey] : []);
+    nodesRef.current = new Map();
+    expandedRef.current = initial;
+    setNodes(new Map());
+    setExpanded(initial);
+    setSelectedId(rootKey);
+    setNotice(null);
+    scrollOffsetRef.current = 0;
+    pendingRevealScrollRef.current = null;
+    revealTargetRef.current = null;
+    revealDoneKeyRef.current = null;
+    revealCancelledKeyRef.current = null;
+    lastDirKeyRef.current = null;
+  }, [agentId, firstRootKey]);
+
+  // Root config changes (root added/removed/renamed/disabled) previously
+  // remounted the whole tree via `key`. In place, only the affected state has
+  // to go: cancel loads and drop expanded/nodes/selection for roots that are
+  // no longer enabled — everything else keeps its position.
+  useEffect(() => {
+    const enabled = new Set(enabledRoots.map((r) => r.name));
+    const stale = new Set<string>();
+    expandedRef.current.forEach((key) => {
+      if (!enabled.has(splitNodeKey(key).root)) stale.add(key);
+    });
+    nodesRef.current.forEach((_, key) => {
+      if (!enabled.has(splitNodeKey(key).root)) stale.add(key);
+    });
+    if (stale.size > 0) {
+      cancelLoads(stale);
+      const nextExpanded = new Set(expandedRef.current);
+      stale.forEach((key) => nextExpanded.delete(key));
+      expandedRef.current = nextExpanded;
+      setExpanded(nextExpanded);
+      const nextNodes = new Map<string, DirectoryState>();
+      nodesRef.current.forEach((state, key) => {
+        if (!stale.has(key)) nextNodes.set(key, state);
+      });
+      nodesRef.current = nextNodes;
+      setNodes(nextNodes);
+    }
+    if (selectedId && !enabled.has(splitNodeKey(selectedId).root)) {
+      setSelectedId(firstRootKey);
+    }
+  }, [cancelLoads, enabledRoots, firstRootKey, rootsSignature, selectedId]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1097,6 +1339,34 @@ export function ExplorerView({
     observer.observe(viewport);
     return () => observer.disconnect();
   }, []);
+
+  // Hide/show transition (another view active → Explorer active again): the
+  // panel's display:none zeroes the viewport, and react-window clamps the
+  // scroll offset to 0 while hidden. Restore what the user was looking at —
+  // unless a Files→Explorer reveal is waiting to scroll to the current
+  // directory, which takes priority (see the reveal effect above).
+  useEffect(() => {
+    if (viewportHeight > 0) {
+      if (viewportHiddenRef.current) {
+        viewportHiddenRef.current = false;
+        if (pendingRevealScrollRef.current !== null) {
+          const pendingId = pendingRevealScrollRef.current;
+          pendingRevealScrollRef.current = null;
+          // Resolve the id at restore time: rows may have shifted while the
+          // panel was hidden. scrollToItem fires onScroll, which re-stashes
+          // the resulting offset — no need to reset scrollOffsetRef here.
+          const pendingIndex = nodeRows.findIndex(({ row }) => row.id === pendingId);
+          if (pendingIndex !== -1) {
+            listRef.current?.scrollToItem(nodeRows[pendingIndex].index, 'smart');
+          }
+        } else if (scrollOffsetRef.current > 0) {
+          listRef.current?.scrollTo(scrollOffsetRef.current);
+        }
+      }
+    } else {
+      viewportHiddenRef.current = true;
+    }
+  }, [nodeRows, viewportHeight]);
 
   const rowData = useMemo<ExplorerRowData>(() => ({
     rows,
@@ -1205,20 +1475,30 @@ export function ExplorerView({
             <span>No roots configured.</span>
             <span style={styles.emptyHint}>Add a root in Settings.</span>
           </div>
-        ) : viewportHeight > 0 ? (
+        ) : (
+          // Kept mounted even while hidden (viewport measures 0): unmounting
+          // on hide made react-window reset the tree's scroll position, so
+          // switching back to Explorer always jumped to the top. The offset
+          // is stashed here and restored by the show-transition effect.
           <FixedSizeList
             ref={listRef}
-            height={viewportHeight}
+            height={Math.max(0, viewportHeight)}
             itemCount={rows.length}
             itemSize={rowHeight}
             itemData={rowData}
             itemKey={(index, data) => data.rows[index].id}
             width="100%"
             overscanCount={8}
+            onScroll={({ scrollOffset }) => {
+              // While the panel is hidden (viewport measures 0), react-window
+              // may clamp the offset to 0 — ignore those events so they can't
+              // clobber the position we restore on show.
+              if (viewportHeight > 0) scrollOffsetRef.current = scrollOffset;
+            }}
           >
             {ExplorerVirtualRow}
           </FixedSizeList>
-        ) : null}
+        )}
       </div>
     </div>
   );

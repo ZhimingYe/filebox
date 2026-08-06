@@ -342,14 +342,6 @@ export default function App() {
   }, [activeTab, previewTabs, view, collectionPicker]);
 
   const selectedAgent = useMemo(() => agents.find((a) => a.id === selectedAgentId) || null, [agents, selectedAgentId]);
-  const explorerStructureKey = useMemo(() => {
-    if (!selectedAgent) return '';
-    const rootsKey = selectedAgent.roots
-      .filter((root) => root.enabled)
-      .map((root) => `${root.name}\u0000${root.path_display}`)
-      .join('\u0001');
-    return `${selectedAgent.id}:${rootsKey}`;
-  }, [selectedAgent]);
 
   // Count pinned folders across the selected agent's ENABLED roots, so the
   // sidebar Pinned Folders section can be hidden entirely when there are none
@@ -445,6 +437,15 @@ export default function App() {
       pathMemory.current.set(memKey(selectedAgent.id, root), path);
     }
   }, [selectedAgent]);
+
+  // Explorer ↔ Files directory sync. Explorer reports the directory the user
+  // is browsing (expand a folder / open a file), which lands in the same
+  // shared browse position FileBrowser is controlled by — so both views point
+  // at the same directory. Conversely, `currentDir` below feeds the Files
+  // position back into Explorer, which reveals that directory in the tree.
+  const handleExplorerDirNav = useCallback((root: string, path: string) => {
+    applyNav(root, path);
+  }, [applyNav]);
 
   // Switch to a different root within the current agent, restoring that root's
   // remembered path (or '/' if none). Saves the outgoing root's current path
@@ -926,10 +927,11 @@ export default function App() {
                 {isMobile ? (
                   <div style={styles.mobileFileWrap}>
                     <ExplorerView
-                      key={explorerStructureKey}
                       agentId={selectedAgent.id}
                       roots={selectedAgent.roots}
                       active={view === 'explorer' && !showMobilePreview}
+                      currentDir={selectedRoot ? { root: selectedRoot, path: currentPath } : null}
+                      onNavigateDir={handleExplorerDirNav}
                       onFileSelect={handleFileSelect}
                       onAddToCollection={openCollectionPicker}
                       onRootsChange={refresh}
@@ -942,10 +944,11 @@ export default function App() {
                     showPreview={view === 'explorer' && !!activeTab}
                     list={(
                       <ExplorerView
-                        key={explorerStructureKey}
                         agentId={selectedAgent.id}
                         roots={selectedAgent.roots}
                         active={view === 'explorer'}
+                        currentDir={selectedRoot ? { root: selectedRoot, path: currentPath } : null}
+                        onNavigateDir={handleExplorerDirNav}
                         onFileSelect={handleFileSelect}
                         onAddToCollection={openCollectionPicker}
                         onRootsChange={refresh}
