@@ -202,11 +202,15 @@ pub(crate) fn open_resolved_leaf(
 /// inside root, not a sensitive virtual fs) and return its mtime. This is the
 /// cache's cheap O(1) validity probe: on a cache hit we pay only this single
 /// stat instead of re-reading the whole directory.
-pub(crate) fn dir_mtime(
+/// Resolve a directory and return its canonical path plus mtime in one call.
+/// DirCache needs the canonical path to re-stat individual entries on cache
+/// hits (in-place file edits don't bump the parent dir's mtime), so resolving
+/// twice — once for the probe, once per entry — would be wasteful.
+pub(crate) fn resolve_dir_mtime(
     roots: &[RootConfig],
     root_name: &str,
     path: &str,
-) -> Result<Option<std::time::SystemTime>, String> {
+) -> Result<(std::path::PathBuf, Option<std::time::SystemTime>), String> {
     let (abs_path, _root_canonical) = resolve_path(roots, root_name, path)?;
     if !abs_path.is_dir() {
         return Err(format!("Not a directory: {}", path));
@@ -214,7 +218,14 @@ pub(crate) fn dir_mtime(
     if is_sensitive_virtual_path(&abs_path) {
         return Err("Access denied: sensitive virtual filesystem".to_string());
     }
-    Ok(fs::metadata(&abs_path).ok().and_then(|m| m.modified().ok()))
+    let mtime = fs::metadata(&abs_path).ok().and_then(|m| m.modified().ok());
+    Ok((abs_path, mtime))
+}
+
+/// Format a SystemTime the same way listings do (local time, RFC3339).
+pub(crate) fn mtime_to_rfc3339(t: std::time::SystemTime) -> String {
+    let dt: chrono::DateTime<chrono::Local> = t.into();
+    dt.to_rfc3339()
 }
 
 pub(crate) fn read_dir_sorted(
@@ -327,10 +338,7 @@ where
             fs::metadata(&entry_path)
                 .ok()
                 .and_then(|m| m.modified().ok())
-                .and_then(|t| {
-                    let dt: chrono::DateTime<chrono::Local> = t.into();
-                    Some(dt.to_rfc3339())
-                })
+                .map(mtime_to_rfc3339)
         };
 
         visit(FsEntry {
