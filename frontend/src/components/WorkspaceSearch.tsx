@@ -10,7 +10,8 @@ import {
 import { VariableSizeList as VList, type ListChildComponentProps } from 'react-window';
 import type { AgentInfo, SearchHit, SearchMode, WorkspaceSearchResult } from '../api/client';
 import { cancelRequest, friendlyMessage, workspaceSearch } from '../api/client';
-import { IconChevronRight } from './icons';
+import { IconCheck, IconChevronRight, IconClipboard, IconPreview } from './icons';
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { useSse } from '../state/events';
 import { c, radius, font } from '../theme';
 
@@ -48,7 +49,10 @@ interface Props {
   agent: AgentInfo;
   /** Prefer the currently selected Files root when present. */
   initialRoot?: string | null;
+  /** Navigate the Files view to a folder (current hit-click behavior). */
   onOpenFile?: (root: string, path: string) => void;
+  /** Open a hit file in the preview pane instead of navigating. */
+  onPreviewFile?: (root: string, path: string) => void;
 }
 
 const DEFAULT_CONTEXT = 10;
@@ -191,8 +195,29 @@ function rememberIgnoredReqId(set: Set<string>, reqId: string) {
   }
 }
 
-export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
+/**
+ * Full server-side address of a hit: the root's absolute path_display joined
+ * with the hit's root-relative path (e.g. "/tmp/fbx_demo/reports/2025.md").
+ * Falls back to "root + path" (e.g. "demo/reports/2025.md") when the agent
+ * did not report a path_display. Same convention as FileBrowser's toolbar
+ * "Copy full directory address".
+ */
+function fullPathFor(rootDisplay: Map<string, string>, hit: SearchHit): string {
+  const display = rootDisplay.get(hit.root);
+  const base = display ? display.replace(/\/+$/, '') : hit.root;
+  const rel = hit.path === '/' ? '' : hit.path;
+  return base + rel;
+}
+
+export function WorkspaceSearch({ agent, initialRoot, onOpenFile, onPreviewFile }: Props) {
   const enabledRoots = (agent.roots ?? []).filter((r) => r.enabled);
+  const { copiedPath, copyToClipboard } = useCopyToClipboard();
+  /** root name → absolute path_display for composing full copy addresses. */
+  const rootDisplay = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of agent.roots ?? []) m.set(r.name, r.path_display);
+    return m;
+  }, [agent.roots]);
   const [mode, setMode] = useState<SearchMode>('content');
   const [root, setRoot] = useState(initialRoot || enabledRoots[0]?.name || '');
   const [folder, setFolder] = useState('/');
@@ -854,7 +879,14 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
                   const h = filteredHits[index]!;
                   return `${h.root}:${h.path}:${h.line ?? 0}:${index}`;
                 }}
-                itemData={{ hits: filteredHits, onOpen: onOpenFile }}
+                itemData={{
+                  hits: filteredHits,
+                  onOpen: onOpenFile,
+                  onPreview: onPreviewFile,
+                  rootDisplay,
+                  copiedPath,
+                  copyToClipboard,
+                }}
               >
                 {VirtualHitRow}
               </VList>
@@ -869,6 +901,10 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile }: Props) {
 type HitRowData = {
   hits: SearchHit[];
   onOpen?: (root: string, path: string) => void;
+  onPreview?: (root: string, path: string) => void;
+  rootDisplay: Map<string, string>;
+  copiedPath: string | null;
+  copyToClipboard: (text: string, label: string) => Promise<boolean>;
 };
 
 /** Module-level so VariableSizeList does not remount rows every parent render. */
@@ -882,7 +918,7 @@ function VirtualHitRow({ index, style, data }: ListChildComponentProps<HitRowDat
         marginBottom: HIT_GAP,
       }}
       >
-        <HitCardBody hit={hit} onOpen={data.onOpen} />
+        <HitCardBody hit={hit} onOpen={data.onOpen} onPreview={data.onPreview} rootDisplay={data.rootDisplay} copiedPath={data.copiedPath} copyToClipboard={data.copyToClipboard} />
       </div>
     </div>
   );
@@ -932,32 +968,78 @@ function parentDir(path: string): string {
 function HitCardBody({
   hit,
   onOpen,
+  onPreview,
+  rootDisplay,
+  copiedPath,
+  copyToClipboard,
 }: {
   hit: SearchHit;
   onOpen?: (root: string, path: string) => void;
+  onPreview?: (root: string, path: string) => void;
+  rootDisplay: Map<string, string>;
+  copiedPath: string | null;
+  copyToClipboard: (text: string, label: string) => Promise<boolean>;
 }) {
   const [hovered, setHovered] = useState(false);
   const context = hit.context ?? [];
   const hasContext = context.length > 0;
+  const copyLabel = `search-${hit.root}:${hit.path}`;
+  const copied = copiedPath === copyLabel;
   return (
     <>
-      <button
-        type="button"
-        style={{
-          ...styles.hitPath,
-          ...(hasContext ? styles.hitPathWithCtx : null),
-          ...(hovered ? styles.hitPathHover : null),
-        }}
-        onClick={() => onOpen?.(hit.root, parentDir(hit.path))}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        title="Open folder in Files"
-      >
-        <span style={styles.hitRoot}>{hit.root}</span>
-        <span style={styles.hitSep}>/</span>
-        <span style={styles.hitPathText}>{hit.path.replace(/^\//, '')}</span>
-        {hit.line != null && <span style={styles.hitLine}>:{hit.line}</span>}
-      </button>
+      <div style={styles.hitHeaderRow}>
+        <button
+          type="button"
+          style={{
+            ...styles.hitPath,
+            ...(hasContext ? styles.hitPathWithCtx : null),
+            ...(hovered ? styles.hitPathHover : null),
+          }}
+          onClick={() => onOpen?.(hit.root, parentDir(hit.path))}
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+          title="Open folder in Files"
+        >
+          <span style={styles.hitRoot}>{hit.root}</span>
+          <span style={styles.hitSep}>/</span>
+          <span style={styles.hitPathText}>{hit.path.replace(/^\//, '')}</span>
+          {hit.line != null && <span style={styles.hitLine}>:{hit.line}</span>}
+        </button>
+        {/* Row actions: copy the file's full server-side path, or open the
+            file in the preview pane (bypassing the Files navigation that a
+            header click performs). Always visible so touch users can reach
+            them; muted until the row is hovered. */}
+        <div
+          style={{
+            ...styles.hitActions,
+            ...(hasContext ? styles.hitActionsWithCtx : null),
+            ...(hovered ? styles.hitPathHover : null),
+          }}
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+        >
+          <button
+            type="button"
+            style={styles.hitActionBtn}
+            onClick={() => void copyToClipboard(fullPathFor(rootDisplay, hit), copyLabel)}
+            title={copied ? 'Copied!' : 'Copy full path'}
+            aria-label="Copy full path"
+          >
+            {copied
+              ? <IconCheck style={{ width: 14, height: 14, color: c.accent }} />
+              : <IconClipboard style={{ width: 14, height: 14 }} />}
+          </button>
+          <button
+            type="button"
+            style={styles.hitActionBtn}
+            onClick={() => onPreview?.(hit.root, hit.path)}
+            title="Open in preview pane"
+            aria-label="Open in preview pane"
+          >
+            <IconPreview style={{ width: 14, height: 14 }} />
+          </button>
+        </div>
+      </div>
       {hasContext && (
         <pre style={styles.context}>
           {context.map((line, idx) => (
@@ -1416,7 +1498,8 @@ const styles: Record<string, CSSProperties> = {
   hitPath: {
     display: 'flex',
     alignItems: 'center',
-    width: '100%',
+    flex: '1 1 auto',
+    minWidth: 0,
     height: HIT_PATH_H,
     boxSizing: 'border-box',
     textAlign: 'left',
@@ -1428,9 +1511,40 @@ const styles: Record<string, CSSProperties> = {
     color: c.text,
     cursor: 'pointer',
     gap: 0,
-    minWidth: 0,
     transition: 'background 0.1s',
     borderRadius: radius.sm,
+  },
+  hitHeaderRow: {
+    display: 'flex',
+    alignItems: 'stretch',
+    width: '100%',
+    minWidth: 0,
+  },
+  hitActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 2,
+    flexShrink: 0,
+    padding: '0 4px',
+    transition: 'background 0.1s',
+  },
+  hitActionsWithCtx: {
+    borderBottom: `1px solid ${c.borderSubtle}`,
+    background: c.bg,
+  },
+  hitActionBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 22,
+    height: 22,
+    padding: 0,
+    border: 'none',
+    background: 'transparent',
+    borderRadius: radius.sm,
+    color: c.textMuted,
+    cursor: 'pointer',
+    flexShrink: 0,
   },
   hitPathWithCtx: {
     borderBottom: `1px solid ${c.borderSubtle}`,

@@ -536,6 +536,18 @@ export default function App() {
     setNavRequest({ root, path, nonce: Date.now() });
   }, []);
 
+  // "Open in preview pane" from a search hit: switch to Files (where the
+  // preview pane lives — on mobile that surfaces the full-screen preview)
+  // and open the hit as a tab. Search hits are always files, so the entry is
+  // synthesized; the preview pane dispatches on the path extension and the
+  // viewers fetch content themselves.
+  const handlePreviewFromSearch = useCallback((root: string, path: string) => {
+    setView('files');
+    const name = path.split('/').filter(Boolean).pop() ?? path;
+    const entry: FsEntry = { name, entry_type: 'file', size: null, modified: null, denied: false };
+    handleFileSelect(root, path, entry);
+  }, [handleFileSelect]);
+
   const activeProgress = Array.from(progressMap.values());
 
   if (loggedIn === null) {
@@ -1024,6 +1036,7 @@ export default function App() {
                   agent={selectedAgent}
                   initialRoot={selectedRoot}
                   onOpenFile={openInFiles}
+                  onPreviewFile={handlePreviewFromSearch}
                 />
               </div>
               {view === 'settings' && (

@@ -213,3 +213,33 @@ export function IconBrandMark({ style }: SvgProps) {
     </svg>
   );
 }
+
+/// Clipboard glyph — transient "Copied!" feedback uses IconCheck instead.
+export function IconClipboard({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <rect x="3" y="4" width="9" height="10" rx="1.5" />
+      <path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1" />
+      <path d="M6 8h4M6 10.5h2.5" />
+    </Svg>
+  );
+}
+
+/// Eye — "open in the preview pane" affordance for search hit cards.
+export function IconPreview({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <path d="M1.5 8C1.5 8 3.8 3.8 8 3.8S14.5 8 14.5 8 12.2 12.2 8 12.2 1.5 8 1.5 8Z" />
+      <circle cx="8" cy="8" r="2.1" />
+    </Svg>
+  );
+}
+
+/// Checkmark — transient success state (e.g. after a copy action).
+export function IconCheck({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <path d="M3.5 8.5l3 3 6-7" />
+    </Svg>
+  );
+}
