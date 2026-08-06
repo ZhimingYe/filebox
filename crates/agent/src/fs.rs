@@ -198,14 +198,13 @@ pub(crate) fn open_resolved_leaf(
 /// syscalls instead of O(files). Skipping is safe because we return nothing
 /// for files (no path-surface exposure); directories still go through the full
 /// canonicalize + deny check.
-/// Resolve a directory path through the security checks (root enabled,
-/// inside root, not a sensitive virtual fs) and return its mtime. This is the
-/// cache's cheap O(1) validity probe: on a cache hit we pay only this single
-/// stat instead of re-reading the whole directory.
-/// Resolve a directory and return its canonical path plus mtime in one call.
-/// DirCache needs the canonical path to re-stat individual entries on cache
-/// hits (in-place file edits don't bump the parent dir's mtime), so resolving
-/// twice — once for the probe, once per entry — would be wasteful.
+/// Resolve a directory path through the security checks (root enabled, inside
+/// root, not a sensitive virtual fs) and return its canonical path plus mtime
+/// in one call. DirCache uses this as its validity probe on cache hits — a
+/// single stat instead of re-reading the whole directory — and also needs the
+/// canonical path to re-stat individual entries on those hits (in-place file
+/// edits don't bump the parent dir's mtime), so resolving twice would be
+/// wasteful.
 pub(crate) fn resolve_dir_mtime(
     roots: &[RootConfig],
     root_name: &str,

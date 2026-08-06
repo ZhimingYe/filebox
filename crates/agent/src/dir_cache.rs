@@ -594,6 +594,154 @@ mod tests {
     }
 
     #[test]
+    fn denied_entries_stay_frozen_on_cache_hit() {
+        // The page re-stat must skip denied entries: they keep
+        // size=None/modified=None even after an in-place edit that would
+        // otherwise change their metadata. Leaking size/mtime of a denied
+        // file on a cache hit would defeat the denylist.
+        let sb = Sandbox::new();
+        sb.write_file(".env", b"SECRET=one");
+        let roots = vec![sb.root()];
+        let cache = DirCache::new();
+
+        let (p1, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
+        let denied = p1
+            .iter()
+            .find(|e| e.name == ".env")
+            .expect("denied entry is still listed");
+        assert!(denied.denied, ".env must be flagged denied");
+        assert!(denied.size.is_none(), "denied entries must not expose size");
+        assert!(denied.modified.is_none(), "denied entries must not expose mtime");
+
+        // In-place edit (parent dir mtime unchanged), then a cache-hit re-list.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        sb.write_file(".env", b"SECRET=two");
+
+        let (p2, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
+        let denied_after = p2
+            .iter()
+            .find(|e| e.name == ".env")
+            .expect("denied entry is still listed");
+        assert!(denied_after.denied);
+        assert!(
+            denied_after.size.is_none(),
+            "cache-hit re-stat must not leak size for denied entries"
+        );
+        assert!(
+            denied_after.modified.is_none(),
+            "cache-hit re-stat must not leak mtime for denied entries"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_target_edit_refreshes_modified_on_hit() {
+        use std::os::unix::fs::symlink;
+
+        // A symlink entry is classified by file_type (no follow), but its
+        // size/modified come from fs::metadata (follows). The page re-stat
+        // must mirror scan_dir_entries exactly: editing the TARGET in place
+        // refreshes the link's `modified` on a cache hit (in-place edits
+        // don't bump the parent dir mtime), while `size` stays None because
+        // the entry is a Symlink, not a File.
+        let sb = Sandbox::new();
+        sb.write_file("target.txt", b"first");
+        symlink(
+            sb.root_path.join("target.txt"),
+            sb.root_path.join("link.txt"),
+        )
+        .unwrap();
+        let roots = vec![sb.root()];
+        let cache = DirCache::new();
+
+        let (p1, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
+        let link = p1
+            .iter()
+            .find(|e| e.name == "link.txt")
+            .expect("symlink is listed");
+        assert_eq!(link.entry_type, FsEntryType::Symlink);
+        assert!(link.size.is_none(), "symlink entries never report size");
+        let modified_before = link
+            .modified
+            .clone()
+            .expect("symlink reports target mtime via follow");
+
+        // Edit the target in place; the parent dir mtime is unchanged.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        sb.write_file("target.txt", b"second");
+
+        let (p2, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
+        let link_after = p2
+            .iter()
+            .find(|e| e.name == "link.txt")
+            .expect("symlink is still listed");
+        assert_ne!(
+            link_after.modified.as_deref(),
+            Some(modified_before.as_str()),
+            "cache hit must re-stat through the symlink"
+        );
+        assert_eq!(link_after.entry_type, FsEntryType::Symlink);
+        assert!(link_after.size.is_none());
+    }
+
+    #[test]
+    fn concurrent_hits_are_stable() {
+        use std::sync::Barrier;
+
+        // Hammer one cached directory from 8 threads. Every call is a cache
+        // hit (10 files, limit 4, never truncated), so the two-phase re-stat
+        // — stats outside the lock, generation-guarded write-back — runs
+        // concurrently. Whatever the interleaving, each thread's pagination
+        // must still cover all 10 files exactly once, with no duplicates,
+        // no lost pages, and no panics.
+        let sb = Sandbox::new();
+        for ch in b'a'..=b'j' {
+            sb.write_file(&format!("{}.txt", ch as char), b"x");
+        }
+        let expected: Vec<String> = (b'a'..=b'j')
+            .map(|ch| format!("{}.txt", ch as char))
+            .collect();
+
+        let roots = vec![sb.root()];
+        let cache = Arc::new(DirCache::new());
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let cache = cache.clone();
+            let roots = roots.clone();
+            let expected = expected.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..50 {
+                    let (p1, c1) = cache.list(&roots, "test", "", 4, None, false).unwrap();
+                    let (p2, c2) = cache.list(&roots, "test", "", 4, c1.as_deref(), false).unwrap();
+                    let (p3, c3) = cache.list(&roots, "test", "", 4, c2.as_deref(), false).unwrap();
+                    assert_eq!(p1.len(), 4);
+                    assert_eq!(p2.len(), 4);
+                    assert_eq!(p3.len(), 2);
+                    assert!(c3.is_none());
+                    let mut names: Vec<String> = p1
+                        .iter()
+                        .chain(p2.iter())
+                        .chain(p3.iter())
+                        .map(|e| e.name.clone())
+                        .collect();
+                    assert_eq!(names.len(), 10);
+                    names.sort();
+                    assert_eq!(
+                        names, expected,
+                        "concurrent pagination must cover every file exactly once"
+                    );
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("concurrent hit thread must not panic");
+        }
+    }
+
+    #[test]
     fn cache_pagination_uses_cached_vec() {
         // Create 5 files; page through with the cache. Page 2 must NOT require
         // a re-read that loses data — the cached vec is sliced consistently.
