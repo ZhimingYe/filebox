@@ -2,7 +2,7 @@ use std::cmp::Ordering as CmpOrdering;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use filebox_protocol::resources::{FsEntry, FsEntryType, RootConfig};
 
@@ -18,11 +18,17 @@ use crate::fs::{dir_mtime, scan_dir_entries};
 ///
 /// **The fix:** retain only the smallest bounded prefix needed for ordinary
 /// pagination, memoize it per (root, path, dirs_only), and invalidate via the
-/// directory's mtime. Oversized directories are rescanned with bounded heaps
-/// once a cursor moves past the cached prefix, so memory stays bounded.
+/// directory's mtime or a TTL. Oversized directories are rescanned with
+/// bounded heaps once a cursor moves past the cached prefix, so memory stays
+/// bounded.
 ///
 /// **Validity / safety:**
 /// - mtime change → natural invalidation (entry is recomputed on next access).
+/// - TTL expiry → natural invalidation too. The mtime signal alone misses
+///   in-place file content edits (a `write`/`save` bumps the file's mtime but
+///   NOT the parent directory's mtime on ext4 & friends), which made the
+///   listing's `modified` column stale until the next structural change.
+///   `DIR_CACHE_TTL` bounds that staleness (see `FILEBOX_AGENT_DIR_CACHE_TTL_SECS`).
 /// - root reconfigure (path/name/enabled change) → the connection loop calls
 ///   `clear()` after a successful `apply_desired`, since a root's path may have
 ///   changed and cached entries would describe the wrong tree. Denied flags are
@@ -36,6 +42,7 @@ use crate::fs::{dir_mtime, scan_dir_entries};
 /// and cached directory count. LRU-ish eviction removes the oldest listing.
 pub struct DirCache {
     inner: Mutex<Inner>,
+    ttl: Duration,
 }
 
 struct Inner {
@@ -54,12 +61,18 @@ struct CacheEntry {
     items: Vec<FsEntry>,
     truncated: bool,
     dir_mtime: Option<SystemTime>,
+    /// When this listing was scanned. TTL revalidation (below) is computed
+    /// from this, independently of `last_used` (LRU eviction recency).
+    listed_at: Instant,
     last_used: Instant,
 }
 
 const MAX_CACHED_DIRS: usize = 256;
 const MAX_CACHEABLE_ENTRIES_PER_DIR: usize = 20_000;
 const MAX_CACHED_ENTRIES: usize = 200_000;
+
+/// Default staleness bound for a cached listing (see `try_cached`).
+const DEFAULT_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 struct RankedEntry {
@@ -225,11 +238,21 @@ fn scan_bounded(
 
 impl DirCache {
     pub fn new() -> Arc<Self> {
+        let secs = std::env::var("FILEBOX_AGENT_DIR_CACHE_TTL_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_TTL.as_secs());
+        Self::with_ttl(Duration::from_secs(secs.max(1)))
+    }
+
+    /// Construct with an explicit TTL (tests use short TTLs).
+    pub fn with_ttl(ttl: Duration) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner {
                 entries: HashMap::new(),
                 total_entries: 0,
             }),
+            ttl,
         })
     }
 
@@ -319,6 +342,7 @@ impl DirCache {
                     items: scanned.cache_items,
                     truncated: scanned.truncated,
                     dir_mtime: Some(mtime),
+                    listed_at: Instant::now(),
                     last_used: Instant::now(),
                 },
             );
@@ -346,6 +370,15 @@ impl DirCache {
         let entry = inner.entries.get_mut(key)?;
         if entry.dir_mtime != Some(current) {
             // Stale — let the caller recompute.
+            return None;
+        }
+        // TTL safety net: the directory mtime does not change when a file's
+        // CONTENT is edited in place (write/save bumps the file's mtime, not
+        // the parent dir's), so an mtime-only cache would serve stale
+        // `modified`/`size` values until the next structural change. Expiring
+        // the entry after `ttl` bounds that staleness: the caller rescans and
+        // the UI refresh (or re-entry) then shows current values.
+        if entry.listed_at.elapsed() >= self.ttl {
             return None;
         }
         entry.last_used = Instant::now();
@@ -493,6 +526,61 @@ mod tests {
     }
 
     #[test]
+    fn inplace_content_edit_surfaces_after_ttl() {
+        // Regression for the issue #39 class of staleness: editing a file's
+        // CONTENT in place changes the file's mtime but NOT the parent
+        // directory's mtime, so an mtime-only cache keeps serving the old
+        // `modified` value until a structural change. The TTL must force a
+        // rescan so the UI refresh shows current values.
+        let sb = Sandbox::new();
+        sb.write_file("a.txt", b"first");
+        let roots = vec![sb.root()];
+        // TTL must comfortably exceed the 1.1s mtime-resolution sleep below so
+        // the second list still lands inside the TTL window.
+        let cache = DirCache::with_ttl(std::time::Duration::from_secs(2));
+
+        let (p1, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
+        let modified_before = p1
+            .iter()
+            .find(|e| e.name == "a.txt")
+            .map(|e| e.modified.clone())
+            .flatten();
+        assert!(modified_before.is_some(), "scan must report a modified time");
+
+        // Ensure the in-place write lands >1s after the scan so coarse mtime
+        // resolution (1s on some filesystems) can't collapse the two values.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        sb.write_file("a.txt", b"second");
+
+        // Within the TTL the cache may still serve the old value — bounded
+        // staleness is the accepted trade-off (the dir mtime did not change).
+        let (p2, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
+        let modified_within_ttl = p2
+            .iter()
+            .find(|e| e.name == "a.txt")
+            .map(|e| e.modified.clone())
+            .flatten();
+        assert_eq!(
+            modified_within_ttl, modified_before,
+            "cache hit within TTL must not rescan (dir mtime unchanged)"
+        );
+
+        // After the TTL expires the listing must be rescanned and show the
+        // file's current mtime.
+        std::thread::sleep(std::time::Duration::from_millis(2200));
+        let (p3, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
+        let modified_after_ttl = p3
+            .iter()
+            .find(|e| e.name == "a.txt")
+            .map(|e| e.modified.clone())
+            .flatten();
+        assert_ne!(
+            modified_after_ttl, modified_before,
+            "TTL expiry must rescan and surface the in-place edit"
+        );
+    }
+
+    #[test]
     fn cache_pagination_uses_cached_vec() {
         // Create 5 files; page through with the cache. Page 2 must NOT require
         // a re-read that loses data — the cached vec is sliced consistently.
@@ -630,6 +718,7 @@ mod tests {
                 items: vec![make_entry("a"), make_entry("b"), make_entry("c")],
                 truncated: false,
                 dir_mtime: Some(SystemTime::UNIX_EPOCH),
+                listed_at: Instant::now(),
                 last_used: Instant::now() - std::time::Duration::from_secs(1),
             },
         );
@@ -639,6 +728,7 @@ mod tests {
                 items: vec![make_entry("d"), make_entry("e"), make_entry("f")],
                 truncated: false,
                 dir_mtime: Some(SystemTime::UNIX_EPOCH),
+                listed_at: Instant::now(),
                 last_used: Instant::now(),
             },
         );
