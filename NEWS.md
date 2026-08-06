@@ -13,6 +13,12 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **Monaco code preview** — read-only Monaco Editor replaces Prism / `react-syntax-highlighter` for code files (Find, wrap, syntax highlight). Lazy-loaded; not placed in Vite `manualChunks` so the ~4MB editor is not preloaded on every page.
 
 ### Changed
+- **Directory cache re-stat cooldown** — cache hits refresh page metadata so
+  in-place file edits surface immediately, but per-entry re-stats are now
+  throttled by a default 2s cooldown (`FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS`):
+  rapid scrolling or back-and-forth paging through the same directory pays
+  ~1 stat per entry per window instead of per page fetch. Structural changes
+  still invalidate instantly; in-place edits surface within one window.
 - **Explorer sorting** — choose filename or modification date with ascending/descending direction; folders stay ahead of files, missing timestamps stay last, and the browser remembers the preference.
 - **Image preview** — flex stage fits tall images; wheel / pinch zoom and pointer pan; dimension downscale caps (max edge 8192, ~16M pixels); `ImagePreview` is now lazy-loaded like other heavy viewers.
 - **Preview size confirmation** — images and PDFs (including Office-converted PDFs) require explicit confirmation at 15 MiB or larger; text, Markdown, and HTML require confirmation at 2 MiB or larger. CSV and TSV require confirmation from 2 MiB through 15 MiB and stay download-only above 15 MiB.

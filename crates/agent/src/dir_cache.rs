@@ -3,7 +3,7 @@ use std::collections::{BinaryHeap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use filebox_protocol::resources::{FsEntry, FsEntryType, RootConfig};
 
@@ -30,6 +30,15 @@ use crate::fs::{resolve_dir_mtime, scan_dir_entries};
 ///   requested page (O(limit), matching `scan_dir_entries` metadata rules)
 ///   before serving — exact values at the cost of a bounded syscall count,
 ///   with no full-directory rescan.
+/// - re-stats are throttled per entry by `RESTAT_COOLDOWN_MS`: an entry
+///   refreshed within the window is served from cache, so rapid repeated
+///   paging through one directory (scroll up/down, re-navigation) pays ~1
+///   stat per entry per window instead of per page fetch. In-place edits
+///   surface within one window (≤2s by default, tunable via
+///   `FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS`); structural changes still
+///   invalidate instantly via the dir mtime. Scans mark every item fresh at
+///   insert, so the first hits after a scan cost nothing. A cooldown of 0
+///   disables throttling (stat every hit).
 /// - root reconfigure (path/name/enabled change) → the connection loop calls
 ///   `clear()` after a successful `apply_desired`, since a root's path may have
 ///   changed and cached entries would describe the wrong tree. Denied flags are
@@ -43,6 +52,9 @@ use crate::fs::{resolve_dir_mtime, scan_dir_entries};
 /// and cached directory count. LRU-ish eviction removes the oldest listing.
 pub struct DirCache {
     inner: Mutex<Inner>,
+    /// Per-entry re-stat throttle on cache hits (see `CachedItem::last_restat`
+    /// and the module docs). Zero disables throttling.
+    restat_cooldown: Duration,
 }
 
 struct Inner {
@@ -60,8 +72,19 @@ struct CacheKey {
     dirs_only: bool,
 }
 
+/// One cached listing row: the `FsEntry` plus the moment its metadata was
+/// last refreshed (scan insert or page re-stat). `try_cached` skips entries
+/// whose `last_restat` is inside the cooldown window, serving the cached
+/// values — that is what collapses repeated paging into ~1 stat per entry
+/// per window instead of per page fetch.
+#[derive(Clone)]
+struct CachedItem {
+    entry: FsEntry,
+    last_restat: Instant,
+}
+
 struct CacheEntry {
-    items: Vec<FsEntry>,
+    items: Vec<CachedItem>,
     truncated: bool,
     dir_mtime: Option<SystemTime>,
     /// Insert generation (see `Inner::next_generation`) guarding page
@@ -73,6 +96,22 @@ struct CacheEntry {
 const MAX_CACHED_DIRS: usize = 256;
 const MAX_CACHEABLE_ENTRIES_PER_DIR: usize = 20_000;
 const MAX_CACHED_ENTRIES: usize = 200_000;
+
+/// Default re-stat cooldown in milliseconds: an entry's metadata is
+/// considered fresh for this long after the scan that produced it or the
+/// page re-stat that refreshed it. 2000ms is invisible to humans (the UI
+/// shows the values once) while eliminating nearly all re-stat syscalls
+/// from rapid back-and-forth paging. Overridable at agent startup via
+/// `FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS` (0 = exact, stat every hit).
+const RESTAT_COOLDOWN_MS: u64 = 2000;
+
+fn restat_cooldown_from_env() -> Duration {
+    let ms = std::env::var("FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(RESTAT_COOLDOWN_MS);
+    Duration::from_millis(ms)
+}
 
 #[derive(Clone)]
 struct RankedEntry {
@@ -238,12 +277,19 @@ fn scan_bounded(
 
 impl DirCache {
     pub fn new() -> Arc<Self> {
+        Self::with_cooldown(restat_cooldown_from_env())
+    }
+
+    /// Constructor with an explicit cooldown. Tests use small/zero cooldowns
+    /// to exercise the re-stat path deterministically.
+    fn with_cooldown(cooldown: Duration) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner {
                 entries: HashMap::new(),
                 total_entries: 0,
                 next_generation: 0,
             }),
+            restat_cooldown: cooldown,
         })
     }
 
@@ -330,10 +376,22 @@ impl DirCache {
             let mut inner = self.inner.lock().expect("DirCache mutex poisoned");
             let generation = inner.next_generation;
             inner.next_generation = inner.next_generation.wrapping_add(1);
+            // The scan just read every entry's metadata from disk, so all
+            // items start inside the cooldown window — the first hits after a
+            // scan cost no re-stats at all.
+            let scanned_at = Instant::now();
+            let items = scanned
+                .cache_items
+                .into_iter()
+                .map(|entry| CachedItem {
+                    entry,
+                    last_restat: scanned_at,
+                })
+                .collect();
             let previous = inner.entries.insert(
                 key,
                 CacheEntry {
-                    items: scanned.cache_items,
+                    items,
                     truncated: scanned.truncated,
                     dir_mtime: Some(mtime),
                     generation,
@@ -369,14 +427,14 @@ impl DirCache {
         }
         entry.last_used = Instant::now();
         let start = match cursor {
-            Some(cursor) => entry.items.iter().position(|item| item.name == cursor)? + 1,
+            Some(cursor) => entry.items.iter().position(|item| item.entry.name == cursor)? + 1,
             None => 0,
         };
         let available = entry.items.len().saturating_sub(start);
         if entry.truncated && available < limit {
             return None;
         }
-        let mut page: Vec<FsEntry> = entry
+        let mut page: Vec<CachedItem> = entry
             .items
             .iter()
             .skip(start)
@@ -386,7 +444,7 @@ impl DirCache {
         let has_more = start.saturating_add(page.len()) < entry.items.len()
             || (entry.truncated && page.len() == limit);
         let next_cursor = (has_more && page.len() == limit)
-            .then(|| page.last().map(|item| item.name.clone()))
+            .then(|| page.last().map(|item| item.entry.name.clone()))
             .flatten();
         let generation = entry.generation;
         drop(inner);
@@ -396,16 +454,21 @@ impl DirCache {
         // content edits don't bump the parent dir mtime, so the cached values
         // would otherwise go stale until the next structural change; re-stat
         // mirrors scan_dir_entries' rules (follow symlinks, size only for
-        // files, denied entries stay frozen).
+        // files, denied entries stay frozen). Entries re-statted inside the
+        // cooldown window are served as-is — repeated paging through the same
+        // directory then pays ~1 stat per entry per window, not per page.
         let refreshed: Vec<(usize, FsEntry)> = page
             .iter()
             .enumerate()
-            .filter_map(|(i, entry)| {
-                if entry.denied {
+            .filter_map(|(i, item)| {
+                if item.entry.denied {
                     return None;
                 }
-                let md = std::fs::metadata(abs_path.join(&entry.name)).ok()?;
-                let mut fresh = entry.clone();
+                if item.last_restat.elapsed() < self.restat_cooldown {
+                    return None;
+                }
+                let md = std::fs::metadata(abs_path.join(&item.entry.name)).ok()?;
+                let mut fresh = item.entry.clone();
                 if fresh.entry_type == FsEntryType::File {
                     fresh.size = Some(md.len());
                 }
@@ -417,8 +480,11 @@ impl DirCache {
             })
             .collect();
         // The caller sees the refreshed page; the cache is updated below.
+        // One timestamp for all write-backs: the moment the stats actually
+        // completed (stats take real time on slow mounts).
+        let restat_done_at = Instant::now();
         for (i, fresh) in &refreshed {
-            page[*i] = fresh.clone();
+            page[*i].entry = fresh.clone();
         }
 
         // Write back under the lock, guarded by the generation: if a rescan
@@ -428,12 +494,16 @@ impl DirCache {
             if entry.generation == generation {
                 for (i, fresh) in refreshed {
                     if let Some(slot) = entry.items.get_mut(start + i) {
-                        *slot = fresh;
+                        slot.entry = fresh;
+                        slot.last_restat = restat_done_at;
                     }
                 }
             }
         }
-        Some((page, next_cursor))
+        Some((
+            page.into_iter().map(|item| item.entry).collect(),
+            next_cursor,
+        ))
     }
 
     /// Evict the least-recently-used entry when over the cap. Called under the
@@ -565,7 +635,10 @@ mod tests {
         let sb = Sandbox::new();
         sb.write_file("a.txt", b"first");
         let roots = vec![sb.root()];
-        let cache = DirCache::new();
+        // Tiny cooldown: the 1.1s granularity sleep below must land OUTSIDE
+        // the window so the hit actually re-stats (this test asserts the
+        // re-stat surfaces the edit, not the cooldown serving cached values).
+        let cache = DirCache::with_cooldown(Duration::from_millis(50));
 
         let (p1, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
         let modified_before = p1
@@ -593,6 +666,51 @@ mod tests {
     }
 
     #[test]
+    fn restat_cooldown_defers_refresh_within_window() {
+        // The cooldown is the deliberate staleness tradeoff: an entry
+        // refreshed within the window is served from cache (no re-stat), and
+        // a visit after the window re-stats and surfaces the in-place edit.
+        // This is what collapses rapid back-and-forth paging into ~1 stat
+        // per entry per window instead of per page fetch.
+        let sb = Sandbox::new();
+        sb.write_file("a.txt", b"first");
+        let roots = vec![sb.root()];
+        let cache = DirCache::with_cooldown(Duration::from_secs(2));
+
+        let (p1, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
+        let e1 = p1.iter().find(|e| e.name == "a.txt").unwrap();
+        let modified_before = e1.modified.clone().expect("scan must report a modified time");
+        let size_before = e1.size.expect("scan must report a size");
+
+        // In-place edit >1s later so coarse mtime resolution (1s on some
+        // filesystems) can't collapse the values; dir mtime is unchanged.
+        std::thread::sleep(Duration::from_millis(1100));
+        sb.write_file("a.txt", b"second!");
+
+        // Visit INSIDE the window: still inside the 2s cooldown from the
+        // scan, so the hit serves the cached values without re-statting.
+        let (p2, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
+        let e2 = p2.iter().find(|e| e.name == "a.txt").unwrap();
+        assert_eq!(
+            e2.modified.as_deref(),
+            Some(modified_before.as_str()),
+            "a hit inside the cooldown window must serve the cached value"
+        );
+        assert_eq!(e2.size, Some(size_before));
+
+        // Visit AFTER the window: the re-stat surfaces the edit.
+        std::thread::sleep(Duration::from_millis(1500));
+        let (p3, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
+        let e3 = p3.iter().find(|e| e.name == "a.txt").unwrap();
+        assert_ne!(
+            e3.modified.as_deref(),
+            Some(modified_before.as_str()),
+            "a hit after the cooldown window must re-stat and surface the edit"
+        );
+        assert_ne!(e3.size, Some(size_before));
+    }
+
+    #[test]
     fn denied_entries_stay_frozen_on_cache_hit() {
         // The page re-stat must skip denied entries: they keep
         // size=None/modified=None even after an in-place edit that would
@@ -601,7 +719,9 @@ mod tests {
         let sb = Sandbox::new();
         sb.write_file(".env", b"SECRET=one");
         let roots = vec![sb.root()];
-        let cache = DirCache::new();
+        // Small cooldown so the post-edit hit really re-stats and exercises
+        // the denied-skip branch (with the default 2s window it would skip).
+        let cache = DirCache::with_cooldown(Duration::from_millis(50));
 
         let (p1, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
         let denied = p1
@@ -651,7 +771,9 @@ mod tests {
         )
         .unwrap();
         let roots = vec![sb.root()];
-        let cache = DirCache::new();
+        // Small cooldown so the post-edit hit really re-stats (the 1.1s
+        // granularity sleep below lands outside a 50ms window).
+        let cache = DirCache::with_cooldown(Duration::from_millis(50));
 
         let (p1, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
         let link = p1
@@ -702,7 +824,10 @@ mod tests {
             .collect();
 
         let roots = vec![sb.root()];
-        let cache = Arc::new(DirCache::new());
+        // Zero cooldown: every hit re-stats, so the generation-guarded
+        // write-back stays hot under concurrency (a real cooldown would
+        // collapse 49 of 50 iterations into cache-only hits).
+        let cache: Arc<DirCache> = DirCache::with_cooldown(Duration::ZERO);
         let barrier = Arc::new(Barrier::new(8));
         let mut handles = Vec::new();
         for _ in 0..8 {
@@ -858,6 +983,10 @@ mod tests {
             modified: None,
             denied: false,
         };
+        let make_item = |name: &str| CachedItem {
+            entry: make_entry(name),
+            last_restat: Instant::now(),
+        };
         let old_key = CacheKey {
             root: "root".to_string(),
             path: "/old".to_string(),
@@ -876,7 +1005,7 @@ mod tests {
         inner.entries.insert(
             old_key.clone(),
             CacheEntry {
-                items: vec![make_entry("a"), make_entry("b"), make_entry("c")],
+                items: vec![make_item("a"), make_item("b"), make_item("c")],
                 truncated: false,
                 dir_mtime: Some(SystemTime::UNIX_EPOCH),
                 generation: 0,
@@ -886,7 +1015,7 @@ mod tests {
         inner.entries.insert(
             new_key.clone(),
             CacheEntry {
-                items: vec![make_entry("d"), make_entry("e"), make_entry("f")],
+                items: vec![make_item("d"), make_item("e"), make_item("f")],
                 truncated: false,
                 dir_mtime: Some(SystemTime::UNIX_EPOCH),
                 generation: 0,

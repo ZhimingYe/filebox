@@ -379,7 +379,10 @@ set `proxy_buffering off` + `proxy_cache off` (SSE). Forward
   (agent's read loop is independent of its writer; writes have a 10s
   timeout).
 - `DirCache` on the agent caches directory listings by mtime (cap 256);
-  it is cleared when roots are applied. Do not assume every list hits disk.
+  cache hits re-stat the requested page so in-place edits surface, throttled
+  per entry by a default 2s cooldown
+  (`FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS`, 0 = stat every hit); it is
+  cleared when roots are applied. Do not assume every list hits disk.
 - Workspace Search is in-process (`ignore` + `regex`); do not assume
   system `fd`/`rg` binaries. One search per agent at a time; long scans
   must stay cancelable and progress-visible.
