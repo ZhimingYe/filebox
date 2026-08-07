@@ -22,7 +22,7 @@ use crate::state::{
     GET_ACCESS_TOKEN_TTL_FILE, MAX_PENDING_RESPONSES,
     PREVIEW_SESSION_MAX_TOTAL, PREVIEW_SESSION_TTL,
 };
-use crate::{events, fs_proxy, health, ws};
+use crate::{events, fs_proxy, health, preview_doc, ws};
 
 pub fn create_router(state: AppState) -> Router {
     // Public routes (no auth required)
@@ -198,10 +198,17 @@ async fn security_headers(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(
-        HeaderName::from_static("x-frame-options"),
-        HeaderValue::from_static("DENY"),
-    );
+    // Blanket clickjacking protection, except for preview document-mode
+    // responses: those must render inside the sandboxed preview iframe and
+    // the blob new-window wrapper (both opaque origins), so the preview
+    // handler marks them with a sentinel header and this layer defers to it.
+    // Their injected CSP keeps them locked to the token origin either way.
+    if !headers.contains_key("x-filebox-preview-document") {
+        headers.insert(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
+        );
+    }
     if is_https {
         headers.insert(
             header::STRICT_TRANSPORT_SECURITY,
@@ -889,12 +896,16 @@ struct PreviewSessionCreateRequest {
 #[derive(serde::Serialize)]
 struct PreviewSessionCreateResponse {
     base_url: String,
+    /// URL of the session's own HTML document (relative, like `base_url`).
+    /// The iframe loads this URL so navigation requests hit document mode.
+    document_url: String,
     expires_in_sec: u64,
 }
 
 async fn preview_session_create_handler(
     State(state): State<AppState>,
     Extension(session): Extension<AuthenticatedSession>,
+    headers: HeaderMap,
     Json(req): Json<PreviewSessionCreateRequest>,
 ) -> Response {
     let Some(file_path) = normalize_preview_file_path(&req.path) else {
@@ -908,7 +919,7 @@ async fn preview_session_create_handler(
         )
             .into_response();
     };
-    if !is_html_preview_path(&file_path) {
+    if !preview_doc::is_html_path(&file_path) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -921,6 +932,7 @@ async fn preview_session_create_handler(
     }
 
     let base_path = preview_base_path(&file_path);
+    let absolute_base_url = preview_doc::absolute_origin_from_request(&headers);
 
     let preview_sessions = {
         let inner = state.inner.read().await;
@@ -1012,7 +1024,8 @@ async fn preview_session_create_handler(
                 .as_secs()
                 .max(1);
             return Json(PreviewSessionCreateResponse {
-                base_url: preview_base_url(&token, &base_path),
+                base_url: preview_doc::preview_base_url(&token, &base_path),
+                document_url: preview_doc::preview_document_url(&token, &base_path, &file_path),
                 expires_in_sec,
             })
             .into_response();
@@ -1027,6 +1040,7 @@ async fn preview_session_create_handler(
         agent_id: req.agent_id.clone(),
         root: req.root.clone(),
         base_path: base_path.clone(),
+        absolute_base_url,
         created_at: now,
         expires_at,
         requests_served: 0,
@@ -1042,7 +1056,8 @@ async fn preview_session_create_handler(
     }
 
     Json(PreviewSessionCreateResponse {
-        base_url: preview_base_url(&token, &base_path),
+        base_url: preview_doc::preview_base_url(&token, &base_path),
+        document_url: preview_doc::preview_document_url(&token, &base_path, &file_path),
         expires_in_sec: PREVIEW_SESSION_TTL.as_secs(),
     })
     .into_response()
@@ -1266,44 +1281,6 @@ fn preview_base_path(file_path: &str) -> String {
         .rsplit_once('/')
         .map(|(base, _)| base.to_string())
         .unwrap_or_default()
-}
-
-fn preview_base_url(token: &str, base_path: &str) -> String {
-    if base_path.is_empty() {
-        format!("/api/preview/{}/", token)
-    } else {
-        format!("/api/preview/{}/{}/", token, percent_encode_path(base_path))
-    }
-}
-
-fn percent_encode_path(path: &str) -> String {
-    path.split('/')
-        .map(percent_encode_path_component)
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-fn percent_encode_path_component(component: &str) -> String {
-    let mut encoded = String::new();
-    for byte in component.as_bytes() {
-        match *byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                encoded.push(*byte as char);
-            }
-            _ => {
-                use std::fmt::Write;
-                let _ = write!(encoded, "%{:02X}", byte);
-            }
-        }
-    }
-    encoded
-}
-
-fn is_html_preview_path(path: &str) -> bool {
-    path.rsplit('.')
-        .next()
-        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "html" | "htm"))
-        .unwrap_or(false)
 }
 
 fn generate_preview_token() -> String {
@@ -2636,6 +2613,7 @@ mod tests {
             agent_id: "agent".to_string(),
             root: "root".to_string(),
             base_path: "".to_string(),
+            absolute_base_url: "http://localhost".to_string(),
             created_at,
             expires_at: created_at + PREVIEW_SESSION_TTL,
             requests_served: 0,
@@ -3532,15 +3510,6 @@ mod tests {
         assert_eq!(preview_base_path("index.html"), "");
     }
 
-    #[test]
-    fn preview_base_url_includes_encoded_html_parent_directory() {
-        assert_eq!(preview_base_url("tok", ""), "/api/preview/tok/");
-        assert_eq!(
-            preview_base_url("tok", "reports/run 1/#figures"),
-            "/api/preview/tok/reports/run%201/%23figures/"
-        );
-    }
-
     #[tokio::test]
     async fn preview_session_create_requires_agent_stat_success() {
         let state = AppState::new(&test_config(), true);
@@ -3561,6 +3530,7 @@ mod tests {
         let response = preview_session_create_handler(
             State(state.clone()),
             test_session(),
+            HeaderMap::new(),
             Json(PreviewSessionCreateRequest {
                 agent_id: "agent".to_string(),
                 root: "root".to_string(),
@@ -3615,6 +3585,7 @@ mod tests {
         let response = preview_session_create_handler(
             State(state.clone()),
             test_session(),
+            HeaderMap::new(),
             Json(PreviewSessionCreateRequest {
                 agent_id: "agent".to_string(),
                 root: "root".to_string(),
@@ -3640,10 +3611,10 @@ mod tests {
 
     #[test]
     fn preview_session_only_accepts_html_extensions() {
-        assert!(is_html_preview_path("report.HTML"));
-        assert!(is_html_preview_path("report.htm"));
-        assert!(!is_html_preview_path("report.md"));
-        assert!(!is_html_preview_path("report"));
+        assert!(preview_doc::is_html_path("report.HTML"));
+        assert!(preview_doc::is_html_path("report.htm"));
+        assert!(!preview_doc::is_html_path("report.md"));
+        assert!(!preview_doc::is_html_path("report"));
     }
 
     #[test]

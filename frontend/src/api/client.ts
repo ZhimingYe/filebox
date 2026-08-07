@@ -655,7 +655,7 @@ export async function eventsAccessUrl(signal?: AbortSignal) {
 }
 
 export async function createPreviewSession(agentId: string, root: string, path: string, signal?: AbortSignal) {
-  return request<{ base_url: string; expires_in_sec: number }>('/api/preview/sessions', {
+  return request<{ base_url: string; document_url: string; expires_in_sec: number }>('/api/preview/sessions', {
     method: 'POST',
     signal,
     body: JSON.stringify({ agent_id: agentId, root, path }),

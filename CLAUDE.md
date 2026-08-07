@@ -299,10 +299,22 @@ survive navigation.
   pinch zoom, pointer pan when zoomed, toolbar ± / rotate / Reset.
   Slow detection at 8s.
 - **HTML**: sandboxed preview sessions (`/api/preview/sessions` + token
-  resource fetch) with Blob URL / `<base>` injection. Toolbar with
-  open-in-new-tab + copy-HTML. Sanitization not enforced — previewing
-  attacker-controlled HTML is out of threat-model scope for this
-  trusted-internal tool.
+  resource fetch). The iframe loads the session's `document_url` directly;
+  the hub serves **navigation** requests (`Sec-Fetch-Mode: navigate` /
+  `nested-navigate`) in document mode — byte-level injected `<base>` (absolute
+  origin from `X-Forwarded-Proto` + `Host`, captured at session creation),
+  CSP meta, charset meta, and a capture-phase click fixup for `#fragment`
+  links (the injected base would otherwise resolve them to the token
+  directory). Subresources / HEAD / XHR stay in raw resource mode (locked
+  down, `frame-ancestors 'none'`, `X-Frame-Options: DENY`). Document-mode
+  responses carry a `x-filebox-preview-document` sentinel so the global
+  `security_headers` layer skips its blanket `X-Frame-Options` for them;
+  their CSP omits `frame-ancestors` so the sandboxed iframe and the blob
+  new-window wrapper (both opaque origins) can render them. Whole documents
+  are buffered for injection, capped at 32 MiB (413 `preview_too_large`);
+  `../` stays a hard sandbox boundary. Non-UTF-8 pages pass through byte-
+  intact. Sanitization not enforced — previewing attacker-controlled HTML
+  is out of threat-model scope for this trusted-internal tool.
 - **CSV**: rendered as table.
 - **Long ops**: `LoadingOverlay` shows spinner + (after 8s) slow warning.
   Does not force cancel — user waits or cancels.
