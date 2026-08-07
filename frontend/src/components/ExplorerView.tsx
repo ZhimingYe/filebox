@@ -1062,7 +1062,16 @@ export function ExplorerView({
         Math.min(nodeRows.length - 1, selectedPosition === -1 ? 0 : selectedPosition + delta),
       );
       const next = nodeRows[nextPosition];
-      if (next) selectNodeAt(next.index);
+      if (next) {
+        selectNodeAt(next.index);
+        // Selection sync: highlighting a directory in the tree moves the
+        // shared browse position too, so the Files view follows the
+        // highlighted folder (mirrors expand/open sync above). Files don't
+        // move the position — they're only opened via Enter.
+        if (next.row.isDirectory) {
+          onNavigateDir(next.row.root, next.row.path);
+        }
+      }
       return;
     }
     if (!selectedNode) return;
@@ -1082,6 +1091,9 @@ export function ExplorerView({
         const child = rows[selectedNode.index + 1];
         if (child?.kind === 'node' && child.depth === row.depth + 1) {
           selectNodeAt(selectedNode.index + 1);
+          // Selection sync: moving into the first child highlights it, and
+          // highlighting a directory moves the shared position.
+          if (child.isDirectory) onNavigateDir(child.root, child.path);
         }
       }
       return;
@@ -1097,7 +1109,12 @@ export function ExplorerView({
         const parentIndex = rows.findIndex(
           (candidate) => candidate.kind === 'node' && candidate.id === parentId,
         );
-        if (parentIndex !== -1) selectNodeAt(parentIndex);
+        if (parentIndex !== -1) {
+          selectNodeAt(parentIndex);
+          // Selection sync: the parent is a directory by construction, so
+          // highlighting it moves the shared position to it.
+          onNavigateDir(row.root, parentPath(row.path));
+        }
       }
     }
   }, [
