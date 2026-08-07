@@ -14,6 +14,17 @@ target, no port forwarding, and no SSH gymnastics.
 > **[See it in action →](https://zhimingye.github.io/filebox/)** — an
 > interactive look at the interface and how deployment works.
 
+## Why filebox
+
+Most coding agents are built for software developers. filebox is built for
+the people those agents tend to overlook: researchers and analysts who need
+to *see* their results — the figures, the PDFs, the logs — to be confident
+the results are right. While the tooling world drifts toward hosted,
+editor-centric workflows, research still lives on self-hosted servers, where
+results are files. filebox gives that world a dependable front door — one
+click away from any browser, laptop, phone, or tablet — so a result can be
+checked from the lab bench, the conference hall, or the train home.
+
 ## How it works
 
 ```text
