@@ -1,261 +1,232 @@
 # filebox
 
-A minimal, secure, read-only remote file browser.
+**Browse the files on any server from one secure web page.**
 
-> **[Live site →](https://zhimingye.github.io/filebox/)** — interactive product
-> tour, architecture diagram, and install walkthrough.
+filebox is a read-only remote file browser with system monitoring. Install a
+small agent on each machine you want to reach, host the hub on a server you
+control, and open a single URL — every machine is one click away, with no
+VPN, no public IP on the target, no port forwarding, and no SSH gymnastics.
 
-## Overview
+[![Release](https://img.shields.io/github/v/release/ZhimingYe/filebox?sort=semver)](https://github.com/ZhimingYe/filebox/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-filebox is a read-only remote file browsing system that lets you access files on remote servers through a web browser. It consists of three parts:
+> **[Live demo and product tour →](https://zhimingye.github.io/filebox/)** —
+> interactive walkthrough of the interface and deployment.
 
-- **Frontend**: Web UI for browsing files, searching workspaces, collections, and managing servers
-- **Hub**: Central server handling authentication and request routing
-- **Agent**: Daemon running on remote servers, providing file access
+## How it works
 
 ```text
-Browser ──HTTPS──▶ Hub ◀──WSS── Agent ──▶ local files
+Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ local files
 ```
 
-Agents connect outward to the Hub. No public IPs, port mapping, or VPN required.
+- **Web app** — the browser interface you use to browse, search, and monitor.
+- **Hub** — one central server that authenticates users, serves the web app,
+  and routes every request to the right machine.
+- **Agent** — a small daemon installed on each machine whose files you want
+  to reach.
 
-Current release: **v0.9.0**. See [NEWS.md](NEWS.md) for the full changelog.
+Agents always connect **outward** to the hub. The machines you want to reach
+need no inbound ports and no public address — only the hub has to be
+reachable. When a machine comes back after an outage, its agent reconnects
+on its own, with no duplicate entries and no lost configuration.
 
 ## Features
 
-### File Browsing
-- Virtualized file list with adaptive column widths
-- Resizable directory tree
-- Address bar (breadcrumbs, paste path, autocomplete)
-- Glob/regex filename filter and modification-date filter
-- File-type badges; recently modified highlighting
-- Filename alignment and font toggles
-- Path memory per agent + root
-- One-click refresh
+### File browsing
 
-### Virtual Collections
-- Per-agent named lists of files across roots
-- Collections workspace with shared preview pane
-- Add files from the browser via CollectionPicker
-- Persisted on the agent; offline edits apply on reconnect
+- Smooth file lists even in very large directories
+- Directory tree and breadcrumb address bar with paste-and-go and autocomplete
+- Filter by filename pattern or modification date
+- File-type badges and recently-changed highlighting
+- Remembers your place — positions survive a page refresh
+- Pin folders you use often for one-click access
 
-### Workspace Search
-- Files mode (fd-like filename substring) and Content mode (rg-like regex)
-- Scoped to one root + optional folder; optional extension filter
-- Progress, cancel, and high-load caps (no system `fd`/`rg` required)
+### Search
 
-### File Preview
-- Multi-tab preview workspace (tab jump, bulk close, Esc to close)
-- Markdown rendering
-- Read-only Monaco code editor (Find, wrap, syntax highlight)
-- PDF reader; image viewer with zoom/pan (including TIFF)
-- HTML preview (sandboxed session for relative assets)
-- CSV table view
-- Optional Office preview (Word / PowerPoint as PDF; spreadsheets as per-sheet CSV)
-- Binary / inaccessible file handling with isolated error UI
+- Find by file name, or search file contents with regular expressions
+- Scope a search to a folder, filter by extension, skip noise folders such
+  as `node_modules` or `venv`
+- Live progress with cancel — safe on very large trees
 
-### Roots & Pins
-- Dynamic root allowlist managed from the UI
-- Home-path roots (`~/…`) expanded on the agent
-- Per-root pinned folders in the sidebar
+### Collections
 
-### System Monitoring
-- Overview: CPU, memory/swap, load
-- Per-user share breakdown
-- Virtualized process table with detail panel
+- Save named lists of files from any of a machine's folders
+- View items side by side, remove them, or jump to their original location
+- Stored on the machine; nothing is moved or copied — they are virtual references
+
+### Preview
+
+- Multi-tab workspace with keyboard shortcuts
+- Markdown, code (find, wrap, syntax highlighting), PDF, images (zoom and
+  pan, including TIFF), HTML in a sandboxed session, and CSV tables
+- Optional Office conversion: Word and PowerPoint open as PDF, spreadsheets
+  as per-sheet CSV
+- Oversized files ask before loading instead of freezing the browser
+
+### System monitoring
+
+- CPU, memory, and load overview
+- Per-user resource share
+- Process table with per-process details
 
 ### Security
-- Username/password authentication (bcrypt)
-- Agent token authentication (bcrypt)
-- CSRF synchronizer token (`X-CSRF-Token` header) on session APIs; short-lived GET access tokens for downloads / SSE
-- Sensitive files denied by default
-- Read-only access
-- Path safety checks (canonicalize, symlink escape, denylist)
+
+- Read-only by design: browsing can never modify or delete anything
+- Per-user logins; a separate token authenticates each machine
+- Sensitive files (credentials, private keys, shell history, `.env`, and
+  more) are denied by default, even inside allowed folders
+- Browsing is strictly confined to the folders you allow — symlinks,
+  `..`, and other escape routes are blocked
 
 ### Operations
-- Responsive mobile layout
-- Automatic agent reconnection
-- Real-time status updates (SSE)
-- Request progress and cancellation
-- Built-in `--init-config` and in-place `--update`
+
+- Works well on phones
+- Live status feed with request progress and cancellation
+- Agents reconnect automatically after outages — identity persists, no duplicates
+- One-command in-place updates
 
 ## Quick Start
 
-### Option 1: Pre-built Release (Recommended)
+The hub lives on a central server you control — a small VPS, an internal
+machine, or a container. Agents go on the machines whose files you want to
+reach. Browsers only ever talk to the hub.
 
-Pre-built static Linux x86_64 (musl) binaries are published on the
-[Releases page](https://github.com/ZhimingYe/filebox/releases/latest).
+### Step 1 — Deploy the hub on a central server
+
+Download the latest
+[release](https://github.com/ZhimingYe/filebox/releases/latest)
+(`filebox-hub-<version>-x86_64-musl.tar.gz`), extract it, and start:
 
 ```bash
-# 1. Download the matching tarball from the latest release page:
-#    filebox-hub-<version>-x86_64-musl.tar.gz     (Hub machine)
-#    filebox-agent-<version>-x86_64-musl.tar.gz   (Agent machine)
-
-# 2. Extract
-tar xzf filebox-hub-*-x86_64-musl.tar.gz     # Hub
-tar xzf filebox-agent-*-x86_64-musl.tar.gz   # Agent
-
-# 3. On the Hub machine
-(
-  cd filebox-hub-*
-  ./bin/hub --init-config       # creates config/hub.json
-  ./bin/hub
-)
-
-# 4. On each Agent machine (paste the token printed by the Hub)
-(
-  cd filebox-agent-*
-  ./agent --init-config         # creates agent.toml
-  ./agent
-)
+tar xzf filebox-hub-*-x86_64-musl.tar.gz
+cd filebox-hub-*
+./bin/hub --init-config     # creates config/hub.json; prints the agent token once
+./bin/hub                   # listens on :3000 by default
 ```
 
-Manual in-place update on Linux x86_64 release installs:
+`--init-config` walks you through the listen address, admin credentials, and
+the agent token (stored hashed, printed once). The hub serves the web app
+itself, so the URL is all your users need.
 
-```bash
-# Default: GitHub latest release
-filebox-hub-*/bin/hub --update
-filebox-agent-*/agent --update
+**HTTPS in production.** Put the hub behind a reverse proxy that terminates
+TLS — nginx, Caddy, or Traefik all work. Example nginx server block:
 
-# Custom release mirror / accelerator
-filebox-hub-*/bin/hub --update \
-  --update-base-url https://your-mirror.example.com/filebox/releases/latest/download
-filebox-agent-*/agent --update \
-  --update-base-url https://your-mirror.example.com/filebox/releases/latest/download
+```nginx
+server {
+    listen 443 ssl;
+    server_name filebox.example.com;
 
-# Plain HTTP mirrors are rejected by default. Only override this on a trusted network.
-filebox-hub-*/bin/hub --update \
-  --update-base-url http://your-mirror.example.com/filebox/releases/latest/download \
-  --allow-insecure-update
+    ssl_certificate     /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket (agent connections) and live status updates
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering off;
+        proxy_cache off;
+    }
+}
 ```
 
-`--update` downloads `SHA256SUMS.txt` plus the matching release tarball,
-verifies the checksum, and replaces the local install in place. The custom
-base URL must expose the same files as the GitHub Release download directory.
-Downgrades are also refused by default; use `--allow-downgrade` only when you
-intentionally want to roll back to an older release.
+HTTPS is what keeps the agent token private in transit, so always terminate
+TLS in production.
 
-The Hub generator hashes the admin password and agent token internally and
-prints the generated agent token once. Paste that token into the Agent
-generator when prompted. Existing files are never overwritten unless you add
-`--force`; use `--output <path>` for a custom location.
+### Step 2 — Deploy agents on your machines
 
-### Option 2: Build From Source
+On each machine, download
+`filebox-agent-<version>-x86_64-musl.tar.gz`, extract, and start:
 
 ```bash
-# Clone
+tar xzf filebox-agent-*-x86_64-musl.tar.gz
+cd filebox-agent-*
+./agent --init-config      # paste the token printed by the hub
+./agent
+```
+
+Or configure with environment variables (handy for systemd or containers):
+
+```bash
+export FILEBOX_AGENT_HUB="https://filebox.example.com"
+export FILEBOX_AGENT_TOKEN="the-token-from-step-1"
+export FILEBOX_AGENT_NAME="web-01"
+export FILEBOX_AGENT_DATA_DIR="/var/lib/filebox"
+./agent
+```
+
+That's it — the agent dials out to the hub and appears in the sidebar. No
+inbound ports to open on the firewall.
+
+### Step 3 — Log in and browse
+
+Open `https://filebox.example.com`, log in, pick a machine, and add the
+folders you want to expose (Settings → Add Root). Files, search, collections,
+and monitoring all work from there.
+
+### Updating
+
+```bash
+./bin/hub --update    # downloads the latest release, verifies checksums,
+./agent --update      # and replaces the install in place
+```
+
+### Building from source
+
+```bash
 git clone https://github.com/ZhimingYe/filebox.git
-cd filebox
-
-# Build frontend
-cd frontend
-npm install
-npm run build
-cd ..
-
-# Build backend
+cd filebox && cd frontend && npm install && npm run build && cd ..
 cargo build --release
 ```
 
-Rust crate layout and architecture: [`crates/README.md`](crates/README.md).
+Most users never need this — see [`docs/`](docs/) for development details.
 
-### Configure Hub
+## Configuration reference
 
-```bash
-./target/release/hub --init-config
-```
-
-This creates `config/hub.json`, prompts for the listen address and admin
-credentials, generates a random agent token by default, and performs bcrypt
-hashing inside the Rust binary. Save the displayed agent token for the next
-step.
-
-### Configure Agent
-
-```bash
-./target/release/agent --init-config
-```
-
-This creates `agent.toml`; paste the token printed by the Hub generator when
-prompted.
-
-Or use environment variables:
-
-```bash
-export FILEBOX_AGENT_HUB="https://your-hub-domain.com"
-export FILEBOX_AGENT_TOKEN="your-agent-token"
-export FILEBOX_AGENT_NAME="My Server"
-export FILEBOX_AGENT_DATA_DIR="/var/lib/filebox"
-```
-
-Agents require `https://` or `wss://` hub URLs by default so the agent token
-is not sent in plaintext. For local development against a plaintext hub only,
-start the agent with `FILEBOX_ALLOW_INSECURE_HUB=1`.
-
-### Start Services
-
-```bash
-# Start Hub
-./target/release/hub
-
-# Start Agent
-./target/release/agent
-```
-
-Source builds can also invoke `--update`, but the updater always installs the
-published Linux x86_64 release artifacts in place. On non-Linux development
-machines, `--update` exits with a clear unsupported-platform error instead of
-attempting a replacement.
-
-### Access the Frontend
-
-Open `http://localhost:3000` in a browser and log in with the configured credentials.
-
-## Configuration Reference
-
-### Hub Configuration (hub.json)
+### Hub (`config/hub.json`, created by `--init-config`)
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `listen_addr` | Listen address | `0.0.0.0:3000` |
-| `agent_token_hash` | bcrypt hash of the agent auth token | Required |
-| `users` | User list | Required |
+| `listen_addr` | Address the hub listens on | `0.0.0.0:3000` |
+| `agent_token_hash` | Hash of the agent token (set during init) | required |
+| `users` | Login accounts | required |
 
-### Agent Configuration (agent.toml)
+### Agent (`agent.toml`, created by `--init-config`)
 
-| Field | Env Var | Description | Default |
-|-------|---------|-------------|---------|
-| `hub` | `FILEBOX_AGENT_HUB` | Hub server URL (`https://` or `wss://` by default) | Required |
-| `token` | `FILEBOX_AGENT_TOKEN` | Agent auth token | Required |
-| `name` | `FILEBOX_AGENT_NAME` | Agent display name | `default-agent` |
-| `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Data storage directory | OS local data directory + `filebox` |
-| — | `FILEBOX_AGENT_SOFFICE` | Absolute path to `soffice` (enables Office preview) | unset |
-| — | `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` / `program/soffice` | unset |
+| Field | Environment variable | Description | Default |
+|-------|---------------------|-------------|---------|
+| `hub` | `FILEBOX_AGENT_HUB` | Hub URL (`https://` or `wss://`) | required |
+| `token` | `FILEBOX_AGENT_TOKEN` | Agent token | required |
+| `name` | `FILEBOX_AGENT_NAME` | Name shown in the sidebar | `default-agent` |
+| `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Where the agent keeps its state | system data dir + `filebox` |
+| — | `FILEBOX_AGENT_SOFFICE` | Path to `soffice` (enables Office preview) | unset |
+| — | `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` | unset |
 
-Office preview is optional. See [Office preview](#office-preview-optional-libreoffice) below.
+## Office preview (optional)
 
-## Office preview (optional LibreOffice)
+Word and PowerPoint files open in the PDF viewer after the **agent** converts
+them with LibreOffice. Spreadsheets (`xls`/`xlsx`/`xlsm`/`ods`) are exported
+as one CSV per worksheet and use the CSV viewer. The hub never runs
+LibreOffice; the agent never bundles it.
 
-Word and PowerPoint files open in the existing PDF viewer after the **agent**
-converts them with LibreOffice. Spreadsheets (`xls`/`xlsx`/`xlsm`/`ods`) are
-exported as one UTF-8 CSV per worksheet and use the existing CSV viewer. The
-Hub never runs LibreOffice; the agent never bundles it.
-
-- **Headless only** — filebox always invokes `soffice --headless` (no GUI,
-  no display server required).
-- **Rootless-friendly** — install under `$HOME` and point the agent at that
-  binary; no `sudo apt` / system package needed.
-- **Opt-in** — without a working `soffice`, the agent simply omits
-  `capabilities.office_pdf_preview` and the UI stays download-only. In the
-  browser, Settings → **Office preview** can also turn conversion off
-  without uninstalling LibreOffice.
+- **Headless only** — conversion always runs `soffice --headless`; no GUI or
+  display server required.
+- **Rootless-friendly** — install under your home directory and point the
+  agent at that binary; no system packages or `sudo` needed.
+- **Opt-in** — without a working `soffice`, the UI simply stays download-only
+  for Office files. A browser setting can also turn conversion off.
 
 ### 1. Install LibreOffice rootless (no sudo)
 
-Pick the tarball that matches the agent host. Extract **into your home
+Pick the tarball that matches the agent host and extract it **into your home
 directory** — do not install system-wide.
 
-**Debian / Ubuntu-style** (deb packages inside the official tarball):
+**Debian / Ubuntu-style** (deb packages):
 
 ```bash
 VERSION=26.2.5
@@ -281,27 +252,18 @@ cd LibreOffice_*_Linux_x86-64_rpm/RPMS
 for rpm in *.rpm; do rpm2cpio "$rpm" | (cd "$PREFIX" && cpio -idm); done
 ```
 
-Find and probe the binary (must print a LibreOffice version line):
-
-```bash
-SOFFICE="$(ls -d "$PREFIX"/opt/libreoffice*/program/soffice | head -1)"
-"$SOFFICE" --headless --version
-# e.g. LibreOffice 26.2.5.2 …
-```
-
 Bump `VERSION` to whatever is current on
 [Document Foundation downloads](https://www.libreoffice.org/download/download-libreoffice/).
 
 ### 2. Point the agent at `soffice`
-
-Prefer an absolute path:
 
 ```bash
 export FILEBOX_AGENT_SOFFICE="$HOME/opt/libreoffice/opt/libreoffice26.2/program/soffice"
 # Or: export FILEBOX_AGENT_SOFFICE_DIR="$HOME/opt/libreoffice/opt/libreoffice26.2/program"
 ```
 
-Optional limits (defaults shown):
+Optional limits (defaults shown; the cache must fit at least one complete
+converted file):
 
 ```bash
 # FILEBOX_AGENT_OFFICE_TIMEOUT_SECS=120
@@ -312,157 +274,61 @@ Optional limits (defaults shown):
 # FILEBOX_AGENT_OFFICE_CACHE_BYTES=1073741824      # 1 GiB on-disk preview cache
 ```
 
-The cache budget counts derived files, metadata, manifests, and empty-file
-entries, and must be large enough for one complete converted preview. If an
-output cannot fit, the request fails safely with `office_cache_too_small`
-instead of reporting success for an immediately evicted file. On Linux the
-memory limit is checked against the converting process tree's resident memory
-only while a preview request is active. It deliberately does not use
-`RLIMIT_AS`: LibreOffice Impress can reserve several GiB of virtual address
-space while using far less physical memory. Other platforms retain the
-portable file-size, descriptor, CPU, timeout, and process-group limits.
-
-PDF output is structurally validated before it enters the cache. A malformed
-or truncated cached PDF is discarded automatically; if browser PDF decoding
-still fails, **Retry** forces one clean conversion instead of returning the
-same cached artifact.
-
-Restart the agent. On a successful probe it advertises
-`office_pdf_preview: true` (the capability name is retained for compatibility).
-Derived files are cached at `/.filebox/office-cache/<key>.(pdf|csv)`. PDF
-outputs use the PDF viewer. Worksheet CSVs use the existing CSV viewer: files
-from 2 MiB through 15 MiB require confirmation, while files larger than 15 MiB
-stay download-only. Progress is cancelable; a second convert while one is
-running returns busy.
-
-The agent does not poll or periodically monitor LibreOffice. It validates the
-configured binary at startup and otherwise reacts only to preview requests. If
-LibreOffice is later removed or becomes non-executable, that request returns a
-stable, retryable `office_unavailable` error. Other conversion failures use
-stable Office-specific errors; the original download remains available, and
-file browsing plus unrelated previews continue normally.
+Restart the agent after configuring. Conversion runs per request with
+progress and cancel; a malformed or truncated result is discarded and
+converted again rather than served from cache. If LibreOffice is later
+removed, Office preview fails cleanly and file browsing keeps working.
 
 ### 3. Verify
 
 ```bash
 # On the agent host
 "$FILEBOX_AGENT_SOFFICE" --headless --version
-
-# In the Hub UI: agent detail / API should show
-# capabilities.office_pdf_preview == true
 ```
 
-For local bring-up notes and an automated fake-soffice e2e script, see
-[`docs/local-debugging.md`](docs/local-debugging.md) §8.
+For local bring-up notes, see
+[`docs/local-debugging.md`](docs/local-debugging.md).
 
 ## Usage
 
-### Adding Root Directories
+### Add a root directory
 
-1. Log in to the frontend
-2. Select an Agent in the sidebar
-3. Open Settings
-4. Add a root (absolute path, or `~/…` for a path under the agent's home)
-5. Save
+1. Log in and select a machine in the sidebar
+2. Open Settings → Add Root
+3. Enter an absolute path (or `~/…` for a path under the machine's home)
+4. Save — invalid paths are rejected without touching existing settings
 
-The Agent validates the path and applies it immediately. Invalid new roots
-are rejected without destroying the last known-good configuration.
+### Browse files
 
-### Browsing Files
+Navigate with the tree, address bar, or folder clicks; click a file to
+preview it (multi-tab on desktop). Use the filename and date filters as
+needed, and pin frequently used folders from the sidebar.
 
-1. Select an Agent
-2. Open Files
-3. Navigate with the tree, address bar, or folder clicks
-4. Click files to preview (multi-tab on desktop)
-5. Use the filename filter and date filter as needed
-6. Pin frequently used folders from the sidebar
+### Use collections
 
-### Collections
+Open Collections to create a named list, or add files to one directly from
+the file list. Open a collection to preview its items, remove them, or open
+a file's location in Files.
 
-1. Select an Agent
-2. Open Collections to create a named collection
-3. Or from Files, use the row action to add a file to an existing or new collection
-4. Open a collection to preview its files; remove items or open a file's location in Files
+### Search a workspace
 
-Collections are stored on the agent and survive reconnects. They do not move
-or copy files on disk — they are virtual references only.
+Open Search, choose Files (file names) or Content (text inside files), pick
+a root and optional folder, and click a hit to open its parent folder.
+Ignore lists and depth limits are set in the UI and applied per request.
 
-### Workspace Search
+### Monitor a machine
 
-1. Select an Agent
-2. Open Search
-3. Choose Files (filename) or Content (regex in file bodies)
-4. Pick a root and optional folder; optionally filter by extensions,
-   ignore folder names, and max directory depth
-5. Click a hit to open its parent folder in Files
+Open Stats to see CPU, memory, and load; the Users tab breaks usage down per
+account; the Processes tab lists running processes with details.
 
-Search runs on the agent with progress and cancel. Ignore / depth are
-set in the UI and sent with each request (browser-local defaults).
-Legacy agents without the capability show an unsupported message.
+### Sensitive file protection
 
-### System Monitoring
-
-1. Select an Agent
-2. Open Stats
-3. Use Overview / Users / Processes tabs
-4. Data is TTL-cached on the agent (default 60s)
-
-### Sensitive File Protection
-
-The following files/directories are denied by default (abbreviated):
+The following kinds of files are denied by default (abbreviated):
 
 ```text
 .git/  .ssh/  .gnupg/  .aws/  .kube/
 .env*  *.pem  *.key  id_*  credentials*.json  *.sqlite*
 ...
-```
-
-Full list in `crates/protocol/src/denylist.rs`.
-
-## Deployment
-
-### Rootless Deployment (Recommended)
-
-filebox is designed to run fully rootless:
-
-```bash
-# Download pre-built tarballs from the Releases page, then extract into
-# a user-owned directory — no root, no system service files needed.
-
-mkdir -p ~/filebox/bin
-tar xzf filebox-hub-*-x86_64-musl.tar.gz -C ~/filebox --strip-components=1
-~/filebox/bin/hub
-```
-
-Then run directly or with your preferred process manager.
-
-### Nginx Reverse Proxy
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name filebox.example.com;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # WebSocket
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        # SSE
-        proxy_buffering off;
-        proxy_cache off;
-    }
-}
 ```
 
 ## License
