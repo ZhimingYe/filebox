@@ -463,6 +463,64 @@ pub async fn preview_options_handler() -> Response {
     resp
 }
 
+/// Per-chunk failure shared by the streaming raw producer ([`serve_raw_file`])
+/// and the buffered document-mode collector ([`collect_raw_file`]).
+enum RawChunkFailure {
+    FileChanged,
+    EmptyChunk,
+    OverlongChunk,
+}
+
+impl RawChunkFailure {
+    fn to_io_error(&self) -> std::io::Error {
+        let (kind, message) = match self {
+            RawChunkFailure::FileChanged => (
+                std::io::ErrorKind::InvalidData,
+                "File changed while it was being streamed",
+            ),
+            RawChunkFailure::EmptyChunk => (
+                std::io::ErrorKind::UnexpectedEof,
+                "Agent returned an empty raw file chunk",
+            ),
+            RawChunkFailure::OverlongChunk => (
+                std::io::ErrorKind::InvalidData,
+                "Agent returned more bytes than requested",
+            ),
+        };
+        std::io::Error::new(kind, message)
+    }
+}
+
+/// Validates one chunk against the advertised file size / modification and
+/// the bytes still expected, so both consumers share one set of rules
+/// instead of two copies that drift apart. Does not cover the (async,
+/// preview-only) byte budget accounting or the `done`-before-size check,
+/// which each caller applies at its own point in the loop.
+fn check_raw_chunk(
+    chunk: &[u8],
+    file_size: u64,
+    remaining: u64,
+    chunk_file_size: Option<u64>,
+    chunk_modified: Option<String>,
+    expected_modified: &Option<String>,
+) -> Result<(), RawChunkFailure> {
+    if let Some(chunk_file_size) = chunk_file_size {
+        if chunk_file_size != file_size {
+            return Err(RawChunkFailure::FileChanged);
+        }
+    }
+    if expected_modified.is_some() && chunk_modified != *expected_modified {
+        return Err(RawChunkFailure::FileChanged);
+    }
+    if chunk.is_empty() {
+        return Err(RawChunkFailure::EmptyChunk);
+    }
+    if chunk.len() as u64 > remaining {
+        return Err(RawChunkFailure::OverlongChunk);
+    }
+    Ok(())
+}
+
 async fn serve_raw_file(
     state: AppState,
     target: RawFileTarget,
@@ -563,50 +621,15 @@ async fn serve_raw_file(
                         return;
                     }
                 };
-                if let Some(chunk_file_size) = chunk_file_size {
-                    if chunk_file_size != file_size {
-                        let _ = send_raw_body_item(
-                            &body_tx,
-                            Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                "File changed while it was being streamed",
-                            )),
-                        )
-                        .await;
-                        return;
-                    }
-                }
-                if expected_modified.is_some() && chunk_modified != expected_modified {
-                    let _ = send_raw_body_item(
-                        &body_tx,
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "File changed while it was being streamed",
-                        )),
-                    )
-                    .await;
-                    return;
-                }
-                if chunk.is_empty() {
-                    let _ = send_raw_body_item(
-                        &body_tx,
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            "Agent returned an empty raw file chunk",
-                        )),
-                    )
-                    .await;
-                    return;
-                }
-                if chunk.len() as u64 > remaining {
-                    let _ = send_raw_body_item(
-                        &body_tx,
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "Agent returned more bytes than requested",
-                        )),
-                    )
-                    .await;
+                if let Err(failure) = check_raw_chunk(
+                    &chunk,
+                    file_size,
+                    remaining,
+                    chunk_file_size,
+                    chunk_modified,
+                    &expected_modified,
+                ) {
+                    let _ = send_raw_body_item(&body_tx, Err(failure.to_io_error())).await;
                     return;
                 }
                 if let Some(token) = producer_target.preview_token.as_deref() {
@@ -798,39 +821,34 @@ async fn collect_raw_file(
                 ))
             }
         };
-        if let Some(chunk_file_size) = chunk_file_size {
-            if chunk_file_size != file_size {
-                return Err(error_response(
+        if let Err(failure) = check_raw_chunk(
+            &chunk,
+            file_size,
+            remaining,
+            chunk_file_size,
+            chunk_modified,
+            &expected_modified,
+        ) {
+            return Err(match failure {
+                RawChunkFailure::FileChanged => error_response(
                     StatusCode::CONFLICT,
                     "file_changed",
                     "The file changed while it was being read. Please refresh the preview.",
                     false,
-                ));
-            }
-        }
-        if expected_modified.is_some() && chunk_modified != expected_modified {
-            return Err(error_response(
-                StatusCode::CONFLICT,
-                "file_changed",
-                "The file changed while it was being read. Please refresh the preview.",
-                false,
-            ));
-        }
-        if chunk.is_empty() {
-            return Err(error_response(
-                StatusCode::BAD_GATEWAY,
-                "file_unavailable",
-                "The file could not be read completely",
-                true,
-            ));
-        }
-        if chunk.len() as u64 > remaining {
-            return Err(error_response(
-                StatusCode::BAD_GATEWAY,
-                "invalid_agent_response",
-                "The agent returned more bytes than requested",
-                false,
-            ));
+                ),
+                RawChunkFailure::EmptyChunk => error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "file_unavailable",
+                    "The file could not be read completely",
+                    true,
+                ),
+                RawChunkFailure::OverlongChunk => error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "invalid_agent_response",
+                    "The agent returned more bytes than requested",
+                    false,
+                ),
+            });
         }
         if let Some(token) = target.preview_token.as_deref() {
             if reserve_preview_bytes(state, token, chunk.len() as u64)
