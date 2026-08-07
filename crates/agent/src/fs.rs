@@ -227,6 +227,28 @@ pub(crate) fn mtime_to_rfc3339(t: std::time::SystemTime) -> String {
     dt.to_rfc3339()
 }
 
+/// Refresh an entry's `size`/`modified` from one fresh stat, following the
+/// single canonical metadata rule for listings: size only for regular files,
+/// modified always (via `fs::metadata`, which follows symlinks). Both
+/// `scan_dir_entries` (on a full scan) and `DirCache::try_cached` (page
+/// re-stats on cache hits) must agree, so the rule lives here instead of
+/// being duplicated and kept in sync by tests.
+///
+/// Denied entries must not be passed here — they stay frozen (no size,
+/// no mtime). Returns `false` when the stat fails; the entry is left
+/// untouched (callers keep prior values and may retry later).
+pub(crate) fn refresh_entry_metadata(path: &Path, entry: &mut FsEntry) -> bool {
+    let md = match fs::metadata(path) {
+        Ok(md) => md,
+        Err(_) => return false,
+    };
+    if entry.entry_type == FsEntryType::File {
+        entry.size = Some(md.len());
+    }
+    entry.modified = md.modified().ok().map(mtime_to_rfc3339);
+    true
+}
+
 pub(crate) fn read_dir_sorted(
     roots: &[RootConfig],
     root_name: &str,
@@ -323,30 +345,21 @@ where
             FsEntryType::File
         };
 
-        let size = if denied {
-            None
-        } else if metadata.is_file() {
-            fs::metadata(&entry_path).ok().map(|m| m.len())
-        } else {
-            None
-        };
-
-        let modified = if denied {
-            None
-        } else {
-            fs::metadata(&entry_path)
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .map(mtime_to_rfc3339)
-        };
-
-        visit(FsEntry {
+        // Size/modified follow the shared refresh_entry_metadata rule (size
+        // only for files, modified follows symlinks); denied entries stay
+        // frozen with no metadata.
+        let mut fs_entry = FsEntry {
             name: file_name,
             entry_type,
-            size,
-            modified,
+            size: None,
+            modified: None,
             denied,
-        })?;
+        };
+        if !denied {
+            refresh_entry_metadata(&entry_path, &mut fs_entry);
+        }
+
+        visit(fs_entry)?;
     }
 
     if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {

@@ -24,21 +24,14 @@ use crate::fs::{resolve_dir_mtime, scan_dir_entries};
 ///
 /// **Validity / safety:**
 /// - mtime change → natural invalidation (entry is recomputed on next access).
-/// - in-place file content edits do NOT bump the parent directory's mtime on
-///   ext4 & friends (only the file's own mtime changes), so a hit's per-entry
-///   `modified`/`size` would go stale. `try_cached` therefore re-stats the
-///   requested page (O(limit), matching `scan_dir_entries` metadata rules)
-///   before serving — exact values at the cost of a bounded syscall count,
-///   with no full-directory rescan.
-/// - re-stats are throttled per entry by `RESTAT_COOLDOWN_MS`: an entry
-///   refreshed within the window is served from cache, so rapid repeated
-///   paging through one directory (scroll up/down, re-navigation) pays ~1
-///   stat per entry per window instead of per page fetch. In-place edits
-///   surface within one window (≤2s by default, tunable via
-///   `FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS`); structural changes still
-///   invalidate instantly via the dir mtime. Scans mark every item fresh at
-///   insert, so the first hits after a scan cost nothing. A cooldown of 0
-///   disables throttling (stat every hit).
+/// - in-place file content edits do NOT bump the parent directory's mtime
+///   (ext4 & friends), so hit metadata would go stale. `try_cached` re-stats
+///   the requested page (O(limit), shared `refresh_entry_metadata` rule)
+///   before serving, throttled per entry by `RESTAT_COOLDOWN_MS` (default
+///   2000ms; `FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS`, 0 = exact): rapid
+///   paging pays ~1 stat per entry per window, in-place edits surface within
+///   one window of the last refresh, and scans mark items fresh at insert so
+///   first hits after a scan cost nothing.
 /// - root reconfigure (path/name/enabled change) → the connection loop calls
 ///   `clear()` after a successful `apply_desired`, since a root's path may have
 ///   changed and cached entries would describe the wrong tree. Denied flags are
@@ -52,8 +45,8 @@ use crate::fs::{resolve_dir_mtime, scan_dir_entries};
 /// and cached directory count. LRU-ish eviction removes the oldest listing.
 pub struct DirCache {
     inner: Mutex<Inner>,
-    /// Per-entry re-stat throttle on cache hits (see `CachedItem::last_restat`
-    /// and the module docs). Zero disables throttling.
+    /// Per-entry re-stat throttle on cache hits (see module docs); zero
+    /// disables it.
     restat_cooldown: Duration,
 }
 
@@ -73,10 +66,8 @@ struct CacheKey {
 }
 
 /// One cached listing row: the `FsEntry` plus the moment its metadata was
-/// last refreshed (scan insert or page re-stat). `try_cached` skips entries
-/// whose `last_restat` is inside the cooldown window, serving the cached
-/// values — that is what collapses repeated paging into ~1 stat per entry
-/// per window instead of per page fetch.
+/// last refreshed (scan insert or page re-stat). Hits serve rows inside the
+/// cooldown window without re-statting (see module docs).
 #[derive(Clone)]
 struct CachedItem {
     entry: FsEntry,
@@ -97,11 +88,9 @@ const MAX_CACHED_DIRS: usize = 256;
 const MAX_CACHEABLE_ENTRIES_PER_DIR: usize = 20_000;
 const MAX_CACHED_ENTRIES: usize = 200_000;
 
-/// Default re-stat cooldown in milliseconds: an entry's metadata is
-/// considered fresh for this long after the scan that produced it or the
-/// page re-stat that refreshed it. 2000ms is invisible to humans (the UI
-/// shows the values once) while eliminating nearly all re-stat syscalls
-/// from rapid back-and-forth paging. Overridable at agent startup via
+/// Default re-stat cooldown in milliseconds: metadata is considered fresh
+/// for this long after the scan that produced it or the re-stat that
+/// refreshed it. Overridable at agent startup via
 /// `FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS` (0 = exact, stat every hit).
 const RESTAT_COOLDOWN_MS: u64 = 2000;
 
@@ -450,13 +439,12 @@ impl DirCache {
         drop(inner);
 
         // Refresh the page's metadata with fresh stats, WITHOUT holding the
-        // lock (a slow networked FS must not stall other listings). In-place
-        // content edits don't bump the parent dir mtime, so the cached values
-        // would otherwise go stale until the next structural change; re-stat
-        // mirrors scan_dir_entries' rules (follow symlinks, size only for
-        // files, denied entries stay frozen). Entries re-statted inside the
-        // cooldown window are served as-is — repeated paging through the same
-        // directory then pays ~1 stat per entry per window, not per page.
+        // lock (a slow networked FS must not stall other listings): in-place
+        // edits don't bump the parent dir mtime, so cached size/modified
+        // would otherwise go stale. The stat rule is shared with
+        // scan_dir_entries (denied frozen, size for files, modified follows
+        // symlinks); entries inside the cooldown window are served as-is
+        // (see module docs).
         let refreshed: Vec<(usize, FsEntry)> = page
             .iter()
             .enumerate()
@@ -467,15 +455,11 @@ impl DirCache {
                 if item.last_restat.elapsed() < self.restat_cooldown {
                     return None;
                 }
-                let md = std::fs::metadata(abs_path.join(&item.entry.name)).ok()?;
                 let mut fresh = item.entry.clone();
-                if fresh.entry_type == FsEntryType::File {
-                    fresh.size = Some(md.len());
+                if !crate::fs::refresh_entry_metadata(&abs_path.join(&item.entry.name), &mut fresh)
+                {
+                    return None;
                 }
-                fresh.modified = md
-                    .modified()
-                    .ok()
-                    .map(crate::fs::mtime_to_rfc3339);
                 Some((i, fresh))
             })
             .collect();
@@ -635,9 +619,8 @@ mod tests {
         let sb = Sandbox::new();
         sb.write_file("a.txt", b"first");
         let roots = vec![sb.root()];
-        // Tiny cooldown: the 1.1s granularity sleep below must land OUTSIDE
-        // the window so the hit actually re-stats (this test asserts the
-        // re-stat surfaces the edit, not the cooldown serving cached values).
+        // Tiny cooldown so the post-edit hit really re-stats (this test
+        // asserts the re-stat, not the cooldown skip path).
         let cache = DirCache::with_cooldown(Duration::from_millis(50));
 
         let (p1, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
@@ -667,11 +650,8 @@ mod tests {
 
     #[test]
     fn restat_cooldown_defers_refresh_within_window() {
-        // The cooldown is the deliberate staleness tradeoff: an entry
-        // refreshed within the window is served from cache (no re-stat), and
-        // a visit after the window re-stats and surfaces the in-place edit.
-        // This is what collapses rapid back-and-forth paging into ~1 stat
-        // per entry per window instead of per page fetch.
+        // The deliberate tradeoff: hits inside the window serve cached
+        // values; hits after it re-stat and surface the in-place edit.
         let sb = Sandbox::new();
         sb.write_file("a.txt", b"first");
         let roots = vec![sb.root()];
@@ -720,7 +700,7 @@ mod tests {
         sb.write_file(".env", b"SECRET=one");
         let roots = vec![sb.root()];
         // Small cooldown so the post-edit hit really re-stats and exercises
-        // the denied-skip branch (with the default 2s window it would skip).
+        // the denied-skip branch.
         let cache = DirCache::with_cooldown(Duration::from_millis(50));
 
         let (p1, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
@@ -772,7 +752,7 @@ mod tests {
         .unwrap();
         let roots = vec![sb.root()];
         // Small cooldown so the post-edit hit really re-stats (the 1.1s
-        // granularity sleep below lands outside a 50ms window).
+        // granularity sleep lands outside the window).
         let cache = DirCache::with_cooldown(Duration::from_millis(50));
 
         let (p1, _) = cache.list(&roots, "test", "", 100, None, false).unwrap();
@@ -827,7 +807,7 @@ mod tests {
         // Zero cooldown: every hit re-stats, so the generation-guarded
         // write-back stays hot under concurrency (a real cooldown would
         // collapse 49 of 50 iterations into cache-only hits).
-        let cache: Arc<DirCache> = DirCache::with_cooldown(Duration::ZERO);
+        let cache = DirCache::with_cooldown(Duration::ZERO);
         let barrier = Arc::new(Barrier::new(8));
         let mut handles = Vec::new();
         for _ in 0..8 {

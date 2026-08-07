@@ -582,6 +582,7 @@ Env vars (verified):
 | `FILEBOX_AGENT_CONFIG` | Agent toml path |
 | `FILEBOX_ALLOW_INSECURE_HUB` | Allow plaintext `ws://` / `http://` hub |
 | `FILEBOX_AGENT_STATS_TTL_SECS` | Sysinfo cache TTL (default 60) |
+| `FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS` | Dir cache per-entry re-stat cooldown (default 2000; 0 = stat every hit) |
 | `FILEBOX_AGENT_SOFFICE` | Absolute path to LibreOffice `soffice` (enables Office preview) |
 | `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` / `program/soffice` |
 | `FILEBOX_AGENT_OFFICE_TIMEOUT_SECS` | Convert timeout (default 120) |
