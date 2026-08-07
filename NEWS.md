@@ -13,6 +13,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **Monaco code preview** — read-only Monaco Editor replaces Prism / `react-syntax-highlighter` for code files (Find, wrap, syntax highlight). Lazy-loaded; not placed in Vite `manualChunks` so the ~4MB editor is not preloaded on every page.
 
 ### Changed
+- **Workspace Search on mobile** — Search now opens as an iOS-style bottom sheet on phones: it slides up from the bottom over the lower half of the screen (rounded top corners, grabber handle, dimmed backdrop), overlaying the current view instead of replacing it. Dismiss by tapping the backdrop, swiping the grabber/header down, the × button, or Esc; Files/Explorer/… stay put underneath and long scans survive closing. Opening a hit closes the sheet to reveal the Files navigation or full-screen preview. A dedicated Search button sits at the right of the mobile top bar (next to the agent status), alongside the sidebar entry.
 - **Directory cache re-stat cooldown** — cache hits refresh page metadata so
   in-place file edits surface immediately, but per-entry re-stats are now
   throttled by a default 2s cooldown (`FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS`):
