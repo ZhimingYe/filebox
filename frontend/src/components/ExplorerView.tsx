@@ -29,6 +29,12 @@ interface Props {
    *  folder or opening a file) so the shared position — and thus the Files
    *  view — follows the Explorer selection. */
   onNavigateDir: (root: string, path: string) => void;
+  /** Imperative "locate a folder here" request (search jump in Explorer
+   *  mode). Bumping `nonce` re-arms the pending locate notice even when the
+   *  target folder is the one already revealed; the notice fires on the
+   *  next reveal settle ("Located the folder." or the nearest-available
+   *  fallback). Mirrors the navRequest nonce pattern. */
+  locateRequest?: { nonce: number } | null;
   onFileSelect: (root: string, path: string, entry: FsEntry) => void;
   onAddToCollection?: (root: string, path: string, anchor: HTMLElement) => void;
   onRootsChange?: () => void | Promise<void>;
@@ -346,6 +352,7 @@ export function ExplorerView({
   roots,
   active,
   currentDir,
+  locateRequest,
   onNavigateDir,
   onFileSelect,
   onAddToCollection,
@@ -426,6 +433,10 @@ export function ExplorerView({
   // outstanding and never re-fires for a target that already resolved.
   const revealTargetRef = useRef<{ root: string; path: string } | null>(null);
   const revealDoneKeyRef = useRef<string | null>(null);
+  // Whether the last settled reveal hit the exact target (vs a fallback
+  // ancestor) — reused when a re-click of the same folder settles against an
+  // already-done reveal, so the notice stays honest about the position.
+  const revealDoneExactRef = useRef<boolean | null>(null);
   // When the user manually collapses a branch the reveal was walking toward,
   // the reveal stands down for that exact directory (telemetry refreshes hand
   // App a fresh `currentDir` object with the same key — without this flag they
@@ -434,6 +445,12 @@ export function ExplorerView({
   // distinguishes genuine navigation from identity-only churn.
   const revealCancelledKeyRef = useRef<string | null>(null);
   const lastDirKeyRef = useRef<string | null>(null);
+  // Pending "locate a folder" notice (search jump in Explorer mode). Armed by
+  // the locateRequest nonce, fired exactly once by the next reveal settle —
+  // or immediately when the target is already revealed. Cleared on settle so
+  // unrelated later reveals stay silent.
+  const locatePendingRef = useRef(false);
+  const locateNonceRef = useRef<number | null>(null);
   const { copiedPath, copyToClipboard } = useCopyToClipboard();
   useEffect(() => {
     try {
@@ -471,6 +488,53 @@ export function ExplorerView({
       }, autoDismissMs);
     }
   }, []);
+
+  // Fires the pending locate notice exactly once, when a reveal settles:
+  // "exact" = the target folder's own row was found (or was already
+  // revealed); otherwise the tree landed on the nearest available ancestor
+  // (folder gone, expansion cap, or a failed load). The message stays honest
+  // about which case happened.
+  const settleReveal = useCallback((exact: boolean) => {
+    if (!locatePendingRef.current) return;
+    locatePendingRef.current = false;
+    showNotice(
+      exact ? 'Located the folder.' : 'Located the nearest available folder.',
+      2_500,
+    );
+  }, [showNotice]);
+
+  // One canonical way to end a reveal: mark it done (the attempt loop stands
+  // down), clear the pending target and any cancelled-branch flag, optionally
+  // select a row, optionally scroll to it (deferring while the panel is
+  // hidden), and fire the pending locate notice. `exact` says whether the
+  // settle hit the target folder itself vs a fallback ancestor — the notice
+  // wording depends on it.
+  const finishReveal = useCallback((
+    targetKey: string,
+    exact: boolean,
+    selectId: string | null,
+    scrollToRow: number | null,
+  ) => {
+    revealDoneKeyRef.current = targetKey;
+    revealDoneExactRef.current = exact;
+    revealTargetRef.current = null;
+    revealCancelledKeyRef.current = null;
+    if (selectId !== null) setSelectedId(selectId);
+    settleReveal(exact);
+    if (scrollToRow !== null) {
+      if (viewportHeight > 0) {
+        // Drop any stale deferred scroll from a hidden completion — the
+        // immediate scroll wins. scrollToItem fires onScroll, which
+        // re-stashes the resulting offset, so a later hide/show restores
+        // this position.
+        pendingRevealScrollRef.current = null;
+        listRef.current?.scrollToItem(scrollToRow, 'smart');
+      } else {
+        // Panel hidden: defer the scroll to the show-transition effect.
+        pendingRevealScrollRef.current = targetKey;
+      }
+    }
+  }, [settleReveal, viewportHeight]);
 
   const finishRefreshTask = useCallback((
     seq: number,
@@ -919,7 +983,9 @@ export function ExplorerView({
   // selects it and scrolls it into view. Re-runs on every rows change until
   // the target resolves; the done-key makes it a no-op afterwards. Ancestors
   // are added monotonically, so it terminates even if a level fails to load
-  // (the deepest reachable node is selected instead).
+  // (the deepest reachable node is selected instead). A locateRequest bump
+  // also arms the pending locate notice, which every settle point (exact or
+  // fallback) fires exactly once.
   //
   // The reveal target is derived from the shared browse position (currentDir)
   // right here rather than in a separate effect, so an agent switch (which
@@ -931,7 +997,18 @@ export function ExplorerView({
       revealDoneKeyRef.current = null;
       revealCancelledKeyRef.current = null;
       lastDirKeyRef.current = null;
+      // No tree to reveal — drop any armed locate notice so it can't fire
+      // against an unrelated later reveal.
+      locatePendingRef.current = false;
       return;
+    }
+    // Consume a locate request (search jump in Explorer mode): arm the
+    // pending notice exactly once per nonce, even for an already-revealed
+    // target, without re-arming on unrelated later renders.
+    const nonce = locateRequest?.nonce ?? null;
+    if (nonce !== null && locateNonceRef.current !== nonce) {
+      locateNonceRef.current = nonce;
+      locatePendingRef.current = true;
     }
     const targetKey = nodeKey(currentDir.root, currentDir.path);
     if (lastDirKeyRef.current !== targetKey) {
@@ -940,24 +1017,29 @@ export function ExplorerView({
       revealCancelledKeyRef.current = null;
     }
     if (revealCancelledKeyRef.current === targetKey) {
-      // The user manually collapsed this directory's branch — stand down.
+      // The user manually collapsed this directory's branch — stand down
+      // (and drop any armed locate notice: claiming "located" would lie).
+      locatePendingRef.current = false;
       return;
     }
     if (revealDoneKeyRef.current !== targetKey) {
       revealTargetRef.current = { root: currentDir.root, path: currentDir.path };
       revealDoneKeyRef.current = null;
+      revealDoneExactRef.current = null;
     }
 
     const target = revealTargetRef.current;
-    if (!target) return;
-    if (revealDoneKeyRef.current === targetKey) return;
+    if (!target) {
+      // Already settled for this key (re-click of the same folder, or a
+      // position restore) — the tree is already positioned there.
+      finishReveal(targetKey, revealDoneExactRef.current === true, null, null);
+      return;
+    }
 
     const root = enabledRoots.find((r) => r.name === target.root);
     if (!root) {
       // Target root is disabled/removed — nothing to reveal.
-      revealDoneKeyRef.current = targetKey;
-      revealTargetRef.current = null;
-      revealCancelledKeyRef.current = null;
+      finishReveal(targetKey, false, null, null);
       return;
     }
 
@@ -977,19 +1059,13 @@ export function ExplorerView({
         // Expansion cap reached: select the deepest reachable ancestor and
         // stop — don't fight the cap (and don't surface the cap notice for
         // an automated reveal).
-        revealDoneKeyRef.current = targetKey;
-        revealTargetRef.current = null;
-        revealCancelledKeyRef.current = null;
-        setSelectedId(nodeKey(target.root, chain[Math.max(0, i - 1)]));
+        finishReveal(targetKey, false, nodeKey(target.root, chain[Math.max(0, i - 1)]), null);
         return;
       }
       const state = nodesRef.current.get(key);
       if (state?.loaded && state.error) {
         // This ancestor failed to load — can't go deeper. Select it and stop.
-        revealDoneKeyRef.current = targetKey;
-        revealTargetRef.current = null;
-        revealCancelledKeyRef.current = null;
-        setSelectedId(key);
+        finishReveal(targetKey, false, key, null);
         return;
       }
       const next = new Set(expandedRef.current);
@@ -1003,24 +1079,22 @@ export function ExplorerView({
 
     // The target's own row only exists once its parent's listing loaded.
     const targetIndex = nodeRows.findIndex(({ row }) => row.id === targetKey);
-    if (targetIndex === -1) return; // ancestors still loading — retry on change
+    if (targetIndex === -1) {
+      // Target row absent. If the parent's listing finished (successfully or
+      // not), the target folder is genuinely gone — settle on the deepest
+      // existing ancestor instead of waiting forever. While the parent is
+      // still loading its row exists but the target may simply not have
+      // arrived yet, so keep retrying on the next rows change.
+      const parentPath = chain.length > 1 ? chain[chain.length - 2] : '/';
+      const parentState = nodesRef.current.get(nodeKey(target.root, parentPath));
+      if (!parentState?.loaded) return;
+      finishReveal(targetKey, false, nodeKey(target.root, parentPath), null);
+      return;
+    }
 
     const rowIndex = nodeRows[targetIndex].index;
-    revealDoneKeyRef.current = targetKey;
-    revealTargetRef.current = null;
-    revealCancelledKeyRef.current = null;
-    setSelectedId(targetKey);
-    if (viewportHeight > 0) {
-      // Drop any stale deferred scroll from a hidden completion — the
-      // immediate scroll wins. scrollToItem fires onScroll, which re-stashes
-      // the resulting offset, so a later hide/show restores this position.
-      pendingRevealScrollRef.current = null;
-      listRef.current?.scrollToItem(rowIndex, 'smart');
-    } else {
-      // Panel hidden: defer the scroll to the show-transition effect.
-      pendingRevealScrollRef.current = targetKey;
-    }
-  }, [currentDir, enabledRoots, nodeRows, scheduleLoad, viewportHeight]);
+    finishReveal(targetKey, true, targetKey, rowIndex);
+  }, [currentDir, enabledRoots, nodeRows, scheduleLoad, finishReveal, locateRequest]);
 
   const selectNodeAt = useCallback((index: number) => {
     const candidate = rows[index];
