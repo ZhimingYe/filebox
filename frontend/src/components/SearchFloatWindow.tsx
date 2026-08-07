@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { WorkspaceSearch } from './WorkspaceSearch';
 import { IconClose, IconSearch } from './icons';
-import type { AgentInfo } from '../api/client';
+import type { SearchPanelProps } from './searchPanel';
 import { c, radius, shadow, font } from '../theme';
 
 /** Persisted window geometry (desktop only). */
@@ -69,23 +69,10 @@ function loadRect(): Rect {
   return fallback;
 }
 
-interface Props {
-  /** When false the window is hidden (display:none) but STAYS MOUNTED so
-   *  long-running scans survive closing, Cancel/progress keep working. */
-  open: boolean;
-  agent: AgentInfo;
-  /** Prefer the currently selected Files root when present. */
-  initialRoot?: string | null;
-  onOpenFile?: (root: string, path: string) => void;
-  onPreviewFile?: (root: string, path: string) => void;
-  onClose: () => void;
-}
-
 /**
  * Desktop floating Search window: draggable by its header, resizable via the
  * right / bottom edges and the bottom-right corner grip. Geometry persists in
- * localStorage. Mobile keeps the plain inline Search view — this component is
- * only rendered on desktop.
+ * localStorage. The mobile counterpart is `SearchBottomSheet`.
  *
  * Drag mutates a CSS transform directly (no React re-renders per frame);
  * resize mutates width/height directly so the search result list re-measures
@@ -98,7 +85,7 @@ export function SearchFloatWindow({
   onOpenFile,
   onPreviewFile,
   onClose,
-}: Props) {
+}: SearchPanelProps) {
   const [rect, setRect] = useState<Rect>(loadRect);
   const rectRef = useRef(rect);
   rectRef.current = rect;

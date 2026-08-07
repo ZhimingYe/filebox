@@ -14,8 +14,8 @@ import { usePreviewTabs } from './hooks/usePreviewTabs';
 import { AgentSettings } from './components/AgentSettings';
 import { AboutDialog } from './components/AboutDialog';
 import { SystemStats } from './components/SystemStats';
-import { WorkspaceSearch } from './components/WorkspaceSearch';
 import { SearchFloatWindow } from './components/SearchFloatWindow';
+import { SearchBottomSheet } from './components/SearchBottomSheet';
 import { PinnedFolders } from './components/PinnedFolders';
 import { CollectionsView } from './components/CollectionsView';
 import { WorkspaceSplit } from './components/WorkspaceSplit';
@@ -63,7 +63,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'explorer' | 'collections' | 'search' | 'settings' | 'stats';
+type View = 'files' | 'explorer' | 'collections' | 'settings' | 'stats';
 
 interface ProgressEvent {
   req_id: string;
@@ -80,9 +80,10 @@ export default function App() {
 
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [view, setView] = useState<View>('files');
-  // Desktop floating Search window. Toggled by the sidebar nav button and
-  // independent of `view`, so Files/Explorer/… stay visible underneath while
-  // the window is open. Mobile ignores this — Search stays an inline view.
+  // Floating Search window (desktop + mobile). Toggled by the sidebar nav
+  // button and independent of `view`, so Files/Explorer/… stay visible
+  // underneath while the window is open. Stays mounted when closed so long
+  // scans survive.
   const [searchOpen, setSearchOpen] = useState(false);
   // Desktop multi-tab / mobile single-tab preview state. The hook owns tab
   // lifecycle (open/activate/replace/close/prune); App only orchestrates when
@@ -314,9 +315,9 @@ export default function App() {
       if (e.key === 'Escape') {
         // CollectionPicker handles its own Esc in capture phase.
         if (collectionPicker) return;
-        // Desktop floating Search window claims Esc while open, before any
-        // preview tab, so Esc means "close the window" there.
-        if (!isMobile && searchOpen) {
+        // Floating Search window claims Esc while open, before any preview
+        // tab, so Esc means "close the window" there.
+        if (searchOpen) {
           setSearchOpen(false);
           return;
         }
@@ -350,12 +351,12 @@ export default function App() {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [activeTab, previewTabs, view, collectionPicker, searchOpen, isMobile]);
+  }, [activeTab, previewTabs, view, collectionPicker, searchOpen]);
 
   // Esc also closes the floating Search window when no preview tab is open
   // (the handler above early-returns without one).
   useEffect(() => {
-    if (isMobile || !searchOpen) return;
+    if (!searchOpen) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
@@ -365,7 +366,7 @@ export default function App() {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [isMobile, searchOpen]);
+  }, [searchOpen]);
 
   const selectedAgent = useMemo(() => agents.find((a) => a.id === selectedAgentId) || null, [agents, selectedAgentId]);
 
@@ -558,9 +559,12 @@ export default function App() {
   }, []);
 
   const openInFiles = useCallback((root: string, path: string) => {
+    // Mobile: the full-screen search sheet would otherwise keep covering the
+    // Files view it just navigated to.
+    if (isMobile) setSearchOpen(false);
     setView('files');
     setNavRequest({ root, path, nonce: Date.now() });
-  }, []);
+  }, [isMobile]);
 
   // "Open in preview pane" from a search hit: switch to Files (where the
   // preview pane lives — on mobile that surfaces the full-screen preview)
@@ -568,11 +572,15 @@ export default function App() {
   // synthesized; the preview pane dispatches on the path extension and the
   // viewers fetch content themselves.
   const handlePreviewFromSearch = useCallback((root: string, path: string) => {
+    // Mobile: close the full-screen sheet first so the full-screen preview
+    // (and the top-bar Back button) is visible. Desktop keeps the float open
+    // — the preview opens in the pane behind it.
+    if (isMobile) setSearchOpen(false);
     setView('files');
     const name = path.split('/').filter(Boolean).pop() ?? path;
     const entry: FsEntry = { name, entry_type: 'file', size: null, modified: null, denied: false };
     handleFileSelect(root, path, entry);
-  }, [handleFileSelect]);
+  }, [handleFileSelect, isMobile]);
 
   const activeProgress = Array.from(progressMap.values());
 
@@ -590,9 +598,8 @@ export default function App() {
   // preference.
   const collapsed = !isMobile && sidebarCollapsed;
   const compactSidebar = !isMobile;
-  // Desktop Search is a floating window; the nav button toggles it instead of
-  // switching views. Mobile keeps the inline view (`view === 'search'`).
-  const searchActive = isMobile ? view === 'search' : searchOpen;
+  // Search is a floating window on both desktop and mobile; the nav button
+  // toggles it instead of switching views.
 
   const navItems = [
     { v: 'files' as const, label: 'Files', Icon: IconFolder },
@@ -685,11 +692,14 @@ export default function App() {
                     key={v}
                     label={label}
                     Icon={Icon}
-                    active={v === 'search' ? searchActive : view === v}
+                    active={v === 'search' ? searchOpen : view === v}
                     collapsed={collapsed}
                     onClick={() => {
-                      if (v === 'search' && !isMobile) {
+                      if (v === 'search') {
                         setSearchOpen((o) => !o);
+                        // Mobile: the drawer hosting the nav button closes
+                        // too, matching navigate()'s behavior.
+                        if (isMobile) setSidebarOpen(false);
                         return;
                       }
                       navigate(v);
@@ -874,6 +884,23 @@ export default function App() {
               >
                 <IconChevronLeft />
                 <span>Back</span>
+              </button>
+            )}
+            {/* Search entry — opens the same bottom sheet as the sidebar
+                Search button. Reuses the hamburger's look so the bar reads
+                as [menu] [title/status] [back?] [search]. Only shown with an
+                agent: search has nothing to search without one. While the
+                sheet is open its backdrop covers this bar, so the button is
+                an opener only (close via backdrop / × / swipe / Esc). */}
+            {selectedAgent && (
+              <button
+                type="button"
+                onClick={() => setSearchOpen(true)}
+                style={styles.hamburger}
+                title="Search"
+                aria-label="Search"
+              >
+                <IconSearch style={{ width: 17, height: 17 }} />
               </button>
             )}
           </div>
@@ -1061,23 +1088,6 @@ export default function App() {
                   />
                 </div>
               )}
-              {/* Mobile Search: plain inline view. Desktop Search is the
-                  floating window rendered below (this stays mounted on mobile
-                  so long scans survive nav to Files/System and Cancel/progress
-                  keep working). */}
-              {isMobile && (
-                <div style={{
-                  ...styles.secondaryView,
-                  ...(view !== 'search' ? styles.filesViewHidden : {}),
-                }}>
-                  <WorkspaceSearch
-                    agent={selectedAgent}
-                    initialRoot={selectedRoot}
-                    onOpenFile={openInFiles}
-                    onPreviewFile={handlePreviewFromSearch}
-                  />
-                </div>
-              )}
               {view === 'settings' && (
                 <div style={styles.secondaryView}>
                   <AgentSettings agent={selectedAgent} onRefresh={refresh} />
@@ -1093,18 +1103,30 @@ export default function App() {
         </div>
       </div>
 
-      {/* Desktop floating Search window. Stays mounted (hidden while closed)
-          so long scans survive closing, same guarantee as the old inline
-          view. Mobile keeps the inline Search view above. */}
-      {!isMobile && selectedAgent && (
-        <SearchFloatWindow
-          open={searchOpen}
-          agent={selectedAgent}
-          initialRoot={selectedRoot}
-          onOpenFile={openInFiles}
-          onPreviewFile={handlePreviewFromSearch}
-          onClose={() => setSearchOpen(false)}
-        />
+      {/* Search panel — stays mounted (hidden while closed) so long scans
+          survive closing, same guarantee as the old inline view. Desktop:
+          draggable/resizable floating window. Mobile: iOS-style bottom sheet
+          sliding up over the lower half of the screen. */}
+      {selectedAgent && (
+        isMobile ? (
+          <SearchBottomSheet
+            open={searchOpen}
+            agent={selectedAgent}
+            initialRoot={selectedRoot}
+            onOpenFile={openInFiles}
+            onPreviewFile={handlePreviewFromSearch}
+            onClose={() => setSearchOpen(false)}
+          />
+        ) : (
+          <SearchFloatWindow
+            open={searchOpen}
+            agent={selectedAgent}
+            initialRoot={selectedRoot}
+            onOpenFile={openInFiles}
+            onPreviewFile={handlePreviewFromSearch}
+            onClose={() => setSearchOpen(false)}
+          />
+        )
       )}
 
       {collectionPicker && selectedAgent && (
