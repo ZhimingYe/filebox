@@ -1,5 +1,9 @@
+import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { fileRawAccessUrl, friendlyMessage } from '../api/client';
+
+/** Cooldown after a click so rapid double-clicks can't fire two downloads. */
+const COOLDOWN_MS = 3000;
 
 interface Props {
   agentId: string;
@@ -24,6 +28,13 @@ const buttonReset: CSSProperties = {
   textAlign: 'left',
 };
 
+// While cooling down the button is non-interactive; dim it and drop the
+// pointer cursor so the state reads visually. Caller `style` still wins.
+const buttonDisabled: CSSProperties = {
+  cursor: 'default',
+  opacity: 0.55,
+};
+
 /**
  * Download trigger that mints a short-lived `access_token` on click so the
  * CSRF synchronizer never appears in the address bar / history / logs.
@@ -31,9 +42,26 @@ const buttonReset: CSSProperties = {
  * Rendered as a <button>, not an <a>: there is no valid href to fall back to
  * (the token only exists after minting), so a real anchor would offer
  * "open in new tab" / "copy link address" affordances that silently 403.
+ *
+ * After a click the button disables itself for COOLDOWN_MS so a fast double
+ * click can't queue a second download; no per-call state is kept beyond
+ * that. The timer is cleared on unmount.
  */
 export function FileDownloadLink({ agentId, root, path, children, style, className }: Props) {
+  const [coolingDown, setCoolingDown] = useState(false);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
   const onClick = async () => {
+    if (coolingDown) return;
+    setCoolingDown(true);
+    timerRef.current = window.setTimeout(() => setCoolingDown(false), COOLDOWN_MS);
     try {
       const url = await fileRawAccessUrl(agentId, root, path);
       const a = document.createElement('a');
@@ -53,7 +81,8 @@ export function FileDownloadLink({ agentId, root, path, children, style, classNa
     <button
       type="button"
       onClick={onClick}
-      style={{ ...buttonReset, ...style }}
+      disabled={coolingDown}
+      style={{ ...buttonReset, ...(coolingDown ? buttonDisabled : null), ...style }}
       className={className}
     >
       {children ?? 'Download'}
