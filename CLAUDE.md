@@ -60,8 +60,11 @@ machines need no public IP, inbound port, VPN, or port mapping.
 ## Stack
 
 **Frontend** (`frontend/`): TypeScript + Vite + React. Files and
-Collections share `FileEntryList` / `WorkspaceSplit`. Workspace Search is
-a sibling sidebar view (`WorkspaceSearch`). Heavy preview components are
+Collections share `FileEntryList` / `WorkspaceSplit`. Workspace Search is a
+sibling sidebar view (`WorkspaceSearch`) on mobile; on desktop it renders in
+`SearchFloatWindow` — a draggable / resizable floating window (geometry
+persisted in localStorage) that overlays the current view instead of
+replacing it, while staying mounted when closed so long scans survive. Heavy preview components are
 `React.lazy()`-loaded (`PdfPreview`, `TextPreview`, `MarkdownPreview`,
 `HtmlPreview`, `CsvPreview`, `ImagePreview`). `PreviewWorkspace` owns
 multi-tab state; `PreviewPane` is a memoized dispatcher — memoization is
