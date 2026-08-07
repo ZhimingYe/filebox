@@ -238,9 +238,19 @@ Frontend POST /api/agents/{id}/workspace-search
 Hardening: result/scan caps, ~512 KiB payload soft limit, 9 min agent
 deadline / 10 min hub wait, one concurrent search per agent, cancel via
 `/api/cancel` (and on client disconnect). Gated by
-`capabilities.workspace_search`. Hitting a result opens the parent folder
-in Files. The Search view stays mounted when hidden so long scans survive
-navigation.
+`capabilities.workspace_search`. Hitting a result opens the parent folder in
+the current browsing mode: in Files it navigates there as before; in
+Explorer it stays in the tree, which expands to the folder and shows a
+"Located the folder." notice once the reveal settles (a vanished folder
+settles on the nearest existing ancestor with an honest fallback notice).
+The browser also restores the last selected agent, the Files/Explorer mode,
+and the per-agent/per-root browse position after a refresh; a restored
+folder that no longer exists falls back to the nearest existing ancestor
+(validated once per (agent, root) pair per session via `fsStat` — the pair
+is only marked validated after the probe completes, so a navigation away
+mid-probe doesn't burn the check), and a removed backend is simply not
+re-selected. The Search view stays mounted when hidden so long scans
+survive navigation.
 
 ## Security
 

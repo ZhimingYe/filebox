@@ -3,6 +3,15 @@ import { useSession } from './state/session';
 import { useHealth } from './state/health';
 import { useSse } from './state/events';
 import { useIsMobile } from './state/useIsMobile';
+import {
+  VIEW_STORAGE,
+  LAST_AGENT_STORAGE,
+  loadNavPosMap,
+  loadPathMemoryMap,
+  persistNavState,
+  findNearestExistingDir,
+  memKey,
+} from './state/navPersistence';
 import { Login } from './components/Login';
 import { BackendList } from './components/BackendList';
 import { FileBrowser } from './components/FileBrowser';
@@ -78,8 +87,21 @@ export default function App() {
   const { health, agents, error: healthError, refresh } = useHealth(loggedIn === true);
   const isMobile = useIsMobile();
 
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [view, setView] = useState<View>('files');
+  // ── Refresh persistence ──
+  // The selected agent and the Files/Explorer mode are restored from
+  // localStorage on load (Settings/Stats/Collections stay session-scoped and
+  // always start on Files); the browse positions are seeded into the refs
+  // below. Restored positions are validated once per (agent, root) pair (see
+  // the fsStat effect): a folder that vanished since the last visit falls
+  // back to the nearest existing ancestor instead of stranding the user on
+  // an error screen.
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() => {
+    try { return localStorage.getItem(LAST_AGENT_STORAGE); } catch { return null; }
+  });
+  const [view, setView] = useState<View>(() => {
+    try { return localStorage.getItem(VIEW_STORAGE) === 'explorer' ? 'explorer' : 'files'; }
+    catch { return 'files'; }
+  });
   // Floating Search window (desktop + mobile). Toggled by the sidebar nav
   // button and independent of `view`, so Files/Explorer/… stay visible
   // underneath while the window is open. Stays mounted when closed so long
@@ -106,6 +128,30 @@ export default function App() {
     anchor: HTMLElement;
   } | null>(null);
 
+  // Persist the browsing mode and the selected agent so a refresh restores
+  // them. Storage may be unavailable in hardened/private contexts — never
+  // let a persistence failure break the session.
+  useEffect(() => {
+    try { localStorage.setItem(VIEW_STORAGE, view); } catch { /* ignore */ }
+  }, [view]);
+  useEffect(() => {
+    try {
+      if (selectedAgentId) localStorage.setItem(LAST_AGENT_STORAGE, selectedAgentId);
+      else localStorage.removeItem(LAST_AGENT_STORAGE);
+    } catch { /* ignore */ }
+  }, [selectedAgentId]);
+  // A restored agent id that no longer exists (backend removed/renamed) must
+  // not keep highlighting a ghost in the sidebar — NoAgentSelected takes over.
+  useEffect(() => {
+    if (!selectedAgentId || agents.length === 0) return;
+    if (!agents.some((a) => a.id === selectedAgentId)) setSelectedAgentId(null);
+  }, [agents, selectedAgentId]);
+
+  // Locate request for the Explorer tree (search jump while in Explorer
+  // mode): the nonce re-arms the "Located the folder." notice even when the
+  // target folder is the one already revealed.
+  const [explorerLocate, setExplorerLocate] = useState<{ nonce: number } | null>(null);
+
   // ── File browsing position, owned HERE (not in FileBrowser) ──
   // FileBrowser unmounts when the user leaves the Files view (Settings/
   // Stats), so any state it held was lost on remount — jumping back to the
@@ -116,9 +162,13 @@ export default function App() {
   // - filePosByAgent: last viewed {root, path} per agent.
   // - pathMemory: last path per (agent:root) — so switching roots within an
   //   agent restores each root's own position.
-  const filePosByAgent = useRef<Map<string, { root: string; path: string }>>(new Map());
-  const pathMemory = useRef<Map<string, string>>(new Map());
-  const memKey = (agentId: string, root: string) => `${agentId}:${root}`;
+  // Seeded once from localStorage (lazy useState initializers) so a refresh
+  // restores every agent's last position; from then on the maps live in
+  // memory for the session.
+  const [filePosSeed] = useState(loadNavPosMap);
+  const [pathMemSeed] = useState(loadPathMemoryMap);
+  const filePosByAgent = useRef(filePosSeed);
+  const pathMemory = useRef(pathMemSeed);
   // Unpin a single folder via an atomic pin_remove delta (not a whole-array
   // replace), so two tabs or rapid clicks can't clobber each other. Returns
   // true on success so the sidebar can surface a failure banner — the
@@ -455,15 +505,56 @@ export default function App() {
   }, [enabledRoots, previewTabs]);
 
   // Atomically apply a navigation for the current agent: update state + record
-  // both the per-agent position and the per-root path memory.
+  // both the per-agent position and the per-root path memory, then persist so
+  // a refresh restores this position.
   const applyNav = useCallback((root: string, path: string) => {
     setSelectedRoot(root);
     setCurrentPath(path);
     if (selectedAgent) {
       filePosByAgent.current.set(selectedAgent.id, { root, path });
       pathMemory.current.set(memKey(selectedAgent.id, root), path);
+      persistNavState(filePosByAgent.current, pathMemory.current);
     }
   }, [selectedAgent]);
+
+  // Refresh-restore validation: a restored position may point at a folder
+  // that vanished since the last visit. Once per (agent, root) pair per
+  // session, stat the restored path and fall back to the nearest existing
+  // ancestor. Only a definitive miss (stat:null) walks up; transient
+  // failures keep the position and let FileBrowser surface its own error
+  // instead. Navigating away while the probe is in flight aborts it so it
+  // can't clobber newer user intent. User-driven navigation is never
+  // validated — it always went through a successful listing.
+  const validatedPairsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!selectedAgent || !selectedRoot) return;
+    // The restore commit (reconcile effect) lands one render after the agent
+    // itself arrives — until the root actually belongs to this agent, the
+    // values are stale leftovers from the previous agent and must not be
+    // probed (nor the pair marked validated).
+    if (!selectedAgent.roots.some((r) => r.name === selectedRoot)) return;
+    const pairKey = memKey(selectedAgent.id, selectedRoot);
+    if (validatedPairsRef.current.has(pairKey)) return;
+    if (currentPath === '/') {
+      // The root itself can't vanish — mark the pair so it isn't re-probed.
+      validatedPairsRef.current.add(pairKey);
+      return;
+    }
+    const agentId = selectedAgent.id;
+    const root = selectedRoot;
+    const path = currentPath;
+    const controller = new AbortController();
+    (async () => {
+      const nearest = await findNearestExistingDir(agentId, root, path, controller.signal);
+      if (controller.signal.aborted) return;
+      // Marked only after the probe completes, so an abort (navigation away)
+      // never burns the pair's validation — a later visit still probes.
+      validatedPairsRef.current.add(pairKey);
+      if (nearest === null || nearest === path) return;
+      applyNav(root, nearest);
+    })();
+    return () => controller.abort();
+  }, [selectedAgent, selectedRoot, currentPath, applyNav]);
 
   // Explorer ↔ Files directory sync. Explorer reports the directory the user
   // is browsing (expand a folder / open a file), which lands in the same
@@ -560,11 +651,26 @@ export default function App() {
 
   const openInFiles = useCallback((root: string, path: string) => {
     // Mobile: the full-screen search sheet would otherwise keep covering the
-    // Files view it just navigated to.
+    // view it just navigated to.
     if (isMobile) setSearchOpen(false);
+    // Remember the browsing mode: in Explorer, stay in the tree and let the
+    // shared position reveal the folder — the tree expands the ancestors,
+    // selects, and scrolls to it, and the locate nonce fires the
+    // "Located the folder." notice once the reveal settles. Everywhere else
+    // lands in Files as before.
+    if (view === 'explorer') {
+      if (isMobile) previewTabs.closeAll();
+      applyNav(root, path);
+      setExplorerLocate((prev) => ({ nonce: (prev?.nonce ?? 0) + 1 }));
+      return;
+    }
+    // Mobile is list-OR-preview: leaving the current file open would bury
+    // the jumped-to folder under the full-screen preview, so close it (same
+    // rule as Pinned Folders).
+    if (isMobile) previewTabs.closeAll();
     setView('files');
     setNavRequest({ root, path, nonce: Date.now() });
-  }, [isMobile]);
+  }, [isMobile, view, applyNav, previewTabs]);
 
   // "Open in preview pane" from a search hit: switch to Files (where the
   // preview pane lives — on mobile that surfaces the full-screen preview)
@@ -576,11 +682,14 @@ export default function App() {
     // (and the top-bar Back button) is visible. Desktop keeps the float open
     // — the preview opens in the pane behind it.
     if (isMobile) setSearchOpen(false);
-    setView('files');
+    // Remember the browsing mode: in Explorer the preview opens in its own
+    // split pane (on mobile that's the full-screen preview with
+    // Back → "Back to Explorer"); everywhere else it opens in Files.
+    if (view !== 'explorer') setView('files');
     const name = path.split('/').filter(Boolean).pop() ?? path;
     const entry: FsEntry = { name, entry_type: 'file', size: null, modified: null, denied: false };
     handleFileSelect(root, path, entry);
-  }, [handleFileSelect, isMobile]);
+  }, [handleFileSelect, isMobile, view]);
 
   const activeProgress = Array.from(progressMap.values());
 
@@ -1005,6 +1114,7 @@ export default function App() {
                       roots={selectedAgent.roots}
                       active={view === 'explorer' && !showMobilePreview}
                       currentDir={selectedRoot ? { root: selectedRoot, path: currentPath } : null}
+                      locateRequest={explorerLocate}
                       onNavigateDir={handleExplorerDirNav}
                       onFileSelect={handleFileSelect}
                       onAddToCollection={openCollectionPicker}
@@ -1022,6 +1132,7 @@ export default function App() {
                         roots={selectedAgent.roots}
                         active={view === 'explorer'}
                         currentDir={selectedRoot ? { root: selectedRoot, path: currentPath } : null}
+                        locateRequest={explorerLocate}
                         onNavigateDir={handleExplorerDirNav}
                         onFileSelect={handleFileSelect}
                         onAddToCollection={openCollectionPicker}
