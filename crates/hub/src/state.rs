@@ -33,6 +33,10 @@ pub struct PreviewSession {
     pub agent_id: String,
     pub root: String,
     pub base_path: String,
+    /// Absolute origin (`scheme://host`) captured at session creation. The
+    /// document-mode injector uses it to build the absolute `<base>` href and
+    /// CSP sources, which a relative base cannot express.
+    pub absolute_base_url: String,
     pub created_at: Instant,
     pub expires_at: Instant,
     pub requests_served: u32,

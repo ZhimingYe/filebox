@@ -27,78 +27,18 @@ interface Props {
 
 const HTML_SANDBOX = 'allow-scripts allow-downloads';
 
-function escapeAttr(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-}
-
-function previewCsp(baseUrl: string): string {
-  const source = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
-  return [
-    "default-src 'none'",
-    `script-src 'unsafe-inline' 'unsafe-eval' blob: ${source}`,
-    `style-src 'unsafe-inline' ${source}`,
-    `img-src data: blob: ${source}`,
-    `font-src data: ${source}`,
-    `connect-src ${source}`,
-    `media-src blob: ${source}`,
-    `worker-src blob: ${source}`,
-    `frame-src blob: ${source}`,
-    `navigate-to blob: ${source}`,
-    `base-uri ${source}`,
-    "form-action 'none'",
-    "object-src 'none'",
-  ].join('; ');
-}
-
-// Inject a locked <base> and CSP meta so relative resources resolve through
-// the tokenized preview endpoint instead of the main Filebox API surface.
-// When injectCharset is true, prepends <meta charset="utf-8"> as the very
-// first element in <head>.
-function injectPreviewGuards(html: string, baseUrl: string, injectCharset: boolean): string {
-  const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
-  const escapedBaseUrl = escapeAttr(normalizedBaseUrl);
-  const escapedCsp = escapeAttr(previewCsp(normalizedBaseUrl));
-  const guardTags = [
-    injectCharset ? `<meta charset="utf-8">` : null,
-    `<meta http-equiv="Content-Security-Policy" content="${escapedCsp}">`,
-    `<base href="${escapedBaseUrl}" target="_self">`,
-  ].filter((t): t is string => t !== null).join('\n');
-  const withoutExistingBase = html.replace(/<base\b[^>]*>/gi, '');
-
-  const headMatch = withoutExistingBase.match(/<head[^>]*>/i);
-  if (headMatch) {
-    const insertPos = withoutExistingBase.indexOf(headMatch[0]) + headMatch[0].length;
-    return withoutExistingBase.slice(0, insertPos) + `\n${guardTags}` + withoutExistingBase.slice(insertPos);
-  }
-
-  const htmlMatch = withoutExistingBase.match(/<html[^>]*>/i);
-  if (htmlMatch) {
-    const insertPos = withoutExistingBase.indexOf(htmlMatch[0]) + htmlMatch[0].length;
-    return withoutExistingBase.slice(0, insertPos) + `\n<head>${guardTags}</head>` + withoutExistingBase.slice(insertPos);
-  }
-
-  return `${guardTags}\n${withoutExistingBase}`;
-}
-
-function detectDocIssues(html: string): { missingHtml: boolean; missingCharset: boolean } {
-  const missingHtml = !/<html[\s>]/i.test(html);
-  const head = html.slice(0, 1024);
-  const hasCharset = /<meta\b[^>]*charset/i.test(head);
-  return { missingHtml, missingCharset: !hasCharset };
-}
-
-// Nested preview for "open in new window". Use srcdoc (not a blob: src) so
-// Safari/WebKit can render inside sandbox without allow-same-origin — blob
-// URLs in that configuration stay blank in WebKit.
-function makeSandboxWrapper(html: string): string {
-  const escapedHtml = escapeAttr(html);
-  const escapedSandbox = escapeAttr(HTML_SANDBOX);
+// Outer page is a top-level blob: URL (renders fine in Safari). The inner
+// iframe loads the tokenized document URL directly — the hub serves it in
+// document mode (injected <base> + CSP), so relative links and #anchors keep
+// working. srcdoc cannot do that for a document that must navigate itself.
+function makeSandboxWrapper(documentUrl: string): string {
+  const origin = new URL(documentUrl).origin;
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src ${origin};">
 <title>HTML Preview</title>
 <style>
 html,body{margin:0;width:100%;height:100%;background:${c.surface};}
@@ -106,7 +46,7 @@ iframe{border:0;width:100%;height:100%;}
 </style>
 </head>
 <body>
-<iframe sandbox="${escapedSandbox}" srcdoc="${escapedHtml}" title="HTML Preview"></iframe>
+<iframe sandbox="${HTML_SANDBOX}" src="${documentUrl}" title="HTML Preview"></iframe>
 </body>
 </html>`;
 }
@@ -116,16 +56,8 @@ const docWarningBanner: CSSProperties = {
   padding: '10px 14px', background: c.warningBg,
   borderBottom: `1px solid ${c.border}`, flexShrink: 0,
 };
-const docInfoBanner: CSSProperties = {
-  ...docWarningBanner,
-  background: c.successBg,
-};
 const docWarningTitle: CSSProperties = {
   color: c.warning, fontWeight: 600, fontSize: 12.5, marginBottom: 2,
-};
-const docInfoTitle: CSSProperties = {
-  ...docWarningTitle,
-  color: c.success,
 };
 const docWarningBody: CSSProperties = {
   color: c.textSecondary, fontSize: 12, lineHeight: 1.5,
@@ -135,43 +67,22 @@ const docWarningClose: CSSProperties = {
   color: c.textMuted, cursor: 'pointer', fontSize: 16, lineHeight: 1,
   padding: '0 2px', alignSelf: 'flex-start',
 };
-const toggleBtn: CSSProperties = {
-  flexShrink: 0, border: `1px solid ${c.border}`, borderRadius: 4,
-  background: c.surface, color: c.textSecondary, cursor: 'pointer',
-  fontSize: 11.5, fontWeight: 500, padding: '4px 10px', whiteSpace: 'nowrap',
-  alignSelf: 'flex-start',
-};
 
 export function HtmlPreview({ agentId, root, path, url }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.html });
   const shouldLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
   const { text, error, loading, retrying, cancel, retry } = useFetchText(url, shouldLoad, agentId);
   const previewShouldLoad = shouldLoad && text !== null && !error;
-  const [previewBaseUrl, setPreviewBaseUrl] = useState<string | null>(null);
+  const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [slowPreviewSetup, setSlowPreviewSetup] = useState(false);
   const [previewRetryToken, setPreviewRetryToken] = useState(0);
-  // srcDoc HTML (not a blob: URL). Safari/WebKit leaves sandboxed blob iframes
-  // blank unless allow-same-origin is also set — which would defeat the sandbox.
-  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [iframeKey, setIframeKey] = useState(0);
   const [iframeLoading, setIframeLoading] = useState(true);
   const [slowRendering, setSlowRendering] = useState(false);
   const [showSource, setShowSource] = useState(false);
   const [dismissedFileKey, setDismissedFileKey] = useState<string | null>(null);
-  const [charsetFix, setCharsetFix] = useState<boolean>(() => {
-    try { return localStorage.getItem('filebox:htmlCharsetFix') !== 'false'; }
-    catch { return true; }
-  });
-  const toggleCharsetFix = useCallback(() => {
-    setCharsetFix(prev => {
-      const next = !prev;
-      try { localStorage.setItem('filebox:htmlCharsetFix', String(next)); }
-      catch { /* ignore */ }
-      return next;
-    });
-  }, []);
   const mounted = useMounted();
   const previewCancelRef = useRef<AbortController | null>(null);
   const previewSetupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -179,11 +90,9 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   const wrapperUrlRef = useRef<string | null>(null);
   const wrapperRevokeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const docIssue = useMemo(() => {
-    if (!text) return null;
-    const { missingHtml, missingCharset } = detectDocIssues(text);
-    if (!missingHtml && !missingCharset) return null;
-    return { missingHtml, missingCharset };
+  const missingHtml = useMemo(() => {
+    if (!text) return false;
+    return !/<html[\s>]/i.test(text);
   }, [text]);
 
   const fileKey = `${root}:${path}`;
@@ -194,7 +103,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
       previewCancelRef.current?.abort();
       previewCancelRef.current = null;
       if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
-      setPreviewBaseUrl(null);
+      setDocumentUrl(null);
       setPreviewError(null);
       setPreviewLoading(false);
       setSlowPreviewSetup(false);
@@ -204,7 +113,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
     let cancelled = false;
     const controller = new AbortController();
     previewCancelRef.current = controller;
-    setPreviewBaseUrl(null);
+    setDocumentUrl(null);
     setPreviewError(null);
     setPreviewLoading(true);
     setSlowPreviewSetup(false);
@@ -226,7 +135,13 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
           },
         );
         if (cancelled || !mounted.current) return;
-        setPreviewBaseUrl(new URL(session.base_url, window.location.href).href);
+        // The hub serves this URL in document mode for navigation requests,
+        // injecting the sandbox guards (absolute <base>, CSP meta, anchor
+        // fixup) server-side.
+        setDocumentUrl(new URL(session.document_url, window.location.href).href);
+        setIframeKey((k) => k + 1);
+        setIframeLoading(true);
+        setSlowRendering(false);
         setPreviewLoading(false);
         setSlowPreviewSetup(false);
         if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
@@ -250,26 +165,14 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   }, [agentId, root, path, previewShouldLoad, previewRetryToken, mounted]);
 
   useEffect(() => {
-    if (text === null || !previewBaseUrl) {
-      setPreviewHtml(null);
-      return;
-    }
-    const injectCharset = charsetFix && !!docIssue?.missingCharset;
-    const processedHtml = injectPreviewGuards(text, previewBaseUrl, injectCharset);
-    setPreviewHtml(processedHtml);
-    setIframeKey((k) => k + 1);
-    setIframeLoading(true);
-    setSlowRendering(false);
-  }, [text, previewBaseUrl, charsetFix, docIssue?.missingCharset]);
-  useEffect(() => {
-    if (!iframeLoading || showSource || !previewHtml) return;
+    if (!iframeLoading || showSource || !documentUrl) return;
     slowTimerRef.current = setTimeout(() => {
       if (mounted.current) setSlowRendering(true);
     }, 8000);
     return () => {
       if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
     };
-  }, [iframeLoading, showSource, previewHtml, mounted]);
+  }, [iframeLoading, showSource, documentUrl, mounted]);
 
   useEffect(() => () => {
     previewCancelRef.current?.abort();
@@ -292,13 +195,11 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   }, []);
 
   const openInNewWindow = useCallback(() => {
-    if (!previewHtml) return;
+    if (!documentUrl) return;
     if (wrapperRevokeTimerRef.current) clearTimeout(wrapperRevokeTimerRef.current);
     if (wrapperUrlRef.current) URL.revokeObjectURL(wrapperUrlRef.current);
 
-    // Outer page is a top-level blob: URL (fine in Safari). The inner iframe
-    // uses srcdoc + sandbox so WebKit does not hit the blank blob-sandbox bug.
-    const wrapperBlob = new Blob([makeSandboxWrapper(previewHtml)], { type: 'text/html' });
+    const wrapperBlob = new Blob([makeSandboxWrapper(documentUrl)], { type: 'text/html' });
     const wrapperUrl = URL.createObjectURL(wrapperBlob);
     wrapperUrlRef.current = wrapperUrl;
     window.open(wrapperUrl, '_blank', 'noopener,noreferrer');
@@ -308,14 +209,14 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
         wrapperUrlRef.current = null;
       }
     }, 60000);
-  }, [previewHtml]);
+  }, [documentUrl]);
 
   const handleRefresh = useCallback(() => {
-    if (!previewHtml) return;
+    if (!documentUrl) return;
     setIframeLoading(true);
     setSlowRendering(false);
     setIframeKey((k) => k + 1);
-  }, [previewHtml]);
+  }, [documentUrl]);
 
   const handlePreviewSetupCancel = useCallback(() => {
     previewCancelRef.current?.abort();
@@ -370,7 +271,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
       </div>
     );
   }
-  if (previewLoading || (!showSource && text !== null && !previewHtml && !previewError)) {
+  if (previewLoading || (!showSource && text !== null && !documentUrl && !previewError)) {
     return (
       <div style={styles.container}>
         <LoadingOverlay
@@ -408,30 +309,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
         </button>
       </div>
 
-      {docIssue?.missingCharset && (
-        <div style={charsetFix ? docInfoBanner : docWarningBanner}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={charsetFix ? docInfoTitle : docWarningTitle}>
-              {charsetFix ? 'Charset auto-fixed' : 'Missing charset declaration'}
-            </div>
-            <div style={docWarningBody}>
-              {charsetFix
-                ? <>This HTML lacks a charset declaration.{' '}
-                  <code>{'<meta charset="utf-8">'}</code> was injected automatically.
-                  {docIssue.missingHtml && <> Also missing{' '}
-                  <code>{'<html>'}</code> tags — browsers handle this gracefully but the markup is non-standard.</>}
-                  </>
-                : <>Non-ASCII characters may appear garbled.{' '}
-                  Enable auto-fix to inject the charset tag.</>}
-            </div>
-          </div>
-          <button type="button" onClick={toggleCharsetFix} style={toggleBtn}>
-            Auto-fix: {charsetFix ? 'ON' : 'OFF'}
-          </button>
-        </div>
-      )}
-
-      {docIssue?.missingHtml && !docIssue?.missingCharset && !docWarningHidden && (
+      {missingHtml && !docWarningHidden && (
         <div style={docWarningBanner}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={docWarningTitle}>Non-standard HTML structure</div>
@@ -461,7 +339,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
         ) : (
           <iframe
             key={iframeKey}
-            srcDoc={previewHtml || ''}
+            src={documentUrl || ''}
             sandbox={HTML_SANDBOX}
             style={styles.htmlFrame}
             title="HTML Preview"

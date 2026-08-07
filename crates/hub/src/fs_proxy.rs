@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::Engine;
@@ -394,21 +394,64 @@ pub async fn preview_resource_handler(
         apply_preview_headers(&mut resp);
         return resp;
     };
-    let mut resp = serve_raw_file(
-        state.clone(),
-        RawFileTarget {
-            agent_id: preview.agent_id.clone(),
-            root: preview.root.clone(),
-            path,
-            session_id: Some(preview.session_id.clone()),
-            preview_token: Some(token.clone()),
-        },
-        req,
-    )
-    .await;
 
-    apply_preview_headers(&mut resp);
+    // Document mode: a navigation request for an HTML file gets the injected
+    // document (absolute <base> + CSP meta + anchor fixup), so relative links
+    // and #fragment links resolve through this same tokenized route and work
+    // inside the sandboxed iframe. Everything else — subresources, HEAD, XHR —
+    // stays in raw resource mode.
+    let document_base_url = format!(
+        "{}{}",
+        preview.absolute_base_url,
+        crate::preview_doc::preview_base_url(&token, &preview.base_path)
+    );
+    let is_document_mode =
+        is_preview_document_request(req.method(), req.headers(), &path);
+
+    let target = RawFileTarget {
+        agent_id: preview.agent_id.clone(),
+        root: preview.root.clone(),
+        path,
+        session_id: Some(preview.session_id.clone()),
+        preview_token: Some(token.clone()),
+    };
+    let mut resp = if is_document_mode {
+        serve_preview_document(state.clone(), target, document_base_url).await
+    } else {
+        serve_raw_file(state.clone(), target, req).await
+    };
+
+    // Document-mode successes already carry their own headers; errors keep
+    // the standard preview error headers.
+    if !is_document_mode || resp.status() != StatusCode::OK {
+        apply_preview_headers(&mut resp);
+    }
     resp
+}
+
+/// Document-mode decision: a GET navigation request for an HTML file.
+/// The `Sec-Fetch-Mode` header makes it opt-in — plain GETs (curl, scripts,
+/// link prefetches without the header) stay in raw resource mode.
+fn is_preview_document_request(
+    method: &axum::http::Method,
+    headers: &HeaderMap,
+    path: &str,
+) -> bool {
+    method == axum::http::Method::GET
+        && sec_fetch_mode_is_document_navigation(headers)
+        && crate::preview_doc::is_html_path(path)
+}
+
+/// True when the request is a top-level or iframe navigation (browsers send
+/// `Sec-Fetch-Mode: navigate` / `nested-navigate` for those).
+fn sec_fetch_mode_is_document_navigation(headers: &HeaderMap) -> bool {
+    headers
+        .get("sec-fetch-mode")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.eq_ignore_ascii_case("navigate") || v.eq_ignore_ascii_case("nested-navigate")
+        })
+        .unwrap_or(false)
 }
 
 pub async fn preview_options_handler() -> Response {
@@ -641,6 +684,179 @@ async fn serve_raw_file(
     let mut resp = builder.body(body).unwrap();
     apply_raw_file_headers(&mut resp, content_type);
     resp.into_response()
+}
+
+/// Document-mode preview response: collects the HTML file (bounded by
+/// [`crate::preview_doc::PREVIEW_DOCUMENT_MAX_BYTES`]), injects the sandbox
+/// guards at the byte level, and returns it with document-mode headers so
+/// the iframe can actually render it (no `frame-ancestors`, unlike raw
+/// resource responses).
+async fn serve_preview_document(
+    state: AppState,
+    target: RawFileTarget,
+    document_base_url: String,
+) -> Response {
+    let raw_permit = match tokio::time::timeout(
+        Duration::from_secs(30),
+        state.raw_read_semaphore.clone().acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        _ => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "hub_overloaded",
+                "The server is busy streaming files. Please retry shortly.",
+                true,
+            )
+        }
+    };
+    let (file_size, initial_modified) = match request_raw_file_size(&state, &target).await {
+        Ok(size) => size,
+        Err(resp) => return resp,
+    };
+    // The whole document is buffered for byte-level injection; the cap keeps
+    // that bounded per request (further bounded by the raw-read semaphore).
+    if file_size > crate::preview_doc::PREVIEW_DOCUMENT_MAX_BYTES {
+        return error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "preview_too_large",
+            &format!(
+                "HTML preview documents are limited to {} bytes",
+                crate::preview_doc::PREVIEW_DOCUMENT_MAX_BYTES
+            ),
+            false,
+        );
+    }
+    // The semaphore bounds Agent round-trips, not response lifetime: drop the
+    // upfront permit before the chunked collect re-acquires per chunk.
+    drop(raw_permit);
+
+    let raw = match collect_raw_file(&state, &target, file_size, initial_modified).await {
+        Ok(raw) => raw,
+        Err(resp) => return resp,
+    };
+    let injected = crate::preview_doc::inject_preview_guards(&raw, &document_base_url);
+    let mut resp = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CONTENT_LENGTH, injected.len())
+        .body(axum::body::Body::from(injected))
+        .unwrap();
+    apply_preview_document_headers(&mut resp, &document_base_url);
+    resp
+}
+
+/// Collects a whole file from the agent with the same chunking, retry and
+/// file-change detection as [`serve_raw_file`]'s producer, but buffered in
+/// memory. Error responses are plain (the caller applies preview headers).
+async fn collect_raw_file(
+    state: &AppState,
+    target: &RawFileTarget,
+    file_size: u64,
+    initial_modified: Option<String>,
+) -> Result<Vec<u8>, Response> {
+    let mut bytes = Vec::with_capacity(file_size as usize);
+    let mut sent = 0u64;
+    let expected_modified = initial_modified;
+    while sent < file_size {
+        let permit = match tokio::time::timeout(
+            Duration::from_secs(30),
+            state.raw_read_semaphore.clone().acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            _ => {
+                return Err(error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "hub_overloaded",
+                    "The server is busy streaming files. Please retry shortly.",
+                    true,
+                ))
+            }
+        };
+        let remaining = file_size - sent;
+        let chunk_result = request_raw_chunk_with_retry(
+            state,
+            target,
+            sent,
+            remaining.min(RAW_STREAM_CHUNK_BYTES),
+        )
+        .await;
+        drop(permit);
+
+        let (chunk, done, chunk_file_size, chunk_modified) = match chunk_result {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                return Err(error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "preview_document_error",
+                    &format!("Failed to read the HTML document: {}", err),
+                    true,
+                ))
+            }
+        };
+        if let Some(chunk_file_size) = chunk_file_size {
+            if chunk_file_size != file_size {
+                return Err(error_response(
+                    StatusCode::CONFLICT,
+                    "file_changed",
+                    "The file changed while it was being read. Please refresh the preview.",
+                    false,
+                ));
+            }
+        }
+        if expected_modified.is_some() && chunk_modified != expected_modified {
+            return Err(error_response(
+                StatusCode::CONFLICT,
+                "file_changed",
+                "The file changed while it was being read. Please refresh the preview.",
+                false,
+            ));
+        }
+        if chunk.is_empty() {
+            return Err(error_response(
+                StatusCode::BAD_GATEWAY,
+                "file_unavailable",
+                "The file could not be read completely",
+                true,
+            ));
+        }
+        if chunk.len() as u64 > remaining {
+            return Err(error_response(
+                StatusCode::BAD_GATEWAY,
+                "invalid_agent_response",
+                "The agent returned more bytes than requested",
+                false,
+            ));
+        }
+        if let Some(token) = target.preview_token.as_deref() {
+            if reserve_preview_bytes(state, token, chunk.len() as u64)
+                .await
+                .is_err()
+            {
+                return Err(error_response(
+                    StatusCode::UNAUTHORIZED,
+                    "preview_expired",
+                    "Preview session expired or not found",
+                    false,
+                ));
+            }
+        }
+        bytes.extend_from_slice(&chunk);
+        sent = sent.saturating_add(chunk.len() as u64);
+        if done && sent != file_size {
+            return Err(error_response(
+                StatusCode::BAD_GATEWAY,
+                "file_unavailable",
+                "The file ended before its advertised size",
+                true,
+            ));
+        }
+    }
+    Ok(bytes)
 }
 
 async fn request_raw_file_size(
@@ -1087,6 +1303,29 @@ fn apply_preview_headers(resp: &mut Response) {
     headers.insert(header::VARY, HeaderValue::from_static("Origin"));
 }
 
+/// Headers for document-mode responses. Unlike resource mode there is no
+/// `frame-ancestors` / `X-Frame-Options`: the document must be embeddable in
+/// the sandboxed preview iframe and in the blob new-window wrapper, both of
+/// which have opaque origins. The injected CSP meta enforces the same
+/// resource policy from inside the document. The `x-filebox-preview-document`
+/// sentinel lets the global [`crate::routes::security_headers`] layer keep
+/// its blanket `X-Frame-Options: DENY` for everything else while allowing
+/// this one opt-out.
+fn apply_preview_document_headers(resp: &mut Response, base_url: &str) {
+    let headers = resp.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_str(&crate::preview_doc::preview_document_csp(base_url)).unwrap(),
+    );
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("null"));
+    headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+    headers.insert(
+        axum::http::HeaderName::from_static("x-filebox-preview-document"),
+        HeaderValue::from_static("1"),
+    );
+}
+
 pub async fn sys_stats_handler(
     State(state): State<AppState>,
     Extension(session): Extension<AuthenticatedSession>,
@@ -1493,6 +1732,7 @@ mod tests {
             agent_id: "agent".to_string(),
             root: "root".to_string(),
             base_path: "".to_string(),
+            absolute_base_url: "http://localhost".to_string(),
             created_at: now,
             expires_at: now + std::time::Duration::from_secs(60),
             requests_served: 0,
@@ -1641,6 +1881,195 @@ mod tests {
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],
         }
+    }
+
+    // ── preview document mode ───────────────────────────────────────────────
+
+    #[test]
+    fn document_mode_requires_navigation_header_and_html_path() {
+        let get = axum::http::Method::GET;
+        let head = axum::http::Method::HEAD;
+        let mut nested = HeaderMap::new();
+        nested.insert("sec-fetch-mode", hv("nested-navigate"));
+        let mut top = HeaderMap::new();
+        top.insert("sec-fetch-mode", hv("navigate"));
+        let mut subresource = HeaderMap::new();
+        subresource.insert("sec-fetch-mode", hv("no-cors"));
+
+        assert!(is_preview_document_request(&get, &nested, "dir/test.html"));
+        assert!(is_preview_document_request(&get, &top, "test.htm"));
+        assert!(!is_preview_document_request(&head, &nested, "test.html"));
+        assert!(!is_preview_document_request(&get, &subresource, "test.html"));
+        assert!(!is_preview_document_request(&get, &HeaderMap::new(), "test.html"));
+        assert!(!is_preview_document_request(&get, &nested, "test.css"));
+    }
+
+    async fn active_principal_id(state: &AppState) -> String {
+        let mut inner = state.inner.write().await;
+        let (session, _) = inner.sessions.create_session("admin", false);
+        session.principal_id
+    }
+
+    async fn insert_preview_session(state: &AppState, token: &str, agent_id: &str, principal_id: &str) {
+        let now = std::time::Instant::now();
+        let preview = PreviewSession {
+            session_id: principal_id.to_string(),
+            agent_id: agent_id.to_string(),
+            root: "test".to_string(),
+            base_path: "".to_string(),
+            absolute_base_url: "http://localhost".to_string(),
+            created_at: now,
+            expires_at: now + std::time::Duration::from_secs(3600),
+            requests_served: 0,
+            bytes_served: 0,
+        };
+        let preview_sessions = state.inner.read().await.preview_sessions.clone();
+        preview_sessions.write().await.insert(token.to_string(), preview);
+    }
+
+    fn build_preview_request(
+        method: &str,
+        sec_fetch_mode: Option<&str>,
+        uri: &str,
+    ) -> axum::extract::Request {
+        let mut builder = axum::http::Request::builder().method(method).uri(uri);
+        if let Some(mode) = sec_fetch_mode {
+            builder = builder.header("sec-fetch-mode", mode);
+        }
+        builder.body(axum::body::Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn preview_navigation_gets_injected_document_without_frame_ancestors() {
+        let state = AppState::new(&test_config(), true);
+        let (tx, agent_handle) = spawn_mock_file_agent(state.clone(), "a1", 64, 64);
+        register_mock_agent(&state, "a1", tx).await;
+        let principal = active_principal_id(&state).await;
+        insert_preview_session(&state, "tok", "a1", &principal).await;
+
+        let response = preview_resource_handler(
+            State(state.clone()),
+            Path(("tok".to_string(), "test.html".to_string())),
+            build_preview_request("GET", Some("nested-navigate"), "/api/preview/tok/test.html"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let csp = response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(csp.contains("script-src 'unsafe-inline'"), "csp: {csp}");
+        assert!(!csp.contains("frame-ancestors"), "csp: {csp}");
+        // Sentinel that lets the global security_headers layer skip its
+        // blanket X-Frame-Options: DENY for this response.
+        assert_eq!(
+            response.headers().get("x-filebox-preview-document").unwrap(),
+            "1"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let html = String::from_utf8_lossy(&bytes);
+        assert!(html.starts_with("<meta charset=\"utf-8\">"), "{html}");
+        assert!(html.contains(
+            "<base href=\"http://localhost/api/preview/tok/\" target=\"_self\">"
+        ));
+        assert!(html.contains("scrollIntoView"));
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn preview_plain_get_stays_raw_with_locked_down_csp() {
+        let state = AppState::new(&test_config(), true);
+        let (tx, agent_handle) = spawn_mock_file_agent(state.clone(), "a1", 64, 64);
+        register_mock_agent(&state, "a1", tx).await;
+        let principal = active_principal_id(&state).await;
+        insert_preview_session(&state, "tok", "a1", &principal).await;
+
+        let response = preview_resource_handler(
+            State(state.clone()),
+            Path(("tok".to_string(), "test.html".to_string())),
+            build_preview_request("GET", None, "/api/preview/tok/test.html"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let csp = response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(csp.contains("frame-ancestors 'none'"), "csp: {csp}");
+        assert!(response.headers().get("x-filebox-preview-document").is_none());
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        // Raw mock bytes (0xAB filler) — no injection.
+        assert_eq!(bytes.len(), 64);
+        assert!(bytes.iter().all(|&b| b == 0xAB));
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn preview_head_stays_raw_even_with_navigation_header() {
+        let state = AppState::new(&test_config(), true);
+        let (tx, agent_handle) = spawn_mock_file_agent(state.clone(), "a1", 64, 64);
+        register_mock_agent(&state, "a1", tx).await;
+        let principal = active_principal_id(&state).await;
+        insert_preview_session(&state, "tok", "a1", &principal).await;
+
+        let response = preview_resource_handler(
+            State(state.clone()),
+            Path(("tok".to_string(), "test.html".to_string())),
+            build_preview_request("HEAD", Some("nested-navigate"), "/api/preview/tok/test.html"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let csp = response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(csp.contains("frame-ancestors 'none'"), "csp: {csp}");
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        assert!(body.is_empty());
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn preview_document_mode_rejects_oversized_documents() {
+        let state = AppState::new(&test_config(), true);
+        let oversized = crate::preview_doc::PREVIEW_DOCUMENT_MAX_BYTES + 1;
+        let (tx, agent_handle) = spawn_mock_file_agent(state.clone(), "a1", oversized, 4096);
+        register_mock_agent(&state, "a1", tx).await;
+        let principal = active_principal_id(&state).await;
+        insert_preview_session(&state, "tok", "a1", &principal).await;
+
+        let response = preview_resource_handler(
+            State(state.clone()),
+            Path(("tok".to_string(), "huge.html".to_string())),
+            build_preview_request("GET", Some("navigate"), "/api/preview/tok/huge.html"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "preview_too_large");
+
+        agent_handle.abort();
     }
 
     /// Spawn a mock agent that simulates `file_total` bytes delivered in
