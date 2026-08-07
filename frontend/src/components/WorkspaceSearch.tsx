@@ -218,7 +218,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile, onPreviewFile 
     for (const r of agent.roots ?? []) m.set(r.name, r.path_display);
     return m;
   }, [agent.roots]);
-  const [mode, setMode] = useState<SearchMode>('content');
+  const [mode, setMode] = useState<SearchMode>('find');
   const [root, setRoot] = useState(initialRoot || enabledRoots[0]?.name || '');
   const [folder, setFolder] = useState('/');
   const [query, setQuery] = useState('');
@@ -592,15 +592,15 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile, onPreviewFile 
             style={styles.modeSeg}
           >
             <ModeButton
-              active={mode === 'content'}
-              onClick={() => setMode('content')}
-              label="Content"
-              position="start"
-            />
-            <ModeButton
               active={mode === 'find'}
               onClick={() => setMode('find')}
               label="Files"
+              position="start"
+            />
+            <ModeButton
+              active={mode === 'content'}
+              onClick={() => setMode('content')}
+              label="Content"
               position="end"
             />
           </div>
