@@ -158,15 +158,29 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
     if (isMobile) return;
     try { localStorage.setItem('filebox.treeOpen', treeOpen ? '1' : '0'); } catch { /* ignore */ }
   }, [treeOpen, isMobile]);
-  // Bumped to remount DateFilterControl closed when the tree opens — keeps
-  // two full-screen-ish mobile layers from stacking on top of each other.
-  const [dateFilterEpoch, setDateFilterEpoch] = useState(0);
+  // Search + date filter collapse behind a single toolbar button. The filter
+  // panel row only exists while `filterOpen`, so the collapsed state takes
+  // zero vertical space on both desktop and mobile.
+  const [filterOpen, setFilterOpen] = useState(false);
+  const filterInputRef = useRef<HTMLInputElement>(null);
+
+  // The panel opens and closes ONLY through the toolbar button — no
+  // outside-click, no Escape, nothing else touches it. Closing via the button
+  // always clears the filters (see the button's onClick), so the button can
+  // never stay highlighted with the panel closed: highlight ⟺ panel open.
+  // Desktop: move focus into the search box when the panel opens so the
+  // toolbar click lands straight in the filter. Mobile skips this — popping
+  // the on-screen keyboard unprompted is jarring there.
+  useEffect(() => {
+    if (filterOpen && !isMobile) filterInputRef.current?.focus();
+  }, [filterOpen, isMobile]);
 
   const closeTree = useCallback(() => setTreeOpen(false), []);
   const toggleTree = useCallback(() => {
     setTreeOpen((v) => {
       if (v) return false;
-      setDateFilterEpoch((n) => n + 1);
+      // Opening the tree closes the root dropdown so their layers can't
+      // stack with the tree drawer.
       setRootOpen(false);
       return true;
     });
@@ -706,6 +720,39 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
             <path d="M6 4h8M6 12h4v-8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
         </button>
+        {/* Filter toggle: search + modification-date filter collapse behind a
+            single button. The panel is a full-width row below the toolbar and
+            only exists while open — zero vertical space otherwise. The button
+            is the ONLY control: opening shows the panel; pressing it again
+            CLEARS the filters and collapses the panel, so the highlight
+            always disappears with it. Nothing else (outside click, Esc, view
+            switch, sort, file click) touches the filter state. */}
+        <button
+          onClick={() => {
+            if (filterOpen) {
+              // Pressing the button again = undo: wipe query + date filter
+              // and collapse. This is the only path that clears or closes.
+              setFilterText('');
+              setDateFilter(EMPTY_DATE_FILTER);
+              setFilterOpen(false);
+            } else {
+              setFilterOpen(true);
+            }
+          }}
+          style={(filterOpen || filterText.trim() || dateFilterActive) ? styles.filterBtnActive : styles.filterBtn}
+          title={filterOpen ? 'Close & clear search / date filter' : 'Search and filter files'}
+          aria-label="Search and filter files"
+          aria-expanded={filterOpen}
+          aria-controls={filterOpen ? 'file-filter-panel' : undefined}
+        >
+          {/* Funnel glyph (Feather-style, scaled to 16×16): wide mouth at the
+              top, narrowing to the stem — the conventional "filter" mark.
+              Drawn as SVG so it matches the stroke weight of the neighboring
+              refresh / tree / align icons. */}
+          <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M14.7 2H1.3l5.4 6.3v4.4l2.6 1.3V8.3L14.7 2z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
         <button
           onClick={() => setNameAlignRight((v) => !v)}
           style={nameAlignRight ? styles.alignBtnActive : styles.alignBtn}
@@ -832,51 +879,53 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
           </button>
         </div>
       )}
-      <div style={styles.filterBar}>
-        <div style={styles.filterRow}>
-          <input
-            type="text"
-            value={filterText}
-            onChange={(e) => setFilterText(e.target.value)}
-            placeholder={isMobile ? 'Search…' : 'Search files... (* and ? supported)'}
-            style={{ ...styles.filterInput, borderColor: filterError ? c.danger : c.border }}
-          />
-          {filterText && (
-            <button onClick={() => setFilterText('')} style={styles.filterClear} title="Clear name filter">&times;</button>
-          )}
-          <DateFilterControl
-            key={dateFilterEpoch}
-            value={dateFilter}
-            onChange={setDateFilter}
-            isMobile={isMobile}
-            matchCount={dateFilterActive ? filteredEntries.length : null}
-            onOpenChange={(open) => {
-              // Date filter is a full-viewport sheet on mobile — never leave
-              // the folder drawer open underneath it.
-              if (open && isMobile) closeTree();
-            }}
-          />
-          {dateFilterActive && (
-            <button
-              onClick={() => setDateFilter(EMPTY_DATE_FILTER)}
-              style={styles.filterClear}
-              title="Clear date filter"
-              aria-label="Clear date filter"
-            >
-              &times;
-            </button>
-          )}
-          {(filterText || dateFilterActive) && !filterError && !dateRangeInvalid && (
-            <span style={styles.filterCount}>
-              {filteredEntries.length}{isMobile ? '' : ` match${filteredEntries.length !== 1 ? 'es' : ''}`}
-            </span>
-          )}
-          {filterError && <span style={styles.filterError}>Invalid regex</span>}
-          {dateRangeInvalid && (
-            <span style={styles.filterError} role="alert">Invalid range</span>
-          )}
+      {filterOpen && (
+        <div id="file-filter-panel" style={styles.filterBar}>
+          <div style={styles.filterRow}>
+            <input
+              ref={filterInputRef}
+              type="text"
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              placeholder={isMobile ? 'Search…' : 'Search files... (* and ? supported)'}
+              style={{ ...styles.filterInput, borderColor: filterError ? c.danger : c.border }}
+            />
+            {filterText && (
+              <button onClick={() => setFilterText('')} style={styles.filterClear} title="Clear name filter">&times;</button>
+            )}
+            <DateFilterControl
+              value={dateFilter}
+              onChange={setDateFilter}
+              isMobile={isMobile}
+              matchCount={dateFilterActive ? filteredEntries.length : null}
+              onOpenChange={(open) => {
+                // Date filter is a full-viewport sheet on mobile — never leave
+                // the folder drawer open underneath it.
+                if (open && isMobile) closeTree();
+              }}
+            />
+            {dateFilterActive && (
+              <button
+                onClick={() => setDateFilter(EMPTY_DATE_FILTER)}
+                style={styles.filterClear}
+                title="Clear date filter"
+                aria-label="Clear date filter"
+              >
+                &times;
+              </button>
+            )}
+            {(filterText || dateFilterActive) && !filterError && !dateRangeInvalid && (
+              <span style={styles.filterCount}>
+                {filteredEntries.length}{isMobile ? '' : ` match${filteredEntries.length !== 1 ? 'es' : ''}`}
+              </span>
+            )}
+            {filterError && <span style={styles.filterError}>Invalid regex</span>}
+            {dateRangeInvalid && (
+              <span style={styles.filterError} role="alert">Invalid range</span>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       <div ref={contentWrapRef} style={{ ...styles.contentWrap, position: 'relative' }}>
         {treeOpen && selectedRoot && activeRootObj && isMobile && (
@@ -1109,6 +1158,25 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 16, lineHeight: 1, width: 34, height: 28,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     boxSizing: 'border-box', flexShrink: 0,
+  },
+  // Filter toggle: same 34×28 box model as the align/font/pin buttons. Idle =
+  // neutral outline; active (accent) while the panel is open OR a name/date
+  // filter is applied, so the collapsed state still signals filtering.
+  filterBtn: {
+    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.border}`,
+    background: 'transparent', color: c.textSecondary, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, width: 34, height: 28,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', flexShrink: 0,
+    transition: 'all 0.15s',
+  },
+  filterBtnActive: {
+    padding: '4px 10px', borderRadius: radius.md, border: `1px solid ${c.accent}`,
+    background: c.accentBg, color: c.accent, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, width: 34, height: 28,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box', flexShrink: 0,
+    transition: 'all 0.15s',
   },
   // Pin toggle button: matches the align/font/copy box model. Idle = neutral
   // outline with a hollow pin; active (pinned) = accent border + accentBg with
