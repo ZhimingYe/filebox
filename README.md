@@ -4,14 +4,15 @@
 
 filebox is a read-only remote file browser with system monitoring. Install a
 small agent on each machine you want to reach, host the hub on a server you
-control, and open a single URL — every machine is one click away, with no
-VPN, no public IP on the target, no port forwarding, and no SSH gymnastics.
+control, and open a single URL — from your desktop or your phone, wherever
+you are. Every machine is one click away, with no VPN, no public IP on the
+target, no port forwarding, and no SSH gymnastics.
 
 [![Release](https://img.shields.io/github/v/release/ZhimingYe/filebox?sort=semver)](https://github.com/ZhimingYe/filebox/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **[Live demo and product tour →](https://zhimingye.github.io/filebox/)** —
-> interactive walkthrough of the interface and deployment.
+> **[See it in action →](https://zhimingye.github.io/filebox/)** — an
+> interactive look at the interface and how deployment works.
 
 ## How it works
 
@@ -80,7 +81,8 @@ on its own, with no duplicate entries and no lost configuration.
 
 ### Operations
 
-- Works well on phones
+- Works on phones and tablets — browse, search, and monitor from anywhere,
+  not just at your desk
 - Live status feed with request progress and cancellation
 - Agents reconnect automatically after outages — identity persists, no duplicates
 - One-command in-place updates
@@ -165,9 +167,10 @@ inbound ports to open on the firewall.
 
 ### Step 3 — Log in and browse
 
-Open `https://filebox.example.com`, log in, pick a machine, and add the
-folders you want to expose (Settings → Add Root). Files, search, collections,
-and monitoring all work from there.
+Open `https://filebox.example.com` in any browser — desktop, phone, or
+tablet — log in, pick a machine, and add the folders you want to expose
+(Settings → Add Root). Files, search, collections, and monitoring all work
+from there, whether you are at your desk or on the go.
 
 ### Updating
 
