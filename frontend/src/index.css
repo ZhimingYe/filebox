@@ -7,9 +7,19 @@
 }
 
 html, body, #root {
-  height: 100%;
+  height: var(--filebox-viewport-height, 100%);
   width: 100%;
   overflow: hidden;
+}
+
+/* `vh` can include Android browsers' bottom toolbar, leaving the lower part
+   of an app shell underneath browser controls. The startup script supplies
+   the actual visible viewport height from VisualViewport; `100dvh` remains a
+   CSS-only fallback for browsers where that API is unavailable. */
+@supports (height: 100dvh) {
+  html, body, #root {
+    height: var(--filebox-viewport-height, 100dvh);
+  }
 }
 
 body {
