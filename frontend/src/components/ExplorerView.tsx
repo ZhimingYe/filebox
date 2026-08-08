@@ -16,6 +16,7 @@ import { useIsMobile } from '../state/useIsMobile';
 import { c, font, radius } from '../theme';
 import { getEntryIcon, IconFolder } from './fileListShared';
 import { IconPin } from './icons';
+import { FileDownloadLink } from './FileDownloadLink';
 
 interface Props {
   agentId: string;
@@ -1460,6 +1461,7 @@ export function ExplorerView({
   }, [nodeRows, viewportHeight]);
 
   const rowData = useMemo<ExplorerRowData>(() => ({
+    agentId,
     rows,
     selectedId,
     hoveredId,
@@ -1477,6 +1479,7 @@ export function ExplorerView({
     onAddToCollection,
   }), [
     activateNode,
+    agentId,
     copiedPath,
     handleCancelLoad,
     handleCopy,
@@ -1596,6 +1599,7 @@ export function ExplorerView({
 }
 
 interface ExplorerRowData {
+  agentId: string;
   rows: ExplorerRow[];
   selectedId: string | null;
   hoveredId: string | null;
@@ -1704,6 +1708,7 @@ function ExplorerVirtualRow({
   const canPin = row.isDirectory && !row.denied;
   const pinned = data.pinnedIds.has(row.id);
   const pinBusy = data.pinBusyIds.has(row.id);
+  const canDownload = row.entry?.entry_type === 'file' && !row.denied;
   const canCollect = !!(
     data.onAddToCollection
     && row.entry?.entry_type === 'file'
@@ -1754,6 +1759,18 @@ function ExplorerVirtualRow({
       {row.denied && <span style={styles.deniedBadge}>denied</span>}
       {showActions && (
         <span style={styles.actions}>
+          {canDownload && (
+            <FileDownloadLink
+              agentId={data.agentId}
+              root={row.root}
+              path={row.path}
+              style={styles.actionButton}
+              title="Download file"
+              aria-label={`Download ${row.label}`}
+            >
+              <DownloadIcon />
+            </FileDownloadLink>
+          )}
           {canPin && (
             <button
               type="button"
@@ -1886,6 +1903,15 @@ function CheckIcon() {
   return (
     <svg style={styles.svgSmall} viewBox="0 0 16 16" fill="none" aria-hidden>
       <path d="m3.5 8.5 3 3 6-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function DownloadIcon() {
+  return (
+    <svg style={styles.svgSmall} viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M8 2.5v7M4.5 6.5 8 10l3.5-3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M3 12.5h10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
     </svg>
   );
 }

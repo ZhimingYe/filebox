@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import { fileRawAccessUrl, friendlyMessage } from '../api/client';
 
 /** Cooldown after a click so rapid double-clicks can't fire two downloads. */
@@ -12,6 +12,8 @@ interface Props {
   children?: ReactNode;
   style?: CSSProperties;
   className?: string;
+  title?: string;
+  'aria-label'?: string;
 }
 
 // Undoes UA <button> chrome (border/background/padding/font) so callers'
@@ -47,7 +49,9 @@ const buttonDisabled: CSSProperties = {
  * click can't queue a second download; no per-call state is kept beyond
  * that. The timer is cleared on unmount.
  */
-export function FileDownloadLink({ agentId, root, path, children, style, className }: Props) {
+export function FileDownloadLink({
+  agentId, root, path, children, style, className, title, 'aria-label': ariaLabel,
+}: Props) {
   const [coolingDown, setCoolingDown] = useState(false);
   const timerRef = useRef<number | null>(null);
 
@@ -58,7 +62,10 @@ export function FileDownloadLink({ agentId, root, path, children, style, classNa
     [],
   );
 
-  const onClick = async () => {
+  const onClick = async (event: MouseEvent<HTMLButtonElement>) => {
+    // Inline action rows (e.g. Explorer tree rows) must not trigger the
+    // surrounding row's own click handler.
+    event.stopPropagation();
     if (coolingDown) return;
     setCoolingDown(true);
     timerRef.current = window.setTimeout(() => setCoolingDown(false), COOLDOWN_MS);
@@ -84,6 +91,8 @@ export function FileDownloadLink({ agentId, root, path, children, style, classNa
       disabled={coolingDown}
       style={{ ...buttonReset, ...(coolingDown ? buttonDisabled : null), ...style }}
       className={className}
+      title={title}
+      aria-label={ariaLabel}
     >
       {children ?? 'Download'}
     </button>
