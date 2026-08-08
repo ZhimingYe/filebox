@@ -34,7 +34,7 @@ interface Props {
   tabs: PreviewTab[];
   activeTab: PreviewTab | null;
   activeTabId: string | null;
-  /** Tab ids whose preview bodies stay mounted (most recent first). */
+  /** Tab ids whose preview bodies stay mounted: active first, others in recency order. */
   mountedTabIds: string[];
   onActivate: (tabId: string) => void;
   onClose: (tabId: string) => void;

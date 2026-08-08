@@ -314,7 +314,12 @@ describe('usePreviewTabs mounted-body cache (LRU, cap 5)', () => {
     expect(api.mountedTabIds).toEqual([]);
   });
 
-  it('recency stamps stay deterministic under StrictMode double-invoked updaters', () => {
+  // Smoke test: StrictMode double-invokes updaters on the same `prev` and
+  // applies the second result, so exact stamps are not observable here —
+  // what this pins is that the double-invoked path does not crash, duplicate
+  // tabs, or corrupt the cache (tabs stay unique, stamps strictly increase,
+  // the active tab is cached first).
+  it('survives StrictMode double-invoked updaters without duplicating tabs or corrupting the cache', () => {
     const el = document.createElement('div');
     const strictRoot = createRoot(el);
     let strictApi: UsePreviewTabs | undefined;

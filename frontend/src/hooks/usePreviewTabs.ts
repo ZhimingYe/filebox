@@ -54,7 +54,8 @@ export interface PreviewTab {
   /**
    * Recency stamp (monotonic counter). Bumped whenever the tab is opened or
    * activated; used to derive which preview bodies stay mounted
-   * (`mountedTabIds` — the `MAX_MOUNTED_PREVIEWS` most recent).
+   * (`mountedTabIds` — the active tab plus the other
+   * `MAX_MOUNTED_PREVIEWS - 1` most recent).
    */
   lastUsed: number;
 }
@@ -173,8 +174,8 @@ export interface UsePreviewTabs {
   pruneByRoots: (enabledRootNames: Set<string> | string[]) => void;
   /**
    * Ids of the preview bodies that stay mounted (hidden): the active tab
-   * plus the `MAX_MOUNTED_PREVIEWS - 1` most-recently-used others, most
-   * recent first. Any other tab mounts fresh when activated.
+   * first, then the other `MAX_MOUNTED_PREVIEWS - 1` most-recently-used
+   * tabs in recency order. Any other tab mounts fresh when activated.
    */
   mountedTabIds: string[];
 }
@@ -340,8 +341,8 @@ export function usePreviewTabs(): UsePreviewTabs {
     [state.tabs, state.activeTabId],
   );
 
-  // Which preview bodies stay mounted: the active tab plus the
-  // MAX_MOUNTED_PREVIEWS - 1 most-recently-used others, most recent first.
+  // Which preview bodies stay mounted: the active tab first, then the
+  // MAX_MOUNTED_PREVIEWS - 1 most-recently-used others in recency order.
   // Purely derived from tab recency — no extra state to keep in sync when
   // tabs open/close/prune. The active tab is always included: usually via
   // its newest stamp (every open/activate bumps it), but also when it
