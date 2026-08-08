@@ -376,9 +376,10 @@ export function ExplorerView({
   const [nodes, setNodes] = useState<Map<string, DirectoryState>>(new Map());
   const nodesRef = useRef(nodes);
   const firstRootKey = enabledRoots[0] ? nodeKey(enabledRoots[0].name, '/') : null;
-  const [expanded, setExpanded] = useState<Set<string>>(
-    () => firstRootKey ? new Set([firstRootKey]) : new Set(),
-  );
+  // Start fully collapsed: opening Explorer must not auto-expand the first
+  // root (the user decides what to open). Selection still defaults to the
+  // first root so keyboard navigation works immediately.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const expandedRef = useRef(expanded);
   const [selectedId, setSelectedId] = useState<string | null>(firstRootKey);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -1359,7 +1360,8 @@ export function ExplorerView({
     refreshFailedRef.current = false;
     refreshCancelledRef.current = false;
     const rootKey = firstRootKey;
-    const initial = new Set<string>(rootKey ? [rootKey] : []);
+    // Fully collapsed on agent switch too — same policy as first mount.
+    const initial = new Set<string>();
     nodesRef.current = new Map();
     expandedRef.current = initial;
     setNodes(new Map());
