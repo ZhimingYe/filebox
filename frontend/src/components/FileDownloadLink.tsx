@@ -62,29 +62,26 @@ export function FileDownloadLink({
     [],
   );
 
-  const onClick = (event: MouseEvent<HTMLButtonElement>) => {
-    // Inline action rows (Explorer tree rows, preview headers inside other
-    // clickable containers) must not trigger the surrounding row's own
-    // click handler.
+  const onClick = async (event: MouseEvent<HTMLButtonElement>) => {
+    // Inline action rows (e.g. Explorer tree rows) must not trigger the
+    // surrounding row's own click handler.
     event.stopPropagation();
     if (coolingDown) return;
     setCoolingDown(true);
     timerRef.current = window.setTimeout(() => setCoolingDown(false), COOLDOWN_MS);
-    void (async () => {
-      try {
-        const url = await fileRawAccessUrl(agentId, root, path);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = '';
-        a.rel = 'noopener';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      } catch (err) {
-        // Surface via alert only as a last resort — download is a one-shot action.
-        window.alert(friendlyMessage(err));
-      }
-    })();
+    try {
+      const url = await fileRawAccessUrl(agentId, root, path);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = '';
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (err) {
+      // Surface via alert only as a last resort — download is a one-shot action.
+      window.alert(friendlyMessage(err));
+    }
   };
 
   return (
