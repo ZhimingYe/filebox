@@ -298,7 +298,10 @@ export function SearchFloatWindow({
 const styles: Record<string, CSSProperties> = {
   window: {
     position: 'absolute',
-    zIndex: 40,
+    // All in-pane preview loading overlays use z-index: 100. Keep this
+    // app-level floating window above them so an active search stays usable
+    // while any preview type is rendering.
+    zIndex: 200,
     flexDirection: 'column',
     overflow: 'hidden',
     boxSizing: 'border-box',
