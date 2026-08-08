@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import { fileRawAccessUrl, friendlyMessage } from '../api/client';
 
 /** Cooldown after a click so rapid double-clicks can't fire two downloads. */
@@ -12,6 +12,8 @@ interface Props {
   children?: ReactNode;
   style?: CSSProperties;
   className?: string;
+  title?: string;
+  'aria-label'?: string;
 }
 
 // Undoes UA <button> chrome (border/background/padding/font) so callers'
@@ -47,7 +49,9 @@ const buttonDisabled: CSSProperties = {
  * click can't queue a second download; no per-call state is kept beyond
  * that. The timer is cleared on unmount.
  */
-export function FileDownloadLink({ agentId, root, path, children, style, className }: Props) {
+export function FileDownloadLink({
+  agentId, root, path, children, style, className, title, 'aria-label': ariaLabel,
+}: Props) {
   const [coolingDown, setCoolingDown] = useState(false);
   const timerRef = useRef<number | null>(null);
 
@@ -58,23 +62,29 @@ export function FileDownloadLink({ agentId, root, path, children, style, classNa
     [],
   );
 
-  const onClick = async () => {
+  const onClick = (event: MouseEvent<HTMLButtonElement>) => {
+    // Inline action rows (Explorer tree rows, preview headers inside other
+    // clickable containers) must not trigger the surrounding row's own
+    // click handler.
+    event.stopPropagation();
     if (coolingDown) return;
     setCoolingDown(true);
     timerRef.current = window.setTimeout(() => setCoolingDown(false), COOLDOWN_MS);
-    try {
-      const url = await fileRawAccessUrl(agentId, root, path);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = '';
-      a.rel = 'noopener';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    } catch (err) {
-      // Surface via alert only as a last resort — download is a one-shot action.
-      window.alert(friendlyMessage(err));
-    }
+    void (async () => {
+      try {
+        const url = await fileRawAccessUrl(agentId, root, path);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = '';
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } catch (err) {
+        // Surface via alert only as a last resort — download is a one-shot action.
+        window.alert(friendlyMessage(err));
+      }
+    })();
   };
 
   return (
@@ -84,6 +94,8 @@ export function FileDownloadLink({ agentId, root, path, children, style, classNa
       disabled={coolingDown}
       style={{ ...buttonReset, ...(coolingDown ? buttonDisabled : null), ...style }}
       className={className}
+      title={title}
+      aria-label={ariaLabel}
     >
       {children ?? 'Download'}
     </button>
