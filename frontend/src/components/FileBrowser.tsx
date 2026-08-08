@@ -8,7 +8,8 @@ import { useIsMobile } from '../state/useIsMobile';
 import { c, radius, font, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import { AddressBar } from './AddressBar';
 import { DirectoryTree } from './DirectoryTree';
-import { IconPin, IconClose } from './icons';
+import { IconPin, IconClose, IconRefresh } from './icons';
+import { fullServerAddress } from './fullServerAddress';
 import {
   DateFilterControl,
   EMPTY_DATE_FILTER,
@@ -252,12 +253,11 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   // Full address = the root's absolute path_display joined with currentPath.
   // Both halves already start with '/'; we must avoid producing a "//" when
   // currentPath is the root ('/'). e.g. "/home/user" + "/" => "/home/user".
+  // Empty until a root is selected.
   const fullAddress = useMemo(() => {
-    if (!activeRootObj) return '';
-    const base = activeRootObj.path_display.replace(/\/+$/, '');
-    const rel = currentPath === '/' ? '' : currentPath;
-    return base + rel;
-  }, [activeRootObj, currentPath]);
+    if (!selectedRoot) return '';
+    return fullServerAddress(roots, selectedRoot, currentPath);
+  }, [roots, selectedRoot, currentPath]);
 
   // ── Pinning ──────────────────────────────────────────────────────────────
   // Normalize a path for membership comparison AND storage: strip trailing
@@ -693,15 +693,9 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
           onClick={() => { loadDir(false); setTreeRefreshNonce((n) => n + 1); }}
           style={styles.refreshBtn}
           title="Refresh"
+          aria-label="Refresh directory"
         >
-          {/* Circular-arrow refresh glyph. Drawn as SVG (not the ↻ text char)
-              so it renders identically across fonts/platforms. Kept compact
-              (radius 4, stroke 1.3) to match the visual weight of the align /
-              font / copy toolbar icons. */}
-          <svg style={{ display: 'block' }} width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 8a4 4 0 1 1-1.2-2.8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-            <path d="M12 3.5v3h-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+          <IconRefresh />
         </button>
         {/* Tree view toggle: shows a directory tree for navigating deep paths
             that overflow the horizontal address bar. On desktop it docks left of

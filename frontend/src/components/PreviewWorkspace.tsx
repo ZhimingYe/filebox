@@ -1,9 +1,10 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { PreviewPane } from './PreviewPane';
 import { PreviewErrorBoundary } from './PreviewErrorBoundary';
-import { FileDownloadLink } from './FileDownloadLink';
+import { PreviewHeaderActions } from './PreviewHeaderActions';
 import { c, radius, font, shadow, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import type { PreviewTab } from '../hooks/usePreviewTabs';
+import type { RootInfo } from '../api/client';
 
 // ── Desktop preview panel ─────────────────────────────────────────────────
 //
@@ -32,6 +33,10 @@ interface Props {
   onCloseAll: () => void;
   onCloseLeft: (tabId: string) => void;
   onCloseRight: (tabId: string) => void;
+  /** Bump a tab's refresh generation so its preview body remounts. */
+  onRefresh: (tabId: string) => void;
+  /** Agent roots — used to compose the full server-side address for copy. */
+  roots: RootInfo[];
   /** Agent `capabilities.office_pdf_preview`. */
   officeCapable?: boolean;
 }
@@ -74,8 +79,8 @@ function scrollChildIntoList(list: HTMLElement, el: HTMLElement) {
 // when the tab set or active tab genuinely changes.
 export const PreviewWorkspace = memo(function PreviewWorkspace({
   agentId, tabs, activeTab, activeTabId,
-  onActivate, onClose, onCloseAll, onCloseLeft, onCloseRight,
-  officeCapable = false,
+  onActivate, onClose, onCloseAll, onCloseLeft, onCloseRight, onRefresh,
+  roots, officeCapable = false,
 }: Props) {
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const [hoveredMenuItem, setHoveredMenuItem] = useState<string | null>(null);
@@ -470,11 +475,11 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
           <div style={styles.header}>
             <span style={styles.path}>{activeTab.path}</span>
             <div style={styles.actions}>
-              <FileDownloadLink
+              <PreviewHeaderActions
                 agentId={agentId}
-                root={activeTab.root}
-                path={activeTab.path}
-                style={styles.downloadLink}
+                tab={activeTab}
+                roots={roots}
+                onRefresh={onRefresh}
               />
               <button
                 type="button"
@@ -487,9 +492,11 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
             </div>
           </div>
           {/* Body wrapper gives PreviewPane a definite flex height so its own
-              height:100% container resolves and internal scrolling works. */}
+              height:100% container resolves and internal scrolling works.
+              Keyed on id + rev: switching tabs remounts, and a refresh bump
+              remounts the viewers so they re-fetch the file. */}
           <div style={styles.body}>
-            <PreviewErrorBoundary key={activeTab.id}>
+            <PreviewErrorBoundary key={`${activeTab.id}:${activeTab.rev}`}>
               <PreviewPane
                 agentId={agentId}
                 root={activeTab.root}
@@ -673,12 +680,6 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1, minWidth: 0,
   },
   actions: { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 },
-  downloadLink: {
-    color: c.textSecondary, fontSize: 12, textDecoration: 'none',
-    padding: '4px 10px', borderRadius: radius.sm,
-    border: `1px solid ${c.border}`, background: 'transparent',
-    transition: 'all 0.15s',
-  },
   closeBtn: {
     background: 'none', border: 'none', color: c.textMuted, fontSize: 18,
     cursor: 'pointer', padding: '0 4px', borderRadius: radius.sm,

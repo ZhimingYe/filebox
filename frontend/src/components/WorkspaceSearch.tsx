@@ -8,9 +8,10 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { VariableSizeList as VList, type ListChildComponentProps } from 'react-window';
-import type { AgentInfo, SearchHit, SearchMode, WorkspaceSearchResult } from '../api/client';
+import type { AgentInfo, SearchHit, SearchMode, WorkspaceSearchResult, RootInfo } from '../api/client';
 import { cancelRequest, friendlyMessage, workspaceSearch } from '../api/client';
 import { IconCheck, IconChevronRight, IconClipboard, IconPreview } from './icons';
+import { fullServerAddress } from './fullServerAddress';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { useSse } from '../state/events';
 import { c, radius, font } from '../theme';
@@ -195,29 +196,9 @@ function rememberIgnoredReqId(set: Set<string>, reqId: string) {
   }
 }
 
-/**
- * Full server-side address of a hit: the root's absolute path_display joined
- * with the hit's root-relative path (e.g. "/tmp/fbx_demo/reports/2025.md").
- * Falls back to "root + path" (e.g. "demo/reports/2025.md") when the agent
- * did not report a path_display. Same convention as FileBrowser's toolbar
- * "Copy full directory address".
- */
-function fullPathFor(rootDisplay: Map<string, string>, hit: SearchHit): string {
-  const display = rootDisplay.get(hit.root);
-  const base = display ? display.replace(/\/+$/, '') : hit.root;
-  const rel = hit.path === '/' ? '' : hit.path;
-  return base + rel;
-}
-
 export function WorkspaceSearch({ agent, initialRoot, onOpenFile, onPreviewFile }: Props) {
   const enabledRoots = (agent.roots ?? []).filter((r) => r.enabled);
   const { copiedPath, copyToClipboard } = useCopyToClipboard();
-  /** root name → absolute path_display for composing full copy addresses. */
-  const rootDisplay = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const r of agent.roots ?? []) m.set(r.name, r.path_display);
-    return m;
-  }, [agent.roots]);
   const [mode, setMode] = useState<SearchMode>('find');
   const [root, setRoot] = useState(initialRoot || enabledRoots[0]?.name || '');
   const [folder, setFolder] = useState('/');
@@ -883,7 +864,7 @@ export function WorkspaceSearch({ agent, initialRoot, onOpenFile, onPreviewFile 
                   hits: filteredHits,
                   onOpen: onOpenFile,
                   onPreview: onPreviewFile,
-                  rootDisplay,
+                  roots: agent.roots ?? [],
                   copiedPath,
                   copyToClipboard,
                 }}
@@ -902,7 +883,7 @@ type HitRowData = {
   hits: SearchHit[];
   onOpen?: (root: string, path: string) => void;
   onPreview?: (root: string, path: string) => void;
-  rootDisplay: Map<string, string>;
+  roots: RootInfo[];
   copiedPath: string | null;
   copyToClipboard: (text: string, label: string) => Promise<boolean>;
 };
@@ -918,7 +899,7 @@ function VirtualHitRow({ index, style, data }: ListChildComponentProps<HitRowDat
         marginBottom: HIT_GAP,
       }}
       >
-        <HitCardBody hit={hit} onOpen={data.onOpen} onPreview={data.onPreview} rootDisplay={data.rootDisplay} copiedPath={data.copiedPath} copyToClipboard={data.copyToClipboard} />
+        <HitCardBody hit={hit} onOpen={data.onOpen} onPreview={data.onPreview} roots={data.roots} copiedPath={data.copiedPath} copyToClipboard={data.copyToClipboard} />
       </div>
     </div>
   );
@@ -969,14 +950,14 @@ function HitCardBody({
   hit,
   onOpen,
   onPreview,
-  rootDisplay,
+  roots,
   copiedPath,
   copyToClipboard,
 }: {
   hit: SearchHit;
   onOpen?: (root: string, path: string) => void;
   onPreview?: (root: string, path: string) => void;
-  rootDisplay: Map<string, string>;
+  roots: RootInfo[];
   copiedPath: string | null;
   copyToClipboard: (text: string, label: string) => Promise<boolean>;
 }) {
@@ -1021,7 +1002,7 @@ function HitCardBody({
           <button
             type="button"
             style={styles.hitActionBtn}
-            onClick={() => void copyToClipboard(fullPathFor(rootDisplay, hit), copyLabel)}
+            onClick={() => void copyToClipboard(fullServerAddress(roots, hit.root, hit.path), copyLabel)}
             title={copied ? 'Copied!' : 'Copy full path'}
             aria-label="Copy full path"
           >

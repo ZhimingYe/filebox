@@ -14,6 +14,18 @@ import type { FsEntry } from '../api/client';
 //  - A tab is identified by a stable id derived from (agentId, root, path).
 //    Opening the same file again activates the existing tab instead of
 //    creating a duplicate.
+//  - Each tab carries a `rev` (refresh generation). Two distinct refresh
+//    semantics, both documented at their call sites:
+//      * `refresh: true` in the open/replace input (search "view"): the
+//        preview body remounts and re-fetches even when the file already
+//        has a tab — an explicit "look again" must not show stale content.
+//      * `refresh(tabId)` (manual refresh button): bumps rev for the
+//        active tab.
+//    Plain re-opens (file-list clicks) never bump rev — resetting an
+//    already-open viewer's state (PDF page, zoom, scroll) on a mere click
+//    would be a regression. `replaceActive` (arrow navigation) never bumps:
+//    the body only mounts the active tab, so re-activating an existing tab
+//    remounts/refetches naturally.
 //  - All transitions are pure updater functions so they are safe under
 //    React StrictMode's double-invoke.
 
@@ -25,6 +37,8 @@ export interface PreviewTab {
   entry: FsEntry;
   /** Visible tab title — the file's basename. */
   title: string;
+  /** Refresh generation — bumped to force the preview body to remount. */
+  rev: number;
 }
 
 export interface TabInput {
@@ -32,6 +46,14 @@ export interface TabInput {
   root: string;
   path: string;
   entry: FsEntry;
+  /**
+   * Force a remount of the preview body when the file already has a tab
+   * (re-fetch content). Only "explicitly look again" intents set this —
+   * currently the search pane's "Open in preview" action. Plain file-list
+   * clicks keep the old no-refresh semantics so an already-open viewer
+   * (PDF page, image zoom, scroll position) is never reset by a click.
+   */
+  refresh?: boolean;
 }
 
 export function tabIdFor(input: { agentId: string; root: string; path: string }): string {
@@ -46,6 +68,7 @@ function makeTab(input: TabInput): PreviewTab {
     path: input.path,
     entry: input.entry,
     title: input.entry.name,
+    rev: 0,
   };
 }
 
@@ -108,6 +131,8 @@ export interface UsePreviewTabs {
   replaceActive: (input: TabInput) => void;
   /** Activate a tab by id. */
   activate: (tabId: string) => void;
+  /** Bump a tab's refresh generation so its preview body remounts. */
+  refresh: (tabId: string) => void;
   /** Close a tab by id; if it was active, activate the nearest neighbor. */
   close: (tabId: string) => void;
   /** Close every tab. */
@@ -130,8 +155,14 @@ export function usePreviewTabs(): UsePreviewTabs {
     setState((prev) => {
       const exists = prev.tabs.some((t) => t.id === id);
       const tabs = exists
-        // Refresh entry metadata in case the file changed; keep tab order.
-        ? prev.tabs.map((t) => (t.id === id ? { ...t, entry: input.entry, title: input.entry.name } : t))
+        // Refresh entry metadata; bump rev ONLY when the caller asked for it
+        // (`refresh: true` — search "view"). A plain re-open (file-list
+        // click) must not reset an already-open viewer's state.
+        ? prev.tabs.map((t) => (
+          t.id === id
+            ? { ...t, entry: input.entry, title: input.entry.name, rev: input.refresh ? t.rev + 1 : t.rev }
+            : t
+        ))
         : [...prev.tabs, makeTab(input)];
       return { tabs, activeTabId: id };
     });
@@ -162,6 +193,17 @@ export function usePreviewTabs(): UsePreviewTabs {
 
   const activate = useCallback((tabId: string) => {
     setState((prev) => (prev.tabs.some((t) => t.id === tabId) ? { ...prev, activeTabId: tabId } : prev));
+  }, []);
+
+  /** Bump a tab's refresh generation so its preview body remounts (manual refresh). */
+  const refresh = useCallback((tabId: string) => {
+    setState((prev) => {
+      if (!prev.tabs.some((t) => t.id === tabId)) return prev;
+      return {
+        ...prev,
+        tabs: prev.tabs.map((t) => (t.id === tabId ? { ...t, rev: t.rev + 1 } : t)),
+      };
+    });
   }, []);
 
   const close = useCallback((tabId: string) => {
@@ -198,8 +240,17 @@ export function usePreviewTabs(): UsePreviewTabs {
       setState(EMPTY);
       return;
     }
-    const tab = makeTab(input);
-    setState({ tabs: [tab], activeTabId: tab.id });
+    const id = tabIdFor(input);
+    setState((prev) => {
+      const existing = prev.tabs.find((t) => t.id === id);
+      // Mobile re-opens replace the single tab. Bump rev only when the
+      // caller asked for it (search "view") — otherwise a plain re-open
+      // must not reset the viewer, same rule as openOrActivate.
+      const tab = existing
+        ? { ...existing, entry: input.entry, title: input.entry.name, rev: input.refresh ? existing.rev + 1 : existing.rev }
+        : makeTab(input);
+      return { tabs: [tab], activeTabId: id };
+    });
   }, []);
 
   const pruneByRoots = useCallback((enabledRootNames: Set<string> | string[]) => {
@@ -225,11 +276,12 @@ export function usePreviewTabs(): UsePreviewTabs {
     openOrActivate,
     replaceActive,
     activate,
+    refresh,
     close,
     closeAll,
     closeLeft,
     closeRight,
     replaceAll,
     pruneByRoots,
-  }), [state.tabs, state.activeTabId, activeTab, openOrActivate, replaceActive, activate, close, closeAll, closeLeft, closeRight, replaceAll, pruneByRoots]);
+  }), [state.tabs, state.activeTabId, activeTab, openOrActivate, replaceActive, activate, refresh, close, closeAll, closeLeft, closeRight, replaceAll, pruneByRoots]);
 }
