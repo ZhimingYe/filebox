@@ -504,6 +504,8 @@ export function CollectionsView({
               onCloseAll={previewTabs.closeAll}
               onCloseLeft={previewTabs.closeLeft}
               onCloseRight={previewTabs.closeRight}
+              onRefresh={previewTabs.refresh}
+              roots={agent.roots}
               officeCapable={!!agent.capabilities?.office_pdf_preview}
             />
           )}

@@ -19,6 +19,7 @@ import { ExplorerView } from './components/ExplorerView';
 import { PreviewPane } from './components/PreviewPane';
 import { PreviewErrorBoundary } from './components/PreviewErrorBoundary';
 import { PreviewWorkspace } from './components/PreviewWorkspace';
+import { PreviewHeaderActions } from './components/PreviewHeaderActions';
 import { usePreviewTabs } from './hooks/usePreviewTabs';
 import { AgentSettings } from './components/AgentSettings';
 import { AboutDialog } from './components/AboutDialog';
@@ -29,7 +30,6 @@ import { PinnedFolders } from './components/PinnedFolders';
 import { CollectionsView } from './components/CollectionsView';
 import { WorkspaceSplit } from './components/WorkspaceSplit';
 import { CollectionPicker } from './components/CollectionPicker';
-import { FileDownloadLink } from './components/FileDownloadLink';
 import { NoAgentSelected } from './components/NoAgentSelected';
 import {
   IconChevronLeft,
@@ -576,9 +576,20 @@ export default function App() {
     const restored = pathMemory.current.get(memKey(selectedAgent.id, root)) || '/';
     applyNav(root, restored);
   }, [selectedAgent, selectedRoot, currentPath, applyNav]);
-  const handleFileSelect = useCallback((root: string, path: string, entry: FsEntry) => {
+  const handleFileSelect = useCallback((
+    root: string,
+    path: string,
+    entry: FsEntry,
+    opts?: { refresh?: boolean },
+  ) => {
     if (!selectedAgentId) return;
-    const input = { agentId: selectedAgentId, root, path, entry };
+    const input = {
+      agentId: selectedAgentId,
+      root,
+      path,
+      entry,
+      ...(opts?.refresh ? { refresh: true } : {}),
+    };
     // Desktop opens/activates a tab per file; mobile keeps a single active
     // tab (its list-or-preview model replaces the tab list on each open).
     // Depends on selectedAgentId (not the whole selectedAgent object) so the
@@ -688,7 +699,10 @@ export default function App() {
     if (view !== 'explorer') setView('files');
     const name = path.split('/').filter(Boolean).pop() ?? path;
     const entry: FsEntry = { name, entry_type: 'file', size: null, modified: null, denied: false };
-    handleFileSelect(root, path, entry);
+    // `refresh: true` — a search "view" is an explicit "look again": if the
+    // file already has a tab, the preview body must remount and re-fetch
+    // instead of silently showing stale content.
+    handleFileSelect(root, path, entry, { refresh: true });
   }, [handleFileSelect, isMobile, view]);
 
   const activeProgress = Array.from(progressMap.values());
@@ -1093,6 +1107,8 @@ export default function App() {
                         onCloseAll={previewTabs.closeAll}
                         onCloseLeft={previewTabs.closeLeft}
                         onCloseRight={previewTabs.closeRight}
+                        onRefresh={previewTabs.refresh}
+                        roots={selectedAgent.roots}
                         officeCapable={!!selectedAgent.capabilities?.office_pdf_preview}
                       />
                     ) : null}
@@ -1150,6 +1166,8 @@ export default function App() {
                         onCloseAll={previewTabs.closeAll}
                         onCloseLeft={previewTabs.closeLeft}
                         onCloseRight={previewTabs.closeRight}
+                        onRefresh={previewTabs.refresh}
+                        roots={selectedAgent.roots}
                         officeCapable={!!selectedAgent.capabilities?.office_pdf_preview}
                       />
                     ) : null}
@@ -1162,15 +1180,15 @@ export default function App() {
                   <div style={styles.previewHeader}>
                     <span style={styles.previewPath}>{activeTab.path}</span>
                     <div style={styles.previewActions}>
-                      <FileDownloadLink
+                      <PreviewHeaderActions
                         agentId={selectedAgent.id}
-                        root={activeTab.root}
-                        path={activeTab.path}
-                        style={styles.headerLink}
+                        tab={activeTab}
+                        roots={selectedAgent.roots}
+                        onRefresh={previewTabs.refresh}
                       />
                     </div>
                   </div>
-                  <PreviewErrorBoundary key={activeTab.id}>
+                  <PreviewErrorBoundary key={`${activeTab.id}:${activeTab.rev}`}>
                     <PreviewPane
                       agentId={selectedAgent.id}
                       root={activeTab.root}
@@ -1660,12 +1678,6 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 16px', borderBottom: `1px solid ${c.border}`, background: c.bgSubtle,
   },
   previewActions: { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 },
-  headerLink: {
-    color: c.textSecondary, fontSize: 12, textDecoration: 'none',
-    padding: '4px 10px', borderRadius: radius.sm,
-    border: `1px solid ${c.border}`, background: 'transparent',
-    transition: 'all 0.15s',
-  },
   previewPath: { color: c.textMuted, fontSize: 12, fontFamily: font.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 },
   // ── Mobile file/preview ──
   mobileFileWrap: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, minHeight: 0 },

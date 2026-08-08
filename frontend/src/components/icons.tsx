@@ -243,3 +243,15 @@ export function IconCheck({ style }: SvgProps) {
     </Svg>
   );
 }
+
+/// Circular-arrow refresh — toolbar / preview-header "reload" affordance.
+/// Drawn as SVG (not the ↻ text char) so it renders identically across
+/// fonts/platforms, matching the stroke weight of the neighboring icons.
+export function IconRefresh({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <path d="M12 8a4 4 0 1 1-1.2-2.8" strokeWidth="1.3" strokeLinecap="round" />
+      <path d="M12 3.5v3h-3" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
