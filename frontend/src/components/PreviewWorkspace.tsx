@@ -10,24 +10,32 @@ import type { RootInfo } from '../api/client';
 //
 // Renders the desktop preview area: an optional tab strip (shown once more
 // than one tab is open), the active tab's header (path + download + close),
-// and exactly ONE PreviewPane for the active tab. Inactive tabs are pure
-// metadata held by the parent's usePreviewTabs hook — they never mount a
-// preview body, so PDF/Image/HTML/Monaco resources are only
-// alive for the visible tab.
+// and the preview bodies.
 //
-// Switching tabs remounts PreviewPane internals via the `key` prop (the
-// stable tab id). V1 deliberately does not preserve scroll / zoom / page
-// position across tab switches.
+// Keep-alive bodies: the active tab plus the other `MAX_MOUNTED_PREVIEWS - 1`
+// most-recently-used tabs (from usePreviewTabs' `mountedTabIds`) stay
+// MOUNTED even when inactive — hidden with display:none so switching back is
+// instant and preserves viewer state (PDF page/zoom, image zoom/rotation,
+// Monaco scroll/find). Tabs beyond the cache render no body; activating one
+// mounts it fresh (loading spinner, same as V1) and evicts the
+// least-recently-used cached body. The manual refresh button (rev bump)
+// remounts a body so stale cached content can always be re-fetched.
 //
-// PreviewPane stays memoized on primitive props, so dragging the file/preview
-// splitter (which re-renders App and this component) does NOT re-render the
-// preview subtree — only a real change to the active tab's primitives does.
+// Each mounted body is keyed on `id:rev` (stable tab id + refresh
+// generation) so switching tabs never remounts, while a refresh bump does.
+// PreviewPane stays memoized on primitive props, so dragging the
+// file/preview splitter (which re-renders App and this component) does NOT
+// re-render the preview subtree — only a real change to a tab's primitives
+// does. Hidden bodies are display:none; Monaco (automaticLayout) and the
+// PDF viewer (ResizeObserver) re-measure themselves when shown again.
 
 interface Props {
   agentId: string;
   tabs: PreviewTab[];
   activeTab: PreviewTab | null;
   activeTabId: string | null;
+  /** Tab ids whose preview bodies stay mounted (most recent first). */
+  mountedTabIds: string[];
   onActivate: (tabId: string) => void;
   onClose: (tabId: string) => void;
   onCloseAll: () => void;
@@ -78,7 +86,7 @@ function scrollChildIntoList(list: HTMLElement, el: HTMLElement) {
 // entirely, and the memoized PreviewPane inside does too. It only re-renders
 // when the tab set or active tab genuinely changes.
 export const PreviewWorkspace = memo(function PreviewWorkspace({
-  agentId, tabs, activeTab, activeTabId,
+  agentId, tabs, activeTab, activeTabId, mountedTabIds,
   onActivate, onClose, onCloseAll, onCloseLeft, onCloseRight, onRefresh,
   roots, officeCapable = false,
 }: Props) {
@@ -491,21 +499,38 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
               </button>
             </div>
           </div>
-          {/* Body wrapper gives PreviewPane a definite flex height so its own
-              height:100% container resolves and internal scrolling works.
-              Keyed on id + rev: switching tabs remounts, and a refresh bump
-              remounts the viewers so they re-fetch the file. */}
+          {/* Keep-alive bodies: one pane per tab, mounted for the active tab
+              plus the other `MAX_MOUNTED_PREVIEWS - 1` most-recently-used
+              tabs (`mountedTabIds`). The active pane is visible; cached
+              inactive panes stay mounted but hidden (display:none) so
+              switching back is instant with preserved viewer state. The
+              `active` disjunct below is defensive — the hook already unions
+              the active id into mountedTabIds. Keyed on id + rev: a refresh
+              bump remounts that tab's viewers so they re-fetch the file;
+              switching tabs never remounts. */}
           <div style={styles.body}>
-            <PreviewErrorBoundary key={`${activeTab.id}:${activeTab.rev}`}>
-              <PreviewPane
-                agentId={agentId}
-                root={activeTab.root}
-                path={activeTab.path}
-                entryType={activeTab.entry.entry_type}
-                denied={activeTab.entry.denied}
-                officeCapable={officeCapable}
-              />
-            </PreviewErrorBoundary>
+            {tabs.map((tab) => {
+              const active = tab.id === activeTabId;
+              const mounted = active || mountedTabIds.includes(tab.id);
+              if (!mounted) return null;
+              return (
+                <div
+                  key={`${tab.id}:${tab.rev}`}
+                  style={active ? styles.bodyPane : styles.bodyPaneHidden}
+                >
+                  <PreviewErrorBoundary>
+                    <PreviewPane
+                      agentId={agentId}
+                      root={tab.root}
+                      path={tab.path}
+                      entryType={tab.entry.entry_type}
+                      denied={tab.entry.denied}
+                      officeCapable={officeCapable}
+                    />
+                  </PreviewErrorBoundary>
+                </div>
+              );
+            })}
           </div>
         </>
       )}
@@ -684,8 +709,21 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'none', border: 'none', color: c.textMuted, fontSize: 18,
     cursor: 'pointer', padding: '0 4px', borderRadius: radius.sm,
   },
+  // ── Preview bodies ──
+  // Each pane is a flex column filling the body; cached inactive panes are
+  // display:none (out of layout, not painted, no a11y presence). Displayed
+  // viewers re-measure themselves on show (Monaco automaticLayout, PDF
+  // ResizeObserver), and hidden PDF pages don't render at all
+  // (IntersectionObserver virtualization) — that's the resource win of the
+  // keep-alive cache.
   body: {
     flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+  },
+  bodyPane: {
+    flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+  },
+  bodyPaneHidden: {
+    display: 'none',
   },
   contextMenu: {
     position: 'fixed', zIndex: 1000, width: 190,
