@@ -1377,11 +1377,11 @@ function SidebarLogoutButton({
 const styles: Record<string, React.CSSProperties> = {
   loading: {
     display: 'flex', alignItems: 'center', justifyContent: 'center',
-    height: '100vh', background: c.bg, color: c.textMuted,
+    height: '100%', background: c.bg, color: c.textMuted,
     fontFamily: font.sans,
   },
   app: {
-    display: 'flex', height: '100vh', background: c.bg, color: c.text,
+    display: 'flex', height: '100%', background: c.bg, color: c.text,
     fontFamily: font.sans, position: 'relative', overflow: 'hidden',
   },
   // ── Sidebar ──
