@@ -283,10 +283,15 @@ survive navigation.
 ## Preview Behavior
 
 - **Workspace**: multi-tab on desktop (`PreviewWorkspace` +
-  `usePreviewTabs`); only the active body is mounted. Arrow keys walk
-  files in the current directory or collection; Esc closes the active
-  tab; context menu supports bulk close; tab-jump dropdown among open
-  tabs. `PreviewErrorBoundary` isolates viewer crashes.
+  `usePreviewTabs`). The active tab plus the four most recently used others
+  stay mounted but hidden (`mountedTabIds`, LRU by a `lastUsed` recency
+  stamp) so switching back is instant and viewer state (PDF page/zoom,
+  image zoom/rotation, scroll, editor view) survives; a sixth+ distinct file
+  mounts fresh on activation and evicts the least-recently-used cached body.
+  The manual refresh button (`rev` bump) always re-fetches. Arrow keys walk
+  files in the current directory or collection; Esc closes the active tab;
+  context menu supports bulk close; tab-jump dropdown among open tabs.
+  `PreviewErrorBoundary` isolates viewer crashes.
 - **Markdown**: fetch raw → render → sanitize HTML → safe mode for large.
 - **Code**: Monaco Editor (read-only), word-wrap toggle, Find (Ctrl/Cmd+F).
   Lazy-loaded via `TextPreview`; large files gated by size threshold
