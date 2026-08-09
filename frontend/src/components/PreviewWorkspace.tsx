@@ -14,7 +14,8 @@ import type { RootInfo } from '../api/client';
 //
 // Keep-alive bodies: the active tab plus the other `MAX_MOUNTED_PREVIEWS - 1`
 // most-recently-used tabs (from usePreviewTabs' `mountedTabIds`) stay
-// MOUNTED even when inactive — hidden with display:none so switching back is
+// MOUNTED even when inactive — hidden with visibility:hidden + absolute
+// positioning (see styles below; never display:none) so switching back is
 // instant and preserves viewer state (PDF page/zoom, image zoom/rotation,
 // Monaco scroll/find). Tabs beyond the cache render no body; activating one
 // mounts it fresh (loading spinner, same as V1) and evicts the
@@ -26,8 +27,13 @@ import type { RootInfo } from '../api/client';
 // PreviewPane stays memoized on primitive props, so dragging the
 // file/preview splitter (which re-renders App and this component) does NOT
 // re-render the preview subtree — only a real change to a tab's primitives
-// does. Hidden bodies are display:none; Monaco (automaticLayout) and the
-// PDF viewer (ResizeObserver) re-measure themselves when shown again.
+// does. Hidden bodies are visibility:hidden + absolute positioning — NOT
+// display:none. Chrome unloads the document of a display:none iframe (an
+// HTML tab would reload white on switch-back, scroll position lost), and a
+// display:none pane zeroes ResizeObserver/IntersectionObserver
+// measurements, which unmounts every virtualized PDF page. visibility keeps
+// the pane in the rendering tree: iframes stay alive and sizes stay real,
+// while paint/focus/a11y removal is identical to display:none.
 
 interface Props {
   agentId: string;
@@ -502,11 +508,15 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
           {/* Keep-alive bodies: one pane per tab, mounted for the active tab
               plus the other `MAX_MOUNTED_PREVIEWS - 1` most-recently-used
               tabs (`mountedTabIds`). The active pane is visible; cached
-              inactive panes stay mounted but hidden (display:none) so
-              switching back is instant with preserved viewer state. The
-              `active` disjunct below is defensive — the hook already unions
-              the active id into mountedTabIds. Keyed on id + rev: a refresh
-              bump remounts that tab's viewers so they re-fetch the file;
+              inactive panes stay mounted but hidden — visibility:hidden +
+              absolute positioning, NOT display:none (Chrome unloads the
+              document of a display:none iframe, so an HTML tab would reload
+              white on switch-back; and a display:none pane zeroes
+              ResizeObserver/IntersectionObserver measurements, which
+              unmounts every virtualized PDF page). The `active` disjunct
+              below is defensive — the hook already unions the active id
+              into mountedTabIds. Keyed on id + rev: a refresh bump
+              remounts that tab's viewers so they re-fetch the file;
               switching tabs never remounts. */}
           <div style={styles.body}>
             {tabs.map((tab) => {
@@ -710,20 +720,28 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer', padding: '0 4px', borderRadius: radius.sm,
   },
   // ── Preview bodies ──
-  // Each pane is a flex column filling the body; cached inactive panes are
-  // display:none (out of layout, not painted, no a11y presence). Displayed
-  // viewers re-measure themselves on show (Monaco automaticLayout, PDF
-  // ResizeObserver), and hidden PDF pages don't render at all
-  // (IntersectionObserver virtualization) — that's the resource win of the
-  // keep-alive cache.
+  // Each pane is a flex column filling the body. Cached inactive panes are
+  // hidden with visibility:hidden + absolute off-flow positioning — NOT
+  // display:none, which breaks two keep-alive consumers:
+  //  - Chrome unloads the document of a display:none iframe, so an HTML tab
+  //    would reload white (and lose its scroll position) on switch-back;
+  //  - a display:none pane reports zero size to ResizeObserver and no
+  //    intersections to IntersectionObserver, which unmounts every
+  //    virtualized PDF page (spinners + re-render on switch-back).
+  // visibility keeps the pane in the rendering tree (iframes alive, real
+  // measurements, Monaco/PDF layouts valid) while staying unpainted,
+  // unclickable, unfocusable, and out of the a11y tree.
   body: {
     flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+    position: 'relative',
   },
   bodyPane: {
     flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
   },
   bodyPaneHidden: {
-    display: 'none',
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    visibility: 'hidden', pointerEvents: 'none',
+    display: 'flex', flexDirection: 'column', overflow: 'hidden',
   },
   contextMenu: {
     position: 'fixed', zIndex: 1000, width: 190,

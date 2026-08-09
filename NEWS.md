@@ -13,6 +13,16 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **Monaco code preview** — read-only Monaco Editor replaces Prism / `react-syntax-highlighter` for code files (Find, wrap, syntax highlight). Lazy-loaded; not placed in Vite `manualChunks` so the ~4MB editor is not preloaded on every page.
 
 ### Changed
+- **Preview tab cache survives hiding** — cached preview panes (and the
+  hidden Files/Explorer shells) are now hidden with `visibility` + off-flow
+  positioning instead of `display:none`. Chrome unloads the document of a
+  `display:none` iframe, so HTML tabs came back white and reloaded with
+  their scroll position lost; and a `display:none` pane zeroes the
+  ResizeObserver/IntersectionObserver measurements that drive PDF page
+  virtualization, so PDFs unmounted every page and re-rendered on
+  switch-back. Hidden panes now keep iframes and measurements alive while
+  staying unpainted and unfocusable, so switching tabs (or views) restores
+  the cached preview instantly.
 - **Preview tab caching** — the active preview plus the four most recently used others stay mounted (hidden) so switching back is instant and viewer state (PDF page/zoom, image zoom/rotation, scroll position, editor view) is preserved. Opening or activating a sixth distinct file evicts the least-recently-used cached body. Tabs beyond the cache mount fresh on switch, and the manual refresh button always re-fetches.
 - **Search jumps remember the mode** — opening a search hit's folder keeps Explorer as the active view when it already is: the tree expands to the folder, selects it, scrolls it into view, and shows a "Located the folder." notice once the reveal settles. A vanished folder settles on the nearest existing ancestor with an honest fallback notice instead of a dead end. Files mode keeps the previous behavior (jump to Files).
 - **Refresh restores the browse position** — the selected backend, the Files/Explorer mode, and the current folder survive a page refresh (per-backend positions and per-root path memories are persisted in localStorage). A restored folder that no longer exists falls back to the nearest existing ancestor; a removed backend is simply not re-selected.
