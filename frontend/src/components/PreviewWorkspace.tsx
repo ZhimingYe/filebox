@@ -33,7 +33,11 @@ import type { RootInfo } from '../api/client';
 // display:none pane zeroes ResizeObserver/IntersectionObserver
 // measurements, which unmounts every virtualized PDF page. visibility keeps
 // the pane in the rendering tree: iframes stay alive and sizes stay real,
-// while paint/focus/a11y removal is identical to display:none.
+// while paint/focus/a11y removal is identical to display:none. Safari is
+// the exception: it fails to repaint visibility-hidden-then-shown iframes
+// (white screen) and breaks their wheel scrolling, so HTML panes hide
+// OFFSCREEN instead (fully rendered, parked out of view — see
+// bodyPaneHiddenHtml).
 
 interface Props {
   agentId: string;
@@ -517,16 +521,36 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
               below is defensive — the hook already unions the active id
               into mountedTabIds. Keyed on id + rev: a refresh bump
               remounts that tab's viewers so they re-fetch the file;
-              switching tabs never remounts. */}
+              switching tabs never remounts.
+              Safari caveat: HTML panes (the only iframe-based viewer) must
+              NOT be hidden with visibility:hidden either — WebKit fails to
+              repaint a hidden-then-shown iframe (intermittent white screen)
+              and its wheel scrolling gets stuck. They hide OFFSCREEN
+              instead (fully rendered, just moved out of view; see
+              bodyPaneHiddenHtml). */}
           <div style={styles.body}>
             {tabs.map((tab) => {
               const active = tab.id === activeTabId;
               const mounted = active || mountedTabIds.includes(tab.id);
               if (!mounted) return null;
+              // Mirror PreviewPane's dispatch: HTML is the only viewer that
+              // renders an <iframe>, and iframes are the only content Safari
+              // breaks when hidden with visibility:hidden (no repaint on
+              // re-show → white; wheel scrolling stuck). Hide those panes
+              // offscreen instead — fully rendered, just out of view.
+              const ext = tab.path.split('.').pop()?.toLowerCase() || '';
+              const htmlPane = ext === 'html' || ext === 'htm';
               return (
                 <div
                   key={`${tab.id}:${tab.rev}`}
-                  style={active ? styles.bodyPane : styles.bodyPaneHidden}
+                  style={active
+                    ? styles.bodyPane
+                    : (htmlPane ? styles.bodyPaneHiddenHtml : styles.bodyPaneHidden)}
+                  // Offscreen panes stay in the tab order and a11y tree —
+                  // inert removes both while hidden (React 19 boolean prop,
+                  // Safari 15.5+).
+                  inert={!active && htmlPane ? true : undefined}
+                  aria-hidden={!active && htmlPane ? true : undefined}
                 >
                   <PreviewErrorBoundary>
                     <PreviewPane
@@ -731,6 +755,15 @@ const styles: Record<string, React.CSSProperties> = {
   // visibility keeps the pane in the rendering tree (iframes alive, real
   // measurements, Monaco/PDF layouts valid) while staying unpainted,
   // unclickable, unfocusable, and out of the a11y tree.
+  //
+  // Safari caveat: visibility:hidden is NOT safe for iframe-bearing panes
+  // (HTML preview). WebKit fails to repaint a hidden-then-shown iframe
+  // (intermittent white screen) and its wheel scrolling gets stuck. HTML
+  // panes therefore hide OFFScreen instead (bodyPaneHiddenHtml): the pane
+  // stays fully rendered at a real size, just parked outside the clipped
+  // body — no visibility flip, no repaint invalidation, no scroll breakage.
+  // inert + aria-hidden (set in the render) remove it from tab order and
+  // the a11y tree while hidden.
   body: {
     flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
     position: 'relative',
@@ -741,6 +774,16 @@ const styles: Record<string, React.CSSProperties> = {
   bodyPaneHidden: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
     visibility: 'hidden', pointerEvents: 'none',
+    display: 'flex', flexDirection: 'column', overflow: 'hidden',
+  },
+  // Offscreen keep-alive for iframe panes (HTML): same size, parked
+  // 10000px left, clipped by body's overflow:hidden. opacity 0 + pointer-
+  // events none are belt-and-braces (the pane is off-viewport anyway);
+  // inert (render prop) covers focus + a11y.
+  bodyPaneHiddenHtml: {
+    position: 'absolute', top: 0, left: -10000,
+    width: '100%', height: '100%',
+    opacity: 0, pointerEvents: 'none',
     display: 'flex', flexDirection: 'column', overflow: 'hidden',
   },
   contextMenu: {
