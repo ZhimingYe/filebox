@@ -316,7 +316,7 @@ survive navigation.
   `security_headers` layer skips its blanket `X-Frame-Options` for them;
   their CSP omits `frame-ancestors` so the sandboxed iframe and the blob
   new-window wrapper (both opaque origins) can render them. Whole documents
-  are buffered for injection, capped at 32 MiB (413 `preview_too_large`);
+  are buffered for injection, capped at 64 MiB (413 `preview_too_large`);
   `../` stays a hard sandbox boundary. Non-UTF-8 pages pass through byte-
   intact. Sanitization not enforced — previewing attacker-controlled HTML
   is out of threat-model scope for this trusted-internal tool.

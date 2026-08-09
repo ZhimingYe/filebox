@@ -15,7 +15,7 @@ use axum::http::{header, HeaderMap};
 /// Documents larger than this are refused in document mode. The whole file is
 /// buffered for byte-level injection, so the cap bounds per-request memory
 /// (bounded further by the raw-read semaphore).
-pub const PREVIEW_DOCUMENT_MAX_BYTES: u64 = 32 * 1024 * 1024;
+pub const PREVIEW_DOCUMENT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// True when `path` looks like an HTML file (`.html` / `.htm`, case-insensitive).
 pub fn is_html_path(path: &str) -> bool {
