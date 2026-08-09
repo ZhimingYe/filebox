@@ -291,7 +291,16 @@ survive navigation.
   The manual refresh button (`rev` bump) always re-fetches. Arrow keys walk
   files in the current directory or collection; Esc closes the active tab;
   context menu supports bulk close; tab-jump dropdown among open tabs.
-  `PreviewErrorBoundary` isolates viewer crashes.
+  `PreviewErrorBoundary` isolates viewer crashes. **Hidden panes are
+  `visibility:hidden` + absolute off-flow positioning, never `display:none`**
+  — Chrome unloads the document of a `display:none` iframe (an HTML tab
+  would reload white on switch-back, scroll position lost) and a
+  `display:none` pane zeroes the ResizeObserver/IntersectionObserver
+  measurements that keep virtualized PDF pages mounted (PDFs would unmount
+  and re-render every page on switch-back). `visibility` keeps iframes and
+  sizes alive while staying unpainted / unclickable / unfocusable. The same
+  rule applies to the hidden Files/Explorer shells in `App.tsx`
+  (`filesViewHidden`) so view switches don't defeat the cache either.
 - **Markdown**: fetch raw → render → sanitize HTML → safe mode for large.
 - **Code**: Monaco Editor (read-only), word-wrap toggle, Find (Ctrl/Cmd+F).
   Lazy-loaded via `TextPreview`; large files gated by size threshold

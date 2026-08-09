@@ -1042,8 +1042,9 @@ export default function App() {
             <>
               {/* Keep FileBrowser mounted across Files/Settings/Stats and across
                   the mobile breakpoint so filter/sort/tree/scroll state survive.
-                  Hidden with display:none (not unmounted) when another view is
-                  active — same idea as mobile preview toggle. */}
+                  Hidden with visibility:hidden + absolute positioning (not
+                  unmounted, and not display:none — see filesViewHidden) when
+                  another view is active — same idea as mobile preview toggle. */}
               <div
                 style={{
                   ...(isMobile ? styles.mobileFilesLayout : styles.splitViewShell),
@@ -1657,7 +1658,9 @@ const styles: Record<string, React.CSSProperties> = {
   main: { flex: 1, display: 'flex', overflow: 'hidden' },
   mainMobile: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
   // Row flex: Files shell and Settings/Stats are siblings; only one is visible.
-  contentArea: { flex: 1, display: 'flex', overflow: 'hidden', minWidth: 0, minHeight: 0 },
+  // Absolute-positioned hidden siblings (filesViewHidden shells) anchor to
+  // this container; the visible sibling stays a normal flex child filling it.
+  contentArea: { flex: 1, display: 'flex', overflow: 'hidden', minWidth: 0, minHeight: 0, position: 'relative' },
   // ── Desktop split ──
   splitViewShell: { display: 'flex', flex: 1, overflow: 'hidden', minWidth: 0, minHeight: 0 },
   // Mobile files shell: column so list (or full-screen preview) fills contentArea.
@@ -1665,12 +1668,20 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex', flex: 1, flexDirection: 'column', overflow: 'hidden', minHeight: 0, minWidth: 0,
   },
   // Keep FileBrowser in the tree while Settings/Stats are shown without it
-  // occupying layout space or intercepting pointer/focus.
+  // occupying layout space or intercepting pointer/focus. Hidden with
+  // visibility:hidden + absolute off-flow positioning — NOT display:none:
+  // a display:none shell would unload its preview iframes (HTML tabs come
+  // back white, reloaded) and zero the measurements that keep virtualized
+  // PDF pages mounted, so switching Files/Explorer/Collections would defeat
+  // the preview keep-alive cache. visibility keeps the subtree alive while
+  // staying unpainted, unclickable, and unfocusable.
   filesViewHidden: {
-    display: 'none',
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    visibility: 'hidden', pointerEvents: 'none',
   },
-  // Fills contentArea when Files is display:none (flex item needs flex:1;
-  // height:100% alone is not enough next to a display:none sibling).
+  // Fills contentArea when the Files/Explorer shells are hidden (flex item
+  // needs flex:1; height:100% alone is not enough next to an off-flow
+  // hidden sibling).
   secondaryView: {
     flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden',
     display: 'flex', flexDirection: 'column',
@@ -1684,7 +1695,8 @@ const styles: Record<string, React.CSSProperties> = {
   // ── Mobile file/preview ──
   mobileFileWrap: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, minHeight: 0 },
   // Full-bleed sibling of the Files shell inside contentArea (row flex).
-  // When open, the Files shell is display:none so this expands to 100% width.
+  // When open, the Files shell is off-flow hidden (filesViewHidden) so this
+  // expands to 100% width.
   mobilePreviewWrap: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, minHeight: 0 },
   // ── Progress toasts ──
   progressToast: {
