@@ -13,6 +13,16 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **Monaco code preview** — read-only Monaco Editor replaces Prism / `react-syntax-highlighter` for code files (Find, wrap, syntax highlight). Lazy-loaded; not placed in Vite `manualChunks` so the ~4MB editor is not preloaded on every page.
 
 ### Changed
+- **HTML preview tabs survive Safari** — Safari (WebKit) fails to repaint an
+  iframe whose ancestor went `visibility:hidden` and back (intermittent
+  white screen) and its wheel scrolling gets stuck after such a toggle.
+  HTML preview panes (the only iframe-based viewer) are now hidden
+  offscreen — parked outside the clipped body at a real size, fully
+  rendered — instead of `visibility:hidden`, so the iframe document and its
+  scroll machinery never leave the rendering tree. `inert` + `aria-hidden`
+  keep hidden panes out of tab order and the accessibility tree. Canvas/DOM
+  viewers (PDF, Monaco, images) keep the `visibility` hiding, which Safari
+  handles fine.
 - **Preview tab cache survives hiding** — cached preview panes (and the
   hidden Files/Explorer shells) are now hidden with `visibility` + off-flow
   positioning instead of `display:none`. Chrome unloads the document of a

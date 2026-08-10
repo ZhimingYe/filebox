@@ -301,6 +301,12 @@ survive navigation.
   sizes alive while staying unpainted / unclickable / unfocusable. The same
   rule applies to the hidden Files/Explorer shells in `App.tsx`
   (`filesViewHidden`) so view switches don't defeat the cache either.
+  **Safari exception: iframe-bearing panes (HTML preview) must NOT use
+  `visibility:hidden` either** — WebKit fails to repaint a hidden-then-shown
+  iframe (intermittent white screen) and its wheel scrolling gets stuck.
+  HTML panes hide OFFScreen instead (`bodyPaneHiddenHtml`, `left:-10000px`,
+  real size, fully rendered) + `inert`/`aria-hidden` while hidden, so the
+  iframe document and scroll machinery never leave the rendering tree.
 - **Markdown**: fetch raw → render → sanitize HTML → safe mode for large.
 - **Code**: Monaco Editor (read-only), word-wrap toggle, Find (Ctrl/Cmd+F).
   Lazy-loaded via `TextPreview`; large files gated by size threshold

@@ -1669,12 +1669,20 @@ const styles: Record<string, React.CSSProperties> = {
   },
   // Keep FileBrowser in the tree while Settings/Stats are shown without it
   // occupying layout space or intercepting pointer/focus. Hidden with
-  // visibility:hidden + absolute off-flow positioning — NOT display:none:
-  // a display:none shell would unload its preview iframes (HTML tabs come
-  // back white, reloaded) and zero the measurements that keep virtualized
-  // PDF pages mounted, so switching Files/Explorer/Collections would defeat
-  // the preview keep-alive cache. visibility keeps the subtree alive while
-  // staying unpainted, unclickable, and unfocusable.
+  // visibility:hidden + absolute off-flow positioning — NOT display:none —
+  // so the tree keeps real DOM + measurements (instant re-show, no
+  // virtualized-list reflow) while staying unpainted, unclickable, and
+  // unfocusable.
+  //
+  // This subtree never contains preview iframes as wired today: desktop
+  // unmounts PreviewWorkspace when the view leaves Files
+  // (preview={view === 'files' && activeTab ? <PreviewWorkspace/> : null}),
+  // and mobile renders it in mobilePreviewWrap, a visible sibling of this
+  // shell. If a future change keeps previews mounted across view switches
+  // here, do NOT hide iframe-bearing (HTML) panes with visibility:hidden —
+  // WebKit fails to repaint a hidden-then-shown iframe (white screen, stuck
+  // wheel scroll); use PreviewWorkspace's offscreen scheme
+  // (bodyPaneHiddenHtml) instead.
   filesViewHidden: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
     visibility: 'hidden', pointerEvents: 'none',
