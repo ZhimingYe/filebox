@@ -780,6 +780,9 @@ const styles: Record<string, React.CSSProperties> = {
   // 10000px left, clipped by body's overflow:hidden. opacity 0 + pointer-
   // events none are belt-and-braces (the pane is off-viewport anyway);
   // inert (render prop) covers focus + a11y.
+  // Cost: up to 4 hidden HTML documents stay fully rendered and composited
+  // (rAF/CSS animation/video decode/timers keep running) — the price of
+  // keeping WebKit's iframe repaint + scroll machinery intact.
   bodyPaneHiddenHtml: {
     position: 'absolute', top: 0, left: -10000,
     width: '100%', height: '100%',
