@@ -274,6 +274,16 @@ export function isTextFile(ext: string): boolean {
   return ext in extToLang;
 }
 
+// HTML is the only viewer that renders an <iframe>, and iframes are the
+// only content Safari breaks when hidden with visibility:hidden (no repaint
+// on re-show → white screen; wheel scrolling stuck). PreviewWorkspace must
+// hide those panes OFFScreen instead. This single source of truth keeps the
+// dispatch in PreviewPane and the hiding scheme in PreviewWorkspace from
+// drifting apart — a mismatch would silently re-trigger the Safari bug.
+export function isHtmlPreviewExt(ext: string): boolean {
+  return ext === 'html' || ext === 'htm';
+}
+
 // ── LoadingOverlay ────────────────────────────────────────────────────────
 
 export function LoadingOverlay({ message, onCancel }: {

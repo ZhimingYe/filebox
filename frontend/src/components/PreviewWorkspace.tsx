@@ -2,6 +2,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { PreviewPane } from './PreviewPane';
 import { PreviewErrorBoundary } from './PreviewErrorBoundary';
 import { PreviewHeaderActions } from './PreviewHeaderActions';
+import { isHtmlPreviewExt } from './previewShared';
 import { c, radius, font, shadow, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import type { PreviewTab } from '../hooks/usePreviewTabs';
 import type { RootInfo } from '../api/client';
@@ -539,7 +540,7 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
               // re-show → white; wheel scrolling stuck). Hide those panes
               // offscreen instead — fully rendered, just out of view.
               const ext = tab.path.split('.').pop()?.toLowerCase() || '';
-              const htmlPane = ext === 'html' || ext === 'htm';
+              const htmlPane = isHtmlPreviewExt(ext);
               return (
                 <div
                   key={`${tab.id}:${tab.rev}`}

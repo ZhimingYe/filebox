@@ -4,6 +4,7 @@ import { FileDownloadLink } from './FileDownloadLink';
 import { c } from '../theme';
 
 import {
+  isHtmlPreviewExt,
   isTextFile,
   styles,
 } from './previewShared';
@@ -154,7 +155,7 @@ export const PreviewPane = memo(function PreviewPane({
     );
   }
 
-  if (['html', 'htm'].includes(ext)) {
+  if (isHtmlPreviewExt(ext)) {
     return (
       <Suspense fallback={<SuspenseFallback label="Loading HTML viewer..." />}>
         <HtmlPreview agentId={agentId} root={root} path={path} url={url} />
