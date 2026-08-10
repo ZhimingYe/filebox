@@ -37,7 +37,7 @@ export function CsvPreview({ url, ext, agentId, root, path, downloadPath = path 
     && !gate.error
     && !isTooLarge
     && (!gate.isLarge || gate.bypassed);
-  const { text, error, loading, retrying, cancel, retry } = useFetchText(url, canLoad, agentId);
+  const { text, error, loading, retrying, cancel, retry, received, total, slow } = useFetchText(url, canLoad, agentId);
   const [view, setView] = useState<'table' | 'raw'>('table');
 
   if (gate.sizeUnknown) {
@@ -89,7 +89,7 @@ export function CsvPreview({ url, ext, agentId, root, path, downloadPath = path 
   if (loading) {
     return (
       <div style={styles.container}>
-        <LoadingOverlay message={previewLoadingMessage(retrying, 'Loading CSV...')} onCancel={cancel} />
+        <LoadingOverlay message={previewLoadingMessage(retrying, 'Loading CSV...', { received, total }, slow)} onCancel={cancel} />
       </div>
     );
   }

@@ -97,7 +97,8 @@ export async function retryAsync<T>(
   fn: (attempt: number, signal: AbortSignal) => Promise<T>,
   opts: {
     maxAttempts: number;
-    maxDurationMs?: number;
+    /** Overall wall-clock budget for the retry cycle; `null` disables it. */
+    maxDurationMs?: number | null;
     agentId?: string;
     signal?: AbortSignal;
     shouldRetry?: (error: unknown, attempt: number) => boolean;
@@ -185,7 +186,9 @@ export async function fetchWithRetry<T = Response>(
   init: RequestInit,
   opts: {
     maxAttempts?: number;
-    maxDurationMs?: number;
+    /** Overall wall-clock budget for the retry cycle. Pass `null` to disable
+     *  (slow-but-alive streams must be allowed to finish); defaults to 120s. */
+    maxDurationMs?: number | null;
     agentId?: string;
     onRetry?: (attempt: number) => void;
     /** Recreate one-shot request bodies for every attempt. */
@@ -221,7 +224,7 @@ export async function fetchWithRetry<T = Response>(
     }
   }, {
     maxAttempts,
-    maxDurationMs: opts.maxDurationMs ?? 120_000,
+    maxDurationMs: opts.maxDurationMs === undefined ? 120_000 : opts.maxDurationMs,
     agentId: opts.agentId,
     signal: init.signal ?? undefined,
     onRetry: (_error, attempt) => opts.onRetry?.(attempt + 1),

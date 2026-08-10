@@ -235,6 +235,9 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
       try {
         const blob = await fetchWithRetry(url, withCsrf({ signal: controller.signal }), {
           maxAttempts: 3,
+          // No wall-clock cap: large images on slow storage must be allowed
+          // to finish; hub/agent timeouts bound dead connections.
+          maxDurationMs: null,
           agentId,
           consume: async (res) => (
             isTiff

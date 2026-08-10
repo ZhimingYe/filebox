@@ -34,6 +34,15 @@ interface Props {
   denied: boolean;
   /** Agent advertised office_pdf_preview capability. */
   officeCapable?: boolean;
+  /**
+   * Refresh generation. Appended to the raw URL as `&v=` so a manual
+   * refresh (which remounts this pane via a new key) also busts the
+   * browser HTTP cache: with the hub's ETag/304 revalidation, an
+   * unchanged file still answers 304 instantly, while a changed file is
+   * re-transferred even if its ETag would have collided (same size +
+   * same-second mtime, common on copied/restored HPC files).
+   */
+  rev?: number;
 }
 
 function SuspenseFallback({ label }: { label: string }) {
@@ -87,7 +96,7 @@ function DownloadFallback({
 // frame) does not re-render the preview subtree. Props are all primitives
 // that only change when the selected file changes.
 export const PreviewPane = memo(function PreviewPane({
-  agentId, root, path, entryType, denied, officeCapable = false,
+  agentId, root, path, entryType, denied, officeCapable = false, rev,
 }: Props) {
   if (denied) {
     return (
@@ -110,7 +119,12 @@ export const PreviewPane = memo(function PreviewPane({
     );
   }
 
-  const url = fileRawUrl(agentId, root, path);
+  // `rev` busts the browser cache on manual refresh (see Props.rev); the
+  // hub's ETag revalidation still makes repeat opens of an unchanged file
+  // answer 304 without re-transferring bytes.
+  const url = rev !== undefined && rev > 0
+    ? `${fileRawUrl(agentId, root, path)}&v=${rev}`
+    : fileRawUrl(agentId, root, path);
   const ext = path.split('.').pop()?.toLowerCase() || '';
 
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif'].includes(ext)) {

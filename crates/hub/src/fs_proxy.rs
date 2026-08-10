@@ -288,6 +288,19 @@ struct RawFileTarget {
     preview_token: Option<String>,
 }
 
+/// Everything needed to start a raw response body once the file size is
+/// known: where the body starts, how long it is, and the first chunk when
+/// the no-stat path already fetched it (it enters the producer loop as the
+/// first item instead of a fresh request).
+struct RawBodyStart {
+    file_size: u64,
+    initial_modified: Option<String>,
+    offset_start: u64,
+    body_len: u64,
+    is_partial: bool,
+    first_chunk: Option<(Vec<u8>, bool)>,
+}
+
 /// Bytes requested per Agent round-trip while proxying a raw/preview stream.
 /// Matches [`filebox_protocol::message::FILE_CHUNK_MAX_BYTES`] so hub asks and
 /// agent clamps stay aligned on slow or jittery links.
@@ -312,7 +325,38 @@ fn is_raw_chunk_retryable(err: &str) -> bool {
             | "Failed to send request to agent"
             | "Agent did not respond in time"
             | "backend_offline"
+            | "Hub pending request limit reached"
     ) || err.starts_with("agent_overloaded")
+}
+
+/// Common mapping for an agent refusal on a raw-file request: transport /
+/// overload → retryable 503, denied → 403, anything else → 400.
+/// (The upfront-stat path additionally checks structured `retryable` flags
+/// from the agent's stat response before falling through to this.)
+fn raw_file_refusal_response(err: &str) -> Response {
+    tracing::warn!("raw file request refused: {}", err);
+    if is_raw_chunk_retryable(err) {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "backend_offline",
+            "Could not read the file",
+            true,
+        );
+    }
+    if err.contains("denied") {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "path_denied",
+            "Access denied",
+            false,
+        );
+    }
+    error_response(
+        StatusCode::BAD_REQUEST,
+        "file_unavailable",
+        "The file is unavailable or cannot be accessed",
+        false,
+    )
 }
 
 async fn send_raw_body_item(
@@ -521,6 +565,40 @@ fn check_raw_chunk(
     Ok(())
 }
 
+/// Cache-control for regular `/api/file/raw` responses: the browser may
+/// store the body but must revalidate (If-None-Match) before every reuse —
+/// a repeat preview of an unchanged file costs one stat round trip instead
+/// of a full re-transfer over a slow agent link.
+const RAW_CACHE_CONTROL: &str = "private, max-age=0, must-revalidate";
+
+/// Strong ETag built from the agent-reported size + mtime. No mtime
+/// (filesystem without one) → no ETag → the response has no validator and
+/// simply won't be revalidated.
+fn etag_for(file_size: u64, modified: Option<&str>) -> Option<String> {
+    modified.map(|m| format!("\"{}-{}\"", file_size, m))
+}
+
+/// RFC 9110 If-None-Match matching: `*` matches anything; otherwise a
+/// comma-separated list with optional `W/` weak prefixes, whitespace
+/// tolerant. We emit strong tags; weak comparison is fine for revalidation.
+fn if_none_match_matches(etag: &str, header: &HeaderValue) -> bool {
+    let etag = etag.trim_matches('"');
+    header
+        .to_str()
+        .map(|value| {
+            value.split(',').any(|candidate| {
+                let candidate = candidate.trim();
+                candidate == "*"
+                    || candidate
+                        .strip_prefix("W/")
+                        .unwrap_or(candidate)
+                        .trim_matches('"')
+                        == etag
+            })
+        })
+        .unwrap_or(false)
+}
+
 async fn serve_raw_file(
     state: AppState,
     target: RawFileTarget,
@@ -542,89 +620,184 @@ async fn serve_raw_file(
             );
         }
     };
-    let (file_size, initial_modified) = match request_raw_file_size(&state, &target).await {
-        Ok(size) => size,
-        Err(resp) => return resp,
+
+    let is_head = req.method() == axum::http::Method::HEAD;
+    let range_header = req.headers().get(header::RANGE).cloned();
+    // Conditional revalidation only applies to the regular /api/file/raw
+    // route; preview-token resources are always no-store.
+    let if_none_match = if target.preview_token.is_none() {
+        req.headers().get(header::IF_NONE_MATCH).cloned()
+    } else {
+        None
     };
-    // The semaphore bounds Agent round-trips, not the lifetime of an HTTP
-    // response. A slow browser must not occupy one of the 96 slots while it
-    // is merely pausing between body reads.
-    drop(raw_permit);
-    let range = match resolve_byte_range(req.headers().get(header::RANGE), file_size) {
-        Ok(range) => range,
-        Err(()) => {
-            return Response::builder()
-                .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                .header(header::CONTENT_RANGE, format!("bytes */{}", file_size))
-                .header(header::ACCEPT_RANGES, "bytes")
-                .body(axum::body::Body::empty())
-                .unwrap()
-                .into_response();
+
+    // Range / HEAD / conditional requests need the size before the first
+    // byte, so they keep the upfront stat round trip. Plain full GETs skip
+    // it — the first chunk itself carries file_size + modified — which
+    // halves the agent round trips on the common preview path (and lets the
+    // agent's content cache answer the first chunk from memory instantly).
+    let needs_size_upfront = is_head || range_header.is_some() || if_none_match.is_some();
+    let upfront = if needs_size_upfront {
+        match request_raw_file_size(&state, &target).await {
+            Ok(size) => Some(size),
+            Err(resp) => return resp,
+        }
+    } else {
+        None
+    };
+
+    // Conditional GET: unchanged file → 304, no bytes move. Only reachable
+    // via the stat path above.
+    if let Some((file_size, initial_modified)) = upfront.as_ref() {
+        if let Some(etag) = etag_for(*file_size, initial_modified.as_deref()) {
+            if let Some(header_value) = if_none_match.as_ref() {
+                if if_none_match_matches(&etag, header_value) {
+                    drop(raw_permit);
+                    return Response::builder()
+                        .status(StatusCode::NOT_MODIFIED)
+                        .header(header::ETAG, etag)
+                        .header(header::CACHE_CONTROL, RAW_CACHE_CONTROL)
+                        .body(axum::body::Body::empty())
+                        .unwrap()
+                        .into_response();
+                }
+            }
+        }
+    }
+
+    // Size discovery: stat path (upfront) or first-chunk path (no-stat).
+    // Both run under `raw_permit`; the permit is dropped before the body
+    // streams so a slow browser never holds one of the 96 slots while it
+    // merely pauses between reads.
+    let start = if let Some((size, modified)) = upfront {
+        let range = match resolve_byte_range(range_header.as_ref(), size) {
+            Ok(range) => range,
+            Err(()) => {
+                drop(raw_permit);
+                return Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header(header::CONTENT_RANGE, format!("bytes */{}", size))
+                    .header(header::ACCEPT_RANGES, "bytes")
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+                    .into_response();
+            }
+        };
+        let (offset_start, body_len) = range.unwrap_or((0, size));
+        RawBodyStart {
+            file_size: size,
+            initial_modified: modified,
+            offset_start,
+            body_len,
+            is_partial: range.is_some(),
+            first_chunk: None,
+        }
+    } else {
+        match fetch_first_chunk(&state, &target).await {
+            Ok((chunk, done, size, modified)) => RawBodyStart {
+                file_size: size,
+                initial_modified: modified,
+                offset_start: 0,
+                body_len: if done { chunk.len() as u64 } else { size },
+                is_partial: false,
+                first_chunk: Some((chunk, done)),
+            },
+            Err(resp) => {
+                drop(raw_permit);
+                return resp;
+            }
         }
     };
-    let (offset_start, body_len) = range.unwrap_or((0, file_size));
+    drop(raw_permit);
+
+    let RawBodyStart {
+        file_size,
+        initial_modified,
+        offset_start,
+        body_len,
+        is_partial,
+        first_chunk,
+    } = start;
+
     let file_path = target.path.clone();
     let content_type = guess_content_type(&file_path);
     let disposition = if is_inline_type(content_type) { "inline" } else { "attachment" };
     let filename = file_path.rsplit('/').next().unwrap_or("file");
     // Sanitize filename: remove chars that could break Content-Disposition header
     let safe_filename: String = filename.chars().filter(|c| *c != '"' && *c != '\\' && *c != '\n' && *c != '\r').collect();
-    let is_partial = range.is_some();
-    let is_head = req.method() == axum::http::Method::HEAD;
     let body = if is_head {
         axum::body::Body::empty()
     } else {
         let (body_tx, body_rx) = mpsc::channel(1);
         let producer_state = state.clone();
         let producer_target = target.clone();
+        let producer_modified = initial_modified.clone();
         tokio::spawn(async move {
             let mut sent = 0u64;
-            let expected_modified = initial_modified;
+            let mut first_chunk = first_chunk;
+            let expected_modified = producer_modified;
             while sent < body_len {
-                let permit = match tokio::time::timeout(
-                    Duration::from_secs(30),
-                    producer_state.raw_read_semaphore.clone().acquire_owned(),
-                )
-                .await
-                {
-                    Ok(Ok(permit)) => permit,
-                    _ => {
-                        let _ = send_raw_body_item(
-                            &body_tx,
-                            Err(std::io::Error::new(
-                                std::io::ErrorKind::TimedOut,
-                                "Hub raw stream concurrency limit reached",
-                            )),
+                // The no-stat flow's first chunk was already fetched (and
+                // preview-budgeted) before the response started; it enters
+                // the loop as the first item instead of a new request. It
+                // carries no per-chunk metadata (agents attach
+                // file_size/modified from their own open), so the values
+                // captured from that same chunk are supplied here to keep
+                // the stream consistent for the shared validator.
+                let first = first_chunk.take();
+                // The no-stat flow's first chunk was already preview-budgeted
+                // inside `fetch_first_chunk`; skip the producer's own reserve
+                // for that item so it is counted exactly once.
+                let pre_reserved = first.is_some();
+                let (chunk, done, chunk_file_size, chunk_modified) =
+                    if let Some((chunk, done)) = first {
+                        (chunk, done, Some(file_size), expected_modified.clone())
+                    } else {
+                        let permit = match tokio::time::timeout(
+                            Duration::from_secs(30),
+                            producer_state.raw_read_semaphore.clone().acquire_owned(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(permit)) => permit,
+                            _ => {
+                                let _ = send_raw_body_item(
+                                    &body_tx,
+                                    Err(std::io::Error::new(
+                                        std::io::ErrorKind::TimedOut,
+                                        "Hub raw stream concurrency limit reached",
+                                    )),
+                                )
+                                .await;
+                                return;
+                            }
+                        };
+                        let remaining = body_len - sent;
+                        let chunk_result = request_raw_chunk_with_retry(
+                            &producer_state,
+                            &producer_target,
+                            offset_start + sent,
+                            remaining.min(RAW_STREAM_CHUNK_BYTES),
                         )
                         .await;
-                        return;
-                    }
-                };
-                let remaining = body_len - sent;
-                let chunk_result = request_raw_chunk_with_retry(
-                    &producer_state,
-                    &producer_target,
-                    offset_start + sent,
-                    remaining.min(RAW_STREAM_CHUNK_BYTES),
-                )
-                .await;
-                drop(permit);
+                        drop(permit);
 
-                let (chunk, done, chunk_file_size, chunk_modified) = match chunk_result {
-                    Ok(chunk) => chunk,
-                    Err(err) => {
-                        let _ = send_raw_body_item(
-                            &body_tx,
-                            Err(std::io::Error::new(std::io::ErrorKind::Other, err)),
-                        )
-                        .await;
-                        return;
-                    }
-                };
+                        match chunk_result {
+                            Ok(chunk) => chunk,
+                            Err(err) => {
+                                let _ = send_raw_body_item(
+                                    &body_tx,
+                                    Err(std::io::Error::new(std::io::ErrorKind::Other, err)),
+                                )
+                                .await;
+                                return;
+                            }
+                        }
+                    };
                 if let Err(failure) = check_raw_chunk(
                     &chunk,
                     file_size,
-                    remaining,
+                    body_len - sent,
                     chunk_file_size,
                     chunk_modified,
                     &expected_modified,
@@ -633,9 +806,10 @@ async fn serve_raw_file(
                     return;
                 }
                 if let Some(token) = producer_target.preview_token.as_deref() {
-                    if reserve_preview_bytes(&producer_state, token, chunk.len() as u64)
-                        .await
-                        .is_err()
+                    if !pre_reserved
+                        && reserve_preview_bytes(&producer_state, token, chunk.len() as u64)
+                            .await
+                            .is_err()
                     {
                         let _ = send_raw_body_item(
                             &body_tx,
@@ -703,6 +877,16 @@ async fn serve_raw_file(
             header::CONTENT_RANGE,
             format!("bytes {}-{}/{}", offset_start, end, file_size),
         );
+    }
+    // Freshness metadata for the browser HTTP cache: a repeat preview of an
+    // unchanged file revalidates with a 304 instead of re-transferring the
+    // body over the agent link. Preview-token resources stay uncacheable
+    // (the caller applies no-store afterwards).
+    if target.preview_token.is_none() {
+        if let Some(etag) = etag_for(file_size, initial_modified.as_deref()) {
+            builder = builder.header(header::ETAG, etag);
+        }
+        builder = builder.header(header::CACHE_CONTROL, RAW_CACHE_CONTROL);
     }
     let mut resp = builder.body(body).unwrap();
     apply_raw_file_headers(&mut resp, content_type);
@@ -877,6 +1061,65 @@ async fn collect_raw_file(
     Ok(bytes)
 }
 
+/// First-chunk size discovery for plain full GETs: the agent's first
+/// FileChunk carries `file_size` + `modified`, so the upfront stat round
+/// trip can be skipped. Single attempt — a retry storm here would leave the
+/// browser waiting ~90s for its first byte; the frontend retries whole
+/// requests instead, and the agent's content cache makes each retry
+/// cheaper. Runs under the caller's `raw_permit`.
+async fn fetch_first_chunk(
+    state: &AppState,
+    target: &RawFileTarget,
+) -> Result<(Vec<u8>, bool, u64, Option<String>), Response> {
+    let (chunk, done, chunk_file_size, chunk_modified) = match request_raw_chunk(
+        state,
+        target,
+        0,
+        RAW_STREAM_CHUNK_BYTES,
+        Duration::from_secs(30),
+    )
+    .await
+    {
+        Ok(chunk) => chunk,
+        Err(err) => return Err(raw_file_refusal_response(&err)),
+    };
+    // Prefer the agent-supplied size; if a virtual path (e.g. the agent's
+    // office-cache) cannot self-describe, a done chunk at offset 0 already
+    // holds the entire file, so its length IS the size.
+    let Some(size) = chunk_file_size.or_else(|| done.then(|| chunk.len() as u64)) else {
+        return Err(error_response(
+            StatusCode::BAD_GATEWAY,
+            "file_stat_error",
+            "Agent returned a file chunk without a file size",
+            true,
+        ));
+    };
+    // A done-but-empty first chunk is a legitimately empty file; a non-done
+    // empty chunk is a protocol violation.
+    if chunk.is_empty() && !done {
+        return Err(error_response(
+            StatusCode::BAD_GATEWAY,
+            "file_stat_error",
+            "Agent returned an empty file chunk without EOF",
+            true,
+        ));
+    }
+    if let Some(token) = target.preview_token.as_deref() {
+        if reserve_preview_bytes(state, token, chunk.len() as u64)
+            .await
+            .is_err()
+        {
+            return Err(error_response(
+                StatusCode::NOT_FOUND,
+                "preview_expired",
+                "Preview session expired or not found",
+                false,
+            ));
+        }
+    }
+    Ok((chunk, done, size, chunk_modified))
+}
+
 async fn request_raw_file_size(
     state: &AppState,
     target: &RawFileTarget,
@@ -917,20 +1160,12 @@ async fn request_raw_file_size(
                 true,
             ));
         }
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            "file_unavailable",
-            "The file is unavailable or cannot be accessed",
-            false,
-        ));
+        // Not transport-level: let the shared refusal mapper classify it
+        // (denied -> 403, anything else -> 400) so both raw paths agree.
+        return Err(raw_file_refusal_response(err));
     }
     if value["stat"]["denied"].as_bool().unwrap_or(false) {
-        return Err(error_response(
-            StatusCode::FORBIDDEN,
-            "path_denied",
-            "Access denied",
-            false,
-        ));
+        return Err(raw_file_refusal_response("denied"));
     }
     if value["stat"]["entry_type"].as_str() != Some("file") {
         return Err(error_response(
@@ -1490,6 +1725,10 @@ mod tests {
         HeaderValue::from_str(val).unwrap()
     }
 
+    /// mtime the mock agents advertise, matching what a real agent reports
+    /// for a stable file.
+    const MOCK_MODIFIED: &str = "2026-01-01T00:00:00+00:00";
+
     // ── resolve_byte_range ───────────────────────────────────────────────────
 
     #[test]
@@ -1893,6 +2132,74 @@ mod tests {
         agent_handle.abort();
     }
 
+    #[tokio::test]
+    async fn file_raw_handler_accepts_done_first_chunk_without_file_size() {
+        // The agent's office-cache virtual path never self-describes chunks
+        // (file_size: None). The no-stat first-chunk path must fall back to
+        // the chunk length when the chunk is done (offset 0 → whole file).
+        let state = AppState::new(&test_config(), true);
+        let file_total = 4096u64;
+        let (tx, agent_handle) = spawn_no_size_file_agent(state.clone(), "a1", file_total);
+        register_mock_agent(&state, "a1", tx).await;
+
+        let params = FileRawParams {
+            agent_id: "a1".to_string(),
+            root: "test".to_string(),
+            path: "office.csv".to_string(),
+        };
+        let response = file_raw_handler(
+            State(state.clone()),
+            test_session(),
+            Query(params),
+            build_raw_request(None),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_LENGTH).unwrap(),
+            &hv(&file_total.to_string())
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), file_total as usize + 1024)
+            .await
+            .unwrap();
+        assert_eq!(bytes.len(), file_total as usize);
+        assert!(bytes.iter().all(|&b| b == 0xCD));
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn file_raw_handler_rejects_undone_chunk_without_file_size() {
+        // A non-done chunk with no size is a protocol violation: the hub
+        // cannot know the body length, so it must fail with a retryable 502.
+        let state = AppState::new(&test_config(), true);
+        let chunk = filebox_protocol::message::FILE_CHUNK_MAX_BYTES;
+        let file_total = chunk * 2;
+        let (tx, agent_handle) = spawn_no_size_file_agent(state.clone(), "a1", file_total);
+        register_mock_agent(&state, "a1", tx).await;
+
+        let params = FileRawParams {
+            agent_id: "a1".to_string(),
+            root: "test".to_string(),
+            path: "mystery.bin".to_string(),
+        };
+        let response = file_raw_handler(
+            State(state.clone()),
+            test_session(),
+            Query(params),
+            build_raw_request(None),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = axum::body::to_bytes(response.into_body(), 8192).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "file_stat_error");
+
+        agent_handle.abort();
+    }
+
     fn test_config() -> crate::config::HubConfig {
         crate::config::HubConfig {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
@@ -2110,7 +2417,9 @@ mod tests {
                             path,
                             entry_type: FsEntryType::File,
                             size: file_total,
-                            modified: None,
+                            // Match the mtime the chunk responses advertise,
+                            // like a real agent reporting a stable file.
+                            modified: Some(MOCK_MODIFIED.to_string()),
                             permissions: None,
                             denied: false,
                         }),
@@ -2140,8 +2449,10 @@ mod tests {
                     data,
                     done,
                     error: None,
-                    file_size: None,
-                    modified: None,
+                    // Real agents self-describe every chunk with the file's
+                    // size + mtime; the mocks must do the same.
+                    file_size: Some(file_total),
+                    modified: Some(MOCK_MODIFIED.to_string()),
                 };
                 let value = serde_json::to_value(&chunk).unwrap();
                 let pending_arc = state.inner.read().await.pending_responses.clone();
@@ -2173,7 +2484,9 @@ mod tests {
                             path,
                             entry_type: FsEntryType::File,
                             size: file_total,
-                            modified: None,
+                            // Match the mtime the chunk responses advertise,
+                            // like a real agent reporting a stable file.
+                            modified: Some(MOCK_MODIFIED.to_string()),
                             permissions: None,
                             denied: false,
                         }),
@@ -2218,6 +2531,48 @@ mod tests {
                     .min(chunk_cap)
                     .min(remaining);
                 let data = vec![0xABu8; to_read as usize];
+                let done = offset + to_read >= file_total;
+                let chunk = AgentMessage::FileChunk {
+                    req_id: req_id.clone(),
+                    offset,
+                    data,
+                    done,
+                    error: None,
+                    // Real agents self-describe every chunk with the file's
+                    // size + mtime; the mocks must do the same.
+                    file_size: Some(file_total),
+                    modified: Some(MOCK_MODIFIED.to_string()),
+                };
+                let value = serde_json::to_value(&chunk).unwrap();
+                let pending_arc = state.inner.read().await.pending_responses.clone();
+                let mut pending = pending_arc.write().await;
+                if let Some(p) = pending.remove(&req_id) {
+                    let _ = p.tx.send(value).await;
+                }
+            }
+            let _ = agent_id_owned;
+        });
+        (tx, handle)
+    }
+
+    /// Mock agent that never self-describes chunks (`file_size: None`),
+    /// mirroring the real agent's office-cache virtual path. Serves the
+    /// whole file from offset 0 in one done chunk.
+    fn spawn_no_size_file_agent(
+        state: AppState,
+        agent_id: &str,
+        file_total: u64,
+    ) -> (mpsc::Sender<HubMessage>, tokio::task::JoinHandle<()>) {
+        let (tx, mut rx) = mpsc::channel::<HubMessage>(256);
+        let agent_id_owned = agent_id.to_string();
+        let handle = tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                let HubMessage::FileReadRequest { req_id, offset, length, .. } = msg else {
+                    continue;
+                };
+                let remaining = file_total.saturating_sub(offset);
+                let to_read = length.unwrap_or(remaining).min(remaining);
+                let data = vec![0xCDu8; to_read as usize];
                 let done = offset + to_read >= file_total;
                 let chunk = AgentMessage::FileChunk {
                     req_id: req_id.clone(),
@@ -2519,34 +2874,14 @@ mod tests {
 
     #[tokio::test]
     async fn file_raw_handler_breaks_on_empty_chunk_without_done() {
-        // Dead-loop defense: if agent returns empty data + done=false, the
-        // handler must stop instead of infinitely re-requesting.
+        // Dead-loop defense: if agent returns empty data + done=false as the
+        // very first chunk, the handler must reject it (502) instead of
+        // re-requesting forever. No upfront stat happens on a plain full GET,
+        // so the mock only ever sees the FileReadRequest.
         let state = AppState::new(&test_config(), true);
         let (tx, mut rx) = mpsc::channel::<HubMessage>(256);
         let state_for_agent = state.clone();
         let agent_handle = tokio::spawn(async move {
-            // First answer the mandatory stat, then reply once with an empty
-            // non-terminal chunk. The stream should stop, not spin.
-            if let Some(HubMessage::FsStatRequest { req_id, path, .. }) = rx.recv().await {
-                let stat = AgentMessage::FsStatResponse {
-                    req_id: req_id.clone(),
-                    stat: Some(FileStat {
-                        path,
-                        entry_type: FsEntryType::File,
-                        size: 100,
-                        modified: None,
-                        permissions: None,
-                        denied: false,
-                    }),
-                    error: None,
-                };
-                let value = serde_json::to_value(&stat).unwrap();
-                let pending_arc = state_for_agent.inner.read().await.pending_responses.clone();
-                let mut pending = pending_arc.write().await;
-                if let Some(p) = pending.remove(&req_id) {
-                    let _ = p.tx.send(value).await;
-                }
-            }
             if let Some(msg) = rx.recv().await {
                 if let HubMessage::FileReadRequest { req_id, offset, .. } = msg {
                     let chunk = AgentMessage::FileChunk {
@@ -2555,8 +2890,8 @@ mod tests {
                         data: vec![],
                         done: false,
                         error: None,
-                        file_size: None,
-                        modified: None,
+                        file_size: Some(100),
+                        modified: Some(MOCK_MODIFIED.to_string()),
                     };
                     let value = serde_json::to_value(&chunk).unwrap();
                     let pending_arc = state_for_agent.inner.read().await.pending_responses.clone();
@@ -2582,12 +2917,169 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response.status(), StatusCode::OK);
-        let body_result = axum::body::to_bytes(response.into_body(), 1024).await;
-        assert!(
-            body_result.is_err(),
-            "an incomplete raw stream must fail instead of returning a successful truncated body"
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_GATEWAY,
+            "a first chunk that is empty without EOF must be rejected up front"
         );
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn file_raw_handler_serves_small_file_without_upfront_stat() {
+        // The no-stat path: a plain full GET must be served entirely from
+        // the first FileChunk (size + mtime + bytes), with no FsStatRequest
+        // round trip at all — this is what removes one agent RTT (and one
+        // storage hit) from every preview.
+        let state = AppState::new(&test_config(), true);
+        let (tx, mut rx) = mpsc::channel::<HubMessage>(256);
+        let state_for_agent = state.clone();
+        let stat_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stat_seen_agent = stat_seen.clone();
+        let agent_handle = tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    HubMessage::FsStatRequest { .. } => {
+                        stat_seen_agent.store(true, std::sync::atomic::Ordering::SeqCst);
+                        // Deliberately never answer — the handler must not
+                        // depend on this request on the full-GET path.
+                    }
+                    HubMessage::FileReadRequest { req_id, offset, length, .. } => {
+                        let data = if offset == 0 {
+                            vec![0x42u8; length.unwrap_or(512 * 1024).min(100) as usize]
+                        } else {
+                            vec![]
+                        };
+                        let done = offset as usize + data.len() >= 100;
+                        let chunk = AgentMessage::FileChunk {
+                            req_id: req_id.clone(),
+                            offset,
+                            data,
+                            done,
+                            error: None,
+                            file_size: Some(100),
+                            modified: Some(MOCK_MODIFIED.to_string()),
+                        };
+                        let value = serde_json::to_value(&chunk).unwrap();
+                        let pending_arc =
+                            state_for_agent.inner.read().await.pending_responses.clone();
+                        let mut pending = pending_arc.write().await;
+                        if let Some(p) = pending.remove(&req_id) {
+                            let _ = p.tx.send(value).await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+        register_mock_agent(&state, "a1", tx).await;
+
+        let params = FileRawParams {
+            agent_id: "a1".to_string(),
+            root: "test".to_string(),
+            path: "small.bin".to_string(),
+        };
+        let response = file_raw_handler(
+            State(state.clone()),
+            test_session(),
+            Query(params),
+            build_raw_request(None),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            !stat_seen.load(std::sync::atomic::Ordering::SeqCst),
+            "a plain full GET must not issue an upfront FsStatRequest"
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_LENGTH).unwrap().to_str().unwrap(),
+            "100"
+        );
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(etag, format!("\"100-{}\"", MOCK_MODIFIED));
+        let bytes = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(bytes.len(), 100);
+        assert!(bytes.iter().all(|&b| b == 0x42));
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn file_raw_handler_returns_304_on_matching_if_none_match() {
+        // Revalidation: the browser sends the stored ETag back; an unchanged
+        // file must answer 304 with an empty body instead of re-transferring
+        // the whole file over the agent link.
+        let state = AppState::new(&test_config(), true);
+        let file_total: u64 = 512 * 1024;
+        let (tx, agent_handle) =
+            spawn_mock_file_agent(state.clone(), "a1", file_total, 512 * 1024);
+        register_mock_agent(&state, "a1", tx).await;
+
+        let params = FileRawParams {
+            agent_id: "a1".to_string(),
+            root: "test".to_string(),
+            path: "big.bin".to_string(),
+        };
+        let first = file_raw_handler(
+            State(state.clone()),
+            test_session(),
+            Query(FileRawParams {
+                agent_id: "a1".to_string(),
+                root: "test".to_string(),
+                path: "big.bin".to_string(),
+            }),
+            build_raw_request(None),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let cache_control = first
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(cache_control.contains("must-revalidate"));
+        // Drain the first body so the mock agent isn't blocked.
+        axum::body::to_bytes(first.into_body(), file_total as usize + 1024)
+            .await
+            .unwrap();
+
+        let mut conditional = build_raw_request(None);
+        *conditional.headers_mut() =
+            HeaderMap::from_iter([(
+                header::IF_NONE_MATCH,
+                HeaderValue::from_str(&etag).unwrap(),
+            )]);
+        let second = file_raw_handler(
+            State(state.clone()),
+            test_session(),
+            Query(params),
+            conditional,
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            second.headers().get(header::ETAG).unwrap().to_str().unwrap(),
+            etag
+        );
+        let body = axum::body::to_bytes(second.into_body(), 1024).await.unwrap();
+        assert!(body.is_empty(), "a 304 must carry no body");
 
         agent_handle.abort();
     }

@@ -560,6 +560,7 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
                       entryType={tab.entry.entry_type}
                       denied={tab.entry.denied}
                       officeCapable={officeCapable}
+                      rev={tab.rev}
                     />
                   </PreviewErrorBoundary>
                 </div>
