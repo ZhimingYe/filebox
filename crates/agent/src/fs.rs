@@ -2,10 +2,13 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use filebox_protocol::denylist;
 use filebox_protocol::message::FILE_CHUNK_MAX_BYTES;
 use filebox_protocol::resources::{FileStat, FsEntry, FsEntryType, RootConfig};
+
+use crate::content_cache::ContentCache;
 
 /// Resolve a root name + relative path to an absolute, canonical path.
 ///
@@ -478,12 +481,47 @@ pub struct FileReadRange {
     pub modified: Option<String>,
 }
 
+/// Serve a slice of a whole-file cache entry with the same offset / length /
+/// done semantics as the streaming read path.
+fn slice_cached(
+    whole: Arc<Vec<u8>>,
+    file_len: u64,
+    modified: Option<String>,
+    offset: u64,
+    length: Option<u64>,
+) -> FileReadRange {
+    let data_len = whole.len() as u64;
+    if offset >= data_len {
+        return FileReadRange {
+            data: vec![],
+            done: true,
+            file_size: Some(file_len),
+            modified,
+        };
+    }
+    let remaining = data_len - offset;
+    let to_read = length
+        .unwrap_or(remaining)
+        .min(remaining)
+        .min(FILE_CHUNK_MAX_BYTES) as usize;
+    let start = offset as usize;
+    let end = start + to_read;
+    let done = offset + to_read as u64 >= file_len;
+    FileReadRange {
+        data: whole[start..end].to_vec(),
+        done,
+        file_size: Some(file_len),
+        modified,
+    }
+}
+
 pub fn read_file_range_with_metadata(
     roots: &[RootConfig],
     root_name: &str,
     path: &str,
     offset: u64,
     length: Option<u64>,
+    content_cache: Option<&Arc<ContentCache>>,
 ) -> Result<FileReadRange, String> {
     let (abs_path, root_canonical) = resolve_path(roots, root_name, path)?;
 
@@ -505,11 +543,70 @@ pub fn read_file_range_with_metadata(
     }
 
     let file_len = file_metadata.len();
-    let modified = file_metadata.modified().ok().and_then(|t| {
+    let file_mtime = file_metadata.modified().ok();
+    let modified = file_mtime.and_then(|t| {
         let dt: chrono::DateTime<chrono::Local> = t.into();
         Some(dt.to_rfc3339())
     });
 
+    // Small-file fast path. Reads are progressive: a completed cache entry
+    // or an in-flight background fill that already read past the requested
+    // range serve from memory; anything else is answered with a direct
+    // small read while a background thread reads the whole file. The first
+    // byte therefore never waits for a whole-file read — on a stalled
+    // shared filesystem a slow 64 MiB read must not hold a 512 KiB preview
+    // hostage — and repeat previews of the same file stop touching storage
+    // entirely.
+    let cache_cap = content_cache.map(|c| c.max_file_bytes() as u64).unwrap_or(0);
+    if cache_cap > 0 && file_len <= cache_cap {
+        if let (Some(cache), Some(mtime)) = (content_cache, file_mtime) {
+            // 1) Completed whole-file entry.
+            if let Some(whole) = cache.get(&abs_path, file_len, mtime) {
+                return Ok(slice_cached(whole, file_len, modified, offset, length));
+            }
+            // 2) An in-flight fill already read past the requested range.
+            if let Some(data) = cache.fill_slice(
+                &abs_path,
+                file_len,
+                mtime,
+                offset,
+                length,
+                FILE_CHUNK_MAX_BYTES as usize,
+            ) {
+                let done = offset + data.len() as u64 >= file_len;
+                return Ok(FileReadRange {
+                    data,
+                    done,
+                    file_size: Some(file_len),
+                    modified,
+                });
+            }
+            // 3) Cache miss: serve the range with a direct read and let a
+            //    background thread fill the whole-file entry. The fill
+            //    re-opens the file itself, so it does not hold this worker
+            //    hostage, and it is not tied to the request's lifetime —
+            //    a cancelled request still leaves the cache warming.
+            let range = direct_range_read(&mut file, offset, length, file_len, modified);
+            if range.is_ok() {
+                cache.begin_fill(abs_path.clone(), file_len, mtime);
+            }
+            return range;
+        }
+    }
+
+    direct_range_read(&mut file, offset, length, file_len, modified)
+}
+
+/// Read one range directly from the open file (the streaming path). The
+/// agent never slurps more than one chunk per request; a short read just
+/// means the chunk is smaller, not an error.
+fn direct_range_read(
+    file: &mut fs::File,
+    offset: u64,
+    length: Option<u64>,
+    file_len: u64,
+    modified: Option<String>,
+) -> Result<FileReadRange, String> {
     if offset >= file_len {
         return Ok(FileReadRange {
             data: vec![],
@@ -543,6 +640,7 @@ pub fn read_file_range_with_metadata(
     })
 }
 
+#[cfg(test)]
 pub fn read_file_range(
     roots: &[RootConfig],
     root_name: &str,
@@ -550,7 +648,7 @@ pub fn read_file_range(
     offset: u64,
     length: Option<u64>,
 ) -> Result<(Vec<u8>, bool), String> {
-    let result = read_file_range_with_metadata(roots, root_name, path, offset, length)?;
+    let result = read_file_range_with_metadata(roots, root_name, path, offset, length, None)?;
     Ok((result.data, result.done))
 }
 
@@ -1038,5 +1136,94 @@ mod tests {
             err.contains("outside root"),
             "expected path-escape message, got: {err}"
         );
+    }
+
+    // ── content cache behavior ──
+
+    fn small_cache() -> Arc<ContentCache> {
+        Arc::new(ContentCache::new(1024 * 1024, 4 * 1024 * 1024))
+    }
+
+    #[test]
+    fn read_file_range_caches_small_file_and_serves_slices() {
+        let sb = Sandbox::new();
+        let payload: Vec<u8> = (0..1000).map(|i| (i % 251) as u8).collect();
+        sb.write_file("data.bin", &payload);
+        let roots = vec![sb.root()];
+        let cache = small_cache();
+
+        // First read serves the slice directly; a background fill then
+        // caches the whole file.
+        let first = read_file_range_with_metadata(&roots, "test", "data.bin", 0, Some(100), Some(&cache))
+            .unwrap();
+        assert_eq!(first.data, payload[..100]);
+        assert!(!first.done);
+
+        // Wait for the background fill to complete, then a later chunk
+        // reads from the cache — same bytes, and the whole file is now
+        // resident (len reflects the cached entry).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while cache.len() < 1 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let tail = read_file_range_with_metadata(&roots, "test", "data.bin", 900, None, Some(&cache))
+            .unwrap();
+        assert_eq!(tail.data, payload[900..]);
+        assert!(tail.done);
+        assert_eq!(tail.file_size, Some(1000));
+        assert!(cache.len() >= 1);
+
+        // Offset at EOF still returns an empty done chunk from the cache.
+        let at_eof = read_file_range_with_metadata(&roots, "test", "data.bin", 1000, None, Some(&cache))
+            .unwrap();
+        assert!(at_eof.data.is_empty());
+        assert!(at_eof.done);
+    }
+
+    #[test]
+    fn read_file_range_invalidates_cache_when_file_changes() {
+        let sb = Sandbox::new();
+        sb.write_file("data.bin", b"version one");
+        let roots = vec![sb.root()];
+        let cache = small_cache();
+
+        let first = read_file_range_with_metadata(&roots, "test", "data.bin", 0, None, Some(&cache))
+            .unwrap();
+        assert_eq!(first.data, b"version one");
+
+        // Same size, different content + mtime: the cache must NOT serve the
+        // stale body.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        sb.write_file("data.bin", b"version two");
+        let second = read_file_range_with_metadata(&roots, "test", "data.bin", 0, None, Some(&cache))
+            .unwrap();
+        assert_eq!(second.data, b"version two");
+    }
+
+    #[test]
+    fn read_file_range_skips_cache_for_files_over_cap() {
+        let sb = Sandbox::new();
+        let big = vec![0xBBu8; 2048];
+        sb.write_file("big.bin", &big);
+        let roots = vec![sb.root()];
+        // Cap of 1 KiB: the 2 KiB file must stream per chunk, uncached.
+        let cache = Arc::new(ContentCache::new(1024 * 1024, 1024));
+
+        let first = read_file_range_with_metadata(&roots, "test", "big.bin", 0, Some(1024), Some(&cache))
+            .unwrap();
+        assert_eq!(first.data.len(), 1024);
+        assert_eq!(cache.len(), 0, "over-cap files must not be cached");
+    }
+
+    #[test]
+    fn read_file_range_cache_respects_denylist() {
+        let sb = Sandbox::new();
+        sb.write_file("secret.key", b"nope");
+        let roots = vec![sb.root()];
+        let cache = small_cache();
+
+        let result = read_file_range_with_metadata(&roots, "test", "secret.key", 0, None, Some(&cache));
+        assert!(result.is_err());
+        assert_eq!(cache.len(), 0, "denied files must never reach the cache");
     }
 }

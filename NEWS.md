@@ -13,6 +13,28 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **Monaco code preview** — read-only Monaco Editor replaces Prism / `react-syntax-highlighter` for code files (Find, wrap, syntax highlight). Lazy-loaded; not placed in Vite `manualChunks` so the ~4MB editor is not preloaded on every page.
 
 ### Changed
+- **Preview loading is cached end-to-end** — file previews no longer re-read
+  storage and re-transfer bytes on every open. The agent now whole-reads and
+  caches small files (≤64 MiB by default,
+  `FILEBOX_AGENT_CONTENT_CACHE_BYTES` total budget 1 GiB /
+  `FILEBOX_AGENT_CONTENT_CACHE_MAX_FILE_BYTES` per file, size+mtime
+  validated, LRU bounded, cleared on root reconfigure) so repeat reads
+  answer from memory;
+  the hub skips its redundant upfront stat on plain full GETs (the first
+  chunk carries size + mtime) and serves `/api/file/raw` with an ETag +
+  `Cache-Control: private, max-age=0, must-revalidate` so browsers revalidate
+  with a 304 instead of re-transferring an unchanged file over slow agent
+  links. Text/markdown/HTML/CSV loading overlays now show byte progress and
+  an 8-second "still loading" notice instead of a silent spinner.
+- **Preview reads are progressive under load** — a stalled shared filesystem
+  can no longer hold the first byte hostage: on a cache miss the agent
+  serves each requested range with a direct small read (the first byte
+  never waits for a whole-file read), while a bounded pool of background
+  threads (4 max) reads the whole file in 512 KiB segments; later ranges
+  are served from the fill buffer as soon as it passes them, and cancelled
+  requests still leave the cache warming so retries converge to memory
+  speed. Fills are cancelled and blocked by the generation guard on root
+  reconfigure.
 - **HTML preview tabs survive Safari** — Safari (WebKit) fails to repaint an
   iframe whose ancestor went `visibility:hidden` and back (intermittent
   white screen) and its wheel scrolling gets stuck after such a toggle.

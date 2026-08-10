@@ -1979,7 +1979,9 @@ fn reap_stale_cache_temps(cache_dir: &Path) {
     }
 }
 
-/// Read a cached derived preview by virtual path.
+/// Read a cached derived preview by virtual path. Returns `(data, done,
+/// file_len)` — the total cached file length, so hub's no-stat first-chunk
+/// path can learn the size without an extra stat round trip.
 pub fn read_cache_range(
     office_dir: &Path,
     roots: &[RootConfig],
@@ -1987,7 +1989,7 @@ pub fn read_cache_range(
     cache: &OfficeCachePath,
     offset: u64,
     length: Option<u64>,
-) -> Result<(Vec<u8>, bool), String> {
+) -> Result<(Vec<u8>, bool, u64), String> {
     if cache.cache_key.len() != 64
         || !cache.cache_key.chars().all(|c| c.is_ascii_hexdigit())
         || !matches!(cache.format.as_str(), "pdf" | "csv")
@@ -2008,7 +2010,7 @@ pub fn read_cache_range(
         .map_err(|e| diagnostic("office_storage_error", format!("stat cache: {e}")))?
         .len();
     if offset >= file_len {
-        return Ok((vec![], true));
+        return Ok((vec![], true, file_len));
     }
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| diagnostic("office_storage_error", format!("seek cache: {e}")))?;
@@ -2021,7 +2023,7 @@ pub fn read_cache_range(
     file.read_exact(&mut buf)
         .map_err(|e| diagnostic("office_storage_error", format!("read cache: {e}")))?;
     let done = offset + to_read >= file_len;
-    Ok((buf, done))
+    Ok((buf, done, file_len))
 }
 
 pub fn stat_cache(
@@ -2362,7 +2364,7 @@ exit 0
             .expect("cache hit");
         assert_eq!(result2.cache_key, result.cache_key);
 
-        let (data, done) =
+        let (data, done, file_len) =
             read_cache_range(
                 &runtime.config.office_dir,
                 &roots,
@@ -2373,6 +2375,7 @@ exit 0
             )
             .unwrap();
         assert!(done);
+        assert!(file_len as usize >= data.len());
         assert!(data.starts_with(b"%PDF"));
     }
 
@@ -2577,7 +2580,7 @@ exit 0
             .unwrap_err(),
             "denied"
         );
-        let (data, done) = read_cache_range(
+        let (data, done, _) = read_cache_range(
             &runtime.config.office_dir,
             &roots,
             "docs",
@@ -2588,7 +2591,7 @@ exit 0
         .unwrap();
         assert!(done);
         assert_eq!(data, b"name,value\nalpha,1\n");
-        let (empty, done) = read_cache_range(
+        let (empty, done, _) = read_cache_range(
             &runtime.config.office_dir,
             &roots,
             "docs",

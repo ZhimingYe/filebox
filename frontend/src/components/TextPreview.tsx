@@ -33,7 +33,7 @@ interface Props {
 export function TextPreview({ url, ext, agentId, root, path }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.text });
   const canLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
-  const { text, error, loading, retrying, cancel, retry } = useFetchText(url, canLoad, agentId);
+  const { text, error, loading, retrying, cancel, retry, received, total, slow } = useFetchText(url, canLoad, agentId);
   const [wrap, setWrap] = useState(wrapPref);
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
 
@@ -75,7 +75,7 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
   if (loading) {
     return (
       <div style={styles.container}>
-        <LoadingOverlay message={previewLoadingMessage(retrying)} onCancel={cancel} />
+        <LoadingOverlay message={previewLoadingMessage(retrying, 'Loading file...', { received, total }, slow)} onCancel={cancel} />
       </div>
     );
   }

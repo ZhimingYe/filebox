@@ -13,6 +13,7 @@ use filebox_protocol::message::{AgentMessage, HubMessage};
 use filebox_protocol::resources::Capabilities;
 
 use crate::config::AgentConfig;
+use crate::content_cache::ContentCache;
 use crate::dir_cache::DirCache;
 use crate::resources::ResourceManager;
 use crate::sysinfo::StatsCache;
@@ -257,6 +258,12 @@ pub async fn run_connection_loop(config: &AgentConfig) {
     // both the main file list and the directory tree. Cleared on resource
     // reconfigure inside the connection loop.
     let dir_cache: Arc<DirCache> = DirCache::new();
+    // Whole-file content cache for previews / downloads. Small files are read
+    // once from storage, then served from memory while (size, mtime) match —
+    // shared HPC filesystems (NFS / Lustre) can stall reads for seconds under
+    // contention, and re-reading the same file per chunk multiplied that.
+    // Cleared on resource reconfigure inside the connection loop.
+    let content_cache: Arc<ContentCache> = Arc::new(ContentCache::from_env());
     let office_runtime = crate::office_convert::probe_from_env(&config.data_dir).and_then(
         |office_config| match crate::office_convert::OfficeRuntime::new(office_config) {
             Ok(runtime) => Some(runtime),
@@ -293,6 +300,7 @@ pub async fn run_connection_loop(config: &AgentConfig) {
             &stable_agent_id,
             &stats_cache,
             &dir_cache,
+            &content_cache,
             office_runtime.as_ref(),
             &fs_workers,
             &dir_list_workers,
@@ -350,6 +358,7 @@ async fn run_one_connection(
     stable_agent_id: &str,
     stats_cache: &Arc<StatsCache>,
     dir_cache: &Arc<DirCache>,
+    content_cache: &Arc<ContentCache>,
     office_runtime: Option<&Arc<crate::office_convert::OfficeRuntime>>,
     fs_workers: &Arc<Semaphore>,
     dir_list_workers: &Arc<Semaphore>,
@@ -553,6 +562,11 @@ async fn run_one_connection(
                                         // lazily on the next request. Cheaper and safer than
                                         // trying to invalidate granularly.
                                         dir_cache.clear();
+                                        // Same for content: a root's path /
+                                        // enabled / denylist semantics may have
+                                        // changed, so cached bytes could
+                                        // describe the wrong tree.
+                                        content_cache.clear();
 
                                         let update = AgentMessage::ResourcesUpdated {
                                             agent_id: assigned_agent_id.clone(),
@@ -802,6 +816,7 @@ async fn run_one_connection(
                                 tracing::debug!("FS read: root={}, path={}, offset={}, len={:?}", root, path, offset, length);
                                 let roots_vec = resource_mgr.roots().to_vec();
                                 let runtime = office_runtime.cloned();
+                                let content_cache_ref = content_cache.clone();
                                 let rid = req_id.clone();
                                 let panic_response = AgentMessage::FileChunk {
                                     req_id: rid,
@@ -853,11 +868,13 @@ async fn run_one_connection(
                                                     offset,
                                                     length,
                                                 )
-                                                .map(|(data, done)| crate::fs::FileReadRange {
-                                                    data,
-                                                    done,
-                                                    file_size: None,
-                                                    modified: None,
+                                                .map(|(data, done, file_len)| {
+                                                    crate::fs::FileReadRange {
+                                                        data,
+                                                        done,
+                                                        file_size: Some(file_len),
+                                                        modified: None,
+                                                    }
                                                 }),
                                                 None => Err("office_unavailable".to_string()),
                                             }
@@ -868,6 +885,7 @@ async fn run_one_connection(
                                                 &path,
                                                 offset,
                                                 length,
+                                                Some(&content_cache_ref),
                                             )
                                         };
                                         if cancelled.load(Ordering::Acquire) {

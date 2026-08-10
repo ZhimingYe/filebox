@@ -21,6 +21,11 @@ export function useMounted() {
 // ── useFetchText ──────────────────────────────────────────────────────────
 // Shared fetch hook with cancel + retry. Uses credentials: 'include' so the
 // hub's session cookie is sent for /api/file/raw.
+//
+// Reports byte progress while the body streams (the hub sends 512 KiB
+// chunks, so a 0.7 MB file on a slow agent link updates several times) and
+// flips `slow` after 8s of no completion — the preview never freezes
+// silently.
 
 export function useFetchText(url: string, enabled = true, agentId?: string) {
   const [text, setText] = useState<string | null>(null);
@@ -28,9 +33,17 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
+  const [received, setReceived] = useState(0);
+  const [total, setTotal] = useState<number | null>(null);
+  const [slow, setSlow] = useState(false);
   const cancelRef = useRef<AbortController | null>(null);
+  const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    if (slowTimerRef.current) {
+      clearTimeout(slowTimerRef.current);
+      slowTimerRef.current = null;
+    }
     if (!enabled) {
       cancelRef.current?.abort();
       cancelRef.current = null;
@@ -38,6 +51,9 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
       setError(null);
       setLoading(false);
       setRetrying(false);
+      setReceived(0);
+      setTotal(null);
+      setSlow(false);
       return;
     }
 
@@ -48,13 +64,53 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
     setError(null);
     setText(null);
     setRetrying(false);
+    setReceived(0);
+    setTotal(null);
+    setSlow(false);
+    slowTimerRef.current = setTimeout(() => {
+      if (!cancelled) setSlow(true);
+    }, 8000);
 
     void (async () => {
       try {
         const body = await fetchWithRetry(url, withCsrf({ signal: controller.signal }), {
-          maxAttempts: 3,
+          // Generous retry budget: under heavy load the first attempt may
+          // 503 while the agent's content cache is still warming — each
+          // retry is cheaper than the last, so keep trying.
+          maxAttempts: 5,
+          // No wall-clock cap: a slow-but-alive stream must be allowed to
+          // finish (hub/agent timeouts still bound genuinely dead
+          // connections). The 8s slow notice plus byte progress keep it
+          // visibly alive.
+          maxDurationMs: null,
           agentId,
-          consume: (res) => res.text(),
+          consume: async (res) => {
+            const contentLength = Number(res.headers.get('content-length'));
+            setTotal(Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null);
+            const reader = res.body?.getReader();
+            if (!reader) return res.text();
+            // Stream the body so the overlay can show byte progress; decode
+            // at the end (TextDecoder matches res.text()'s UTF-8 + BOM
+            // handling).
+            const chunks: Uint8Array[] = [];
+            let receivedBytes = 0;
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value && value.byteLength > 0) {
+                chunks.push(value);
+                receivedBytes += value.byteLength;
+                if (!cancelled) setReceived(receivedBytes);
+              }
+            }
+            const merged = new Uint8Array(receivedBytes);
+            let offset = 0;
+            for (const chunk of chunks) {
+              merged.set(chunk, offset);
+              offset += chunk.byteLength;
+            }
+            return new TextDecoder().decode(merged);
+          },
           onRetry: () => {
             if (!cancelled) setRetrying(true);
           },
@@ -63,6 +119,7 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
         setText(body);
         setLoading(false);
         setRetrying(false);
+        setSlow(false);
       } catch (e: unknown) {
         if (cancelled) return;
         const err = e as { name?: string; message?: string };
@@ -70,6 +127,7 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
         setError(err?.message || 'Failed to load file');
         setLoading(false);
         setRetrying(false);
+        setSlow(false);
       }
     })();
 
@@ -77,6 +135,10 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
       cancelled = true;
       controller.abort();
       cancelRef.current = null;
+      if (slowTimerRef.current) {
+        clearTimeout(slowTimerRef.current);
+        slowTimerRef.current = null;
+      }
     };
   }, [url, retryToken, enabled, agentId]);
 
@@ -96,7 +158,26 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
   // back to true. Treat an enabled request with neither text nor an error as
   // pending so consumers never render a null payload during that gap.
   const requestLoading = enabled && (loading || (text === null && error === null));
-  return { text, error, loading: requestLoading, retrying, cancel, retry };
+  return {
+    text, error, loading: requestLoading, retrying, cancel, retry,
+    received, total, slow,
+  };
+}
+
+// ── byte formatting ───────────────────────────────────────────────────────
+
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes / 1024;
+  let unit = units[0];
+  for (const next of units.slice(1)) {
+    if (value < 1024) break;
+    value /= 1024;
+    unit = next;
+  }
+  return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${unit}`;
 }
 
 // ── wrap preference ───────────────────────────────────────────────────────
@@ -161,8 +242,27 @@ export const binaryExts = new Set([
   'epub', 'mobi',
 ]);
 
-export function previewLoadingMessage(retrying: boolean, fallback = 'Loading file...'): string {
-  return retrying ? 'Connection interrupted, retrying…' : fallback;
+export function previewLoadingMessage(
+  retrying: boolean,
+  fallback = 'Loading file...',
+  progress?: { received: number; total?: number | null } | null,
+  slow = false,
+): string {
+  if (retrying) return 'Connection interrupted, retrying…';
+  const bytes = progress && progress.received > 0
+    ? formatBytes(progress.received)
+    : null;
+  if (slow) {
+    return bytes
+      ? `${fallback} — still loading (${bytes}${progress?.total ? ` / ${formatBytes(progress.total)}` : ''}); the agent may be slow or reconnecting…`
+      : `${fallback} — still loading; the agent may be slow or reconnecting…`;
+  }
+  if (bytes) {
+    return progress?.total
+      ? `${fallback} (${bytes} / ${formatBytes(progress.total)})`
+      : `${fallback} (${bytes})`;
+  }
+  return fallback;
 }
 
 export function gateLoadingMessage(retrying: boolean): string {
@@ -172,6 +272,16 @@ export function gateLoadingMessage(retrying: boolean): string {
 export function isTextFile(ext: string): boolean {
   if (binaryExts.has(ext)) return false;
   return ext in extToLang;
+}
+
+// HTML is the only viewer that renders an <iframe>, and iframes are the
+// only content Safari breaks when hidden with visibility:hidden (no repaint
+// on re-show → white screen; wheel scrolling stuck). PreviewWorkspace must
+// hide those panes OFFScreen instead. This single source of truth keeps the
+// dispatch in PreviewPane and the hiding scheme in PreviewWorkspace from
+// drifting apart — a mismatch would silently re-trigger the Safari bug.
+export function isHtmlPreviewExt(ext: string): boolean {
+  return ext === 'html' || ext === 'htm';
 }
 
 // ── LoadingOverlay ────────────────────────────────────────────────────────

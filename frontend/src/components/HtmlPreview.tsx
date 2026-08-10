@@ -71,7 +71,7 @@ const docWarningClose: CSSProperties = {
 export function HtmlPreview({ agentId, root, path, url }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.html });
   const shouldLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
-  const { text, error, loading, retrying, cancel, retry } = useFetchText(url, shouldLoad, agentId);
+  const { text, error, loading, retrying, cancel, retry, received, total, slow } = useFetchText(url, shouldLoad, agentId);
   const previewShouldLoad = shouldLoad && text !== null && !error;
   const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -254,7 +254,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   if (loading) {
     return (
       <div style={styles.container}>
-        <LoadingOverlay message={previewLoadingMessage(retrying, 'Loading HTML...')} onCancel={cancel} />
+        <LoadingOverlay message={previewLoadingMessage(retrying, 'Loading HTML...', { received, total }, slow)} onCancel={cancel} />
       </div>
     );
   }
