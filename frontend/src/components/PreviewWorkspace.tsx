@@ -99,6 +99,9 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
 }: Props) {
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const [hoveredMenuItem, setHoveredMenuItem] = useState<string | null>(null);
+  // Hovered pin button — inline styles can't express :hover, so the strip
+  // tracks it per tab to give the pin affordance visible feedback.
+  const [hoveredPinId, setHoveredPinId] = useState<string | null>(null);
   // Jump-to-tab dropdown: shown when 2+ tabs are open so a long strip can be
   // navigated without horizontal scrolling. Closed by outside click / Esc /
   // selecting a tab (or when the multi-tab strip itself unmounts).
@@ -377,11 +380,19 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); onTogglePin(tab.id); }}
+                    onMouseEnter={() => setHoveredPinId(tab.id)}
+                    onMouseLeave={() => setHoveredPinId(null)}
                     title={tab.pinned
                       ? 'Unpin — stop keeping this preview mounted in the background'
                       : 'Pin — keep this preview mounted in the background'}
                     aria-label={`${tab.pinned ? 'Unpin' : 'Pin'} ${tab.title}`}
-                    style={tab.pinned ? styles.tabPinActive : styles.tabPin}
+                    style={{
+                      ...styles.tabPin,
+                      ...(tab.pinned ? styles.tabPinActive : {}),
+                      ...(hoveredPinId === tab.id
+                        ? (tab.pinned ? styles.tabPinActiveHover : styles.tabPinHover)
+                        : {}),
+                    }}
                   >
                     <PinIcon filled={tab.pinned} />
                   </button>
@@ -691,15 +702,21 @@ const styles: Record<string, React.CSSProperties> = {
   },
   tabPin: {
     flexShrink: 0, background: 'none', border: 'none',
-    color: c.textMuted, cursor: 'pointer', opacity: 0.7,
+    color: c.textMuted, cursor: 'pointer',
     display: 'flex', alignItems: 'center',
-    padding: '1px 3px', borderRadius: radius.sm,
+    padding: '2px 4px', borderRadius: radius.sm,
+    transition: 'background 0.12s, color 0.12s',
+  },
+  // Hover feedback for the unpinned state — inline styles have no :hover,
+  // so the strip tracks the hovered tab and merges these in.
+  tabPinHover: {
+    background: c.bgMuted, color: c.textSecondary,
   },
   tabPinActive: {
-    flexShrink: 0, background: 'none', border: 'none',
-    color: c.accent, cursor: 'pointer',
-    display: 'flex', alignItems: 'center',
-    padding: '1px 3px', borderRadius: radius.sm,
+    color: c.accent,
+  },
+  tabPinActiveHover: {
+    background: c.accentBg, color: c.accentHover,
   },
   tabClose: {
     flexShrink: 0, background: 'none', border: 'none',
