@@ -124,9 +124,13 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   useEffect(() => {
     etagRef.current = etag;
   }, [etag]);
-  // Scroll position to restore once the iframe finishes loading (only set
-  // when the saved ETag matches the freshly fetched one).
-  const pendingScrollRef = useRef<{ x: number; y: number } | null>(null);
+  // The cache entry is only written once the document actually loaded —
+  // saving during the load race would clobber a good position with (0,0).
+  const iframeLoadedRef = useRef(false);
+  // The reading position is restored at most once per mount, on the first
+  // successful iframe load. A manual refresh (handleRefresh) reloads the
+  // iframe but must never restore — this flag makes that one-shot.
+  const restoredScrollRef = useRef(false);
 
   const missingHtml = useMemo(() => {
     if (!text) return false;
@@ -144,7 +148,8 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
       previewCancelRef.current?.abort();
       previewCancelRef.current = null;
       if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
-      pendingScrollRef.current = null;
+      iframeLoadedRef.current = false;
+      restoredScrollRef.current = false;
       setDocumentUrl(null);
       setPreviewError(null);
       setPreviewLoading(false);
@@ -186,15 +191,10 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
         setSlowRendering(false);
         setPreviewLoading(false);
         setSlowPreviewSetup(false);
-        // Restore the saved reading position only when the file is
-        // unchanged: the ETag captured from this fetch must equal the one
-        // saved with the position (a changed file, or one without an ETag,
-        // never restores). handleRefresh clears this before its iframe
-        // reload so a manual refresh starts fresh.
-        const cached = htmlScrollCache.get(scrollKey);
-        pendingScrollRef.current = cached && cached.etag === etagRef.current
-          ? { x: cached.x, y: cached.y }
-          : null;
+        // A fresh document is loading: reset the load guard. The restore
+        // flag stays as-is within a mount — handleRefresh relies on it to
+        // keep a manual reload from restoring.
+        iframeLoadedRef.current = false;
         if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
       } catch (e: unknown) {
         const err = e as { name?: string; message?: string; error?: string };
@@ -229,9 +229,11 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
 
   useEffect(() => () => {
     // Cache the reading position before the viewer unmounts (tab switch,
-    // close, mobile file switch). Only saved — restored on a later mount
-    // only when the file's ETag still matches (see the setup effect).
-    const win = iframeRef.current?.contentWindow;
+    // close, mobile file switch). Only saved once the document actually
+    // loaded — during the load race the scroll is 0,0 and would clobber a
+    // good entry. Restored on a later mount only when the file's ETag
+    // still matches (see handleIframeLoad).
+    const win = iframeLoadedRef.current ? iframeRef.current?.contentWindow : null;
     if (win) {
       cacheHtmlScroll(scrollKey, win.scrollX, win.scrollY, etagRef.current);
     }
@@ -249,21 +251,30 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
     if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
     setIframeLoading(false);
     setSlowRendering(false);
-    const pending = pendingScrollRef.current;
-    pendingScrollRef.current = null;
-    if (pending) {
-      const win = iframeRef.current?.contentWindow;
-      if (win) {
-        win.scrollTo(pending.x, pending.y);
-        // Late-loading content (images, scripts) can shift layout after the
-        // load event; re-apply on the next frame so the restore sticks.
-        requestAnimationFrame(() => {
-          const w = iframeRef.current?.contentWindow;
-          if (w) w.scrollTo(pending.x, pending.y);
-        });
+    iframeLoadedRef.current = true;
+    // Restore the saved reading position at most once per mount: the ETag
+    // captured from this fetch must equal the one saved with the position
+    // (a changed file, or one without an ETag, never restores). The flag
+    // stays set after the first load so a manual refresh (handleRefresh)
+    // never restores onto the reloaded document.
+    if (!restoredScrollRef.current) {
+      const cached = htmlScrollCache.get(scrollKey);
+      if (cached && cached.etag === etagRef.current) {
+        restoredScrollRef.current = true;
+        const win = iframeRef.current?.contentWindow;
+        if (win) {
+          win.scrollTo(cached.x, cached.y);
+          // Late-loading content (images, scripts) can shift layout after
+          // the load event; re-apply on the next frame so the restore
+          // sticks.
+          requestAnimationFrame(() => {
+            const w = iframeRef.current?.contentWindow;
+            if (w) w.scrollTo(cached.x, cached.y);
+          });
+        }
       }
     }
-  }, []);
+  }, [scrollKey]);
 
   const handleIframeError = useCallback(() => {
     if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
@@ -290,9 +301,10 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
 
   const handleRefresh = useCallback(() => {
     if (!documentUrl) return;
-    // A manual refresh is an explicit "look again" — never restore the old
-    // reading position onto the reloaded document.
-    pendingScrollRef.current = null;
+    // A manual refresh is an explicit "look again" — the restoredScrollRef
+    // flag (left set) keeps the reloaded document from restoring the old
+    // reading position.
+    iframeLoadedRef.current = false;
     setIframeLoading(true);
     setSlowRendering(false);
     setIframeKey((k) => k + 1);
