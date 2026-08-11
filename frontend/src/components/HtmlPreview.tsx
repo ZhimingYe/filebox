@@ -89,7 +89,6 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wrapperUrlRef = useRef<string | null>(null);
   const wrapperRevokeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const missingHtml = useMemo(() => {
     if (!text) return false;
     return !/<html[\s>]/i.test(text);
@@ -339,7 +338,6 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
         ) : (
           <iframe
             key={iframeKey}
-            ref={iframeRef}
             src={documentUrl || ''}
             sandbox={HTML_SANDBOX}
             style={styles.htmlFrame}

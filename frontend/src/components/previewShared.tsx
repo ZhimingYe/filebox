@@ -276,8 +276,14 @@ export function isTextFile(ext: string): boolean {
 
 // HTML is the only viewer that renders an <iframe>. PreviewPane's dispatch
 // checks this so the sandboxed-session viewer is used instead of plain text
-// or a download fallback. (HtmlPreview is the only consumer of the iframe;
-// only the active tab mounts a body, so no hiding scheme is needed anymore.)
+// or a download fallback. PreviewWorkspace mirrors the same check to decide
+// how hidden PINNED panes are parked: visibility:hidden for ordinary panes,
+// but iframes are the only content Safari breaks when hidden with
+// visibility:hidden (no repaint on re-show → white screen; wheel scrolling
+// stuck), so HTML panes hide offscreen instead. This single source of truth
+// keeps the dispatch in PreviewPane and the hiding scheme in
+// PreviewWorkspace from drifting apart — a mismatch would silently
+// re-trigger the Safari bug.
 export function isHtmlPreviewExt(ext: string): boolean {
   return ext === 'html' || ext === 'htm';
 }
