@@ -283,30 +283,29 @@ survive navigation.
 ## Preview Behavior
 
 - **Workspace**: multi-tab on desktop (`PreviewWorkspace` +
-  `usePreviewTabs`). The active tab plus the four most recently used others
-  stay mounted but hidden (`mountedTabIds`, LRU by a `lastUsed` recency
-  stamp) so switching back is instant and viewer state (PDF page/zoom,
-  image zoom/rotation, scroll, editor view) survives; a sixth+ distinct file
-  mounts fresh on activation and evicts the least-recently-used cached body.
-  The manual refresh button (`rev` bump) always re-fetches. Arrow keys walk
-  files in the current directory or collection; Esc closes the active tab;
-  context menu supports bulk close; tab-jump dropdown among open tabs.
-  `PreviewErrorBoundary` isolates viewer crashes. **Hidden panes are
-  `visibility:hidden` + absolute off-flow positioning, never `display:none`**
-  — Chrome unloads the document of a `display:none` iframe (an HTML tab
-  would reload white on switch-back, scroll position lost) and a
-  `display:none` pane zeroes the ResizeObserver/IntersectionObserver
-  measurements that keep virtualized PDF pages mounted (PDFs would unmount
-  and re-render every page on switch-back). `visibility` keeps iframes and
-  sizes alive while staying unpainted / unclickable / unfocusable. The same
-  rule applies to the hidden Files/Explorer shells in `App.tsx`
-  (`filesViewHidden`) so view switches don't defeat the cache either.
-  **Safari exception: iframe-bearing panes (HTML preview) must NOT use
-  `visibility:hidden` either** — WebKit fails to repaint a hidden-then-shown
-  iframe (intermittent white screen) and its wheel scrolling gets stuck.
-  HTML panes hide OFFScreen instead (`bodyPaneHiddenHtml`, `left:-10000px`,
-  real size, fully rendered) + `inert`/`aria-hidden` while hidden, so the
-  iframe document and scroll machinery never leave the rendering tree.
+  `usePreviewTabs`). Tabs are metadata: a tab's body mounts only while it
+  is the active tab — unless the user **pins** the tab (pin button on the
+  tab, or the tab context menu), in which case the body stays mounted
+  hidden in the background so switching back is instant and viewer state
+  (PDF page/zoom, image zoom, Monaco scroll) survives. Unpinned inactive
+  tabs hold no viewer resources; pinned bodies are an explicit opt-in
+  (each pinned HTML document stays fully rendered — the user's choice).
+  The manual refresh button (`rev` bump) always re-fetches. Arrow keys
+  walk files in the current directory or collection; Esc closes the active
+  tab; context menu supports bulk close and pin; tab-jump dropdown among
+  open tabs. `PreviewErrorBoundary` isolates viewer crashes. Hidden pinned
+  panes are `visibility:hidden` + absolute off-flow positioning, never
+  `display:none` — Chrome unloads the document of a `display:none` iframe
+  (an HTML tab would reload white on switch-back), and `display:none`
+  zeroes the ResizeObserver/IntersectionObserver measurements that keep
+  virtualized PDF pages mounted (PDFs would unmount and re-render every
+  page on switch-back). **Safari exception: iframe-bearing panes (HTML
+  preview) must NOT use `visibility:hidden` either** — WebKit fails to
+  repaint a hidden-then-shown iframe (intermittent white screen) and its
+  wheel scrolling gets stuck. HTML panes hide OFFScreen instead (parked
+  10000px left, real size, fully rendered) + `inert`/`aria-hidden` while
+  hidden. The hidden Files/Explorer shells in `App.tsx` (`filesViewHidden`)
+  follow the same visibility rule.
 - **Markdown**: fetch raw → render → sanitize HTML → safe mode for large.
 - **Code**: Monaco Editor (read-only), word-wrap toggle, Find (Ctrl/Cmd+F).
   Lazy-loaded via `TextPreview`; large files gated by size threshold

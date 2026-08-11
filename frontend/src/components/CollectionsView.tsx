@@ -499,13 +499,13 @@ export function CollectionsView({
               tabs={previewTabs.tabs}
               activeTab={activeTab}
               activeTabId={previewTabs.activeTabId}
-              mountedTabIds={previewTabs.mountedTabIds}
               onActivate={previewTabs.activate}
               onClose={previewTabs.close}
               onCloseAll={previewTabs.closeAll}
               onCloseLeft={previewTabs.closeLeft}
               onCloseRight={previewTabs.closeRight}
               onRefresh={previewTabs.refresh}
+              onTogglePin={previewTabs.togglePin}
               roots={agent.roots}
               officeCapable={!!agent.capabilities?.office_pdf_preview}
             />

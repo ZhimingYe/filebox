@@ -3,6 +3,7 @@ import { PreviewPane } from './PreviewPane';
 import { PreviewErrorBoundary } from './PreviewErrorBoundary';
 import { PreviewHeaderActions } from './PreviewHeaderActions';
 import { isHtmlPreviewExt } from './previewShared';
+import PinIcon from './PinIcon';
 import { c, radius, font, shadow, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import type { PreviewTab } from '../hooks/usePreviewTabs';
 import type { RootInfo } from '../api/client';
@@ -11,33 +12,28 @@ import type { RootInfo } from '../api/client';
 //
 // Renders the desktop preview area: an optional tab strip (shown once more
 // than one tab is open), the active tab's header (path + download + close),
-// and the preview bodies.
-//
-// Keep-alive bodies: the active tab plus the other `MAX_MOUNTED_PREVIEWS - 1`
-// most-recently-used tabs (from usePreviewTabs' `mountedTabIds`) stay
-// MOUNTED even when inactive — hidden with visibility:hidden + absolute
-// positioning (see styles below; never display:none) so switching back is
-// instant and preserves viewer state (PDF page/zoom, image zoom/rotation,
-// Monaco scroll/find). Tabs beyond the cache render no body; activating one
-// mounts it fresh (loading spinner, same as V1) and evicts the
-// least-recently-used cached body. The manual refresh button (rev bump)
-// remounts a body so stale cached content can always be re-fetched.
+// and the preview bodies: exactly one VISIBLE pane (the active tab), plus
+// one hidden pane per PINNED tab (user opt-in via the pin button on the
+// tab, see usePreviewTabs) so switching back to a pinned tab is instant and
+// its viewer state (PDF page/zoom, image zoom, Monaco scroll) survives.
+// Unpinned inactive tabs never mount a body. The manual refresh button
+// (rev bump) remounts a body so stale content can always be re-fetched.
 //
 // Each mounted body is keyed on `id:rev` (stable tab id + refresh
-// generation) so switching tabs never remounts, while a refresh bump does.
-// PreviewPane stays memoized on primitive props, so dragging the
-// file/preview splitter (which re-renders App and this component) does NOT
-// re-render the preview subtree — only a real change to a tab's primitives
-// does. Hidden bodies are visibility:hidden + absolute positioning — NOT
-// display:none. Chrome unloads the document of a display:none iframe (an
-// HTML tab would reload white on switch-back, scroll position lost), and a
-// display:none pane zeroes ResizeObserver/IntersectionObserver
-// measurements, which unmounts every virtualized PDF page. visibility keeps
-// the pane in the rendering tree: iframes stay alive and sizes stay real,
-// while paint/focus/a11y removal is identical to display:none. Safari is
-// the exception: it fails to repaint visibility-hidden-then-shown iframes
-// (white screen) and breaks their wheel scrolling, so HTML panes hide
-// OFFSCREEN instead (fully rendered, parked out of view — see
+// generation) so switching tabs never remounts a mounted body, while a
+// refresh bump does. PreviewPane stays memoized on primitive props, so
+// dragging the file/preview splitter (which re-renders App and this
+// component) does NOT re-render the preview subtree — only a real change
+// to a tab's primitives does. Hidden pinned panes are visibility:hidden +
+// absolute positioning — NOT display:none. Chrome unloads the document of
+// a display:none iframe (an HTML tab would reload white on switch-back),
+// and a display:none pane zeroes ResizeObserver/IntersectionObserver
+// measurements, which unmounts every virtualized PDF page. visibility
+// keeps the pane in the rendering tree: iframes stay alive and sizes stay
+// real, while paint/focus/a11y removal is identical to display:none.
+// Safari is the exception: it fails to repaint visibility-hidden-then-
+// shown iframes (white screen) and breaks their wheel scrolling, so HTML
+// panes hide OFFSCREEN instead (fully rendered, parked out of view — see
 // bodyPaneHiddenHtml).
 
 interface Props {
@@ -45,8 +41,6 @@ interface Props {
   tabs: PreviewTab[];
   activeTab: PreviewTab | null;
   activeTabId: string | null;
-  /** Tab ids whose preview bodies stay mounted: active first, others in recency order. */
-  mountedTabIds: string[];
   onActivate: (tabId: string) => void;
   onClose: (tabId: string) => void;
   onCloseAll: () => void;
@@ -54,6 +48,8 @@ interface Props {
   onCloseRight: (tabId: string) => void;
   /** Bump a tab's refresh generation so its preview body remounts. */
   onRefresh: (tabId: string) => void;
+  /** Pin/unpin a tab — pinned tabs keep their body mounted when inactive. */
+  onTogglePin: (tabId: string) => void;
   /** Agent roots — used to compose the full server-side address for copy. */
   roots: RootInfo[];
   /** Agent `capabilities.office_pdf_preview`. */
@@ -97,8 +93,8 @@ function scrollChildIntoList(list: HTMLElement, el: HTMLElement) {
 // entirely, and the memoized PreviewPane inside does too. It only re-renders
 // when the tab set or active tab genuinely changes.
 export const PreviewWorkspace = memo(function PreviewWorkspace({
-  agentId, tabs, activeTab, activeTabId, mountedTabIds,
-  onActivate, onClose, onCloseAll, onCloseLeft, onCloseRight, onRefresh,
+  agentId, tabs, activeTab, activeTabId,
+  onActivate, onClose, onCloseAll, onCloseLeft, onCloseRight, onRefresh, onTogglePin,
   roots, officeCapable = false,
 }: Props) {
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
@@ -380,6 +376,17 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
                   <span style={styles.tabTitle}>{tab.title}</span>
                   <button
                     type="button"
+                    onClick={(e) => { e.stopPropagation(); onTogglePin(tab.id); }}
+                    title={tab.pinned
+                      ? 'Unpin — stop keeping this preview mounted in the background'
+                      : 'Pin — keep this preview mounted in the background'}
+                    aria-label={`${tab.pinned ? 'Unpin' : 'Pin'} ${tab.title}`}
+                    style={tab.pinned ? styles.tabPinActive : styles.tabPin}
+                  >
+                    <PinIcon filled={tab.pinned} />
+                  </button>
+                  <button
+                    type="button"
                     onClick={(e) => { e.stopPropagation(); onClose(tab.id); }}
                     title="Close tab"
                     aria-label={`Close ${tab.title}`}
@@ -470,7 +477,14 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
                         onMouseEnter={() => setHighlightedPickerId(tab.id)}
                         onClick={() => activateFromPicker(tab.id)}
                       >
-                        <span style={menuList.itemTitle}>{tab.title}</span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                          {tab.pinned && (
+                            <span style={{ display: 'flex', color: c.accent, flexShrink: 0 }}>
+                              <PinIcon size={10} filled />
+                            </span>
+                          )}
+                          <span style={menuList.itemTitle}>{tab.title}</span>
+                        </span>
                         <span
                           style={menuListSubStyle(active, {
                             // File paths stay mono; root selector paths are
@@ -510,35 +524,28 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
               </button>
             </div>
           </div>
-          {/* Keep-alive bodies: one pane per tab, mounted for the active tab
-              plus the other `MAX_MOUNTED_PREVIEWS - 1` most-recently-used
-              tabs (`mountedTabIds`). The active pane is visible; cached
-              inactive panes stay mounted but hidden — visibility:hidden +
-              absolute positioning, NOT display:none (Chrome unloads the
-              document of a display:none iframe, so an HTML tab would reload
-              white on switch-back; and a display:none pane zeroes
-              ResizeObserver/IntersectionObserver measurements, which
-              unmounts every virtualized PDF page). The `active` disjunct
-              below is defensive — the hook already unions the active id
-              into mountedTabIds. Keyed on id + rev: a refresh bump
-              remounts that tab's viewers so they re-fetch the file;
-              switching tabs never remounts.
-              Safari caveat: HTML panes (the only iframe-based viewer) must
-              NOT be hidden with visibility:hidden either — WebKit fails to
-              repaint a hidden-then-shown iframe (intermittent white screen)
-              and its wheel scrolling gets stuck. They hide OFFSCREEN
-              instead (fully rendered, just moved out of view; see
-              bodyPaneHiddenHtml). */}
+          {/* Preview bodies: the active tab's pane (visible) plus one hidden
+              pane per PINNED tab (user opt-in, see usePreviewTabs). Hidden
+              panes are visibility:hidden + absolute positioning, NOT
+              display:none — Chrome unloads the document of a display:none
+              iframe (an HTML tab would reload white on switch-back), and a
+              display:none pane zeroes ResizeObserver/IntersectionObserver
+              measurements, unmounting every virtualized PDF page. Safari
+              caveat: iframe-bearing panes (HTML) must not be hidden with
+              visibility:hidden either — WebKit fails to repaint a
+              hidden-then-shown iframe (white screen) and breaks its wheel
+              scrolling; they hide OFFSCREEN instead (fully rendered, just
+              parked out of view; see bodyPaneHiddenHtml). Keyed on id +
+              rev: a refresh bump remounts that tab's viewers so they
+              re-fetch the file; switching tabs never remounts a mounted
+              body. */}
           <div style={styles.body}>
             {tabs.map((tab) => {
               const active = tab.id === activeTabId;
-              const mounted = active || mountedTabIds.includes(tab.id);
-              if (!mounted) return null;
+              if (!active && !tab.pinned) return null;
               // Mirror PreviewPane's dispatch: HTML is the only viewer that
               // renders an <iframe>, and iframes are the only content Safari
-              // breaks when hidden with visibility:hidden (no repaint on
-              // re-show → white; wheel scrolling stuck). Hide those panes
-              // offscreen instead — fully rendered, just out of view.
+              // breaks when hidden with visibility:hidden.
               const ext = tab.path.split('.').pop()?.toLowerCase() || '';
               const htmlPane = isHtmlPreviewExt(ext);
               return (
@@ -577,6 +584,17 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
           onPointerDown={(event) => event.stopPropagation()}
           style={{ ...styles.contextMenu, left: menu.x, top: menu.y }}
         >
+          <button
+            type="button"
+            role="menuitem"
+            style={menuItemStyle('pin')}
+            onMouseEnter={() => setHoveredMenuItem('pin')}
+            onMouseLeave={() => setHoveredMenuItem(null)}
+            onClick={() => runMenuAction(() => onTogglePin(menu.tabId))}
+          >
+            {tabs.find((t) => t.id === menu.tabId)?.pinned ? 'Unpin tab' : 'Pin tab'}
+          </button>
+          <div style={styles.menuDivider} />
           <button
             type="button"
             role="menuitem"
@@ -671,6 +689,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12, fontFamily: font.sans,
     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
   },
+  tabPin: {
+    flexShrink: 0, background: 'none', border: 'none',
+    color: c.textMuted, cursor: 'pointer', opacity: 0.7,
+    display: 'flex', alignItems: 'center',
+    padding: '1px 3px', borderRadius: radius.sm,
+  },
+  tabPinActive: {
+    flexShrink: 0, background: 'none', border: 'none',
+    color: c.accent, cursor: 'pointer',
+    display: 'flex', alignItems: 'center',
+    padding: '1px 3px', borderRadius: radius.sm,
+  },
   tabClose: {
     flexShrink: 0, background: 'none', border: 'none',
     color: c.textMuted, fontSize: 16, lineHeight: 1, cursor: 'pointer',
@@ -746,9 +776,9 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer', padding: '0 4px', borderRadius: radius.sm,
   },
   // ── Preview bodies ──
-  // Each pane is a flex column filling the body. Cached inactive panes are
-  // hidden with visibility:hidden + absolute off-flow positioning — NOT
-  // display:none, which breaks two keep-alive consumers:
+  // Each pane is a flex column filling the body. Hidden pinned panes are
+  // visibility:hidden + absolute off-flow positioning — NOT display:none,
+  // which breaks two keep-alive consumers:
   //  - Chrome unloads the document of a display:none iframe, so an HTML tab
   //    would reload white (and lose its scroll position) on switch-back;
   //  - a display:none pane reports zero size to ResizeObserver and no
@@ -782,9 +812,10 @@ const styles: Record<string, React.CSSProperties> = {
   // 10000px left, clipped by body's overflow:hidden. opacity 0 + pointer-
   // events none are belt-and-braces (the pane is off-viewport anyway);
   // inert (render prop) covers focus + a11y.
-  // Cost: up to 4 hidden HTML documents stay fully rendered and composited
+  // Cost: each pinned HTML document stays fully rendered and composited
   // (rAF/CSS animation/video decode/timers keep running) — the price of
-  // keeping WebKit's iframe repaint + scroll machinery intact.
+  // keeping WebKit's iframe repaint + scroll machinery intact, and the
+  // user's explicit opt-in for pinned tabs.
   bodyPaneHiddenHtml: {
     position: 'absolute', top: 0, left: -10000,
     width: '100%', height: '100%',
