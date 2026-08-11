@@ -13,10 +13,8 @@ import type { RootInfo } from '../api/client';
 // and exactly ONE PreviewPane for the active tab. Inactive tabs are pure
 // metadata held by the parent's usePreviewTabs hook — they never mount a
 // preview body, so PDF/Image/HTML/Monaco resources are only alive for the
-// visible tab. Switching tabs remounts the viewer fresh; the one preserved
-// state is the HTML preview's scroll position, which HtmlPreview caches
-// itself and restores on switch-back only when the file is unchanged (ETag
-// match) — see HtmlPreview.tsx. The manual refresh button (rev bump)
+// visible tab. Switching tabs remounts the viewer fresh, so viewer state
+// resets on switch-back by design. The manual refresh button (rev bump)
 // remounts the body so stale content can always be re-fetched.
 //
 // PreviewPane stays memoized on primitive props, so dragging the

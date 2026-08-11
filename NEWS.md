@@ -38,14 +38,8 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **One preview body at a time** — preview tabs are metadata only: exactly
   the active tab mounts a viewer, so switching tabs no longer keeps up to
   five hidden preview bodies alive (previously HTML documents stayed fully
-  rendered offscreen, which roughly quintupled HTML preview load). The only
-  state preserved across a tab switch is the HTML document's scroll
-  position, cached by the HTML preview and restored on switch-back only
-  when the file is unchanged — the hub's strong ETag (`"size-mtime"` from
-  the raw fetch) must match the one saved with the position; changed files
-  and files without an ETag never restore, and the manual refresh button
-  always re-fetches without restoring. Everything else reloads fresh on
-  switch-back.
+  rendered offscreen, which roughly quintupled HTML preview load).
+  Everything reloads fresh on switch-back.
 - **Search jumps remember the mode** — opening a search hit's folder keeps Explorer as the active view when it already is: the tree expands to the folder, selects it, scrolls it into view, and shows a "Located the folder." notice once the reveal settles. A vanished folder settles on the nearest existing ancestor with an honest fallback notice instead of a dead end. Files mode keeps the previous behavior (jump to Files).
 - **Refresh restores the browse position** — the selected backend, the Files/Explorer mode, and the current folder survive a page refresh (per-backend positions and per-root path memories are persisted in localStorage). A restored folder that no longer exists falls back to the nearest existing ancestor; a removed backend is simply not re-selected.
 - **Workspace Search on mobile** — Search now opens as an iOS-style bottom sheet on phones: it slides up from the bottom over the lower half of the screen (rounded top corners, grabber handle, dimmed backdrop), overlaying the current view instead of replacing it. Dismiss by tapping the backdrop, swiping the grabber/header down, the × button, or Esc; Files/Explorer/… stay put underneath and long scans survive closing. Opening a hit closes the sheet to reveal the Files navigation or full-screen preview. A dedicated Search button sits at the right of the mobile top bar (next to the agent status), alongside the sidebar entry.

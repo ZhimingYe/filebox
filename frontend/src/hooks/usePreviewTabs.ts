@@ -28,10 +28,7 @@ import type { FsEntry } from '../api/client';
 //  - Tabs are metadata only. Exactly one preview body is mounted at a time
 //    (the active tab — PreviewWorkspace renders one pane), so inactive tabs
 //    hold no viewer resources and switching back remounts the viewer fresh.
-//    The sole exception is the HTML preview's scroll position, which
-//    HtmlPreview caches itself keyed by file and restores on switch-back
-//    only when the file is unchanged (hub ETag match) — see HtmlPreview.tsx.
-//    Everything else (PDF page, zoom, Monaco scroll) resets on tab switch,
+//    Everything (PDF page, zoom, scroll, editor view) resets on tab switch,
 //    by design: keeping up to five hidden bodies mounted roughly
 //    quintupled HTML preview load.
 //  - All transitions are pure updater functions so they are safe under

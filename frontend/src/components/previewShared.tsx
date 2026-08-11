@@ -36,10 +36,6 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
   const [received, setReceived] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
   const [slow, setSlow] = useState(false);
-  // Strong validator from the hub's /api/file/raw response ("size-mtime").
-  // Consumers (HtmlPreview) use it to detect "same file as last time" so
-  // saved viewer state is only restored for unchanged content.
-  const [etag, setEtag] = useState<string | null>(null);
   const cancelRef = useRef<AbortController | null>(null);
   const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -58,7 +54,6 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
       setReceived(0);
       setTotal(null);
       setSlow(false);
-      setEtag(null);
       return;
     }
 
@@ -72,7 +67,6 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
     setReceived(0);
     setTotal(null);
     setSlow(false);
-    setEtag(null);
     slowTimerRef.current = setTimeout(() => {
       if (!cancelled) setSlow(true);
     }, 8000);
@@ -91,10 +85,6 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
           maxDurationMs: null,
           agentId,
           consume: async (res) => {
-            // Present on 200 and 304 alike (the hub echoes it on 304), and
-            // on cache-served responses — a stable "file unchanged" signal.
-            const resEtag = res.headers.get('etag');
-            if (resEtag) setEtag(resEtag);
             const contentLength = Number(res.headers.get('content-length'));
             setTotal(Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null);
             const reader = res.body?.getReader();
@@ -170,7 +160,7 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
   const requestLoading = enabled && (loading || (text === null && error === null));
   return {
     text, error, loading: requestLoading, retrying, cancel, retry,
-    received, total, slow, etag,
+    received, total, slow,
   };
 }
 
