@@ -2,6 +2,8 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { PreviewPane } from './PreviewPane';
 import { PreviewErrorBoundary } from './PreviewErrorBoundary';
 import { PreviewHeaderActions } from './PreviewHeaderActions';
+import { isHtmlPreviewExt } from './previewShared';
+import PinIcon from './PinIcon';
 import { c, radius, font, shadow, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import type { PreviewTab } from '../hooks/usePreviewTabs';
 import type { RootInfo } from '../api/client';
@@ -10,17 +12,29 @@ import type { RootInfo } from '../api/client';
 //
 // Renders the desktop preview area: an optional tab strip (shown once more
 // than one tab is open), the active tab's header (path + download + close),
-// and exactly ONE PreviewPane for the active tab. Inactive tabs are pure
-// metadata held by the parent's usePreviewTabs hook — they never mount a
-// preview body, so PDF/Image/HTML/Monaco resources are only alive for the
-// visible tab. Switching tabs remounts the viewer fresh, so viewer state
-// resets on switch-back by design. The manual refresh button (rev bump)
-// remounts the body so stale content can always be re-fetched.
+// and the preview bodies: exactly one VISIBLE pane (the active tab), plus
+// one hidden pane per PINNED tab (user opt-in via the pin button on the
+// tab, see usePreviewTabs) so switching back to a pinned tab is instant and
+// its viewer state (PDF page/zoom, image zoom, Monaco scroll) survives.
+// Unpinned inactive tabs never mount a body. The manual refresh button
+// (rev bump) remounts a body so stale content can always be re-fetched.
 //
-// PreviewPane stays memoized on primitive props, so dragging the
-// file/preview splitter (which re-renders App and this component) does NOT
-// re-render the preview subtree — only a real change to a tab's primitives
-// does.
+// Each mounted body is keyed on `id:rev` (stable tab id + refresh
+// generation) so switching tabs never remounts a mounted body, while a
+// refresh bump does. PreviewPane stays memoized on primitive props, so
+// dragging the file/preview splitter (which re-renders App and this
+// component) does NOT re-render the preview subtree — only a real change
+// to a tab's primitives does. Hidden pinned panes are visibility:hidden +
+// absolute positioning — NOT display:none. Chrome unloads the document of
+// a display:none iframe (an HTML tab would reload white on switch-back),
+// and a display:none pane zeroes ResizeObserver/IntersectionObserver
+// measurements, which unmounts every virtualized PDF page. visibility
+// keeps the pane in the rendering tree: iframes stay alive and sizes stay
+// real, while paint/focus/a11y removal is identical to display:none.
+// Safari is the exception: it fails to repaint visibility-hidden-then-
+// shown iframes (white screen) and breaks their wheel scrolling, so HTML
+// panes hide OFFSCREEN instead (fully rendered, parked out of view — see
+// bodyPaneHiddenHtml).
 
 interface Props {
   agentId: string;
@@ -34,6 +48,8 @@ interface Props {
   onCloseRight: (tabId: string) => void;
   /** Bump a tab's refresh generation so its preview body remounts. */
   onRefresh: (tabId: string) => void;
+  /** Pin/unpin a tab — pinned tabs keep their body mounted when inactive. */
+  onTogglePin: (tabId: string) => void;
   /** Agent roots — used to compose the full server-side address for copy. */
   roots: RootInfo[];
   /** Agent `capabilities.office_pdf_preview`. */
@@ -78,7 +94,7 @@ function scrollChildIntoList(list: HTMLElement, el: HTMLElement) {
 // when the tab set or active tab genuinely changes.
 export const PreviewWorkspace = memo(function PreviewWorkspace({
   agentId, tabs, activeTab, activeTabId,
-  onActivate, onClose, onCloseAll, onCloseLeft, onCloseRight, onRefresh,
+  onActivate, onClose, onCloseAll, onCloseLeft, onCloseRight, onRefresh, onTogglePin,
   roots, officeCapable = false,
 }: Props) {
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
@@ -360,6 +376,17 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
                   <span style={styles.tabTitle}>{tab.title}</span>
                   <button
                     type="button"
+                    onClick={(e) => { e.stopPropagation(); onTogglePin(tab.id); }}
+                    title={tab.pinned
+                      ? 'Unpin — stop keeping this preview mounted in the background'
+                      : 'Pin — keep this preview mounted in the background'}
+                    aria-label={`${tab.pinned ? 'Unpin' : 'Pin'} ${tab.title}`}
+                    style={tab.pinned ? styles.tabPinActive : styles.tabPin}
+                  >
+                    <PinIcon filled={tab.pinned} />
+                  </button>
+                  <button
+                    type="button"
                     onClick={(e) => { e.stopPropagation(); onClose(tab.id); }}
                     title="Close tab"
                     aria-label={`Close ${tab.title}`}
@@ -450,7 +477,14 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
                         onMouseEnter={() => setHighlightedPickerId(tab.id)}
                         onClick={() => activateFromPicker(tab.id)}
                       >
-                        <span style={menuList.itemTitle}>{tab.title}</span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                          {tab.pinned && (
+                            <span style={{ display: 'flex', color: c.accent, flexShrink: 0 }}>
+                              <PinIcon size={10} filled />
+                            </span>
+                          )}
+                          <span style={menuList.itemTitle}>{tab.title}</span>
+                        </span>
                         <span
                           style={menuListSubStyle(active, {
                             // File paths stay mono; root selector paths are
@@ -490,22 +524,56 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
               </button>
             </div>
           </div>
-          {/* Body wrapper gives PreviewPane a definite flex height so its own
-              height:100% container resolves and internal scrolling works.
-              Keyed on id + rev: switching tabs remounts, and a refresh bump
-              remounts the viewers so they re-fetch the file. */}
+          {/* Preview bodies: the active tab's pane (visible) plus one hidden
+              pane per PINNED tab (user opt-in, see usePreviewTabs). Hidden
+              panes are visibility:hidden + absolute positioning, NOT
+              display:none — Chrome unloads the document of a display:none
+              iframe (an HTML tab would reload white on switch-back), and a
+              display:none pane zeroes ResizeObserver/IntersectionObserver
+              measurements, unmounting every virtualized PDF page. Safari
+              caveat: iframe-bearing panes (HTML) must not be hidden with
+              visibility:hidden either — WebKit fails to repaint a
+              hidden-then-shown iframe (white screen) and breaks its wheel
+              scrolling; they hide OFFSCREEN instead (fully rendered, just
+              parked out of view; see bodyPaneHiddenHtml). Keyed on id +
+              rev: a refresh bump remounts that tab's viewers so they
+              re-fetch the file; switching tabs never remounts a mounted
+              body. */}
           <div style={styles.body}>
-            <PreviewErrorBoundary key={`${activeTab.id}:${activeTab.rev}`}>
-              <PreviewPane
-                agentId={agentId}
-                root={activeTab.root}
-                path={activeTab.path}
-                entryType={activeTab.entry.entry_type}
-                denied={activeTab.entry.denied}
-                officeCapable={officeCapable}
-                rev={activeTab.rev}
-              />
-            </PreviewErrorBoundary>
+            {tabs.map((tab) => {
+              const active = tab.id === activeTabId;
+              if (!active && !tab.pinned) return null;
+              // Mirror PreviewPane's dispatch: HTML is the only viewer that
+              // renders an <iframe>, and iframes are the only content Safari
+              // breaks when hidden with visibility:hidden.
+              const ext = tab.path.split('.').pop()?.toLowerCase() || '';
+              const htmlPane = isHtmlPreviewExt(ext);
+              return (
+                <div
+                  key={`${tab.id}:${tab.rev}`}
+                  style={active
+                    ? styles.bodyPane
+                    : (htmlPane ? styles.bodyPaneHiddenHtml : styles.bodyPaneHidden)}
+                  // Offscreen panes stay in the tab order and a11y tree —
+                  // inert removes both while hidden (React 19 boolean prop,
+                  // Safari 15.5+).
+                  inert={!active && htmlPane ? true : undefined}
+                  aria-hidden={!active && htmlPane ? true : undefined}
+                >
+                  <PreviewErrorBoundary>
+                    <PreviewPane
+                      agentId={agentId}
+                      root={tab.root}
+                      path={tab.path}
+                      entryType={tab.entry.entry_type}
+                      denied={tab.entry.denied}
+                      officeCapable={officeCapable}
+                      rev={tab.rev}
+                    />
+                  </PreviewErrorBoundary>
+                </div>
+              );
+            })}
           </div>
         </>
       )}
@@ -516,6 +584,17 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
           onPointerDown={(event) => event.stopPropagation()}
           style={{ ...styles.contextMenu, left: menu.x, top: menu.y }}
         >
+          <button
+            type="button"
+            role="menuitem"
+            style={menuItemStyle('pin')}
+            onMouseEnter={() => setHoveredMenuItem('pin')}
+            onMouseLeave={() => setHoveredMenuItem(null)}
+            onClick={() => runMenuAction(() => onTogglePin(menu.tabId))}
+          >
+            {tabs.find((t) => t.id === menu.tabId)?.pinned ? 'Unpin tab' : 'Pin tab'}
+          </button>
+          <div style={styles.menuDivider} />
           <button
             type="button"
             role="menuitem"
@@ -610,6 +689,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12, fontFamily: font.sans,
     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
   },
+  tabPin: {
+    flexShrink: 0, background: 'none', border: 'none',
+    color: c.textMuted, cursor: 'pointer', opacity: 0.7,
+    display: 'flex', alignItems: 'center',
+    padding: '1px 3px', borderRadius: radius.sm,
+  },
+  tabPinActive: {
+    flexShrink: 0, background: 'none', border: 'none',
+    color: c.accent, cursor: 'pointer',
+    display: 'flex', alignItems: 'center',
+    padding: '1px 3px', borderRadius: radius.sm,
+  },
   tabClose: {
     flexShrink: 0, background: 'none', border: 'none',
     color: c.textMuted, fontSize: 16, lineHeight: 1, cursor: 'pointer',
@@ -684,14 +775,52 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'none', border: 'none', color: c.textMuted, fontSize: 18,
     cursor: 'pointer', padding: '0 4px', borderRadius: radius.sm,
   },
-  // ── Preview body ──
-  // The body wrapper gives PreviewPane a definite flex height so its own
-  // height:100% container resolves and internal scrolling works. Exactly
-  // one pane is mounted (the active tab) — no keep-alive bodies, so no
-  // hidden-pane visibility/offscreen machinery is needed.
+  // ── Preview bodies ──
+  // Each pane is a flex column filling the body. Hidden pinned panes are
+  // visibility:hidden + absolute off-flow positioning — NOT display:none,
+  // which breaks two keep-alive consumers:
+  //  - Chrome unloads the document of a display:none iframe, so an HTML tab
+  //    would reload white (and lose its scroll position) on switch-back;
+  //  - a display:none pane reports zero size to ResizeObserver and no
+  //    intersections to IntersectionObserver, which unmounts every
+  //    virtualized PDF page (spinners + re-render on switch-back).
+  // visibility keeps the pane in the rendering tree (iframes alive, real
+  // measurements, Monaco/PDF layouts valid) while staying unpainted,
+  // unclickable, unfocusable, and out of the a11y tree.
+  //
+  // Safari caveat: visibility:hidden is NOT safe for iframe-bearing panes
+  // (HTML preview). WebKit fails to repaint a hidden-then-shown iframe
+  // (intermittent white screen) and its wheel scrolling gets stuck. HTML
+  // panes therefore hide OFFScreen instead (bodyPaneHiddenHtml): the pane
+  // stays fully rendered at a real size, just parked outside the clipped
+  // body — no visibility flip, no repaint invalidation, no scroll breakage.
+  // inert + aria-hidden (set in the render) remove it from tab order and
+  // the a11y tree while hidden.
   body: {
     flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
     position: 'relative',
+  },
+  bodyPane: {
+    flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+  },
+  bodyPaneHidden: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    visibility: 'hidden', pointerEvents: 'none',
+    display: 'flex', flexDirection: 'column', overflow: 'hidden',
+  },
+  // Offscreen keep-alive for iframe panes (HTML): same size, parked
+  // 10000px left, clipped by body's overflow:hidden. opacity 0 + pointer-
+  // events none are belt-and-braces (the pane is off-viewport anyway);
+  // inert (render prop) covers focus + a11y.
+  // Cost: each pinned HTML document stays fully rendered and composited
+  // (rAF/CSS animation/video decode/timers keep running) — the price of
+  // keeping WebKit's iframe repaint + scroll machinery intact, and the
+  // user's explicit opt-in for pinned tabs.
+  bodyPaneHiddenHtml: {
+    position: 'absolute', top: 0, left: -10000,
+    width: '100%', height: '100%',
+    opacity: 0, pointerEvents: 'none',
+    display: 'flex', flexDirection: 'column', overflow: 'hidden',
   },
   contextMenu: {
     position: 'fixed', zIndex: 1000, width: 190,

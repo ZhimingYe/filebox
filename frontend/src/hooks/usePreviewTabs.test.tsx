@@ -267,3 +267,73 @@ describe('usePreviewTabs tab management', () => {
     act(() => { strictRoot.unmount(); });
   });
 });
+
+describe('usePreviewTabs pinning', () => {
+  it('togglePin pins an unpinned tab and unpins a pinned one', () => {
+    renderHarness();
+    act(() => { api.openOrActivate(A); });
+    act(() => { api.openOrActivate(B); });
+    expect(tabOf(A).pinned).toBe(false);
+    act(() => { api.togglePin(tabOf(A).id); });
+    expect(tabOf(A).pinned).toBe(true);
+    act(() => { api.togglePin(tabOf(A).id); });
+    expect(tabOf(A).pinned).toBe(false);
+  });
+
+  it('togglePin on an unknown tab id is a no-op', () => {
+    renderHarness();
+    act(() => { api.openOrActivate(A); });
+    act(() => { api.togglePin('no-such-tab'); });
+    expect(api.tabs).toHaveLength(1);
+    expect(tabOf(A).pinned).toBe(false);
+  });
+
+  it('a pinned tab stays pinned when re-opened, activated, or refreshed', () => {
+    renderHarness();
+    act(() => { api.openOrActivate(A); });
+    act(() => { api.togglePin(tabOf(A).id); });
+    // Re-open (plain click): metadata refresh, pin survives.
+    act(() => { api.openOrActivate(A); });
+    expect(tabOf(A).pinned).toBe(true);
+    // Switch away and back.
+    act(() => { api.openOrActivate(B); });
+    act(() => { api.activate(tabOf(A).id); });
+    expect(tabOf(A).pinned).toBe(true);
+    // Manual refresh bumps rev, pin survives.
+    act(() => { api.refresh(tabOf(A).id); });
+    expect(tabOf(A).pinned).toBe(true);
+    expect(tabOf(A).rev).toBe(1);
+  });
+
+  it('replaceActive to a different file starts unpinned (arrow nav replaces the tab)', () => {
+    renderHarness();
+    act(() => { api.openOrActivate(A); });
+    act(() => { api.openOrActivate(B); });
+    act(() => { api.activate(tabOf(A).id); });
+    act(() => { api.togglePin(tabOf(A).id); });
+    act(() => { api.replaceActive(C); });
+    expect(tabOf(C).pinned).toBe(false);
+  });
+
+  it('closing other tabs preserves the pin; closing the pinned tab removes it', () => {
+    renderHarness();
+    act(() => { api.openOrActivate(A); });
+    act(() => { api.openOrActivate(B); });
+    act(() => { api.togglePin(tabOf(A).id); });
+    act(() => { api.close(tabOf(B).id); });
+    expect(api.tabs).toHaveLength(1);
+    expect(tabOf(A).pinned).toBe(true);
+    act(() => { api.close(tabOf(A).id); });
+    expect(api.tabs).toHaveLength(0);
+  });
+
+  it('pruneByRoots drops pinned tabs of disabled roots', () => {
+    renderHarness();
+    act(() => { api.openOrActivate(A); });
+    act(() => { api.openOrActivate(WORK); });
+    act(() => { api.togglePin(tabOf(WORK).id); });
+    act(() => { api.pruneByRoots(['home']); });
+    expect(api.tabs).toHaveLength(1);
+    expect(api.tabs[0].id).toBe(tabOf(A).id);
+  });
+});

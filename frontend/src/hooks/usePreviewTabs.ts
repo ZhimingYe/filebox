@@ -25,12 +25,15 @@ import type { FsEntry } from '../api/client';
 //    already-open viewer's state (PDF page, zoom, scroll) on a mere click
 //    would be a regression. `replaceActive` (arrow navigation) never bumps:
 //    re-activating an existing tab must not reset the viewer.
-//  - Tabs are metadata only. Exactly one preview body is mounted at a time
-//    (the active tab — PreviewWorkspace renders one pane), so inactive tabs
-//    hold no viewer resources and switching back remounts the viewer fresh.
-//    Everything (PDF page, zoom, scroll, editor view) resets on tab switch,
-//    by design: keeping up to five hidden bodies mounted roughly
-//    quintupled HTML preview load.
+//  - Tabs are metadata: a tab's body mounts only while it is the active
+//    tab — unless the user pinned it (`pinned`), in which case the body
+//    stays mounted hidden in the background so switching back is instant
+//    and viewer state (PDF page/zoom, image zoom, Monaco scroll) survives.
+//    Unpinned inactive tabs hold no viewer resources; pinned bodies are an
+//    explicit per-tab opt-in (each pinned HTML document stays fully
+//    rendered — the user's choice to pay that cost). Everything else
+//    resets on tab switch by design: keeping up to five hidden bodies
+//    mounted automatically roughly quintupled HTML preview load.
 //  - All transitions are pure updater functions so they are safe under
 //    React StrictMode's double-invoke.
 
@@ -44,6 +47,12 @@ export interface PreviewTab {
   title: string;
   /** Refresh generation — bumped to force the preview body to remount. */
   rev: number;
+  /**
+   * User opt-in: keep this tab's preview body mounted in the background
+   * when inactive (see PreviewWorkspace), so switching back is instant and
+   * viewer state survives. Unpinned tabs mount nothing while inactive.
+   */
+  pinned: boolean;
 }
 
 export interface TabInput {
@@ -74,6 +83,7 @@ function makeTab(input: TabInput): PreviewTab {
     entry: input.entry,
     title: input.entry.name,
     rev: 0,
+    pinned: false,
   };
 }
 
@@ -138,6 +148,8 @@ export interface UsePreviewTabs {
   activate: (tabId: string) => void;
   /** Bump a tab's refresh generation so its preview body remounts. */
   refresh: (tabId: string) => void;
+  /** Pin/unpin a tab: pinned tabs keep their body mounted when inactive. */
+  togglePin: (tabId: string) => void;
   /** Close a tab by id; if it was active, activate the nearest neighbor. */
   close: (tabId: string) => void;
   /** Close every tab. */
@@ -220,6 +232,16 @@ export function usePreviewTabs(): UsePreviewTabs {
     });
   }, []);
 
+  const togglePin = useCallback((tabId: string) => {
+    setState((prev) => {
+      if (!prev.tabs.some((t) => t.id === tabId)) return prev;
+      return {
+        ...prev,
+        tabs: prev.tabs.map((t) => (t.id === tabId ? { ...t, pinned: !t.pinned } : t)),
+      };
+    });
+  }, []);
+
   const close = useCallback((tabId: string) => {
     setState((prev) => {
       const res = pickNearestSurvivor(prev.tabs, prev.activeTabId, (t) => t.id !== tabId);
@@ -296,11 +318,12 @@ export function usePreviewTabs(): UsePreviewTabs {
     replaceActive,
     activate,
     refresh,
+    togglePin,
     close,
     closeAll,
     closeLeft,
     closeRight,
     replaceAll,
     pruneByRoots,
-  }), [state.tabs, state.activeTabId, activeTab, openOrActivate, replaceActive, activate, refresh, close, closeAll, closeLeft, closeRight, replaceAll, pruneByRoots]);
+  }), [state.tabs, state.activeTabId, activeTab, openOrActivate, replaceActive, activate, refresh, togglePin, close, closeAll, closeLeft, closeRight, replaceAll, pruneByRoots]);
 }

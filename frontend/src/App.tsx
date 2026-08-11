@@ -1109,6 +1109,7 @@ export default function App() {
                         onCloseLeft={previewTabs.closeLeft}
                         onCloseRight={previewTabs.closeRight}
                         onRefresh={previewTabs.refresh}
+                        onTogglePin={previewTabs.togglePin}
                         roots={selectedAgent.roots}
                         officeCapable={!!selectedAgent.capabilities?.office_pdf_preview}
                       />
@@ -1168,6 +1169,7 @@ export default function App() {
                         onCloseLeft={previewTabs.closeLeft}
                         onCloseRight={previewTabs.closeRight}
                         onRefresh={previewTabs.refresh}
+                        onTogglePin={previewTabs.togglePin}
                         roots={selectedAgent.roots}
                         officeCapable={!!selectedAgent.capabilities?.office_pdf_preview}
                       />

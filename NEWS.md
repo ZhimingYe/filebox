@@ -35,11 +35,16 @@ All notable changes to filebox are listed here. Dates are UTC.
   requests still leave the cache warming so retries converge to memory
   speed. Fills are cancelled and blocked by the generation guard on root
   reconfigure.
-- **One preview body at a time** — preview tabs are metadata only: exactly
-  the active tab mounts a viewer, so switching tabs no longer keeps up to
-  five hidden preview bodies alive (previously HTML documents stayed fully
-  rendered offscreen, which roughly quintupled HTML preview load).
-  Everything reloads fresh on switch-back.
+- **One preview body at a time, pin what you need** — preview tabs are
+  metadata: exactly the active tab mounts a viewer, so switching tabs no
+  longer keeps up to five hidden preview bodies alive (previously HTML
+  documents stayed fully rendered offscreen, which roughly quintupled HTML
+  preview load). Tabs you explicitly **pin** (pin button on the tab, or
+  the tab context menu) keep their preview mounted in the background
+  instead: switching back is instant and viewer state (PDF page/zoom,
+  image zoom, Monaco scroll) survives, at the cost of that one document
+  staying fully rendered — your choice per tab. Everything else reloads
+  fresh on switch-back.
 - **Search jumps remember the mode** — opening a search hit's folder keeps Explorer as the active view when it already is: the tree expands to the folder, selects it, scrolls it into view, and shows a "Located the folder." notice once the reveal settles. A vanished folder settles on the nearest existing ancestor with an honest fallback notice instead of a dead end. Files mode keeps the previous behavior (jump to Files).
 - **Refresh restores the browse position** — the selected backend, the Files/Explorer mode, and the current folder survive a page refresh (per-backend positions and per-root path memories are persisted in localStorage). A restored folder that no longer exists falls back to the nearest existing ancestor; a removed backend is simply not re-selected.
 - **Workspace Search on mobile** — Search now opens as an iOS-style bottom sheet on phones: it slides up from the bottom over the lower half of the screen (rounded top corners, grabber handle, dimmed backdrop), overlaying the current view instead of replacing it. Dismiss by tapping the backdrop, swiping the grabber/header down, the × button, or Esc; Files/Explorer/… stay put underneath and long scans survive closing. Opening a hit closes the sheet to reveal the Files navigation or full-screen preview. A dedicated Search button sits at the right of the mobile top bar (next to the agent status), alongside the sidebar entry.
