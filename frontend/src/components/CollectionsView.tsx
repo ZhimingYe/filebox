@@ -499,7 +499,6 @@ export function CollectionsView({
               tabs={previewTabs.tabs}
               activeTab={activeTab}
               activeTabId={previewTabs.activeTabId}
-              mountedTabIds={previewTabs.mountedTabIds}
               onActivate={previewTabs.activate}
               onClose={previewTabs.close}
               onCloseAll={previewTabs.closeAll}

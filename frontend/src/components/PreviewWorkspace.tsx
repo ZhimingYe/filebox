@@ -2,7 +2,6 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { PreviewPane } from './PreviewPane';
 import { PreviewErrorBoundary } from './PreviewErrorBoundary';
 import { PreviewHeaderActions } from './PreviewHeaderActions';
-import { isHtmlPreviewExt } from './previewShared';
 import { c, radius, font, shadow, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import type { PreviewTab } from '../hooks/usePreviewTabs';
 import type { RootInfo } from '../api/client';
@@ -11,42 +10,25 @@ import type { RootInfo } from '../api/client';
 //
 // Renders the desktop preview area: an optional tab strip (shown once more
 // than one tab is open), the active tab's header (path + download + close),
-// and the preview bodies.
+// and exactly ONE PreviewPane for the active tab. Inactive tabs are pure
+// metadata held by the parent's usePreviewTabs hook — they never mount a
+// preview body, so PDF/Image/HTML/Monaco resources are only alive for the
+// visible tab. Switching tabs remounts the viewer fresh; the one preserved
+// state is the HTML preview's scroll position, which HtmlPreview caches
+// itself and restores on switch-back only when the file is unchanged (ETag
+// match) — see HtmlPreview.tsx. The manual refresh button (rev bump)
+// remounts the body so stale content can always be re-fetched.
 //
-// Keep-alive bodies: the active tab plus the other `MAX_MOUNTED_PREVIEWS - 1`
-// most-recently-used tabs (from usePreviewTabs' `mountedTabIds`) stay
-// MOUNTED even when inactive — hidden with visibility:hidden + absolute
-// positioning (see styles below; never display:none) so switching back is
-// instant and preserves viewer state (PDF page/zoom, image zoom/rotation,
-// Monaco scroll/find). Tabs beyond the cache render no body; activating one
-// mounts it fresh (loading spinner, same as V1) and evicts the
-// least-recently-used cached body. The manual refresh button (rev bump)
-// remounts a body so stale cached content can always be re-fetched.
-//
-// Each mounted body is keyed on `id:rev` (stable tab id + refresh
-// generation) so switching tabs never remounts, while a refresh bump does.
 // PreviewPane stays memoized on primitive props, so dragging the
 // file/preview splitter (which re-renders App and this component) does NOT
 // re-render the preview subtree — only a real change to a tab's primitives
-// does. Hidden bodies are visibility:hidden + absolute positioning — NOT
-// display:none. Chrome unloads the document of a display:none iframe (an
-// HTML tab would reload white on switch-back, scroll position lost), and a
-// display:none pane zeroes ResizeObserver/IntersectionObserver
-// measurements, which unmounts every virtualized PDF page. visibility keeps
-// the pane in the rendering tree: iframes stay alive and sizes stay real,
-// while paint/focus/a11y removal is identical to display:none. Safari is
-// the exception: it fails to repaint visibility-hidden-then-shown iframes
-// (white screen) and breaks their wheel scrolling, so HTML panes hide
-// OFFSCREEN instead (fully rendered, parked out of view — see
-// bodyPaneHiddenHtml).
+// does.
 
 interface Props {
   agentId: string;
   tabs: PreviewTab[];
   activeTab: PreviewTab | null;
   activeTabId: string | null;
-  /** Tab ids whose preview bodies stay mounted: active first, others in recency order. */
-  mountedTabIds: string[];
   onActivate: (tabId: string) => void;
   onClose: (tabId: string) => void;
   onCloseAll: () => void;
@@ -97,7 +79,7 @@ function scrollChildIntoList(list: HTMLElement, el: HTMLElement) {
 // entirely, and the memoized PreviewPane inside does too. It only re-renders
 // when the tab set or active tab genuinely changes.
 export const PreviewWorkspace = memo(function PreviewWorkspace({
-  agentId, tabs, activeTab, activeTabId, mountedTabIds,
+  agentId, tabs, activeTab, activeTabId,
   onActivate, onClose, onCloseAll, onCloseLeft, onCloseRight, onRefresh,
   roots, officeCapable = false,
 }: Props) {
@@ -510,63 +492,22 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
               </button>
             </div>
           </div>
-          {/* Keep-alive bodies: one pane per tab, mounted for the active tab
-              plus the other `MAX_MOUNTED_PREVIEWS - 1` most-recently-used
-              tabs (`mountedTabIds`). The active pane is visible; cached
-              inactive panes stay mounted but hidden — visibility:hidden +
-              absolute positioning, NOT display:none (Chrome unloads the
-              document of a display:none iframe, so an HTML tab would reload
-              white on switch-back; and a display:none pane zeroes
-              ResizeObserver/IntersectionObserver measurements, which
-              unmounts every virtualized PDF page). The `active` disjunct
-              below is defensive — the hook already unions the active id
-              into mountedTabIds. Keyed on id + rev: a refresh bump
-              remounts that tab's viewers so they re-fetch the file;
-              switching tabs never remounts.
-              Safari caveat: HTML panes (the only iframe-based viewer) must
-              NOT be hidden with visibility:hidden either — WebKit fails to
-              repaint a hidden-then-shown iframe (intermittent white screen)
-              and its wheel scrolling gets stuck. They hide OFFSCREEN
-              instead (fully rendered, just moved out of view; see
-              bodyPaneHiddenHtml). */}
+          {/* Body wrapper gives PreviewPane a definite flex height so its own
+              height:100% container resolves and internal scrolling works.
+              Keyed on id + rev: switching tabs remounts, and a refresh bump
+              remounts the viewers so they re-fetch the file. */}
           <div style={styles.body}>
-            {tabs.map((tab) => {
-              const active = tab.id === activeTabId;
-              const mounted = active || mountedTabIds.includes(tab.id);
-              if (!mounted) return null;
-              // Mirror PreviewPane's dispatch: HTML is the only viewer that
-              // renders an <iframe>, and iframes are the only content Safari
-              // breaks when hidden with visibility:hidden (no repaint on
-              // re-show → white; wheel scrolling stuck). Hide those panes
-              // offscreen instead — fully rendered, just out of view.
-              const ext = tab.path.split('.').pop()?.toLowerCase() || '';
-              const htmlPane = isHtmlPreviewExt(ext);
-              return (
-                <div
-                  key={`${tab.id}:${tab.rev}`}
-                  style={active
-                    ? styles.bodyPane
-                    : (htmlPane ? styles.bodyPaneHiddenHtml : styles.bodyPaneHidden)}
-                  // Offscreen panes stay in the tab order and a11y tree —
-                  // inert removes both while hidden (React 19 boolean prop,
-                  // Safari 15.5+).
-                  inert={!active && htmlPane ? true : undefined}
-                  aria-hidden={!active && htmlPane ? true : undefined}
-                >
-                  <PreviewErrorBoundary>
-                    <PreviewPane
-                      agentId={agentId}
-                      root={tab.root}
-                      path={tab.path}
-                      entryType={tab.entry.entry_type}
-                      denied={tab.entry.denied}
-                      officeCapable={officeCapable}
-                      rev={tab.rev}
-                    />
-                  </PreviewErrorBoundary>
-                </div>
-              );
-            })}
+            <PreviewErrorBoundary key={`${activeTab.id}:${activeTab.rev}`}>
+              <PreviewPane
+                agentId={agentId}
+                root={activeTab.root}
+                path={activeTab.path}
+                entryType={activeTab.entry.entry_type}
+                denied={activeTab.entry.denied}
+                officeCapable={officeCapable}
+                rev={activeTab.rev}
+              />
+            </PreviewErrorBoundary>
           </div>
         </>
       )}
@@ -745,51 +686,14 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'none', border: 'none', color: c.textMuted, fontSize: 18,
     cursor: 'pointer', padding: '0 4px', borderRadius: radius.sm,
   },
-  // ── Preview bodies ──
-  // Each pane is a flex column filling the body. Cached inactive panes are
-  // hidden with visibility:hidden + absolute off-flow positioning — NOT
-  // display:none, which breaks two keep-alive consumers:
-  //  - Chrome unloads the document of a display:none iframe, so an HTML tab
-  //    would reload white (and lose its scroll position) on switch-back;
-  //  - a display:none pane reports zero size to ResizeObserver and no
-  //    intersections to IntersectionObserver, which unmounts every
-  //    virtualized PDF page (spinners + re-render on switch-back).
-  // visibility keeps the pane in the rendering tree (iframes alive, real
-  // measurements, Monaco/PDF layouts valid) while staying unpainted,
-  // unclickable, unfocusable, and out of the a11y tree.
-  //
-  // Safari caveat: visibility:hidden is NOT safe for iframe-bearing panes
-  // (HTML preview). WebKit fails to repaint a hidden-then-shown iframe
-  // (intermittent white screen) and its wheel scrolling gets stuck. HTML
-  // panes therefore hide OFFScreen instead (bodyPaneHiddenHtml): the pane
-  // stays fully rendered at a real size, just parked outside the clipped
-  // body — no visibility flip, no repaint invalidation, no scroll breakage.
-  // inert + aria-hidden (set in the render) remove it from tab order and
-  // the a11y tree while hidden.
+  // ── Preview body ──
+  // The body wrapper gives PreviewPane a definite flex height so its own
+  // height:100% container resolves and internal scrolling works. Exactly
+  // one pane is mounted (the active tab) — no keep-alive bodies, so no
+  // hidden-pane visibility/offscreen machinery is needed.
   body: {
     flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
     position: 'relative',
-  },
-  bodyPane: {
-    flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
-  },
-  bodyPaneHidden: {
-    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    visibility: 'hidden', pointerEvents: 'none',
-    display: 'flex', flexDirection: 'column', overflow: 'hidden',
-  },
-  // Offscreen keep-alive for iframe panes (HTML): same size, parked
-  // 10000px left, clipped by body's overflow:hidden. opacity 0 + pointer-
-  // events none are belt-and-braces (the pane is off-viewport anyway);
-  // inert (render prop) covers focus + a11y.
-  // Cost: up to 4 hidden HTML documents stay fully rendered and composited
-  // (rAF/CSS animation/video decode/timers keep running) — the price of
-  // keeping WebKit's iframe repaint + scroll machinery intact.
-  bodyPaneHiddenHtml: {
-    position: 'absolute', top: 0, left: -10000,
-    width: '100%', height: '100%',
-    opacity: 0, pointerEvents: 'none',
-    display: 'flex', flexDirection: 'column', overflow: 'hidden',
   },
   contextMenu: {
     position: 'fixed', zIndex: 1000, width: 190,

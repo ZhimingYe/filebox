@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { FsEntry } from '../api/client';
 
 // ── Preview tabs state ────────────────────────────────────────────────────
@@ -25,21 +25,17 @@ import type { FsEntry } from '../api/client';
 //    already-open viewer's state (PDF page, zoom, scroll) on a mere click
 //    would be a regression. `replaceActive` (arrow navigation) never bumps:
 //    re-activating an existing tab must not reset the viewer.
-//  - Each tab carries a `lastUsed` stamp (monotonic counter). Opening or
-//    activating a tab bumps it; closing/pruning does not. The desktop
-//    preview keeps bodies mounted only for the `MAX_MOUNTED_PREVIEWS`
-//    most-recently-used tabs (`mountedTabIds`), so switching between cached
-//    tabs is instant and preserves viewer state. `mountedTabIds` always
-//    includes the active tab — via its newest stamp when opened/activated,
-//    or explicitly when it becomes active through close/prune (whose
-//    survivor is picked by index proximity, not recency) — plus the other
-//    MAX_MOUNTED_PREVIEWS - 1 most-recently-used tabs, so the mounted set
-//    never exceeds the cap. A tab beyond the cache (6th+ distinct file)
-//    mounts fresh on activation and evicts the least-recently used cached
-//    body.
+//  - Tabs are metadata only. Exactly one preview body is mounted at a time
+//    (the active tab — PreviewWorkspace renders one pane), so inactive tabs
+//    hold no viewer resources and switching back remounts the viewer fresh.
+//    The sole exception is the HTML preview's scroll position, which
+//    HtmlPreview caches itself keyed by file and restores on switch-back
+//    only when the file is unchanged (hub ETag match) — see HtmlPreview.tsx.
+//    Everything else (PDF page, zoom, Monaco scroll) resets on tab switch,
+//    by design: keeping up to five hidden bodies mounted roughly
+//    quintupled HTML preview load.
 //  - All transitions are pure updater functions so they are safe under
-//    React StrictMode's double-invoke. The recency counter ticks OUTSIDE
-//    the updaters so a double-invoked updater stays deterministic.
+//    React StrictMode's double-invoke.
 
 export interface PreviewTab {
   id: string;
@@ -51,13 +47,6 @@ export interface PreviewTab {
   title: string;
   /** Refresh generation — bumped to force the preview body to remount. */
   rev: number;
-  /**
-   * Recency stamp (monotonic counter). Bumped whenever the tab is opened or
-   * activated; used to derive which preview bodies stay mounted
-   * (`mountedTabIds` — the active tab plus the other
-   * `MAX_MOUNTED_PREVIEWS - 1` most recent).
-   */
-  lastUsed: number;
 }
 
 export interface TabInput {
@@ -79,14 +68,7 @@ export function tabIdFor(input: { agentId: string; root: string; path: string })
   return `${input.agentId}:${input.root}:${input.path}`;
 }
 
-/**
- * How many preview bodies the desktop layout keeps mounted (hidden) for
- * instant re-switching. Tabs beyond this are pure metadata: activating one
- * mounts its body fresh and evicts the least-recently-used cached body.
- */
-export const MAX_MOUNTED_PREVIEWS = 5;
-
-function makeTab(input: TabInput, lastUsed: number): PreviewTab {
+function makeTab(input: TabInput): PreviewTab {
   return {
     id: tabIdFor(input),
     agentId: input.agentId,
@@ -95,7 +77,6 @@ function makeTab(input: TabInput, lastUsed: number): PreviewTab {
     entry: input.entry,
     title: input.entry.name,
     rev: 0,
-    lastUsed,
   };
 }
 
@@ -172,33 +153,19 @@ export interface UsePreviewTabs {
   replaceAll: (input: TabInput | null) => void;
   /** Remove tabs whose root is no longer enabled; re-pick active if needed. */
   pruneByRoots: (enabledRootNames: Set<string> | string[]) => void;
-  /**
-   * Ids of the preview bodies that stay mounted (hidden): the active tab
-   * first, then the other `MAX_MOUNTED_PREVIEWS - 1` most-recently-used
-   * tabs in recency order. Any other tab mounts fresh when activated.
-   */
-  mountedTabIds: string[];
 }
 
 export function usePreviewTabs(): UsePreviewTabs {
   const [state, setState] = useState<State>(EMPTY);
-  // Monotonic recency clock. Tick OUTSIDE updaters: updaters must stay pure
-  // (StrictMode double-invokes them), and each dispatch needs a unique stamp.
-  const clock = useRef(0);
-  const tick = useCallback(() => {
-    clock.current += 1;
-    return clock.current;
-  }, []);
 
   const openOrActivate = useCallback((input: TabInput) => {
     const id = tabIdFor(input);
-    const lastUsed = tick();
     setState((prev) => {
       const exists = prev.tabs.some((t) => t.id === id);
       const tabs = exists
-        // Refresh entry metadata + recency; bump rev ONLY when the caller
-        // asked for it (`refresh: true` — search "view"). A plain re-open
-        // (file-list click) must not reset an already-open viewer's state.
+        // Refresh entry metadata; bump rev ONLY when the caller asked for
+        // it (`refresh: true` — search "view"). A plain re-open (file-list
+        // click) must not reset an already-open viewer's state.
         ? prev.tabs.map((t) => (
           t.id === id
             ? {
@@ -206,61 +173,44 @@ export function usePreviewTabs(): UsePreviewTabs {
               entry: input.entry,
               title: input.entry.name,
               rev: input.refresh ? t.rev + 1 : t.rev,
-              lastUsed,
             }
             : t
         ))
-        : [...prev.tabs, makeTab(input, lastUsed)];
+        : [...prev.tabs, makeTab(input)];
       return { tabs, activeTabId: id };
     });
-  }, [tick]);
+  }, []);
 
   const replaceActive = useCallback((input: TabInput) => {
     const newId = tabIdFor(input);
-    const lastUsed = tick();
     setState((prev) => {
       if (prev.tabs.length === 0) {
-        return { tabs: [makeTab(input, lastUsed)], activeTabId: newId };
+        return { tabs: [makeTab(input)], activeTabId: newId };
       }
       const activeIdx = prev.activeTabId ? prev.tabs.findIndex((t) => t.id === prev.activeTabId) : -1;
-      // Target file already has a tab: just activate it (and mark it recent),
-      // leaving the current active tab in place. Arrow navigation must never
-      // delete a tab the user opened explicitly, and we never keep two tabs
-      // for the same file. When the target IS the active tab itself this is a
-      // true no-op — it already holds the newest stamp, so no recency bump or
-      // re-render is needed (the unused tick above is harmless: the counter
-      // is monotonic and comparisons are relative).
+      // Target file already has a tab: just activate it, leaving the
+      // current active tab in place. Arrow navigation must never delete a
+      // tab the user opened explicitly, and we never keep two tabs for the
+      // same file. When the target IS the active tab itself this is a true
+      // no-op.
       if (prev.tabs.some((t) => t.id === newId)) {
-        if (prev.activeTabId === newId) return prev;
-        return {
-          ...prev,
-          activeTabId: newId,
-          tabs: prev.tabs.map((t) => (t.id === newId ? { ...t, lastUsed } : t)),
-        };
+        return prev.activeTabId === newId ? prev : { ...prev, activeTabId: newId };
       }
       if (activeIdx === -1) {
-        return { tabs: [...prev.tabs, makeTab(input, lastUsed)], activeTabId: newId };
+        return { tabs: [...prev.tabs, makeTab(input)], activeTabId: newId };
       }
       const tabs = [...prev.tabs];
-      tabs[activeIdx] = makeTab(input, lastUsed);
+      tabs[activeIdx] = makeTab(input);
       return { tabs, activeTabId: newId };
     });
-  }, [tick]);
+  }, []);
 
   const activate = useCallback((tabId: string) => {
-    // Activating IS using: bump recency so the tab counts as recently opened
-    // for the mounted-body cache (a tab beyond the cache enters it, evicting
-    // the least-recently-used cached body).
-    const lastUsed = tick();
     setState((prev) => {
       if (!prev.tabs.some((t) => t.id === tabId)) return prev;
-      return {
-        ...prev,
-        activeTabId: tabId,
-        tabs: prev.tabs.map((t) => (t.id === tabId ? { ...t, lastUsed } : t)),
-      };
+      return { ...prev, activeTabId: tabId };
     });
-  }, [tick]);
+  }, []);
 
   /** Bump a tab's refresh generation so its preview body remounts (manual refresh). */
   const refresh = useCallback((tabId: string) => {
@@ -308,7 +258,6 @@ export function usePreviewTabs(): UsePreviewTabs {
       return;
     }
     const id = tabIdFor(input);
-    const lastUsed = tick();
     setState((prev) => {
       const existing = prev.tabs.find((t) => t.id === id);
       // Mobile re-opens replace the single tab. Bump rev only when the
@@ -320,12 +269,11 @@ export function usePreviewTabs(): UsePreviewTabs {
           entry: input.entry,
           title: input.entry.name,
           rev: input.refresh ? existing.rev + 1 : existing.rev,
-          lastUsed,
         }
-        : makeTab(input, lastUsed);
+        : makeTab(input);
       return { tabs: [tab], activeTabId: id };
     });
-  }, [tick]);
+  }, []);
 
   const pruneByRoots = useCallback((enabledRootNames: Set<string> | string[]) => {
     const set = enabledRootNames instanceof Set ? enabledRootNames : new Set(enabledRootNames);
@@ -340,28 +288,6 @@ export function usePreviewTabs(): UsePreviewTabs {
     () => (state.activeTabId ? state.tabs.find((t) => t.id === state.activeTabId) ?? null : null),
     [state.tabs, state.activeTabId],
   );
-
-  // Which preview bodies stay mounted: the active tab first, then the
-  // MAX_MOUNTED_PREVIEWS - 1 most-recently-used others in recency order.
-  // Purely derived from tab recency — no extra state to keep in sync when
-  // tabs open/close/prune. The active tab is always included: usually via
-  // its newest stamp (every open/activate bumps it), but also when it
-  // becomes active through close/prune, whose index-proximity survivor may
-  // hold a stale stamp. Unioning the active id here (instead of relying on
-  // the render's `active ||` guard) keeps the mounted set at exactly
-  // MAX_MOUNTED_PREVIEWS bodies — the guard then is purely defensive.
-  const mountedTabIds = useMemo(() => {
-    if (state.tabs.length === 0) return [];
-    const others = [...state.tabs]
-      .filter((t) => t.id !== state.activeTabId)
-      .sort((a, b) => b.lastUsed - a.lastUsed)
-      .slice(0, MAX_MOUNTED_PREVIEWS - 1)
-      .map((t) => t.id);
-    const active = state.activeTabId
-      ? state.tabs.find((t) => t.id === state.activeTabId)
-      : null;
-    return active ? [active.id, ...others] : others;
-  }, [state.tabs, state.activeTabId]);
 
   // Stable return object so consumers can depend on `tabs` without churning
   // (e.g. the keyboard effect in App.tsx) across unrelated re-renders.
@@ -379,6 +305,5 @@ export function usePreviewTabs(): UsePreviewTabs {
     closeRight,
     replaceAll,
     pruneByRoots,
-    mountedTabIds,
-  }), [state.tabs, state.activeTabId, activeTab, openOrActivate, replaceActive, activate, refresh, close, closeAll, closeLeft, closeRight, replaceAll, pruneByRoots, mountedTabIds]);
+  }), [state.tabs, state.activeTabId, activeTab, openOrActivate, replaceActive, activate, refresh, close, closeAll, closeLeft, closeRight, replaceAll, pruneByRoots]);
 }

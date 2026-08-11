@@ -27,6 +27,32 @@ interface Props {
 
 const HTML_SANDBOX = 'allow-scripts allow-downloads';
 
+// ── Scroll-position cache ────────────────────────────────────────────────
+// The only viewer state preserved across tab switches: where the user was
+// reading in an HTML document. Keyed by file (agentId:root:path), bounded,
+// and restored ONLY when the file is unchanged — verified via the hub's
+// strong ETag ("size-mtime") on the raw fetch (see useFetchText's `etag`).
+// A changed file (or one without an ETag — no mtime on the filesystem)
+// never gets its scroll restored, so the user is never jumped to a stale
+// position in new content. Everything else (zoom, source view, iframe
+// reloads) resets on tab switch by design — keeping hidden bodies mounted
+// roughly quintupled HTML preview load.
+const MAX_HTML_SCROLL_CACHE = 20;
+const htmlScrollCache = new Map<string, { x: number; y: number; etag: string }>();
+
+function scrollCacheKey(agentId: string, root: string, path: string): string {
+  return `${agentId}:${root}:${path}`;
+}
+
+function cacheHtmlScroll(key: string, x: number, y: number, etag: string | null) {
+  if (!etag) return; // No validator → cannot prove "unchanged" later; don't cache.
+  htmlScrollCache.set(key, { x, y, etag });
+  if (htmlScrollCache.size > MAX_HTML_SCROLL_CACHE) {
+    const oldest = htmlScrollCache.keys().next().value;
+    if (oldest !== undefined) htmlScrollCache.delete(oldest);
+  }
+}
+
 // Outer page is a top-level blob: URL (renders fine in Safari). The inner
 // iframe loads the tokenized document URL directly — the hub serves it in
 // document mode (injected <base> + CSP), so relative links and #anchors keep
@@ -71,7 +97,7 @@ const docWarningClose: CSSProperties = {
 export function HtmlPreview({ agentId, root, path, url }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.html });
   const shouldLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
-  const { text, error, loading, retrying, cancel, retry, received, total, slow } = useFetchText(url, shouldLoad, agentId);
+  const { text, error, loading, retrying, cancel, retry, received, total, slow, etag } = useFetchText(url, shouldLoad, agentId);
   const previewShouldLoad = shouldLoad && text !== null && !error;
   const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -89,6 +115,18 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wrapperUrlRef = useRef<string | null>(null);
   const wrapperRevokeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  // Latest ETag of the fetched raw text, readable from effects/cleanups that
+  // capture render-scope values (a `[]` cleanup would otherwise see null).
+  // Kept in sync via an effect — the react-hooks/refs rule forbids writing
+  // a ref during render.
+  const etagRef = useRef<string | null>(null);
+  useEffect(() => {
+    etagRef.current = etag;
+  }, [etag]);
+  // Scroll position to restore once the iframe finishes loading (only set
+  // when the saved ETag matches the freshly fetched one).
+  const pendingScrollRef = useRef<{ x: number; y: number } | null>(null);
 
   const missingHtml = useMemo(() => {
     if (!text) return false;
@@ -96,6 +134,9 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   }, [text]);
 
   const fileKey = `${root}:${path}`;
+  // agentId included so switching backends never restores another machine's
+  // same-path document position.
+  const scrollKey = scrollCacheKey(agentId, root, path);
   const docWarningHidden = dismissedFileKey === fileKey;
 
   useEffect(() => {
@@ -103,6 +144,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
       previewCancelRef.current?.abort();
       previewCancelRef.current = null;
       if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
+      pendingScrollRef.current = null;
       setDocumentUrl(null);
       setPreviewError(null);
       setPreviewLoading(false);
@@ -144,6 +186,15 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
         setSlowRendering(false);
         setPreviewLoading(false);
         setSlowPreviewSetup(false);
+        // Restore the saved reading position only when the file is
+        // unchanged: the ETag captured from this fetch must equal the one
+        // saved with the position (a changed file, or one without an ETag,
+        // never restores). handleRefresh clears this before its iframe
+        // reload so a manual refresh starts fresh.
+        const cached = htmlScrollCache.get(scrollKey);
+        pendingScrollRef.current = cached && cached.etag === etagRef.current
+          ? { x: cached.x, y: cached.y }
+          : null;
         if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
       } catch (e: unknown) {
         const err = e as { name?: string; message?: string; error?: string };
@@ -162,7 +213,9 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
       if (previewCancelRef.current === controller) previewCancelRef.current = null;
       if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
     };
-  }, [agentId, root, path, previewShouldLoad, previewRetryToken, mounted]);
+    // scrollKey derives from the props already listed; listed too so the
+    // effect re-runs if the key scheme ever changes.
+  }, [agentId, root, path, scrollKey, previewShouldLoad, previewRetryToken, mounted]);
 
   useEffect(() => {
     if (!iframeLoading || showSource || !documentUrl) return;
@@ -175,17 +228,41 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   }, [iframeLoading, showSource, documentUrl, mounted]);
 
   useEffect(() => () => {
+    // Cache the reading position before the viewer unmounts (tab switch,
+    // close, mobile file switch). Only saved — restored on a later mount
+    // only when the file's ETag still matches (see the setup effect).
+    const win = iframeRef.current?.contentWindow;
+    if (win) {
+      cacheHtmlScroll(scrollKey, win.scrollX, win.scrollY, etagRef.current);
+    }
     previewCancelRef.current?.abort();
     if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
     if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
     if (wrapperRevokeTimerRef.current) clearTimeout(wrapperRevokeTimerRef.current);
     if (wrapperUrlRef.current) URL.revokeObjectURL(wrapperUrlRef.current);
-  }, []);
+    // scrollKey is constant for the lifetime of this mount (props never
+    // change in place — the parent remounts the pane on file switch), so
+    // the cleanup always saves under the key that matches the iframe.
+  }, [scrollKey]);
 
   const handleIframeLoad = useCallback(() => {
     if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
     setIframeLoading(false);
     setSlowRendering(false);
+    const pending = pendingScrollRef.current;
+    pendingScrollRef.current = null;
+    if (pending) {
+      const win = iframeRef.current?.contentWindow;
+      if (win) {
+        win.scrollTo(pending.x, pending.y);
+        // Late-loading content (images, scripts) can shift layout after the
+        // load event; re-apply on the next frame so the restore sticks.
+        requestAnimationFrame(() => {
+          const w = iframeRef.current?.contentWindow;
+          if (w) w.scrollTo(pending.x, pending.y);
+        });
+      }
+    }
   }, []);
 
   const handleIframeError = useCallback(() => {
@@ -213,6 +290,9 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
 
   const handleRefresh = useCallback(() => {
     if (!documentUrl) return;
+    // A manual refresh is an explicit "look again" — never restore the old
+    // reading position onto the reloaded document.
+    pendingScrollRef.current = null;
     setIframeLoading(true);
     setSlowRendering(false);
     setIframeKey((k) => k + 1);
@@ -339,6 +419,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
         ) : (
           <iframe
             key={iframeKey}
+            ref={iframeRef}
             src={documentUrl || ''}
             sandbox={HTML_SANDBOX}
             style={styles.htmlFrame}

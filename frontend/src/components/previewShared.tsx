@@ -36,6 +36,10 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
   const [received, setReceived] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
   const [slow, setSlow] = useState(false);
+  // Strong validator from the hub's /api/file/raw response ("size-mtime").
+  // Consumers (HtmlPreview) use it to detect "same file as last time" so
+  // saved viewer state is only restored for unchanged content.
+  const [etag, setEtag] = useState<string | null>(null);
   const cancelRef = useRef<AbortController | null>(null);
   const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -54,6 +58,7 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
       setReceived(0);
       setTotal(null);
       setSlow(false);
+      setEtag(null);
       return;
     }
 
@@ -67,6 +72,7 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
     setReceived(0);
     setTotal(null);
     setSlow(false);
+    setEtag(null);
     slowTimerRef.current = setTimeout(() => {
       if (!cancelled) setSlow(true);
     }, 8000);
@@ -85,6 +91,10 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
           maxDurationMs: null,
           agentId,
           consume: async (res) => {
+            // Present on 200 and 304 alike (the hub echoes it on 304), and
+            // on cache-served responses — a stable "file unchanged" signal.
+            const resEtag = res.headers.get('etag');
+            if (resEtag) setEtag(resEtag);
             const contentLength = Number(res.headers.get('content-length'));
             setTotal(Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null);
             const reader = res.body?.getReader();
@@ -160,7 +170,7 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
   const requestLoading = enabled && (loading || (text === null && error === null));
   return {
     text, error, loading: requestLoading, retrying, cancel, retry,
-    received, total, slow,
+    received, total, slow, etag,
   };
 }
 
@@ -274,12 +284,10 @@ export function isTextFile(ext: string): boolean {
   return ext in extToLang;
 }
 
-// HTML is the only viewer that renders an <iframe>, and iframes are the
-// only content Safari breaks when hidden with visibility:hidden (no repaint
-// on re-show → white screen; wheel scrolling stuck). PreviewWorkspace must
-// hide those panes OFFScreen instead. This single source of truth keeps the
-// dispatch in PreviewPane and the hiding scheme in PreviewWorkspace from
-// drifting apart — a mismatch would silently re-trigger the Safari bug.
+// HTML is the only viewer that renders an <iframe>. PreviewPane's dispatch
+// checks this so the sandboxed-session viewer is used instead of plain text
+// or a download fallback. (HtmlPreview is the only consumer of the iframe;
+// only the active tab mounts a body, so no hiding scheme is needed anymore.)
 export function isHtmlPreviewExt(ext: string): boolean {
   return ext === 'html' || ext === 'htm';
 }

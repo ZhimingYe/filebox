@@ -1103,7 +1103,6 @@ export default function App() {
                         tabs={previewTabs.tabs}
                         activeTab={activeTab}
                         activeTabId={previewTabs.activeTabId}
-                        mountedTabIds={previewTabs.mountedTabIds}
                         onActivate={previewTabs.activate}
                         onClose={previewTabs.close}
                         onCloseAll={previewTabs.closeAll}
@@ -1163,7 +1162,6 @@ export default function App() {
                         tabs={previewTabs.tabs}
                         activeTab={activeTab}
                         activeTabId={previewTabs.activeTabId}
-                        mountedTabIds={previewTabs.mountedTabIds}
                         onActivate={previewTabs.activate}
                         onClose={previewTabs.close}
                         onCloseAll={previewTabs.closeAll}
@@ -1678,11 +1676,12 @@ const styles: Record<string, React.CSSProperties> = {
   // unmounts PreviewWorkspace when the view leaves Files
   // (preview={view === 'files' && activeTab ? <PreviewWorkspace/> : null}),
   // and mobile renders it in mobilePreviewWrap, a visible sibling of this
-  // shell. If a future change keeps previews mounted across view switches
-  // here, do NOT hide iframe-bearing (HTML) panes with visibility:hidden —
-  // WebKit fails to repaint a hidden-then-shown iframe (white screen, stuck
-  // wheel scroll); use PreviewWorkspace's offscreen scheme
-  // (bodyPaneHiddenHtml) instead.
+  // shell. Preview panes themselves are never hidden either — only the
+  // active tab mounts a body (PreviewWorkspace), so no iframe ever gets
+  // visibility-hidden here. If a future change keeps previews mounted
+  // across view switches, do NOT hide iframe-bearing (HTML) panes with
+  // visibility:hidden — WebKit fails to repaint a hidden-then-shown iframe
+  // (white screen, stuck wheel scroll).
   filesViewHidden: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
     visibility: 'hidden', pointerEvents: 'none',
