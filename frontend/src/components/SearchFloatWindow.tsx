@@ -29,7 +29,13 @@ function clampRect(r: Rect, vw: number, vh: number): Rect {
   const h = Math.min(Math.max(r.h, MIN_H), Math.max(MIN_H, vh - EDGE * 2));
   const loX = EDGE - w + MIN_VISIBLE;
   const hiX = vw - EDGE - MIN_VISIBLE;
-  const loY = EDGE - h + MIN_VISIBLE;
+  // The header (the only drag handle, HEADER_H tall) sits at the window's
+  // top. Horizontally, a MIN_VISIBLE sliver of the window always contains
+  // header, so it stays grabbable. That symmetry breaks vertically: dragged
+  // far up, the on-screen sliver is the window's BOTTOM (body only) and the
+  // header — the only thing you can grab — flies fully off-screen with no
+  // way back. Pin the window's top to the viewport top instead.
+  const loY = EDGE;
   const hiY = vh - EDGE - MIN_VISIBLE;
   return {
     x: Math.min(Math.max(r.x, Math.min(loX, hiX)), Math.max(loX, hiX)),
@@ -137,7 +143,9 @@ export function SearchFloatWindow({
       const vh = window.innerHeight;
       const loX = EDGE - start.w + MIN_VISIBLE - start.x;
       const hiX = vw - EDGE - MIN_VISIBLE - start.x;
-      const loY = EDGE - start.h + MIN_VISIBLE - start.y;
+      // Mirrors clampRect: dragging up must stop with the header still on
+      // screen — a visible sliver of body is not grabbable.
+      const loY = EDGE - start.y;
       const hiY = vh - EDGE - MIN_VISIBLE - start.y;
       lastDx = Math.min(Math.max(ev.clientX - start.px, Math.min(loX, hiX)), Math.max(loX, hiX));
       lastDy = Math.min(Math.max(ev.clientY - start.py, Math.min(loY, hiY)), Math.max(loY, hiY));
@@ -146,6 +154,7 @@ export function SearchFloatWindow({
     const onUp = () => {
       el.removeEventListener('pointermove', onMove);
       el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('pointercancel', onUp);
       try {
         if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
       } catch {
@@ -163,6 +172,9 @@ export function SearchFloatWindow({
     };
     el.addEventListener('pointermove', onMove);
     el.addEventListener('pointerup', onUp);
+    // A cancelled pointer (touch gesture, OS pointer grab) must finalize
+    // like a pointerup, or the translate transform stays stuck on the window.
+    el.addEventListener('pointercancel', onUp);
   };
 
   const onResizePointerDown = (dir: 'e' | 's' | 'se') => (e: React.PointerEvent<HTMLDivElement>) => {
@@ -207,6 +219,7 @@ export function SearchFloatWindow({
     const onUp = () => {
       el.removeEventListener('pointermove', onMove);
       el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('pointercancel', onUp);
       try {
         if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
       } catch {
@@ -224,6 +237,7 @@ export function SearchFloatWindow({
     };
     el.addEventListener('pointermove', onMove);
     el.addEventListener('pointerup', onUp);
+    el.addEventListener('pointercancel', onUp);
   };
 
   return (
