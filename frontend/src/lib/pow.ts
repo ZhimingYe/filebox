@@ -69,13 +69,23 @@ function sha256Into(input: Uint8Array, len: number, scratch: ShaScratch): Uint8A
   const bitLen = len * 8;
   scratch.dv.setUint32(paddedLen - 8, Math.floor(bitLen / 0x100000000));
   scratch.dv.setUint32(paddedLen - 4, bitLen >>> 0);
+  return sha256Blocks(scratch, paddedLen);
+}
 
+/** Block compression + output extraction. Assumes `scratch.msg` already
+ *  holds a fully padded message (input | 0x80 | zeros | 64-bit length). */
+function sha256Blocks(scratch: ShaScratch, paddedLen: number): Uint8Array {
   const w = scratch.w;
   const h = scratch.h;
   h.set(H0);
-  const dv = scratch.dv;
+  const msg = scratch.msg;
   for (let i = 0; i < paddedLen; i += 64) {
-    for (let j = 0; j < 16; j++) w[j] = dv.getUint32(i + j * 4, false);
+    // Direct byte reads beat DataView.getUint32 in the hot loop (no call
+    // overhead per word).
+    for (let j = 0; j < 16; j++) {
+      const o = i + j * 4;
+      w[j] = (msg[o] << 24) | (msg[o + 1] << 16) | (msg[o + 2] << 8) | msg[o + 3];
+    }
     for (let j = 16; j < 64; j++) {
       const s0 = rotr(w[j - 15], 7) ^ rotr(w[j - 15], 18) ^ (w[j - 15] >>> 3);
       const s1 = rotr(w[j - 2], 17) ^ rotr(w[j - 2], 19) ^ (w[j - 2] >>> 10);
@@ -151,11 +161,19 @@ const CHUNK = 16384;
  *  `2^difficulty`; hitting the cap means something is broken, so fail
  *  loudly instead of looping forever ("never freeze silently"). */
 const MAX_ATTEMPTS_MULT = 512;
+/** Nonces are fixed-width, zero-padded decimal strings. A constant width
+ *  keeps the hashed message length constant, so the padding block (0x80,
+ *  zeros, 64-bit length) is laid out once and only the digit bytes change
+ *  per attempt — no per-hash string allocation, encode, copy, or fill.
+ *  16 digits covers every reachable attempt count (2^32 × 512 < 10^16). */
+const NONCE_WIDTH = 16;
 
 /** Find a decimal nonce such that `sha256("{id}:{salt}:{nonce}")` has at
  *  least `difficulty` leading zero bits. Yields to the event loop between
  *  chunks and reports attempt counts so the UI can show progress.
- *  Throws on abort (AbortError) or if the attempt cap is exceeded. */
+ *  Throws on abort (AbortError) or if the attempt cap is exceeded. The
+ *  returned nonce is zero-padded to [`NONCE_WIDTH`] digits — it is exactly
+ *  the string that was hashed, so the hub must verify it verbatim. */
 export async function solvePow(
   target: PowTarget,
   opts: { onProgress?: (attempts: number) => void; signal?: AbortSignal } = {},
@@ -165,9 +183,24 @@ export async function solvePow(
   if (!Number.isInteger(difficulty) || difficulty < 1 || difficulty > 32) {
     throw new Error(`invalid difficulty: ${target.difficulty}`);
   }
-  const encoder = new TextEncoder();
-  const prefix = encoder.encode(`${id}:${salt}:`);
+  const prefix = new TextEncoder().encode(`${id}:${salt}:`);
+  const messageLen = prefix.length + NONCE_WIDTH;
   const scratch = makeScratch();
+  const paddedLen = Math.ceil((messageLen + 9) / 64) * 64;
+  if (scratch.msg.length < paddedLen) {
+    scratch.msg = new Uint8Array(paddedLen);
+    scratch.dv = new DataView(scratch.msg.buffer);
+  }
+  const msg = scratch.msg;
+  // Lay out the message skeleton once: prefix, 0x80 terminator, zero
+  // padding, and the 64-bit bit length. Only the digit bytes change.
+  msg.fill(0, 0, paddedLen);
+  msg.set(prefix, 0);
+  msg[messageLen] = 0x80;
+  const bitLen = messageLen * 8;
+  scratch.dv.setUint32(paddedLen - 8, Math.floor(bitLen / 0x100000000));
+  scratch.dv.setUint32(paddedLen - 4, bitLen >>> 0);
+
   const maxAttempts = Math.pow(2, difficulty) * MAX_ATTEMPTS_MULT;
   let nonce = 0;
   let attempts = 0;
@@ -177,14 +210,16 @@ export async function solvePow(
       throw new DOMException('The operation was aborted.', 'AbortError');
     }
     for (let i = 0; i < CHUNK; i++, nonce++) {
-      const suffix = encoder.encode(nonce.toString());
-      scratch.msg.set(prefix, 0);
-      scratch.msg.set(suffix, prefix.length);
-      const hash = sha256Into(scratch.msg, prefix.length + suffix.length, scratch);
+      let value = nonce;
+      for (let d = NONCE_WIDTH - 1; d >= 0; d--) {
+        msg[prefix.length + d] = 48 + (value % 10);
+        value = Math.floor(value / 10);
+      }
+      const hash = sha256Blocks(scratch, paddedLen);
       attempts++;
       if (leadingZeroBits(hash) >= difficulty) {
         opts.onProgress?.(attempts);
-        return nonce.toString();
+        return String.fromCharCode(...msg.subarray(prefix.length, messageLen));
       }
     }
     if (attempts >= maxAttempts) {

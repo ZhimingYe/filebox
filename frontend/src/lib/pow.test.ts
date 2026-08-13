@@ -42,7 +42,7 @@ describe('solvePow', () => {
   it('finds a nonce that meets the difficulty', async () => {
     const target = { id: 'a'.repeat(32), salt: 'b'.repeat(32), difficulty: 8 };
     const nonce = await solvePow(target);
-    expect(nonce).toMatch(/^\d+$/);
+    expect(nonce).toMatch(/^\d{16}$/);
     // Recompute with the standalone sha256 to cross-check the wire format.
     const hash = sha256(encoder.encode(`${target.id}:${target.salt}:${nonce}`));
     expect(leadingZeroBits(hash)).toBeGreaterThanOrEqual(8);
@@ -52,7 +52,7 @@ describe('solvePow', () => {
     const calls: number[] = [];
     const target = { id: 'c'.repeat(32), salt: 'd'.repeat(32), difficulty: 6 };
     const nonce = await solvePow(target, { onProgress: (n) => calls.push(n) });
-    expect(nonce).toMatch(/^\d+$/);
+    expect(nonce).toMatch(/^\d{16}$/);
     expect(calls.length).toBeGreaterThan(0);
     expect(calls[calls.length - 1]).toBeGreaterThanOrEqual(calls[0]);
   });
