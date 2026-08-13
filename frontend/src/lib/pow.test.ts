@@ -72,5 +72,9 @@ describe('solvePow', () => {
     await expect(solvePow({ id: 'x', salt: 'y', difficulty: 64 })).rejects.toThrow(
       /invalid difficulty/,
     );
+    // Fractional difficulties must be rejected, not silently rounded.
+    await expect(solvePow({ id: 'x', salt: 'y', difficulty: 3.5 })).rejects.toThrow(
+      /invalid difficulty/,
+    );
   });
 });
