@@ -657,7 +657,29 @@ async fn session_exchange_handler(
     let ip = client_ip(&headers, addr);
     let user_agent = user_agent(&headers);
 
-    // Rate limit check
+    // Raw request-rate bound. Password attempts are counted separately (the
+    // per-IP 5/30s limiter below), and proof failures deliberately do not
+    // consume that budget — otherwise five zero-work requests could burn the
+    // whole window and lock out a NAT-sharing user. This bound instead caps
+    // how often the endpoint can be hit at all, keeping the per-request
+    // audit/tracing writes bounded.
+    if let Err(remaining) = state.login_request_limiter.check(&ip) {
+        state
+            .audit
+            .record("login_rate_limited", &req.username, &ip, &user_agent);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": "login_rate_limited",
+                "message": format!("Too many login requests. Try again in {} seconds.", remaining),
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+    state.login_request_limiter.record_failure(&ip);
+
+    // Password-attempt rate limit check
     if let Err(remaining) = state.rate_limiter.check(&ip) {
         state
             .audit
@@ -674,8 +696,9 @@ async fn session_exchange_handler(
     }
 
     // Proof of work comes before any password verification: a failed proof
-    // burns a login attempt, so password guessers pay ~2^difficulty hashes
-    // per attempt AND hit the rate limit without ever probing a credential.
+    // burns a login request (bounded above) but NOT a password attempt, so
+    // password guessers still pay ~2^difficulty hashes per guess and hit the
+    // password rate limit, while zero-work garbage cannot lock users out.
     // The challenge is single-use — the browser must fetch + solve a fresh
     // one after every attempt.
     let pow = match (req.pow_id.as_deref(), req.pow_nonce.as_deref()) {
@@ -685,8 +708,10 @@ async fn session_exchange_handler(
         _ => VerifyOutcome::UnknownOrExpired,
     };
     if pow != VerifyOutcome::Valid {
-        state.rate_limiter.record_failure(&ip);
-        tracing::warn!(target: "audit", ip = %ip, user = %req.username, "pow_failed");
+        // Usernames are attacker-controlled up to the 1MB body limit — keep
+        // them out of the log untruncated (the audit ring truncates itself).
+        let display_user: String = req.username.chars().take(64).collect();
+        tracing::warn!(target: "audit", ip = %ip, user = %display_user, "pow_failed");
         state
             .audit
             .record("pow_failed", &req.username, &ip, &user_agent);
@@ -737,8 +762,11 @@ async fn session_exchange_handler(
     let csrf_token = session.csrf_token.clone();
     drop(inner);
 
-    // Clear rate limit on successful login
+    // Clear rate limits on successful login (password attempts, login
+    // requests, and challenge fetches — a success proves a human at this IP).
     state.rate_limiter.clear(&ip);
+    state.login_request_limiter.clear(&ip);
+    state.pow_rate_limiter.clear(&ip);
 
     tracing::info!(target: "audit", ip = %ip, user = %req.username, "login_success");
     state

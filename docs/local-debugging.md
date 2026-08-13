@@ -145,7 +145,9 @@ discipline localizes ~90% of issues.
 # nonce where sha256("{id}:{salt}:{nonce}") has `difficulty` leading zero
 # bits — ~1M hashes at the default difficulty 20 (sub-second in CPython's
 # C-backed hashlib). Every login attempt consumes its challenge, so fetch
-# a fresh one per attempt.
+# a fresh one per attempt. The nonce is any ASCII decimal string ≤ 20
+# digits (the browser zero-pads to 16; this helper emits unpadded) — the
+# hub hashes exactly the string you submit.
 POW_JSON=$(curl -s --noproxy '*' http://127.0.0.1:3000/api/pow/challenge)
 POW_ID=$(printf '%s' "$POW_JSON" \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")

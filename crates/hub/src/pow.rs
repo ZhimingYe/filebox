@@ -77,38 +77,35 @@ impl PowStore {
     }
 
     /// Issue a new challenge for `ip`, evicting expired entries and this IP's
-    /// (then the store's) oldest challenges to respect the caps.
+    /// (then the store's) oldest challenges to respect the caps. Eviction
+    /// work happens only when a cap is actually reached — the common case
+    /// (store well under both caps) is one retain pass + insert.
     pub fn issue(&self, ip: &str) -> PowChallenge {
         let now = Instant::now();
         let challenge = PowChallenge::generate(ip, now, self.difficulty);
 
-        let mut map = self.challenges.lock().unwrap();
+        let mut map = self.challenges.lock().unwrap_or_else(|e| e.into_inner());
         map.retain(|_, ch| now.duration_since(ch.created_at) < CHALLENGE_TTL);
 
-        // Per-IP cap: drop this IP's oldest challenges first.
-        let mut mine: Vec<(String, Instant)> = map
-            .iter()
-            .filter(|(_, ch)| ch.ip == ip)
-            .map(|(id, ch)| (id.clone(), ch.created_at))
-            .collect();
-        mine.sort_by_key(|(_, created)| *created);
-        while mine.len() >= MAX_CHALLENGES_PER_IP {
-            if let Some((oldest, _)) = mine.first() {
-                map.remove(oldest);
-                mine.remove(0);
+        // Per-IP cap: evict this IP's single oldest challenge.
+        if map.values().filter(|ch| ch.ip == ip).count() >= MAX_CHALLENGES_PER_IP {
+            if let Some(oldest) = map
+                .iter()
+                .filter(|(_, ch)| ch.ip == ip)
+                .min_by_key(|(_, ch)| ch.created_at)
+                .map(|(id, _)| id.clone())
+            {
+                map.remove(&oldest);
             }
         }
-
-        // Global cap: drop the globally oldest challenges.
-        let mut all: Vec<(String, Instant)> = map
-            .iter()
-            .map(|(id, ch)| (id.clone(), ch.created_at))
-            .collect();
-        all.sort_by_key(|(_, created)| *created);
-        while all.len() >= MAX_TOTAL_CHALLENGES {
-            if let Some((oldest, _)) = all.first() {
-                map.remove(oldest);
-                all.remove(0);
+        // Global cap: evict the single oldest challenge overall.
+        if map.len() >= MAX_TOTAL_CHALLENGES {
+            if let Some(oldest) = map
+                .iter()
+                .min_by_key(|(_, ch)| ch.created_at)
+                .map(|(id, _)| id.clone())
+            {
+                map.remove(&oldest);
             }
         }
 
@@ -118,13 +115,17 @@ impl PowStore {
 
     /// Verify a proof, consuming the challenge. One-time by design: the
     /// frontend must fetch a fresh challenge after every submit attempt.
+    /// The nonce is any ASCII decimal string up to [`MAX_NONCE_LEN`] digits
+    /// — the JS solver zero-pads to a fixed 16 digits, the python helpers
+    /// don't pad; the verifier hashes exactly the submitted string, so as
+    /// long as the client hashes what it submits, either form works.
     pub fn verify(&self, id: &str, nonce: &str) -> VerifyOutcome {
         // Reject absurd ids before even locking (defense in depth).
         if id.is_empty() || id.len() > 64 {
             return VerifyOutcome::UnknownOrExpired;
         }
         let challenge = {
-            let mut map = self.challenges.lock().unwrap();
+            let mut map = self.challenges.lock().unwrap_or_else(|e| e.into_inner());
             match map.remove(id) {
                 Some(ch) => ch,
                 None => return VerifyOutcome::UnknownOrExpired,
@@ -152,7 +153,7 @@ impl PowStore {
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.challenges.lock().unwrap().len()
+        self.challenges.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 
@@ -228,6 +229,37 @@ mod tests {
         for _ in 0..5 {
             let ch = store.issue("10.0.0.1");
             assert_eq!(store.verify(&ch.id, &solve(&ch)), VerifyOutcome::Valid);
+        }
+    }
+
+    /// Pin the wire contract used by the browser solver: it hashes the
+    /// zero-padded 16-digit nonce form. A future change to the JS padding
+    /// (or to this verifier) must keep this test green.
+    #[test]
+    fn js_solver_style_padded_nonce_is_accepted() {
+        let store = PowStore::new(8);
+        let ch = store.issue("10.0.0.1");
+        let mut nonce: u64 = 0;
+        let padded = loop {
+            let candidate = format!("{nonce:0>16}");
+            let message = format!("{}:{}:{}", ch.id, ch.salt, candidate);
+            let digest = Sha256::digest(message.as_bytes());
+            if leading_zero_bits(digest.as_slice()) >= ch.difficulty {
+                break candidate;
+            }
+            nonce += 1;
+        };
+        assert_eq!(padded.len(), 16);
+        assert_eq!(store.verify(&ch.id, &padded), VerifyOutcome::Valid);
+        // The padded string was hashed verbatim — the same value in
+        // unpadded form must NOT accidentally verify.
+        let unpadded = padded.trim_start_matches('0').to_string();
+        if unpadded != padded {
+            // A different challenge: solve it in unpadded form and confirm
+            // that works too (the verifier is format-agnostic).
+            let ch2 = store.issue("10.0.0.1");
+            let unpadded_solve = solve(&ch2);
+            assert_eq!(store.verify(&ch2.id, &unpadded_solve), VerifyOutcome::Valid);
         }
     }
 

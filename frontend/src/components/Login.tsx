@@ -31,9 +31,13 @@ export function Login({ onLogin }: Props) {
   const [powNonce, setPowNonce] = useState<string | null>(null);
   const [powStatus, setPowStatus] = useState<VerificationStatus>('loading');
   const [powProgress, setPowProgress] = useState(0);
+  const [powErrorMsg, setPowErrorMsg] = useState<string | null>(null);
   // Supersedes stale fetches/solves (a new run invalidates the previous one).
   const powGenRef = useRef(0);
   const powAbortRef = useRef<AbortController | null>(null);
+  // Synchronous guard so a double-click / Enter+click cannot fire two
+  // exchangeSession calls with the same (single-use) challenge.
+  const submitLockRef = useRef(false);
 
   const canSubmit =
     username.trim().length > 0
@@ -54,12 +58,19 @@ export function Login({ onLogin }: Props) {
     setPowNonce(null);
     setPowStatus('loading');
     setPowProgress(0);
+    setPowErrorMsg(null);
 
     let challenge;
     try {
-      challenge = await getPowChallenge();
-    } catch {
-      if (powGenRef.current === gen) setPowStatus('error');
+      challenge = await getPowChallenge(controller.signal);
+    } catch (err) {
+      if (powGenRef.current !== gen) return;
+      setPowStatus('error');
+      // Surface rate-limit feedback instead of a bare "Unavailable".
+      const apiError = err as ApiError;
+      if (apiError?.error === 'pow_rate_limited' && apiError?.message) {
+        setPowErrorMsg(apiError.message);
+      }
       return;
     }
     if (powGenRef.current !== gen || controller.signal.aborted) return;
@@ -106,7 +117,9 @@ export function Login({ onLogin }: Props) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitLockRef.current) return;
     if (!canSubmit || !pow || !powNonce) return;
+    submitLockRef.current = true;
     setLoading(true);
     setError('');
     try {
@@ -138,6 +151,7 @@ export function Login({ onLogin }: Props) {
       }
     } finally {
       setLoading(false);
+      submitLockRef.current = false;
     }
   };
 
@@ -250,7 +264,7 @@ export function Login({ onLogin }: Props) {
               </div>
               {powStatus === 'error' && (
                 <div style={styles.powErrorText}>
-                  Could not complete verification.
+                  {powErrorMsg ?? 'Could not complete verification.'}
                   <button
                     type="button"
                     onClick={() => void startVerification()}

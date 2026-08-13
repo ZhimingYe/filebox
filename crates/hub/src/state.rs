@@ -151,6 +151,12 @@ pub struct AppState {
     pub pow: Arc<crate::pow::PowStore>,
     /// Per-IP bound on how often a client may fetch fresh challenges.
     pub pow_rate_limiter: Arc<LoginRateLimiter>,
+    /// Per-IP bound on the raw login POST request rate, regardless of
+    /// outcome. Proof failures no longer consume the password-attempt budget
+    /// (see `routes.rs`), so this separate bound keeps missing/garbage-proof
+    /// requests from flooding the audit log and tracing without letting a
+    /// zero-work flood burn anyone's login attempts.
+    pub login_request_limiter: Arc<LoginRateLimiter>,
     /// Bounds simultaneous streamed raw responses by actual concurrency,
     /// independent of how many files a user has viewed historically.
     pub raw_read_semaphore: Arc<tokio::sync::Semaphore>,
@@ -257,6 +263,9 @@ impl AppState {
             // Humans only need a handful of challenges per minute; this cap
             // just stops the public challenge endpoint from being a memory pump.
             pow_rate_limiter: Arc::new(LoginRateLimiter::new(30, Duration::from_secs(60))),
+            // Generous enough for human retry bursts, low enough that a
+            // garbage-proof flood cannot spam the audit log per request.
+            login_request_limiter: Arc::new(LoginRateLimiter::new(60, Duration::from_secs(60))),
             // 70 rapid PDF opens must fit without becoming a user-visible
             // rate limit. Memory remains bounded because each stream asks the
             // Agent for at most FILE_CHUNK_MAX_BYTES at a time.

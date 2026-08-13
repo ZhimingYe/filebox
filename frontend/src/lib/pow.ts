@@ -168,6 +168,26 @@ const MAX_ATTEMPTS_MULT = 512;
  *  16 digits covers every reachable attempt count (2^32 × 512 < 10^16). */
 const NONCE_WIDTH = 16;
 
+/** Yield to the event loop. `MessageChannel` fires as an unclamped
+ *  macrotask — a nested `setTimeout(0)` is clamped to ≥4 ms after five
+ *  nestings, which would add ~20% to a difficulty-20 solve (~60 yields) —
+ *  and keeps running in background tabs, unlike requestAnimationFrame. */
+const yieldToEventLoop = (() => {
+  let channel: MessageChannel | null = null;
+  return () =>
+    new Promise<void>((resolve) => {
+      if (typeof MessageChannel === 'undefined') {
+        setTimeout(resolve, 0);
+        return;
+      }
+      if (!channel) {
+        channel = new MessageChannel();
+      }
+      channel.port1.onmessage = () => resolve();
+      channel.port2.postMessage(0);
+    });
+})();
+
 /** Find a decimal nonce such that `sha256("{id}:{salt}:{nonce}")` has at
  *  least `difficulty` leading zero bits. Yields to the event loop between
  *  chunks and reports attempt counts so the UI can show progress.
@@ -231,6 +251,6 @@ export async function solvePow(
       throw new Error('pow_solve_failed');
     }
     opts.onProgress?.(attempts);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await yieldToEventLoop();
   }
 }

@@ -213,8 +213,8 @@ export interface PowChallenge {
   expires_in_secs: number;
 }
 
-export async function getPowChallenge() {
-  return request<PowChallenge>('/api/pow/challenge');
+export async function getPowChallenge(signal?: AbortSignal) {
+  return request<PowChallenge>('/api/pow/challenge', signal ? { signal } : {});
 }
 
 export async function exchangeSession(

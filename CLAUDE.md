@@ -267,8 +267,15 @@ survive navigation.
   frontend solver `frontend/src/lib/pow.ts` byte-for-byte). Challenges are
   in-memory, single-use (consumed by the first verification, valid or not),
   5-min TTL, bounded per IP and globally. Failed proofs are audited as
-  `pow_failed` and burn a login-rate-limit attempt. Verifies effort, not
-  humanity — the per-IP rate limiter remains the primary brute-force
+  `pow_failed`. Rate-limit split (deliberate): proof failures do NOT
+  consume the password-attempt budget (otherwise five zero-work requests
+  could lock out a NAT-sharing user); a separate 60/min-per-IP request
+  bound on the login POST caps garbage traffic, only credential failures
+  burn the 5/30s password budget, and a successful login clears all three
+  limits. The nonce is any ASCII decimal string ≤ 20 digits (the browser
+  solver zero-pads to a fixed 16; the python helpers don't pad) — the
+  verifier hashes the submitted string verbatim. Verifies effort, not
+  humanity — the per-IP password limiter remains the primary brute-force
   defense; PoW prices each guess in CPU. No external service — works on
   air-gapped hubs.
 - Agents: bcrypt-hashed token in `hub.json`. Token separate from user
