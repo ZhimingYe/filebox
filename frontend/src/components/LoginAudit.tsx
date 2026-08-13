@@ -101,7 +101,9 @@ export function LoginAudit() {
       if (genRef.current !== gen) return;
       setLoadOlderError(api.friendlyMessage(e));
     } finally {
-      if (genRef.current === gen) setLoadingMore(false);
+      // Unconditional: a refresh supersedes the merge above (gen guard), but
+      // the flag must still clear or the button stays disabled until remount.
+      setLoadingMore(false);
     }
   }, [entries, loadingMore]);
 

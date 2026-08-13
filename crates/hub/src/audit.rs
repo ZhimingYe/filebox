@@ -163,7 +163,7 @@ impl LoginAuditLog {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let entry = LoginAuditEntry {
             id: inner.next_id,
             at_ms,
@@ -173,11 +173,21 @@ impl LoginAuditLog {
             user_agent: truncate_chars(user_agent, USER_AGENT_MAX),
         };
         inner.next_id = inner.next_id.saturating_add(1);
-        inner.entries.push_back(entry.clone());
+        // Serialize before moving the entry into the ring so append() has the
+        // line ready without cloning the entry. Infallible for this struct.
+        let line = serde_json::to_string(&entry)
+            .map(|mut s| {
+                s.push('\n');
+                s
+            })
+            .ok();
+        inner.entries.push_back(entry);
         while inner.entries.len() > AUDIT_MAX_ENTRIES {
             inner.entries.pop_front();
         }
-        self.append(&mut inner, &entry);
+        if let Some(line) = line {
+            self.append(&mut inner, &line);
+        }
         if inner.lines_on_disk >= AUDIT_COMPACT_LINES {
             self.compact(&mut inner);
         }
@@ -186,7 +196,7 @@ impl LoginAuditLog {
     /// Newest-first page of entries. `before` (exclusive entry id) supports
     /// "load older" pagination. `has_more` is true when another page exists.
     pub fn recent(&self, limit: usize, before: Option<u64>) -> (Vec<LoginAuditEntry>, bool) {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = Vec::new();
         let mut has_more = false;
         for entry in inner.entries.iter().rev() {
@@ -205,19 +215,25 @@ impl LoginAuditLog {
         (out, has_more)
     }
 
-    fn append(&self, inner: &mut Inner, entry: &LoginAuditEntry) {
+    /// Append one pre-serialized JSON line. `lines_on_disk` is a running
+    /// total: incremented here, and reset to the ring length by `compact`.
+    fn append(&self, inner: &mut Inner, line: &str) {
         let Some(path) = inner.path.clone() else {
             return;
         };
         let result = (|| -> Result<(), String> {
             create_parent_dir(&path)?;
             let mut file = open_append(&path)?;
-            let mut line = serde_json::to_string(entry).map_err(|e| e.to_string())?;
-            line.push('\n');
             file.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
             Ok(())
         })();
-        self.note_write_result(inner, &path, result, 1);
+        match result {
+            Ok(()) => {
+                inner.lines_on_disk = inner.lines_on_disk.saturating_add(1);
+                inner.write_warned = false;
+            }
+            Err(error) => self.warn_write_failure(inner, &path, error),
+        }
     }
 
     /// Rewrite the file with exactly the in-memory tail (bounded), so the
@@ -239,35 +255,26 @@ impl LoginAuditLog {
             std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
             Ok(())
         })();
-        self.note_write_result(inner, &path, result, inner.entries.len() as u64);
-    }
-
-    /// Track write health: log the first failure of a streak once, and keep
-    /// `lines_on_disk` truthful on success so compaction triggers correctly.
-    fn note_write_result(
-        &self,
-        inner: &mut Inner,
-        path: &Path,
-        result: Result<(), String>,
-        lines_if_ok: u64,
-    ) {
         match result {
             Ok(()) => {
-                inner.lines_on_disk = lines_if_ok;
+                inner.lines_on_disk = inner.entries.len() as u64;
                 inner.write_warned = false;
             }
-            Err(error) => {
-                inner.lines_on_disk = inner.lines_on_disk.saturating_add(lines_if_ok);
-                if !inner.write_warned {
-                    inner.write_warned = true;
-                    tracing::warn!(
-                        target: "audit",
-                        path = %path.display(),
-                        %error,
-                        "failed to write audit log; keeping records in memory only",
-                    );
-                }
-            }
+            Err(error) => self.warn_write_failure(inner, &path, error),
+        }
+    }
+
+    /// Log the first failure of a streak once; further failures stay silent
+    /// until a write succeeds again.
+    fn warn_write_failure(&self, inner: &mut Inner, path: &Path, error: String) {
+        if !inner.write_warned {
+            inner.write_warned = true;
+            tracing::warn!(
+                target: "audit",
+                path = %path.display(),
+                %error,
+                "failed to write audit log; keeping records in memory only",
+            );
         }
     }
 }
@@ -402,6 +409,30 @@ mod tests {
         let (entries, _) = LoginAuditLog::load(Some(path.clone())).recent(1, None);
         assert_eq!(entries[0].id, 3);
         assert_eq!(entries[0].event, "login_failed");
+    }
+
+    #[test]
+    fn file_is_compacted_when_line_count_exceeds_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(AUDIT_FILE_NAME);
+        let log = LoginAuditLog::load(Some(path.clone()));
+        for _ in 0..(AUDIT_COMPACT_LINES as usize + 50) {
+            log.record("login_success", "alice", "10.0.0.1", "ua");
+        }
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let line_count = contents.lines().filter(|l| !l.trim().is_empty()).count();
+        // Compaction rewrites the file with the in-memory tail when the append
+        // counter crosses the threshold, so the file never keeps all ~3050
+        // lines — it sits between the ring cap and the compaction threshold.
+        assert!(
+            line_count > AUDIT_MAX_ENTRIES && line_count <= AUDIT_MAX_ENTRIES + 50,
+            "file should be compacted mid-run, got {line_count} lines",
+        );
+        // The counter must track the on-disk file so the next compaction
+        // triggers at the right time.
+        let inner = log.inner.lock().unwrap();
+        assert_eq!(inner.lines_on_disk as usize, line_count);
+        assert_eq!(inner.entries.len(), AUDIT_MAX_ENTRIES);
     }
 
     #[test]
