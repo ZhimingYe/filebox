@@ -143,6 +143,10 @@ pub struct AppState {
     pub inner: Arc<RwLock<AppStateInner>>,
     pub rate_limiter: Arc<LoginRateLimiter>,
     pub ws_rate_limiter: Arc<LoginRateLimiter>,
+    /// Login audit trail (success / failure / rate-limit / logout), persisted
+    /// as JSONL next to the hub config. Write failures degrade to in-memory
+    /// only — auditing never fails a login.
+    pub audit: Arc<crate::audit::LoginAuditLog>,
     /// Bounds simultaneous streamed raw responses by actual concurrency,
     /// independent of how many files a user has viewed historically.
     pub raw_read_semaphore: Arc<tokio::sync::Semaphore>,
@@ -240,6 +244,9 @@ impl AppState {
             // or network partition. Keep this high enough for same-IP NATed
             // agents while still bounding unauthenticated WS auth attempts.
             ws_rate_limiter: Arc::new(LoginRateLimiter::new(300, std::time::Duration::from_secs(30))),
+            audit: Arc::new(crate::audit::LoginAuditLog::load(crate::audit::default_path(
+                secure_cookies,
+            ))),
             // 70 rapid PDF opens must fit without becoming a user-visible
             // rate limit. Memory remains bounded because each stream asks the
             // Agent for at most FILE_CHUNK_MAX_BYTES at a time.

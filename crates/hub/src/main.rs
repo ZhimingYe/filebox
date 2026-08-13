@@ -1,6 +1,7 @@
 use tracing_subscriber::EnvFilter;
 
 mod agent_registry;
+mod audit;
 mod auth;
 mod config;
 mod events;

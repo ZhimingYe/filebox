@@ -255,3 +255,16 @@ export function IconRefresh({ style }: SvgProps) {
     </Svg>
   );
 }
+
+/// Document with record lines — login audit log nav icon. Same stroke
+/// language as the other nav glyphs (outline only, currentColor).
+export function IconAudit({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <path d="M3 2.5h6.5L13 6v7.5H3z" />
+      <path d="M9.5 2.5V6H13" />
+      <line x1="5.5" y1="8.5" x2="10.5" y2="8.5" />
+      <line x1="5.5" y1="11" x2="10.5" y2="11" />
+    </Svg>
+  );
+}

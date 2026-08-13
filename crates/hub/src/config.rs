@@ -29,6 +29,28 @@ fn default_listen_addr() -> SocketAddr {
     "0.0.0.0:3000".parse().unwrap()
 }
 
+/// Resolve the hub config path with the same precedence `load` uses. Exposed
+/// so other hub subsystems (e.g. the login audit log) can anchor sidecar
+/// files next to the config without reimplementing the lookup chain.
+pub fn resolve_config_path() -> PathBuf {
+    std::env::var("FILEBOX_CONFIG_PATH")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            PathBuf::from(DEFAULT_CONFIG_PATH)
+                .is_file()
+                .then(|| PathBuf::from(DEFAULT_CONFIG_PATH))
+        })
+        .or_else(|| HubConfig::find_default_config().map(PathBuf::from))
+        .or_else(|| {
+            PathBuf::from("./hub.json")
+                .is_file()
+                .then(|| PathBuf::from("./hub.json"))
+        })
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH))
+}
+
 impl HubConfig {
     /// Try to find config/hub.json relative to the binary location.
     /// Walks up from the binary directory, looking for config/hub.json.
@@ -47,30 +69,14 @@ impl HubConfig {
     }
 
     pub fn load() -> Self {
-        let config_path = std::env::var("FILEBOX_CONFIG_PATH")
-            .ok()
-            .filter(|p| !p.is_empty())
-            .or_else(|| {
-                PathBuf::from(DEFAULT_CONFIG_PATH)
-                    .is_file()
-                    .then(|| DEFAULT_CONFIG_PATH.to_string())
-            })
-            .or_else(Self::find_default_config)
-            .or_else(|| {
-                PathBuf::from("./hub.json")
-                    .is_file()
-                    .then(|| "./hub.json".to_string())
-            })
-            .unwrap_or_else(|| DEFAULT_CONFIG_PATH.to_string());
-
-        let path = PathBuf::from(&config_path);
+        let path = resolve_config_path();
         if !path.exists() {
             let dev_mode = std::env::var("FILEBOX_DEV_MODE")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
 
             if !dev_mode {
-                eprintln!("[hub] FATAL: config not found: {}", config_path);
+                eprintln!("[hub] FATAL: config not found: {}", path.display());
                 eprintln!("[hub] Run `hub --init-config` or set FILEBOX_CONFIG_PATH.");
                 eprintln!("[hub] For local development only, set FILEBOX_DEV_MODE=1 to use insecure defaults bound to 127.0.0.1.");
                 std::process::exit(1);
@@ -94,17 +100,17 @@ impl HubConfig {
         }
 
         let contents = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("Failed to read config file '{}': {}", config_path, e));
+            .unwrap_or_else(|e| panic!("Failed to read config file '{}': {}", path.display(), e));
 
         let mut config: HubConfig = serde_json::from_str(&contents)
-            .unwrap_or_else(|e| panic!("Failed to parse config file '{}': {}", config_path, e));
+            .unwrap_or_else(|e| panic!("Failed to parse config file '{}': {}", path.display(), e));
 
         // Allow env override for listen address
         if let Ok(addr) = std::env::var("FILEBOX_LISTEN_ADDR") {
             config.listen_addr = addr.parse().expect("invalid FILEBOX_LISTEN_ADDR");
         }
 
-        eprintln!("[hub] config: {}", config_path);
+        eprintln!("[hub] config: {}", path.display());
         eprintln!("[hub] users: {}", config.users.iter().map(|u| u.username.as_str()).collect::<Vec<_>>().join(", "));
 
         if config.users.is_empty() {

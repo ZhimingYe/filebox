@@ -28,7 +28,8 @@ machines need no public IP, inbound port, VPN, or port mapping.
 - Arbitrary TCP proxying, LAN scanning, **port forwarding** (an earlier
   draft planned a port-tunnel feature; it was dropped)
 - WebDAV, sync drive behavior
-- Multi-tenant user management, RBAC, audit log
+- Multi-tenant user management, RBAC, general audit log (only the
+  **login audit trail** exists — see "Login Audit" below)
 
 ## Hard Rules
 
@@ -280,6 +281,30 @@ survive navigation.
   but never previewable. Read-only access can still leak secrets — that's
   why the list is broad.
 
+## Login Audit (non-obvious invariants)
+
+The hub records every `login_success`, `login_failed`, `login_rate_limited`,
+and `logout` with username, client IP, user agent, and timestamp
+(`crates/hub/src/audit.rs`), and exposes them read-only via
+`GET /api/audit/logins?limit=&before=` (session + CSRF protected; `before`
+is an exclusive entry id for paging backwards). The sidebar **Audit** view
+(lives on the hub, so it works with no agent selected) renders it newest
+first with "Load older" paging.
+
+- **Persistence**: JSONL sidecar `audit-log.jsonl` next to the hub config
+  (dev mode: cwd, gitignored), mode 0600. Records survive restarts; ids
+  keep increasing across reloads so `before` cursors stay stable.
+- **Bounded**: in-memory ring caps at 2000 entries (evicted entries are
+  gone — `has_more` never pages past them). The file is compacted
+  (temp file + rename, keeping only the in-memory tail) once it exceeds
+  ~1.5× the cap. Username/IP/UA strings are length-capped before they
+  touch disk.
+- **Never fails login**: any persistence error degrades to in-memory-only
+  with one warning per streak — auditing must not block or reject auth.
+- **Attribution**: `Session.username` exists specifically so `logout` can
+  be attributed after the session is removed (captured before removal).
+  Keep it set when touching session lifecycle.
+
 ## Preview Behavior
 
 - **Workspace**: multi-tab on desktop (`PreviewWorkspace` +
@@ -352,7 +377,7 @@ filebox/
     protocol/src/           # message.rs, agent.rs, resources.rs (roots/pins/
                             # collections), search.rs, denylist.rs
     updater/src/            # --init-config, --update
-    hub/src/                # … + search_proxy.rs, net.rs
+    hub/src/                # … + search_proxy.rs, net.rs, audit.rs (login audit)
     agent/src/              # … + search.rs, dir_cache.rs
   frontend/
     vite.config.ts          # manualChunks: react / markdown / tiff
@@ -370,6 +395,7 @@ filebox/
         PreviewPane previewShared {Pdf,Text,Markdown,Html,Csv,Image}Preview
         DirectoryTree AddressBar DateFilterControl PinnedFolders
         AgentSettings RootManager HealthPanel SystemStats AboutDialog
+        LoginAudit
   scripts/
     release.sh
     gen_notice.sh

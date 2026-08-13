@@ -215,6 +215,42 @@ export async function logout() {
   }
 }
 
+// ── Login audit ──────────────────────────────────────────────────────────────
+
+export type LoginAuditEvent =
+  | 'login_success'
+  | 'login_failed'
+  | 'login_rate_limited'
+  | 'logout'
+  | (string & {});
+
+export interface LoginAuditEntry {
+  id: number;
+  at_ms: number;
+  event: LoginAuditEvent;
+  username: string;
+  ip: string;
+  user_agent: string;
+}
+
+/** Newest-first page of hub login audit records. `before` = exclusive entry
+ *  id, used to page backwards into older records. */
+export async function getLoginAudit(
+  opts: { limit?: number; before?: number } = {},
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams();
+  if (opts.limit) params.set('limit', String(opts.limit));
+  if (opts.before) params.set('before', String(opts.before));
+  const qs = params.toString();
+  return request<{ entries: LoginAuditEntry[]; has_more: boolean }>(
+    `/api/audit/logins${qs ? `?${qs}` : ''}`,
+    { signal },
+    false,
+    15_000,
+  );
+}
+
 // ── Health ───────────────────────────────────────────────────────────────────
 
 export interface AgentCapabilities {
