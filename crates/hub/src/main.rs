@@ -3,6 +3,7 @@ use tracing_subscriber::EnvFilter;
 mod agent_registry;
 mod audit;
 mod auth;
+mod captcha;
 mod config;
 mod events;
 mod fs_proxy;

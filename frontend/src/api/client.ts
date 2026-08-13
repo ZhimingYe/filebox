@@ -194,12 +194,47 @@ async function request<T>(
   }
 }
 
+/** Shape thrown by `request` for non-2xx API responses (`{ status, ...body }`). */
+export interface ApiError {
+  status?: number;
+  error?: string;
+  message?: string;
+  retryable?: boolean;
+}
+
 // ── Session ──────────────────────────────────────────────────────────────────
 
-export async function exchangeSession(username: string, password: string, remember: boolean) {
+/** Self-hosted arithmetic login captcha challenge. Single-use: a fresh
+ *  challenge must be fetched after every submit attempt. */
+export interface CaptchaChallenge {
+  id: string;
+  question: string;
+  expires_in_secs: number;
+}
+
+export async function getCaptchaChallenge() {
+  return request<CaptchaChallenge>('/api/captcha/challenge');
+}
+
+export async function exchangeSession(
+  username: string,
+  password: string,
+  remember: boolean,
+  captchaId: string,
+  captchaAnswer: string,
+) {
   const result = await request<{ ok: boolean; permissions: string[]; csrf_token?: string }>(
     '/api/session/exchange',
-    { method: 'POST', body: JSON.stringify({ username, password, remember }) },
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        password,
+        remember,
+        captcha_id: captchaId,
+        captcha_answer: captchaAnswer,
+      }),
+    },
   );
   if (result.ok && result.csrf_token) {
     setCsrfToken(result.csrf_token);
@@ -221,6 +256,7 @@ export type LoginAuditEvent =
   | 'login_success'
   | 'login_failed'
   | 'login_rate_limited'
+  | 'captcha_failed'
   | 'logout'
   | (string & {});
 

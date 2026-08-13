@@ -1,10 +1,17 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { c, radius, shadow, font } from '../theme';
-import { IconBrandMark } from './icons';
+import { IconBrandMark, IconRefresh } from './icons';
 import { useIsMobile } from '../state/useIsMobile';
+import { getCaptchaChallenge, type ApiError } from '../api/client';
 
 interface Props {
-  onLogin: (username: string, password: string, remember: boolean) => Promise<boolean>;
+  onLogin: (
+    username: string,
+    password: string,
+    remember: boolean,
+    captchaId: string,
+    captchaAnswer: string,
+  ) => Promise<boolean>;
 }
 
 export function Login({ onLogin }: Props) {
@@ -17,19 +24,97 @@ export function Login({ onLogin }: Props) {
   const [loading, setLoading] = useState(false);
   const [focused, setFocused] = useState<'user' | 'pass' | null>(null);
   const [btnHover, setBtnHover] = useState(false);
+  const [captcha, setCaptcha] = useState<{ id: string; question: string } | null>(null);
+  const [captchaAnswer, setCaptchaAnswer] = useState('');
+  const [captchaLoading, setCaptchaLoading] = useState(true);
+  const [captchaError, setCaptchaError] = useState(false);
 
-  const canSubmit = username.trim().length > 0 && password.trim().length > 0 && !loading;
+  const canSubmit =
+    username.trim().length > 0
+    && password.trim().length > 0
+    && captcha !== null
+    && captchaAnswer.trim().length > 0
+    && !loading;
+
+  // Interactive refreshes (refresh button, failed submit). Event handlers may
+  // set state synchronously; the mount effect uses its own inline IIFE.
+  const loadCaptcha = useCallback(async () => {
+    setCaptchaLoading(true);
+    setCaptchaError(false);
+    try {
+      const challenge = await getCaptchaChallenge();
+      setCaptcha({ id: challenge.id, question: challenge.question });
+    } catch {
+      setCaptcha(null);
+      setCaptchaError(true);
+    } finally {
+      setCaptchaLoading(false);
+    }
+  }, []);
+
+  const refreshCaptcha = useCallback(() => {
+    setCaptcha(null);
+    setCaptchaLoading(true);
+    setCaptchaError(false);
+    void loadCaptcha();
+  }, [loadCaptcha]);
+
+  useEffect(() => {
+    // Initial challenge fetch on mount. All setState happens after the first
+    // await, so the fetch can never cascade synchronously from the effect.
+    let cancelled = false;
+    (async () => {
+      try {
+        const challenge = await getCaptchaChallenge();
+        if (!cancelled) setCaptcha({ id: challenge.id, question: challenge.question });
+      } catch {
+        if (!cancelled) {
+          setCaptcha(null);
+          setCaptchaError(true);
+        }
+      } finally {
+        if (!cancelled) setCaptchaLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit || !captcha) return;
     setLoading(true);
     setError('');
     try {
-      const ok = await onLogin(username, password, remember);
-      if (!ok) setError('Invalid username or password');
-    } catch {
-      setError('Authentication failed. Check the hub is reachable.');
+      const ok = await onLogin(username, password, remember, captcha.id, captchaAnswer);
+      if (!ok) {
+        setError('Invalid username or password');
+        setCaptchaAnswer('');
+        refreshCaptcha();
+      }
+    } catch (err) {
+      const apiError = err as ApiError;
+      switch (apiError?.error) {
+        case 'invalid_credentials':
+          setError('Invalid username or password');
+          break;
+        case 'captcha_failed':
+          setError(apiError?.message || 'Incorrect verification answer');
+          break;
+        case 'login_rate_limited':
+          setError(apiError?.message || 'Too many login attempts. Try again shortly.');
+          break;
+        default:
+          setError('Authentication failed. Check the hub is reachable.');
+          break;
+      }
+      // A consumed challenge can never be retried; the rate-limit pause is
+      // the one failure where the current challenge is not the problem.
+      if (apiError?.error !== 'login_rate_limited') {
+        setCaptchaAnswer('');
+        refreshCaptcha();
+      }
     } finally {
       setLoading(false);
     }
@@ -112,6 +197,55 @@ export function Login({ onLogin }: Props) {
                   {showPassword ? 'Hide' : 'Show'}
                 </button>
               </div>
+            </div>
+
+            <div style={styles.field}>
+              <label htmlFor="fb-captcha" style={styles.label}>Verification</label>
+              <div style={styles.captchaRow}>
+                <div style={styles.captchaQuestion} aria-live="polite">
+                  <span style={styles.captchaQuestionText}>
+                    {captchaLoading ? '…' : captcha ? captcha.question : '—'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={refreshCaptcha}
+                    style={styles.captchaRefresh}
+                    disabled={captchaLoading || loading}
+                    title="New challenge"
+                    aria-label="New challenge"
+                  >
+                    <IconRefresh style={{ width: 14, height: 14 }} />
+                  </button>
+                </div>
+                <input
+                  id="fb-captcha"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  value={captchaAnswer}
+                  onChange={(e) => { setCaptchaAnswer(e.target.value); if (error) setError(''); }}
+                  placeholder="Answer"
+                  aria-label="Captcha answer"
+                  style={{
+                    ...styles.input,
+                    ...styles.captchaInput,
+                    ...(error ? styles.inputError : null),
+                  }}
+                  disabled={loading || captchaLoading || !captcha}
+                />
+              </div>
+              {captchaError && (
+                <div style={styles.captchaErrorText}>
+                  Could not load the verification challenge.
+                  <button
+                    type="button"
+                    onClick={refreshCaptcha}
+                    style={styles.captchaRetry}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
             </div>
 
             <label style={styles.rememberRow}>
@@ -305,6 +439,70 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '4px 8px',
     borderRadius: radius.sm,
     lineHeight: 1,
+  },
+  captchaRow: {
+    display: 'flex',
+    alignItems: 'stretch',
+    gap: 8,
+  },
+  // Striped question badge — a restrained "prove you're human" affordance
+  // using theme tokens only (no external images).
+  captchaQuestion: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    minWidth: 138,
+    padding: '0 6px 0 12px',
+    borderRadius: radius.md,
+    border: `1px solid ${c.border}`,
+    background: `repeating-linear-gradient(-45deg, ${c.bgMuted} 0px, ${c.bgMuted} 6px, ${c.surface} 6px, ${c.surface} 12px)`,
+    boxSizing: 'border-box',
+    flexShrink: 0,
+  },
+  captchaQuestionText: {
+    fontFamily: font.mono,
+    fontSize: 15,
+    fontWeight: 600,
+    color: c.textSecondary,
+    letterSpacing: '0.06em',
+    whiteSpace: 'nowrap',
+    userSelect: 'none' as const,
+  },
+  captchaRefresh: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 26,
+    height: 26,
+    border: 'none',
+    background: 'transparent',
+    color: c.textMuted,
+    cursor: 'pointer',
+    borderRadius: radius.sm,
+    padding: 0,
+    flexShrink: 0,
+  },
+  captchaInput: {
+    flex: 1,
+    minWidth: 0,
+  },
+  captchaErrorText: {
+    fontSize: 12.5,
+    color: c.danger,
+    lineHeight: 1.4,
+  },
+  captchaRetry: {
+    border: 'none',
+    background: 'transparent',
+    color: c.accent,
+    fontSize: 12.5,
+    fontWeight: 600,
+    fontFamily: font.sans,
+    cursor: 'pointer',
+    padding: 0,
+    marginLeft: 6,
+    textDecoration: 'underline',
   },
   rememberRow: {
     display: 'flex',

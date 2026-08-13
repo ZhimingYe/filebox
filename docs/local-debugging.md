@@ -141,21 +141,42 @@ discipline localizes ~90% of issues.
 ### Authenticate and keep the cookie
 
 ```bash
+# Fetch a login captcha challenge (self-hosted arithmetic) and solve it.
+# Every login attempt consumes its challenge — fetch a fresh one per attempt.
+CAPTCHA_JSON=$(curl -s --noproxy '*' http://127.0.0.1:3000/api/captcha/challenge)
+CAPTCHA_ID=$(printf '%s' "$CAPTCHA_JSON" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+# eval is safe here: the hub generates the question in the strict
+# "<a> <+|−|×> <b> = ?" format (single-digit operands only).
+CAPTCHA_ANSWER=$(printf '%s' "$CAPTCHA_JSON" | python3 -c "
+import sys,json
+q = json.load(sys.stdin)['question'].replace(' = ?','').replace('×','*')
+print(int(eval(q)))")
+
 # Login, store session + CSRF cookies in a jar (mimics a browser)
 curl -s -c /tmp/fb.cookie --noproxy '*' \
   -X POST http://127.0.0.1:3000/api/session/exchange \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"dev-password"}' \
+  -d "{\"username\":\"admin\",\"password\":\"dev-password\",\"captcha_id\":\"$CAPTCHA_ID\",\"captcha_answer\":\"$CAPTCHA_ANSWER\"}" \
   -o /tmp/fb.login.json
 
 # CSRF token from login JSON (also present as filebox_csrf cookie)
 CSRF=$(python3 -c "import json;print(json.load(open('/tmp/fb.login.json'))['csrf_token'])")
 
 # Confirm Set-Cookie includes session + csrf, without Secure in dev mode
+# (fresh challenge required — the previous one was consumed by the login above)
+CAPTCHA_JSON=$(curl -s --noproxy '*' http://127.0.0.1:3000/api/captcha/challenge)
+CAPTCHA_ID=$(printf '%s' "$CAPTCHA_JSON" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+CAPTCHA_ANSWER=$(printf '%s' "$CAPTCHA_JSON" | python3 -c "
+import sys,json
+q = json.load(sys.stdin)['question'].replace(' = ?','').replace('×','*')
+print(int(eval(q)))")
 curl -s -D - -o /dev/null --noproxy '*' \
   -X POST http://127.0.0.1:3000/api/session/exchange \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"dev-password"}' | grep -i set-cookie
+  -d "{\"username\":\"admin\",\"password\":\"dev-password\",\"captcha_id\":\"$CAPTCHA_ID\",\"captcha_answer\":\"$CAPTCHA_ANSWER\"}" \
+  | grep -i set-cookie
 ```
 
 **Why `--noproxy '*'`:** if your shell has `http_proxy`/`https_proxy` set
@@ -201,7 +222,8 @@ curl -s -N -b /tmp/fb.cookie --noproxy '*' \
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/api/health` | no | Liveness + version |
-| POST | `/api/session/exchange` | no | Login → sets session + CSRF cookies |
+| GET | `/api/captcha/challenge` | no (IP rate limited) | Fresh login captcha (single-use, 5 min TTL, no-store) |
+| POST | `/api/session/exchange` | no | Login → sets session + CSRF cookies (requires `captcha_id` + `captcha_answer`) |
 | POST | `/api/session/logout` | yes + CSRF | Logout → clears cookies |
 | GET | `/api/agents` | yes + CSRF | List agents (the "No agents connected" source) |
 | GET | `/api/agents/{id}` | yes | One agent + roots + collections |

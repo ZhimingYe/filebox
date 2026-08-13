@@ -83,7 +83,8 @@ some mobile browsers ship no native PDF viewer.
 tokio-tungstenite. Serves the built frontend via `ServeDir`. 1MB body
 limit. CORS mirrors request origin (credentials need non-`*` ACAO). See
 `routes.rs` for the full route table; `auth.rs` (bcrypt + sessions +
-per-IP login rate limit), `net.rs` (`FILEBOX_TRUST_XFF` for client IP),
+per-IP login rate limit), `captcha.rs` (self-hosted login captcha
+challenges), `net.rs` (`FILEBOX_TRUST_XFF` for client IP),
 `agent_registry.rs` (lifecycle + coalesced pending root/collection
 updates + config_error), `ws.rs` (agent WSS handler with
 abort-on-reregister), `events.rs` (SSE fanout), `fs_proxy.rs` (proxies
@@ -257,6 +258,14 @@ survive navigation.
 
 - Users: bcrypt-hashed passwords in `hub.json`. Sessions: `HttpOnly;
   Secure; SameSite=Strict` cookies.
+- **Login captcha** (`crates/hub/src/captcha.rs`): self-hosted arithmetic
+  challenge from `GET /api/captcha/challenge` (public, per-IP rate limited,
+  `no-store`). Login must echo `captcha_id` + `captcha_answer`. Challenges
+  are in-memory, single-use (consumed by the first check, right or wrong),
+  5-min TTL, bounded per IP and globally. Failed captchas are audited as
+  `captcha_failed` and burn a login-rate-limit attempt, so brute-forcers are
+  throttled before they ever probe a password. No external service — works
+  on air-gapped hubs.
 - Agents: bcrypt-hashed token in `hub.json`. Token separate from user
   session.
 - Login is rate-limited per IP (`state.rate_limiter`).
@@ -284,7 +293,8 @@ survive navigation.
 ## Login Audit (non-obvious invariants)
 
 The hub records every `login_success`, `login_failed`, `login_rate_limited`,
-and `logout` with username, client IP, user agent, and timestamp
+`captcha_failed`, and `logout` with username, client IP, user agent, and
+timestamp
 (`crates/hub/src/audit.rs`), and exposes them read-only via
 `GET /api/audit/logins?limit=&before=` (session + CSRF protected; `before`
 is an exclusive entry id for paging backwards). The sidebar **Audit** view

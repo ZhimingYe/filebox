@@ -15,6 +15,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 
 use crate::agent_registry::AgentStatus;
+use crate::captcha::{CheckOutcome, CHALLENGE_TTL};
 use crate::net::client_ip;
 use crate::state::{
     AppState, AuthenticatedSession, GetAccessPurpose, GetAccessToken, PendingResponse,
@@ -28,6 +29,7 @@ pub fn create_router(state: AppState) -> Router {
     // Public routes (no auth required)
     let public = Router::new()
         .route("/api/health", get(health::health_handler))
+        .route("/api/captcha/challenge", get(captcha_challenge_handler))
         .route("/api/session/exchange", post(session_exchange_handler))
         .route("/ws/agent", get(ws::ws_handler));
 
@@ -604,6 +606,45 @@ struct SessionExchangeRequest {
     username: String,
     password: String,
     remember: Option<bool>,
+    /// Human-check challenge id from `GET /api/captcha/challenge`. Required.
+    captcha_id: Option<String>,
+    /// Human-check answer for that challenge. Required.
+    captcha_answer: Option<String>,
+}
+
+/// Self-hosted login captcha: issue a fresh arithmetic challenge. Public
+/// (needed before any session exists), rate-limited per IP, and never cached.
+async fn captcha_challenge_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let ip = client_ip(&headers, addr);
+    if let Err(remaining) = state.captcha_rate_limiter.check(&ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": "captcha_rate_limited",
+                "message": format!("Too many challenge requests. Try again in {} seconds.", remaining),
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+    // Count the issuance toward the per-IP cap (reuses the login limiter's
+    // counter/cooldown semantics).
+    state.captcha_rate_limiter.record_failure(&ip);
+
+    let challenge = state.captcha.issue(&ip);
+    let mut resp = Json(serde_json::json!({
+        "id": challenge.id,
+        "question": challenge.question,
+        "expires_in_secs": CHALLENGE_TTL.as_secs(),
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
 }
 
 async fn session_exchange_handler(
@@ -625,6 +666,43 @@ async fn session_exchange_handler(
             Json(serde_json::json!({
                 "error": "login_rate_limited",
                 "message": format!("Too many login attempts. Try again in {} seconds.", remaining),
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+
+    // Human check comes before any password verification: a failed captcha
+    // burns a login attempt, so brute-forcers hit the rate limit without ever
+    // probing a credential. The challenge is single-use — the browser must
+    // fetch a fresh one after every attempt.
+    let captcha = match (req.captcha_id.as_deref(), req.captcha_answer.as_deref()) {
+        (Some(id), Some(answer)) if !id.is_empty() && !answer.is_empty() => {
+            state.captcha.check(id, answer)
+        }
+        _ => CheckOutcome::UnknownOrExpired,
+    };
+    if captcha != CheckOutcome::Correct {
+        state.rate_limiter.record_failure(&ip);
+        tracing::warn!(target: "audit", ip = %ip, user = %req.username, "captcha_failed");
+        state
+            .audit
+            .record("captcha_failed", &req.username, &ip, &user_agent);
+        let (status, message) = match captcha {
+            CheckOutcome::Wrong => (
+                StatusCode::UNAUTHORIZED,
+                "Incorrect captcha answer",
+            ),
+            _ => (
+                StatusCode::UNAUTHORIZED,
+                "Captcha challenge missing or expired. Refresh and try again.",
+            ),
+        };
+        return (
+            status,
+            Json(serde_json::json!({
+                "error": "captcha_failed",
+                "message": message,
                 "retryable": true,
             })),
         )

@@ -147,6 +147,10 @@ pub struct AppState {
     /// as JSONL next to the hub config. Write failures degrade to in-memory
     /// only — auditing never fails a login.
     pub audit: Arc<crate::audit::LoginAuditLog>,
+    /// Login captcha challenges (self-hosted arithmetic human check).
+    pub captcha: Arc<crate::captcha::CaptchaStore>,
+    /// Per-IP bound on how often a client may fetch fresh challenges.
+    pub captcha_rate_limiter: Arc<LoginRateLimiter>,
     /// Bounds simultaneous streamed raw responses by actual concurrency,
     /// independent of how many files a user has viewed historically.
     pub raw_read_semaphore: Arc<tokio::sync::Semaphore>,
@@ -247,6 +251,10 @@ impl AppState {
             audit: Arc::new(crate::audit::LoginAuditLog::load(crate::audit::default_path(
                 secure_cookies,
             ))),
+            captcha: Arc::new(crate::captcha::CaptchaStore::new()),
+            // Humans only need a handful of refreshes per minute; this cap just
+            // stops the public challenge endpoint from being a memory pump.
+            captcha_rate_limiter: Arc::new(LoginRateLimiter::new(30, Duration::from_secs(60))),
             // 70 rapid PDF opens must fit without becoming a user-visible
             // rate limit. Memory remains bounded because each stream asks the
             // Agent for at most FILE_CHUNK_MAX_BYTES at a time.

@@ -152,10 +152,17 @@ start_agent() {
 start_agent 1
 
 login() {
+  # Solve the self-hosted arithmetic captcha first (single-use per attempt).
+  CAPTCHA_JSON="$(curl -sS --noproxy '*' "${BASE}/api/captcha/challenge")"
+  CAPTCHA_ID="$(printf '%s' "${CAPTCHA_JSON}" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")"
+  CAPTCHA_ANSWER="$(printf '%s' "${CAPTCHA_JSON}" | python3 -c "
+import sys, json
+q = json.load(sys.stdin)['question'].replace(' = ?', '').replace('×', '*')
+print(int(eval(q)))")"
   curl -sS --noproxy '*' -c "${COOKIE_JAR}" -b "${COOKIE_JAR}" \
     -X POST "${BASE}/api/session/exchange" \
     -H 'Content-Type: application/json' \
-    -d '{"username":"admin","password":"dev-password","remember":false}' \
+    -d "{\"username\":\"admin\",\"password\":\"dev-password\",\"remember\":false,\"captcha_id\":\"${CAPTCHA_ID}\",\"captcha_answer\":\"${CAPTCHA_ANSWER}\"}" \
     -o "${WORKDIR}/login.json"
   CSRF="$(python3 -c "import json;print(json.load(open('${WORKDIR}/login.json'))['csrf_token'])")"
   export CSRF

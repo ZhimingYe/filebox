@@ -11,6 +11,7 @@ const EVENT_META: Record<string, { label: string; color: string; bg: string }> =
   login_success: { label: 'Signed in', color: c.success, bg: c.successBg },
   login_failed: { label: 'Login failed', color: c.danger, bg: c.dangerBg },
   login_rate_limited: { label: 'Rate limited', color: c.warning, bg: c.warningBg },
+  captcha_failed: { label: 'Captcha failed', color: c.warning, bg: c.warningBg },
   logout: { label: 'Signed out', color: c.textSecondary, bg: c.bgMuted },
 };
 

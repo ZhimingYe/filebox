@@ -56,14 +56,23 @@ export function useSession() {
     return () => window.removeEventListener('filebox:session-expired', onExpired);
   }, []);
 
-  const login = useCallback(async (username: string, password: string, remember: boolean) => {
-    const result = await api.exchangeSession(username, password, remember);
-    if (result.ok) {
-      setLoggedIn(true);
-      return true;
-    }
-    return false;
-  }, []);
+  const login = useCallback(
+    async (
+      username: string,
+      password: string,
+      remember: boolean,
+      captchaId: string,
+      captchaAnswer: string,
+    ) => {
+      const result = await api.exchangeSession(username, password, remember, captchaId, captchaAnswer);
+      if (result.ok) {
+        setLoggedIn(true);
+        return true;
+      }
+      return false;
+    },
+    [],
+  );
 
   const logout = useCallback(async () => {
     try {
