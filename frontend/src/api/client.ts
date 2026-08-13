@@ -204,24 +204,25 @@ export interface ApiError {
 
 // ── Session ──────────────────────────────────────────────────────────────────
 
-/** Self-hosted arithmetic login captcha challenge. Single-use: a fresh
- *  challenge must be fetched after every submit attempt. */
-export interface CaptchaChallenge {
+/** Self-hosted proof-of-work login challenge. Single-use: a fresh challenge
+ *  must be fetched and solved after every submit attempt. */
+export interface PowChallenge {
   id: string;
-  question: string;
+  salt: string;
+  difficulty: number;
   expires_in_secs: number;
 }
 
-export async function getCaptchaChallenge() {
-  return request<CaptchaChallenge>('/api/captcha/challenge');
+export async function getPowChallenge() {
+  return request<PowChallenge>('/api/pow/challenge');
 }
 
 export async function exchangeSession(
   username: string,
   password: string,
   remember: boolean,
-  captchaId: string,
-  captchaAnswer: string,
+  powId: string,
+  powNonce: string,
 ) {
   const result = await request<{ ok: boolean; permissions: string[]; csrf_token?: string }>(
     '/api/session/exchange',
@@ -231,8 +232,8 @@ export async function exchangeSession(
         username,
         password,
         remember,
-        captcha_id: captchaId,
-        captcha_answer: captchaAnswer,
+        pow_id: powId,
+        pow_nonce: powNonce,
       }),
     },
   );
@@ -256,7 +257,7 @@ export type LoginAuditEvent =
   | 'login_success'
   | 'login_failed'
   | 'login_rate_limited'
-  | 'captcha_failed'
+  | 'pow_failed'
   | 'logout'
   | (string & {});
 

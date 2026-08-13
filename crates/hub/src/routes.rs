@@ -15,8 +15,8 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 
 use crate::agent_registry::AgentStatus;
-use crate::captcha::{CheckOutcome, CHALLENGE_TTL};
 use crate::net::client_ip;
+use crate::pow::{VerifyOutcome, CHALLENGE_TTL};
 use crate::state::{
     AppState, AuthenticatedSession, GetAccessPurpose, GetAccessToken, PendingResponse,
     PreviewSession, GET_ACCESS_TOKEN_MAX_TOTAL, GET_ACCESS_TOKEN_TTL_EVENTS,
@@ -29,7 +29,7 @@ pub fn create_router(state: AppState) -> Router {
     // Public routes (no auth required)
     let public = Router::new()
         .route("/api/health", get(health::health_handler))
-        .route("/api/captcha/challenge", get(captcha_challenge_handler))
+        .route("/api/pow/challenge", get(pow_challenge_handler))
         .route("/api/session/exchange", post(session_exchange_handler))
         .route("/ws/agent", get(ws::ws_handler));
 
@@ -606,25 +606,25 @@ struct SessionExchangeRequest {
     username: String,
     password: String,
     remember: Option<bool>,
-    /// Human-check challenge id from `GET /api/captcha/challenge`. Required.
-    captcha_id: Option<String>,
-    /// Human-check answer for that challenge. Required.
-    captcha_answer: Option<String>,
+    /// Proof-of-work challenge id from `GET /api/pow/challenge`. Required.
+    pow_id: Option<String>,
+    /// Nonce proving the required work for that challenge. Required.
+    pow_nonce: Option<String>,
 }
 
-/// Self-hosted login captcha: issue a fresh arithmetic challenge. Public
-/// (needed before any session exists), rate-limited per IP, and never cached.
-async fn captcha_challenge_handler(
+/// Self-hosted login proof-of-work: issue a fresh challenge. Public (needed
+/// before any session exists), rate-limited per IP, and never cached.
+async fn pow_challenge_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     let ip = client_ip(&headers, addr);
-    if let Err(remaining) = state.captcha_rate_limiter.check(&ip) {
+    if let Err(remaining) = state.pow_rate_limiter.check(&ip) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({
-                "error": "captcha_rate_limited",
+                "error": "pow_rate_limited",
                 "message": format!("Too many challenge requests. Try again in {} seconds.", remaining),
                 "retryable": true,
             })),
@@ -633,12 +633,13 @@ async fn captcha_challenge_handler(
     }
     // Count the issuance toward the per-IP cap (reuses the login limiter's
     // counter/cooldown semantics).
-    state.captcha_rate_limiter.record_failure(&ip);
+    state.pow_rate_limiter.record_failure(&ip);
 
-    let challenge = state.captcha.issue(&ip);
+    let challenge = state.pow.issue(&ip);
     let mut resp = Json(serde_json::json!({
         "id": challenge.id,
-        "question": challenge.question,
+        "salt": challenge.salt,
+        "difficulty": challenge.difficulty,
         "expires_in_secs": CHALLENGE_TTL.as_secs(),
     }))
     .into_response();
@@ -672,36 +673,37 @@ async fn session_exchange_handler(
             .into_response();
     }
 
-    // Human check comes before any password verification: a failed captcha
-    // burns a login attempt, so brute-forcers hit the rate limit without ever
-    // probing a credential. The challenge is single-use — the browser must
-    // fetch a fresh one after every attempt.
-    let captcha = match (req.captcha_id.as_deref(), req.captcha_answer.as_deref()) {
-        (Some(id), Some(answer)) if !id.is_empty() && !answer.is_empty() => {
-            state.captcha.check(id, answer)
+    // Proof of work comes before any password verification: a failed proof
+    // burns a login attempt, so password guessers pay ~2^difficulty hashes
+    // per attempt AND hit the rate limit without ever probing a credential.
+    // The challenge is single-use — the browser must fetch + solve a fresh
+    // one after every attempt.
+    let pow = match (req.pow_id.as_deref(), req.pow_nonce.as_deref()) {
+        (Some(id), Some(nonce)) if !id.is_empty() && !nonce.is_empty() => {
+            state.pow.verify(id, nonce)
         }
-        _ => CheckOutcome::UnknownOrExpired,
+        _ => VerifyOutcome::UnknownOrExpired,
     };
-    if captcha != CheckOutcome::Correct {
+    if pow != VerifyOutcome::Valid {
         state.rate_limiter.record_failure(&ip);
-        tracing::warn!(target: "audit", ip = %ip, user = %req.username, "captcha_failed");
+        tracing::warn!(target: "audit", ip = %ip, user = %req.username, "pow_failed");
         state
             .audit
-            .record("captcha_failed", &req.username, &ip, &user_agent);
-        let (status, message) = match captcha {
-            CheckOutcome::Wrong => (
+            .record("pow_failed", &req.username, &ip, &user_agent);
+        let (status, message) = match pow {
+            VerifyOutcome::Insufficient => (
                 StatusCode::UNAUTHORIZED,
-                "Incorrect captcha answer",
+                "Insufficient proof of work",
             ),
             _ => (
                 StatusCode::UNAUTHORIZED,
-                "Captcha challenge missing or expired. Refresh and try again.",
+                "Verification challenge missing or expired. Refresh and try again.",
             ),
         };
         return (
             status,
             Json(serde_json::json!({
-                "error": "captcha_failed",
+                "error": "pow_failed",
                 "message": message,
                 "retryable": true,
             })),

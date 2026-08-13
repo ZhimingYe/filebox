@@ -61,10 +61,10 @@ export function useSession() {
       username: string,
       password: string,
       remember: boolean,
-      captchaId: string,
-      captchaAnswer: string,
+      powId: string,
+      powNonce: string,
     ) => {
-      const result = await api.exchangeSession(username, password, remember, captchaId, captchaAnswer);
+      const result = await api.exchangeSession(username, password, remember, powId, powNonce);
       if (result.ok) {
         setLoggedIn(true);
         return true;

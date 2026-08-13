@@ -1,18 +1,21 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { c, radius, shadow, font } from '../theme';
-import { IconBrandMark, IconRefresh } from './icons';
+import { IconBrandMark, IconCheck, IconRefresh } from './icons';
 import { useIsMobile } from '../state/useIsMobile';
-import { getCaptchaChallenge, type ApiError } from '../api/client';
+import { getPowChallenge, type ApiError } from '../api/client';
+import { solvePow } from '../lib/pow';
 
 interface Props {
   onLogin: (
     username: string,
     password: string,
     remember: boolean,
-    captchaId: string,
-    captchaAnswer: string,
+    powId: string,
+    powNonce: string,
   ) => Promise<boolean>;
 }
+
+type VerificationStatus = 'loading' | 'solving' | 'ready' | 'error';
 
 export function Login({ onLogin }: Props) {
   const isMobile = useIsMobile();
@@ -24,74 +27,91 @@ export function Login({ onLogin }: Props) {
   const [loading, setLoading] = useState(false);
   const [focused, setFocused] = useState<'user' | 'pass' | null>(null);
   const [btnHover, setBtnHover] = useState(false);
-  const [captcha, setCaptcha] = useState<{ id: string; question: string } | null>(null);
-  const [captchaAnswer, setCaptchaAnswer] = useState('');
-  const [captchaLoading, setCaptchaLoading] = useState(true);
-  const [captchaError, setCaptchaError] = useState(false);
+  const [pow, setPow] = useState<{ id: string; salt: string; difficulty: number } | null>(null);
+  const [powNonce, setPowNonce] = useState<string | null>(null);
+  const [powStatus, setPowStatus] = useState<VerificationStatus>('loading');
+  const [powProgress, setPowProgress] = useState(0);
+  // Supersedes stale fetches/solves (a new run invalidates the previous one).
+  const powGenRef = useRef(0);
+  const powAbortRef = useRef<AbortController | null>(null);
 
   const canSubmit =
     username.trim().length > 0
     && password.trim().length > 0
-    && captcha !== null
-    && captchaAnswer.trim().length > 0
+    && powStatus === 'ready'
+    && powNonce !== null
     && !loading;
 
-  // Interactive refreshes (refresh button, failed submit). Event handlers may
-  // set state synchronously; the mount effect uses its own inline IIFE.
-  const loadCaptcha = useCallback(async () => {
-    setCaptchaLoading(true);
-    setCaptchaError(false);
+  // Fetch a challenge and solve it in the background. Event handlers and the
+  // deferred mount effect may call this; it sets state synchronously, so the
+  // mount effect defers it one tick (react-hooks/set-state-in-effect).
+  const startVerification = useCallback(async () => {
+    const gen = ++powGenRef.current;
+    powAbortRef.current?.abort();
+    const controller = new AbortController();
+    powAbortRef.current = controller;
+    setPow(null);
+    setPowNonce(null);
+    setPowStatus('loading');
+    setPowProgress(0);
+
+    let challenge;
     try {
-      const challenge = await getCaptchaChallenge();
-      setCaptcha({ id: challenge.id, question: challenge.question });
+      challenge = await getPowChallenge();
     } catch {
-      setCaptcha(null);
-      setCaptchaError(true);
-    } finally {
-      setCaptchaLoading(false);
+      if (powGenRef.current === gen) setPowStatus('error');
+      return;
+    }
+    if (powGenRef.current !== gen || controller.signal.aborted) return;
+
+    setPow({ id: challenge.id, salt: challenge.salt, difficulty: challenge.difficulty });
+    setPowStatus('solving');
+    const expected = Math.pow(2, challenge.difficulty);
+    let lastRender = 0;
+    try {
+      const nonce = await solvePow(challenge, {
+        signal: controller.signal,
+        onProgress: (attempts) => {
+          // Throttle to ~10 renders/s — the solver reports per ~16k hashes.
+          const now = Date.now();
+          if (now - lastRender < 100) return;
+          lastRender = now;
+          if (powGenRef.current === gen) {
+            setPowProgress(Math.min(99, Math.round((attempts / expected) * 100)));
+          }
+        },
+      });
+      if (powGenRef.current !== gen || controller.signal.aborted) return;
+      setPowNonce(nonce);
+      setPowStatus('ready');
+    } catch (err) {
+      if (powGenRef.current !== gen) return;
+      if ((err as DOMException)?.name === 'AbortError') return;
+      setPowStatus('error');
     }
   }, []);
 
-  const refreshCaptcha = useCallback(() => {
-    setCaptcha(null);
-    setCaptchaLoading(true);
-    setCaptchaError(false);
-    void loadCaptcha();
-  }, [loadCaptcha]);
-
   useEffect(() => {
-    // Initial challenge fetch on mount. All setState happens after the first
-    // await, so the fetch can never cascade synchronously from the effect.
-    let cancelled = false;
-    (async () => {
-      try {
-        const challenge = await getCaptchaChallenge();
-        if (!cancelled) setCaptcha({ id: challenge.id, question: challenge.question });
-      } catch {
-        if (!cancelled) {
-          setCaptcha(null);
-          setCaptchaError(true);
-        }
-      } finally {
-        if (!cancelled) setCaptchaLoading(false);
-      }
-    })();
+    // Deferred one tick so no state update fires synchronously from the
+    // effect; the cleanup aborts any in-flight verification on unmount.
+    const timer = window.setTimeout(() => void startVerification(), 0);
     return () => {
-      cancelled = true;
+      window.clearTimeout(timer);
+      powGenRef.current += 1;
+      powAbortRef.current?.abort();
     };
-  }, []);
+  }, [startVerification]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSubmit || !captcha) return;
+    if (!canSubmit || !pow || !powNonce) return;
     setLoading(true);
     setError('');
     try {
-      const ok = await onLogin(username, password, remember, captcha.id, captchaAnswer);
+      const ok = await onLogin(username, password, remember, pow.id, powNonce);
       if (!ok) {
         setError('Invalid username or password');
-        setCaptchaAnswer('');
-        refreshCaptcha();
+        void startVerification();
       }
     } catch (err) {
       const apiError = err as ApiError;
@@ -99,8 +119,8 @@ export function Login({ onLogin }: Props) {
         case 'invalid_credentials':
           setError('Invalid username or password');
           break;
-        case 'captcha_failed':
-          setError(apiError?.message || 'Incorrect verification answer');
+        case 'pow_failed':
+          setError(apiError?.message || 'Verification failed');
           break;
         case 'login_rate_limited':
           setError(apiError?.message || 'Too many login attempts. Try again shortly.');
@@ -112,8 +132,7 @@ export function Login({ onLogin }: Props) {
       // A consumed challenge can never be retried; the rate-limit pause is
       // the one failure where the current challenge is not the problem.
       if (apiError?.error !== 'login_rate_limited') {
-        setCaptchaAnswer('');
-        refreshCaptcha();
+        void startVerification();
       }
     } finally {
       setLoading(false);
@@ -200,47 +219,40 @@ export function Login({ onLogin }: Props) {
             </div>
 
             <div style={styles.field}>
-              <label htmlFor="fb-captcha" style={styles.label}>Verification</label>
-              <div style={styles.captchaRow}>
-                <div style={styles.captchaQuestion} aria-live="polite">
-                  <span style={styles.captchaQuestionText}>
-                    {captchaLoading ? '…' : captcha ? captcha.question : '—'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={refreshCaptcha}
-                    style={styles.captchaRefresh}
-                    disabled={captchaLoading || loading}
-                    title="New challenge"
-                    aria-label="New challenge"
-                  >
-                    <IconRefresh style={{ width: 14, height: 14 }} />
-                  </button>
-                </div>
-                <input
-                  id="fb-captcha"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="off"
-                  value={captchaAnswer}
-                  onChange={(e) => { setCaptchaAnswer(e.target.value); if (error) setError(''); }}
-                  placeholder="Answer"
-                  aria-label="Captcha answer"
-                  style={{
-                    ...styles.input,
-                    ...styles.captchaInput,
-                    ...(error ? styles.inputError : null),
-                  }}
-                  disabled={loading || captchaLoading || !captcha}
-                />
+              <label htmlFor="fb-pow" style={styles.label}>Verification</label>
+              <div style={styles.powBadge} aria-live="polite">
+                <span style={styles.powBadgeText}>
+                  {powStatus === 'solving' && `Solving… ${powProgress}%`}
+                  {powStatus === 'ready' && 'Ready'}
+                  {powStatus === 'error' && 'Unavailable'}
+                  {powStatus === 'loading' && '…'}
+                </span>
+                {powStatus === 'ready' && (
+                  <IconCheck style={{ width: 14, height: 14, color: c.success }} />
+                )}
+                <button
+                  type="button"
+                  onClick={() => void startVerification()}
+                  style={styles.powRefresh}
+                  disabled={powStatus === 'loading' || powStatus === 'solving' || loading}
+                  title="Re-run verification"
+                  aria-label="Re-run verification"
+                >
+                  <IconRefresh style={{ width: 14, height: 14 }} />
+                </button>
               </div>
-              {captchaError && (
-                <div style={styles.captchaErrorText}>
-                  Could not load the verification challenge.
+              <div style={styles.powHint}>
+                {powStatus === 'solving'
+                  ? 'Proving this is not an automated sign-in attempt…'
+                  : 'Protects the sign-in form from automated attempts.'}
+              </div>
+              {powStatus === 'error' && (
+                <div style={styles.powErrorText}>
+                  Could not complete verification.
                   <button
                     type="button"
-                    onClick={refreshCaptcha}
-                    style={styles.captchaRetry}
+                    onClick={() => void startVerification()}
+                    style={styles.powRetry}
                   >
                     Retry
                   </button>
@@ -440,36 +452,31 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: radius.sm,
     lineHeight: 1,
   },
-  captchaRow: {
-    display: 'flex',
-    alignItems: 'stretch',
-    gap: 8,
-  },
-  // Striped question badge — a restrained "prove you're human" affordance
-  // using theme tokens only (no external images).
-  captchaQuestion: {
+  // Proof-of-work status badge — striped "checking" affordance using theme
+  // tokens only (no external images).
+  powBadge: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
-    minWidth: 138,
+    minHeight: 40,
     padding: '0 6px 0 12px',
     borderRadius: radius.md,
     border: `1px solid ${c.border}`,
     background: `repeating-linear-gradient(-45deg, ${c.bgMuted} 0px, ${c.bgMuted} 6px, ${c.surface} 6px, ${c.surface} 12px)`,
     boxSizing: 'border-box',
-    flexShrink: 0,
   },
-  captchaQuestionText: {
+  powBadgeText: {
+    flex: 1,
     fontFamily: font.mono,
-    fontSize: 15,
+    fontSize: 13.5,
     fontWeight: 600,
     color: c.textSecondary,
-    letterSpacing: '0.06em',
+    letterSpacing: '0.04em',
     whiteSpace: 'nowrap',
     userSelect: 'none' as const,
   },
-  captchaRefresh: {
+  powRefresh: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -483,16 +490,18 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 0,
     flexShrink: 0,
   },
-  captchaInput: {
-    flex: 1,
-    minWidth: 0,
+  powHint: {
+    fontSize: 12,
+    color: c.textMuted,
+    lineHeight: 1.4,
+    letterSpacing: '-0.01em',
   },
-  captchaErrorText: {
+  powErrorText: {
     fontSize: 12.5,
     color: c.danger,
     lineHeight: 1.4,
   },
-  captchaRetry: {
+  powRetry: {
     border: 'none',
     background: 'transparent',
     color: c.accent,

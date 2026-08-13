@@ -99,8 +99,8 @@ no Hub restart required for UI-only changes).
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/captcha/challenge` | GET | Public human-check challenge (single-use, 5 min TTL) |
-| `/api/session/exchange` | POST | Login (requires `captcha_id` + `captcha_answer`; returns `csrf_token`; sets session + CSRF cookies) |
+| `/api/pow/challenge` | GET | Public proof-of-work challenge (single-use, 5 min TTL) |
+| `/api/session/exchange` | POST | Login (requires `pow_id` + `pow_nonce`; returns `csrf_token`; sets session + CSRF cookies) |
 | `/api/session/logout` | POST | Logout (requires `X-CSRF-Token`) |
 | `/api/health` | GET | Public hub health |
 | `/api/agents` | GET | List agents |
