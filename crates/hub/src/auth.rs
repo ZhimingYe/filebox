@@ -26,6 +26,8 @@ pub struct Session {
     /// the `X-CSRF-Token` header. Headerless GETs use short-lived access tokens
     /// instead — never put this value in a URL query string.
     pub csrf_token: String,
+    /// Account that owns this session (login audit attribution).
+    pub username: String,
     pub permissions: Vec<String>,
     pub created_at: u64,
     pub expires_at: u64,
@@ -90,7 +92,7 @@ impl SessionStore {
         bcrypt::verify(token, &self.agent_token_hash).unwrap_or(false)
     }
 
-    pub fn create_session(&mut self, _username: &str, remember: bool) -> (Session, u64) {
+    pub fn create_session(&mut self, username: &str, remember: bool) -> (Session, u64) {
         let session_id = generate_session_id();
         let principal_id = generate_session_id();
         let csrf_token = generate_session_id();
@@ -102,6 +104,7 @@ impl SessionStore {
             session_id: session_id.clone(),
             principal_id,
             csrf_token,
+            username: username.to_string(),
             permissions: vec![
                 "view_files".to_string(),
                 "preview_files".to_string(),
@@ -163,6 +166,7 @@ impl SessionStore {
                 // the synchronizer (header / readable cookie) keep working.
                 // GET access tokens are bound to principal_id, not cookie id.
                 csrf_token: current.csrf_token.clone(),
+                username: current.username.clone(),
                 permissions: current.permissions.clone(),
                 created_at: now,
                 expires_at: new_expires,
@@ -411,6 +415,7 @@ mod tests {
             session_id: session_id.to_string(),
             principal_id: "principal-1".to_string(),
             csrf_token: "csrf-old".to_string(),
+            username: "admin".to_string(),
             permissions: vec!["view_files".to_string()],
             created_at: now.saturating_sub(80),
             expires_at: now + 20,
@@ -540,6 +545,7 @@ mod tests {
                 session_id: session_id.clone(),
                 principal_id: "p".to_string(),
                 csrf_token: "csrf-test".to_string(),
+                username: "admin".to_string(),
                 permissions: vec![],
                 created_at: 0,
                 expires_at: past,
@@ -555,6 +561,7 @@ mod tests {
             session_id: "x".to_string(),
             principal_id: "p".to_string(),
             csrf_token: "csrf-test".to_string(),
+            username: "admin".to_string(),
             permissions: vec![],
             created_at: 0,
             expires_at: 1, // epoch + 1s = past
@@ -570,6 +577,7 @@ mod tests {
             session_id: "x".to_string(),
             principal_id: "p".to_string(),
             csrf_token: "csrf-test".to_string(),
+            username: "admin".to_string(),
             permissions: vec![],
             created_at: 0,
             expires_at: future,
@@ -609,6 +617,7 @@ mod tests {
                 session_id: expired_id.clone(),
                 principal_id: "expired-principal".to_string(),
                 csrf_token: "csrf-test".to_string(),
+                username: "admin".to_string(),
                 permissions: vec![],
                 created_at: 0,
                 expires_at: 1,

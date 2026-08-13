@@ -20,6 +20,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Hub login audit sidecar (dev mode writes it to cwd; prod keeps it next to config)
+audit-log.jsonl
+
 # Env / secrets
 .env
 .env.*

@@ -1,4 +1,4 @@
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
@@ -40,6 +40,7 @@ pub fn create_router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/api/events", get(events::sse_handler))
         .route("/api/session/logout", post(session_logout_handler))
+        .route("/api/audit/logins", get(login_audit_handler))
         .route("/api/agents", get(agents_list_handler))
         .route("/api/agents/{agent_id}", get(agent_detail_handler))
         .route(
@@ -612,9 +613,13 @@ async fn session_exchange_handler(
     Json(req): Json<SessionExchangeRequest>,
 ) -> Response {
     let ip = client_ip(&headers, addr);
+    let user_agent = user_agent(&headers);
 
     // Rate limit check
     if let Err(remaining) = state.rate_limiter.check(&ip) {
+        state
+            .audit
+            .record("login_rate_limited", &req.username, &ip, &user_agent);
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({
@@ -632,6 +637,9 @@ async fn session_exchange_handler(
         drop(inner);
         state.rate_limiter.record_failure(&ip);
         tracing::warn!(target: "audit", ip = %ip, user = %req.username, "login_failed");
+        state
+            .audit
+            .record("login_failed", &req.username, &ip, &user_agent);
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
@@ -653,6 +661,9 @@ async fn session_exchange_handler(
     state.rate_limiter.clear(&ip);
 
     tracing::info!(target: "audit", ip = %ip, user = %req.username, "login_success");
+    state
+        .audit
+        .record("login_success", &req.username, &ip, &user_agent);
 
     let mut resp = (
         StatusCode::OK,
@@ -677,7 +688,14 @@ async fn session_logout_handler(
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
 ) -> Response {
     let ip = client_ip(&headers, addr);
+    let user_agent = user_agent(&headers);
     let mut inner = state.inner.write().await;
+    // Attribute the audit record to the account before the session is gone.
+    let username = inner
+        .sessions
+        .get_session(&session.id)
+        .map(|s| s.username.clone())
+        .unwrap_or_default();
     inner.sessions.remove(&session.id);
     let preview_sessions = inner.preview_sessions.clone();
     let get_access_tokens = inner.get_access_tokens.clone();
@@ -691,7 +709,8 @@ async fn session_logout_handler(
         tokens.retain(|_, tok| tok.principal_id != session.principal_id);
     }
 
-    tracing::info!(target: "audit", ip = %ip, "logout");
+    tracing::info!(target: "audit", ip = %ip, user = %username, "logout");
+    state.audit.record("logout", &username, &ip, &user_agent);
 
     let mut resp = (
         StatusCode::OK,
@@ -702,6 +721,38 @@ async fn session_logout_handler(
         resp.headers_mut().append(header::SET_COOKIE, cookie);
     }
     resp
+}
+
+// ── Login audit ──────────────────────────────────────────────────────────────
+
+/// Newest-first page of login audit records. `limit` (default 100, max 500)
+/// bounds the page; `before` (exclusive entry id) walks backwards through
+/// older records. Session-protected like every other control API.
+#[derive(serde::Deserialize)]
+struct LoginAuditQuery {
+    limit: Option<usize>,
+    before: Option<u64>,
+}
+
+async fn login_audit_handler(
+    State(state): State<AppState>,
+    Query(query): Query<LoginAuditQuery>,
+) -> Response {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let (entries, has_more) = state.audit.recent(limit, query.before);
+    Json(serde_json::json!({
+        "entries": entries,
+        "has_more": has_more,
+    }))
+    .into_response()
+}
+
+fn user_agent(headers: &HeaderMap) -> String {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string()
 }
 
 // ── Short-lived GET access tokens (downloads / SSE / PDF ranges) ────────────
@@ -2924,6 +2975,7 @@ mod tests {
                 session_id: session_id.clone(),
                 principal_id: principal_id.clone(),
                 csrf_token: csrf,
+                username: "admin".to_string(),
                 permissions: vec!["view_files".to_string()],
                 created_at: now.saturating_sub(80),
                 expires_at: now + 20,

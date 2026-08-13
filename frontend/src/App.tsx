@@ -24,6 +24,7 @@ import { usePreviewTabs } from './hooks/usePreviewTabs';
 import { AgentSettings } from './components/AgentSettings';
 import { AboutDialog } from './components/AboutDialog';
 import { SystemStats } from './components/SystemStats';
+import { LoginAudit } from './components/LoginAudit';
 import { SearchFloatWindow } from './components/SearchFloatWindow';
 import { SearchBottomSheet } from './components/SearchBottomSheet';
 import { PinnedFolders } from './components/PinnedFolders';
@@ -43,6 +44,7 @@ import {
   IconMenu,
   IconClose,
   IconBrandMark,
+  IconAudit,
 } from './components/icons';
 import type { FsEntry } from './api/client';
 import * as api from './api/client';
@@ -72,7 +74,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'explorer' | 'collections' | 'settings' | 'stats';
+type View = 'files' | 'explorer' | 'collections' | 'settings' | 'stats' | 'audit';
 
 interface ProgressEvent {
   req_id: string;
@@ -858,6 +860,24 @@ export default function App() {
             </div>
           </>
         )}
+
+        {/* Hub-level section: the login audit trail is available even when no
+            agent is selected (it lives on the hub, not on an agent). */}
+        <>
+          {!collapsed && <div style={styles.sectionRule} aria-hidden />}
+          <div style={sectionStyle}>
+            {!collapsed && <div style={styles.sectionHeader}>Hub</div>}
+            <div style={collapsed ? styles.navCollapsed : styles.nav}>
+              <SidebarNavButton
+                label="Audit"
+                Icon={IconAudit}
+                active={view === 'audit'}
+                collapsed={collapsed}
+                onClick={() => navigate('audit')}
+              />
+            </div>
+          </div>
+        </>
         <div style={{ flex: 1 }} />
       </div>
 
@@ -1032,12 +1052,19 @@ export default function App() {
         {/* Content area */}
         <div style={styles.contentArea}>
           {!selectedAgent ? (
-            <NoAgentSelected
-              agents={agents}
-              isMobile={isMobile}
-              onOpenSidebar={isMobile ? () => setSidebarOpen(true) : undefined}
-              onSelectAgent={selectAgent}
-            />
+            view === 'audit' ? (
+              // Hub-level audit stays reachable without a selected agent.
+              <div style={styles.secondaryView}>
+                <LoginAudit />
+              </div>
+            ) : (
+              <NoAgentSelected
+                agents={agents}
+                isMobile={isMobile}
+                onOpenSidebar={isMobile ? () => setSidebarOpen(true) : undefined}
+                onSelectAgent={selectAgent}
+              />
+            )
           ) : (
             <>
               {/* Keep FileBrowser mounted across Files/Settings/Stats and across
@@ -1228,6 +1255,11 @@ export default function App() {
               {view === 'stats' && (
                 <div style={styles.secondaryView}>
                   <SystemStats agentId={selectedAgent.id} />
+                </div>
+              )}
+              {view === 'audit' && (
+                <div style={styles.secondaryView}>
+                  <LoginAudit />
                 </div>
               )}
             </>
