@@ -179,7 +179,7 @@ export async function solvePow(
   opts: { onProgress?: (attempts: number) => void; signal?: AbortSignal } = {},
 ): Promise<string> {
   const { id, salt } = target;
-  const difficulty = Math.round(target.difficulty);
+  const difficulty = target.difficulty;
   if (!Number.isInteger(difficulty) || difficulty < 1 || difficulty > 32) {
     throw new Error(`invalid difficulty: ${target.difficulty}`);
   }
@@ -219,6 +219,11 @@ export async function solvePow(
       attempts++;
       if (leadingZeroBits(hash) >= difficulty) {
         opts.onProgress?.(attempts);
+        // Keep the abort contract: an abort that lands mid-chunk must still
+        // reject rather than resolve with a now-unwanted nonce.
+        if (opts.signal?.aborted) {
+          throw new DOMException('The operation was aborted.', 'AbortError');
+        }
         return String.fromCharCode(...msg.subarray(prefix.length, messageLen));
       }
     }

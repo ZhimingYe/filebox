@@ -72,9 +72,11 @@ export function Login({ onLogin }: Props) {
       const nonce = await solvePow(challenge, {
         signal: controller.signal,
         onProgress: (attempts) => {
-          // Throttle to ~10 renders/s — the solver reports per ~16k hashes.
+          // Throttle to ~4 renders/s — the solver reports per ~16k hashes,
+          // and this text feeds an aria-live region (keep announcements
+          // sparse for screen readers).
           const now = Date.now();
-          if (now - lastRender < 100) return;
+          if (now - lastRender < 250) return;
           lastRender = now;
           if (powGenRef.current === gen) {
             setPowProgress(Math.min(99, Math.round((attempts / expected) * 100)));
