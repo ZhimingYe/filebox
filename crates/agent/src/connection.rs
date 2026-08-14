@@ -10,13 +10,34 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 use filebox_protocol::message::{AgentMessage, HubMessage};
-use filebox_protocol::resources::Capabilities;
+use filebox_protocol::resources::{Capabilities, RootConfig};
 
 use crate::config::AgentConfig;
 use crate::content_cache::ContentCache;
 use crate::dir_cache::DirCache;
 use crate::resources::ResourceManager;
 use crate::sysinfo::StatsCache;
+
+/// User roots plus the synthetic temp-upload root (when enabled). The temp
+/// root is appended for read-side resolution only — it is never persisted
+/// into the desired set. A user root with the same name takes precedence.
+fn roots_with_temp(
+    mgr: &ResourceManager,
+    temp_store: Option<&Arc<crate::temp_store::TempStore>>,
+) -> Vec<RootConfig> {
+    let mut roots = mgr.roots().to_vec();
+    if let Some(store) = temp_store {
+        if !roots.iter().any(|r| r.name == store.name()) {
+            roots.push(RootConfig {
+                name: store.name().to_string(),
+                path: store.upload_dir_str(),
+                enabled: true,
+                pinned_folders: Vec::new(),
+            });
+        }
+    }
+    roots
+}
 
 /// At most one workspace search at a time — large trees are expensive and
 /// must not pile up under load. Additional requests get a fast busy error.
@@ -276,6 +297,30 @@ pub async fn run_connection_loop(config: &AgentConfig) {
             }
         },
     );
+    // Dedicated temp-upload folder — the ONLY write path in this agent.
+    // Absent when the folder cannot be initialized; the capability is then
+    // advertised as false and the hub rejects uploads.
+    let temp_store = match crate::temp_store::TempStore::new(
+        crate::temp_store::TempStoreConfig::from_env(
+            &config.data_dir,
+            config.temp_dir.as_deref(),
+            config.temp_upload_name.as_deref(),
+        ),
+    ) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(error) => {
+            tracing::warn!("Temp upload folder disabled: {error}");
+            None
+        }
+    };
+    if let Some(store) = temp_store.as_ref() {
+        tracing::info!(
+            "Temp upload folder enabled: {} (max file {} bytes, total quota {} bytes)",
+            store.upload_dir_str(),
+            store.root_info().max_file_bytes,
+            store.root_info().max_total_bytes,
+        );
+    }
     // Shared across reconnects. A filesystem syscall left behind by a broken
     // WebSocket must continue counting against the same global worker bound.
     let fs_workers = Arc::new(Semaphore::new(FS_WORKER_CONCURRENCY));
@@ -302,6 +347,7 @@ pub async fn run_connection_loop(config: &AgentConfig) {
             &dir_cache,
             &content_cache,
             office_runtime.as_ref(),
+            temp_store.as_ref(),
             &fs_workers,
             &dir_list_workers,
             &search_inflight,
@@ -360,6 +406,7 @@ async fn run_one_connection(
     dir_cache: &Arc<DirCache>,
     content_cache: &Arc<ContentCache>,
     office_runtime: Option<&Arc<crate::office_convert::OfficeRuntime>>,
+    temp_store: Option<&Arc<crate::temp_store::TempStore>>,
     fs_workers: &Arc<Semaphore>,
     dir_list_workers: &Arc<Semaphore>,
     search_inflight: &Arc<AtomicUsize>,
@@ -446,6 +493,11 @@ async fn run_one_connection(
         capabilities.office_max_pdf_bytes = Some(runtime.config.max_pdf_bytes);
         capabilities.office_timeout_secs = Some(runtime.config.timeout.as_secs());
     }
+    // The temp folder is a capability AND a synthetic root. The root never
+    // enters the persisted desired set — the hub surfaces it to the UI from
+    // the Register payload, and this agent resolves the name specially.
+    capabilities.temp_upload = temp_store.is_some();
+    let temp_root = temp_store.map(|store| store.root_info());
     let register = AgentMessage::Register {
         agent_id: Some(stable_agent_id.to_string()),
         name: config.agent_name.clone(),
@@ -454,6 +506,7 @@ async fn run_one_connection(
         capabilities,
         collections_revision: collections_rev,
         collections,
+        temp_root,
     };
     let register_msg = Message::Text(serde_json::to_string(&register).unwrap().into());
     if !send_with_timeout(&mut write, register_msg).await {
@@ -653,7 +706,7 @@ async fn run_one_connection(
                             }
                             Ok(HubMessage::FsListRequest { req_id, root, path, limit, cursor, dirs_only }) => {
                                 tracing::debug!("FS list: root={}, path={}, dirs_only={:?}", root, path, dirs_only);
-                                let roots_vec = resource_mgr.roots().to_vec();
+                                let roots_vec = roots_with_temp(resource_mgr, temp_store);
                                 let dirs_only_flag = dirs_only.unwrap_or(false);
                                 let cache_clone = dir_cache.clone();
                                 let rid = req_id.clone();
@@ -714,7 +767,7 @@ async fn run_one_connection(
                             }
                             Ok(HubMessage::FsStatRequest { req_id, root, path }) => {
                                 tracing::debug!("FS stat: root={}, path={}", root, path);
-                                let roots_vec = resource_mgr.roots().to_vec();
+                                let roots_vec = roots_with_temp(resource_mgr, temp_store);
                                 let runtime = office_runtime.cloned();
                                 let rid = req_id.clone();
                                 let panic_response = AgentMessage::FsStatResponse {
@@ -814,7 +867,7 @@ async fn run_one_connection(
                             }
                             Ok(HubMessage::FileReadRequest { req_id, root, path, offset, length }) => {
                                 tracing::debug!("FS read: root={}, path={}, offset={}, len={:?}", root, path, offset, length);
-                                let roots_vec = resource_mgr.roots().to_vec();
+                                let roots_vec = roots_with_temp(resource_mgr, temp_store);
                                 let runtime = office_runtime.cloned();
                                 let content_cache_ref = content_cache.clone();
                                 let rid = req_id.clone();
@@ -956,6 +1009,9 @@ async fn run_one_connection(
                                 if let Some(rt) = office_runtime {
                                     rt.request_cancel(&req_id);
                                 }
+                                if let Some(store) = temp_store {
+                                    store.cancel(&req_id);
+                                }
                             }
                             Ok(HubMessage::SysStatsRequest { req_id }) => {
                                 tracing::debug!("Sys stats request");
@@ -1015,7 +1071,7 @@ async fn run_one_connection(
                                     map.insert(req_id.clone(), cancel.clone());
                                 }
 
-                                let roots_vec = resource_mgr.roots().to_vec();
+                                let roots_vec = roots_with_temp(resource_mgr, temp_store);
                                 let tx = search_tx.clone();
                                 let progress_tx = search_tx.clone();
                                 let inflight = search_inflight.clone();
@@ -1141,7 +1197,7 @@ async fn run_one_connection(
                                         continue;
                                     }
                                 };
-                                let roots_vec = resource_mgr.roots().to_vec();
+                                let roots_vec = roots_with_temp(resource_mgr, temp_store);
                                 let tx = office_tx.clone();
                                 let progress_tx = office_tx.clone();
                                 let rid = req_id.clone();
@@ -1242,6 +1298,137 @@ async fn run_one_connection(
                                     let _ = terminal_tx.send(response).await;
                                 });
                             }
+                            Ok(HubMessage::TempUploadBegin { req_id, name, total_size }) => {
+                                tracing::debug!(
+                                    "Temp upload begin: name={}, total={}",
+                                    name,
+                                    total_size
+                                );
+                                let store = temp_store.cloned();
+                                let result = match &store {
+                                    Some(store) => store.begin(&req_id, &name, total_size),
+                                    None => Err("temp_unavailable".to_string()),
+                                };
+                                if let Err(error) = result {
+                                    let response = AgentMessage::TempUploadResponse {
+                                        req_id,
+                                        name: None,
+                                        size: None,
+                                        error: Some(error),
+                                    };
+                                    if !send_agent_message(&mut write, &response).await {
+                                        tracing::warn!("Failed to send temp upload response, reconnecting");
+                                        break;
+                                    }
+                                }
+                            }
+                            Ok(HubMessage::TempUploadChunk { req_id, offset, data, done }) => {
+                                let store = temp_store.cloned();
+                                let result = match &store {
+                                    Some(store) => store.write_chunk(&req_id, offset, &data, done),
+                                    None => Err("temp_unavailable".to_string()),
+                                };
+                                match result {
+                                    Ok(None) => {}
+                                    Ok(Some((name, size))) => {
+                                        let response = AgentMessage::TempUploadResponse {
+                                            req_id,
+                                            name: Some(name),
+                                            size: Some(size),
+                                            error: None,
+                                        };
+                                        if !send_agent_message(&mut write, &response).await {
+                                            tracing::warn!("Failed to send temp upload response, reconnecting");
+                                            break;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        // `temp_no_session` means a terminal
+                                        // response for this req_id was already
+                                        // sent (Begin failed or the upload
+                                        // finished) — never double-respond.
+                                        if error == "temp_no_session" {
+                                            // nothing to send
+                                        } else {
+                                            let response = AgentMessage::TempUploadResponse {
+                                                req_id,
+                                                name: None,
+                                                size: None,
+                                                error: Some(error),
+                                            };
+                                            if !send_agent_message(&mut write, &response).await {
+                                                tracing::warn!("Failed to send temp upload response, reconnecting");
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(HubMessage::TempCleanupRequest { req_id }) => {
+                                tracing::debug!("Temp cleanup request");
+                                let store = temp_store.cloned();
+                                let rid = req_id.clone();
+                                let panic_response = AgentMessage::TempCleanupResponse {
+                                    req_id: rid.clone(),
+                                    removed: 0,
+                                    freed_bytes: 0,
+                                    error: Some("agent_internal_error".to_string()),
+                                };
+                                let cancelled_response = AgentMessage::TempCleanupResponse {
+                                    req_id: req_id.clone(),
+                                    removed: 0,
+                                    freed_bytes: 0,
+                                    error: Some("request_cancelled".to_string()),
+                                };
+                                let accepted = try_spawn_fs_job(
+                                    &mut fs_tasks,
+                                    &fs_admission,
+                                    fs_workers,
+                                    &fs_tx,
+                                    req_id.clone(),
+                                    &fs_cancellations,
+                                    move |cancelled| match store {
+                                        Some(store) => match store.cleanup(Some(&cancelled)) {
+                                            Ok((removed, freed_bytes)) => {
+                                                AgentMessage::TempCleanupResponse {
+                                                    req_id: rid.clone(),
+                                                    removed,
+                                                    freed_bytes,
+                                                    error: None,
+                                                }
+                                            }
+                                            Err(error) => AgentMessage::TempCleanupResponse {
+                                                req_id: rid.clone(),
+                                                removed: 0,
+                                                freed_bytes: 0,
+                                                error: Some(error),
+                                            },
+                                        },
+                                        None => AgentMessage::TempCleanupResponse {
+                                            req_id: rid.clone(),
+                                            removed: 0,
+                                            freed_bytes: 0,
+                                            error: Some("temp_unavailable".to_string()),
+                                        },
+                                    },
+                                    cancelled_response,
+                                    panic_response,
+                                );
+                                if !accepted {
+                                    let response = AgentMessage::TempCleanupResponse {
+                                        req_id,
+                                        removed: 0,
+                                        freed_bytes: 0,
+                                        error: Some(
+                                            "agent_overloaded: file I/O queue is full".to_string(),
+                                        ),
+                                    };
+                                    if !send_agent_message(&mut write, &response).await {
+                                        tracing::warn!("Failed to send temp cleanup overload response, reconnecting");
+                                        break;
+                                    }
+                                }
+                            }
                             Ok(HubMessage::Error { message }) => {
                                 tracing::warn!("Hub error: {}", message);
                             }
@@ -1284,6 +1471,9 @@ async fn run_one_connection(
     }
     if let Some(rt) = office_runtime {
         rt.cancel_all();
+    }
+    if let Some(store) = temp_store {
+        store.cancel_all();
     }
     fs_tasks.abort_all();
     // Drop the search result receiver so a worker blocked on

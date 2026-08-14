@@ -34,6 +34,28 @@ pub struct RootInfo {
     pub pinned_folders: Vec<String>,
 }
 
+/// The agent's dedicated temp upload folder, advertised at Register time.
+///
+/// The folder is a *synthetic* root: it never enters the user-managed desired
+/// root set (and so never persists into `agent_state.json`), but the hub
+/// surfaces it to the frontend as a regular enabled root so the folder can be
+/// browsed like any other. The agent resolves this root name against its
+/// private temp directory instead of the root table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TempRootInfo {
+    /// Root name the frontend uses (defaults to the folder's name).
+    pub name: String,
+    /// Absolute path of the upload folder on the agent (for display only —
+    /// never trusted by the agent for writes).
+    pub path: String,
+    /// Per-file upload cap enforced by the agent (bytes).
+    #[serde(default)]
+    pub max_file_bytes: u64,
+    /// Total folder quota enforced by the agent (bytes).
+    #[serde(default)]
+    pub max_total_bytes: u64,
+}
+
 /// Validate the *shape* of a pinned-folder path (relative to a root).
 ///
 /// Rules:
@@ -125,6 +147,12 @@ pub struct Capabilities {
     pub office_max_pdf_bytes: Option<u64>,
     #[serde(default)]
     pub office_timeout_secs: Option<u64>,
+    /// Whether this agent runs a dedicated temp-upload folder: the browser may
+    /// send small files through the hub and the agent writes them ONLY inside
+    /// that folder. Defaults to `false` for rolling-upgrade safety and when
+    /// the folder could not be initialized.
+    #[serde(default)]
+    pub temp_upload: bool,
 }
 
 impl Default for Capabilities {
@@ -145,6 +173,7 @@ impl Default for Capabilities {
             office_max_src_bytes: None,
             office_max_pdf_bytes: None,
             office_timeout_secs: None,
+            temp_upload: false,
         }
     }
 }

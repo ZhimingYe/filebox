@@ -1,6 +1,8 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::{Error as DeError, SeqAccess, Visitor};
-use crate::resources::{Capabilities, CollectionConfig, FileStat, FsEntry, RootConfig, SysStats};
+use crate::resources::{
+    Capabilities, CollectionConfig, FileStat, FsEntry, RootConfig, SysStats, TempRootInfo,
+};
 use crate::search::{SearchMode, SearchResult};
 
 /// Max raw bytes per `FileChunk` over the Hub↔Agent WebSocket.
@@ -38,6 +40,10 @@ pub enum AgentMessage {
         collections_revision: u64,
         #[serde(default)]
         collections: Vec<CollectionConfig>,
+        /// Dedicated temp-upload folder (write-scoped scratch space). Absent on
+        /// legacy agents and when the folder could not be initialized.
+        #[serde(default)]
+        temp_root: Option<TempRootInfo>,
     },
     Pong,
     Heartbeat,
@@ -124,6 +130,24 @@ pub enum AgentMessage {
         size: Option<u64>,
         #[serde(default)]
         outputs: Vec<OfficePreviewOutput>,
+        error: Option<String>,
+    },
+    /// Terminal result of a temp upload: `name` + `size` describe the file
+    /// actually written inside the dedicated temp folder (the agent may have
+    /// resolved a name collision with a numeric suffix), or `error` carries a
+    /// machine-readable `temp_*` code.
+    TempUploadResponse {
+        req_id: String,
+        name: Option<String>,
+        size: Option<u64>,
+        error: Option<String>,
+    },
+    /// Result of a temp-folder cleanup: how many entries were removed and how
+    /// many bytes that freed (regular files only).
+    TempCleanupResponse {
+        req_id: String,
+        removed: u64,
+        freed_bytes: u64,
         error: Option<String>,
     },
 }
@@ -273,6 +297,31 @@ pub enum HubMessage {
         #[serde(default)]
         force: bool,
     },
+    /// Open a temp-upload session on the agent. The agent validates the name
+    /// and quotas, then creates a private staging file. `total_size` must not
+    /// exceed the agent's advertised `TempRootInfo.max_file_bytes`.
+    TempUploadBegin {
+        req_id: String,
+        name: String,
+        total_size: u64,
+    },
+    /// One chunk of a temp upload. Chunks MUST arrive at strictly increasing
+    /// offsets (`offset == bytes already received`) — anything else aborts the
+    /// upload with `temp_chunk_out_of_order`. The final chunk carries
+    /// `done: true` and the agent then verifies the byte count before the
+    /// file becomes visible in the temp folder.
+    TempUploadChunk {
+        req_id: String,
+        offset: u64,
+        #[serde(with = "base64_bytes")]
+        data: Vec<u8>,
+        done: bool,
+    },
+    /// Delete every entry inside the temp upload folder (the folder itself
+    /// survives). One-click cleanup for the scratch space.
+    TempCleanupRequest {
+        req_id: String,
+    },
 }
 
 #[cfg(test)]
@@ -317,6 +366,7 @@ mod tests {
             capabilities: Capabilities::default(),
             collections_revision: 0,
             collections: vec![],
+            temp_root: None,
         };
         let back = round_trip_agent(&msg);
         match back {
@@ -348,6 +398,7 @@ mod tests {
             capabilities: Capabilities::default(),
             collections_revision: 0,
             collections: vec![],
+            temp_root: None,
         };
         let back = round_trip_agent(&msg);
         match back {
@@ -1017,5 +1068,137 @@ mod tests {
         let pong_json = serde_json::to_string(&pong).unwrap();
         assert_eq!(hb_json, "{\"type\":\"heartbeat\"}");
         assert_eq!(pong_json, "{\"type\":\"pong\"}");
+    }
+
+    #[test]
+    fn temp_upload_messages_round_trip() {
+        let begin = HubMessage::TempUploadBegin {
+            req_id: "tu1".into(),
+            name: "shot.png".into(),
+            total_size: 4096,
+        };
+        let back = round_trip_hub(&begin);
+        match back {
+            HubMessage::TempUploadBegin { req_id, name, total_size } => {
+                assert_eq!(req_id, "tu1");
+                assert_eq!(name, "shot.png");
+                assert_eq!(total_size, 4096);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let chunk = HubMessage::TempUploadChunk {
+            req_id: "tu1".into(),
+            offset: 2048,
+            data: vec![0xde, 0xad, 0xbe, 0xef],
+            done: true,
+        };
+        let chunk_json = serde_json::to_value(&chunk).unwrap();
+        assert_eq!(chunk_json["type"], "temp_upload_chunk");
+        assert_eq!(chunk_json["data"], "3q2+7w==");
+        match round_trip_hub(&chunk) {
+            HubMessage::TempUploadChunk { offset, data, done, .. } => {
+                assert_eq!(offset, 2048);
+                assert_eq!(data, vec![0xde, 0xad, 0xbe, 0xef]);
+                assert!(done);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let cleanup = HubMessage::TempCleanupRequest { req_id: "tc1".into() };
+        match round_trip_hub(&cleanup) {
+            HubMessage::TempCleanupRequest { req_id } => assert_eq!(req_id, "tc1"),
+            _ => panic!("wrong variant"),
+        }
+
+        let ok = AgentMessage::TempUploadResponse {
+            req_id: "tu1".into(),
+            name: Some("shot.png".into()),
+            size: Some(4096),
+            error: None,
+        };
+        match round_trip_agent(&ok) {
+            AgentMessage::TempUploadResponse { name, size, error, .. } => {
+                assert_eq!(name.as_deref(), Some("shot.png"));
+                assert_eq!(size, Some(4096));
+                assert!(error.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let err = AgentMessage::TempUploadResponse {
+            req_id: "tu2".into(),
+            name: None,
+            size: None,
+            error: Some("temp_quota_exceeded".into()),
+        };
+        match round_trip_agent(&err) {
+            AgentMessage::TempUploadResponse { error, .. } => {
+                assert_eq!(error.as_deref(), Some("temp_quota_exceeded"));
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let done = AgentMessage::TempCleanupResponse {
+            req_id: "tc1".into(),
+            removed: 3,
+            freed_bytes: 1024,
+            error: None,
+        };
+        match round_trip_agent(&done) {
+            AgentMessage::TempCleanupResponse { removed, freed_bytes, error, .. } => {
+                assert_eq!(removed, 3);
+                assert_eq!(freed_bytes, 1024);
+                assert!(error.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn register_with_temp_root_round_trips() {
+        let msg = AgentMessage::Register {
+            agent_id: Some("stable-uuid".to_string()),
+            name: "Lab Server 1".to_string(),
+            resource_revision: 0,
+            roots: vec![],
+            capabilities: Capabilities::default(),
+            collections_revision: 0,
+            collections: vec![],
+            temp_root: Some(TempRootInfo {
+                name: "agent-temp-copied-file".into(),
+                path: "/var/lib/filebox/temp/agent-temp-copied-file".into(),
+                max_file_bytes: 20 * 1024 * 1024,
+                max_total_bytes: 1024 * 1024 * 1024,
+            }),
+        };
+        let back = round_trip_agent(&msg);
+        match back {
+            AgentMessage::Register { temp_root, .. } => {
+                let t = temp_root.expect("temp root");
+                assert_eq!(t.name, "agent-temp-copied-file");
+                assert_eq!(t.max_file_bytes, 20 * 1024 * 1024);
+                assert_eq!(t.max_total_bytes, 1024 * 1024 * 1024);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        // Legacy agents omit the field entirely — serde defaults to None.
+        let caps = serde_json::to_value(Capabilities::default()).unwrap();
+        let mut legacy_json = serde_json::json!({
+            "type": "register",
+            "agent_id": "stable-uuid",
+            "name": "old-agent",
+            "resource_revision": 1,
+            "roots": [],
+            "collections_revision": 0,
+            "collections": []
+        });
+        legacy_json["capabilities"] = caps;
+        let legacy: AgentMessage = serde_json::from_value(legacy_json).unwrap();
+        match legacy {
+            AgentMessage::Register { temp_root, .. } => assert!(temp_root.is_none()),
+            _ => panic!("wrong variant"),
+        }
     }
 }

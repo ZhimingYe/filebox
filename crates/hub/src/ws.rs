@@ -104,7 +104,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
     // Step 2: Wait for Register
     let reg_msg = tokio::time::timeout(Duration::from_secs(10), ws_stream.next()).await;
 
-    let (agent_id, name, resource_revision, roots, collections_revision, collections, capabilities) =
+    let (agent_id, name, resource_revision, roots, collections_revision, collections, capabilities, temp_root) =
         match reg_msg {
         Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<AgentMessage>(&text) {
             Ok(AgentMessage::Register {
@@ -115,6 +115,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                 collections_revision,
                 collections,
                 capabilities,
+                temp_root,
                 ..
             }) => {
                 // Use the agent's stable ID if provided
@@ -131,6 +132,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                     collections_revision,
                     collections,
                     capabilities,
+                    temp_root,
                 )
             }
             Ok(AgentMessage::Register {
@@ -140,6 +142,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                 collections_revision,
                 collections,
                 capabilities,
+                temp_root,
                 ..
             }) => (
                 temp_id.clone(),
@@ -149,6 +152,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                 collections_revision,
                 collections,
                 capabilities,
+                temp_root,
             ),
             _ => (
                 temp_id.clone(),
@@ -158,6 +162,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                 0,
                 vec![],
                 Capabilities::default(),
+                None,
             ),
         },
         _ => (
@@ -168,6 +173,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
             0,
             vec![],
             Capabilities::default(),
+            None,
         ),
     };
 
@@ -241,6 +247,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
             collections_revision,
             collections.clone(),
             capabilities.clone(),
+            temp_root.clone(),
         );
 
         // Re-apply the preserved pending update onto the freshly registered
@@ -700,7 +707,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                             | Ok(AgentMessage::FileChunk { req_id, .. })
                             | Ok(AgentMessage::SysStatsResponse { req_id, .. })
                             | Ok(AgentMessage::WorkspaceSearchResponse { req_id, .. })
-                            | Ok(AgentMessage::OfficeConvertResponse { req_id, .. }) => {
+                            | Ok(AgentMessage::OfficeConvertResponse { req_id, .. })
+                            | Ok(AgentMessage::TempUploadResponse { req_id, .. })
+                            | Ok(AgentMessage::TempCleanupResponse { req_id, .. }) => {
                                 let pending_resp = take_pending_for_connection(
                                     &state,
                                     &req_id,

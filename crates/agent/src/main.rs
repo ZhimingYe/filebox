@@ -10,6 +10,7 @@ mod office_convert;
 mod resources;
 mod search;
 mod sysinfo;
+mod temp_store;
 
 #[tokio::main]
 async fn main() {

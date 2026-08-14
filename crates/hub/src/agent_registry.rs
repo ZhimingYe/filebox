@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, Notify};
 
 use filebox_protocol::resources::{
     Capabilities, CollectionConfig, CollectionInfo, DesiredCollections, DesiredResources,
-    ResourceRevision, RootConfig, RootInfo,
+    ResourceRevision, RootConfig, RootInfo, TempRootInfo,
 };
 use filebox_protocol::message::HubMessage;
 
@@ -45,6 +45,9 @@ pub struct AgentConnection {
     pub rtt_ms: Option<u64>,
     pub resource_revision: u64,
     pub roots: Vec<RootConfig>,
+    /// Synthetic write-scoped temp root advertised at Register time. Never
+    /// part of `roots` / the desired set — surfaced to the UI alongside them.
+    pub temp_root: Option<TempRootInfo>,
     pub collections_revision: u64,
     pub collections: Vec<CollectionConfig>,
     pub capabilities: Capabilities,
@@ -76,16 +79,9 @@ impl AgentConnection {
             resource_revision: self.resource_revision,
             pending_resource_update: self.pending_update.is_some(),
             last_config_error: self.last_config_error.clone(),
-            roots: self
-                .roots
-                .iter()
-                .map(|r| RootInfo {
-                    name: r.name.clone(),
-                    path_display: r.path.clone(),
-                    enabled: r.enabled,
-                    pinned_folders: r.pinned_folders.clone(),
-                })
-                .collect(),
+            roots: self.roots_with_temp(),
+            temp_root_name: self.temp_root.as_ref().map(|t| t.name.clone()),
+            temp_max_file_bytes: self.temp_root.as_ref().map(|t| t.max_file_bytes),
             collections_revision: self.collections_revision,
             pending_collections_update: self.pending_collections_update.is_some(),
             collections: {
@@ -110,24 +106,42 @@ impl AgentConnection {
                 office_max_src_bytes: self.capabilities.office_max_src_bytes,
                 office_max_pdf_bytes: self.capabilities.office_max_pdf_bytes,
                 office_timeout_secs: self.capabilities.office_timeout_secs,
+                temp_upload: self.capabilities.temp_upload,
             },
         }
+    }
+
+    /// User roots plus the synthetic temp root (when advertised and its name
+    /// does not collide with a user root — user roots take precedence).
+    fn roots_with_temp(&self) -> Vec<RootInfo> {
+        let mut roots: Vec<RootInfo> = self
+            .roots
+            .iter()
+            .map(|r| RootInfo {
+                name: r.name.clone(),
+                path_display: r.path.clone(),
+                enabled: r.enabled,
+                pinned_folders: r.pinned_folders.clone(),
+            })
+            .collect();
+        if let Some(temp) = &self.temp_root {
+            if !self.roots.iter().any(|r| r.name == temp.name) {
+                roots.push(RootInfo {
+                    name: temp.name.clone(),
+                    path_display: temp.path.clone(),
+                    enabled: true,
+                    pinned_folders: Vec::new(),
+                });
+            }
+        }
+        roots
     }
 
     pub fn to_resource_revision(&self) -> ResourceRevision {
         ResourceRevision {
             agent_id: self.agent_id.clone(),
             resource_revision: self.resource_revision,
-            roots: self
-                .roots
-                .iter()
-                .map(|r| RootInfo {
-                    name: r.name.clone(),
-                    path_display: r.path.clone(),
-                    enabled: r.enabled,
-                    pinned_folders: r.pinned_folders.clone(),
-                })
-                .collect(),
+            roots: self.roots_with_temp(),
         }
     }
 }
@@ -142,6 +156,7 @@ pub struct AgentCapabilitiesInfo {
     pub workspace_search: bool,
     pub pinned_folders: bool,
     pub collections: bool,
+    pub temp_upload: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -156,6 +171,12 @@ pub struct AgentInfoResponse {
     pub pending_resource_update: bool,
     pub last_config_error: Option<String>,
     pub roots: Vec<RootInfo>,
+    /// Name of the synthetic temp-upload root (present when the agent
+    /// advertises one). Also appears in `roots` unless shadowed by a
+    /// user root of the same name.
+    pub temp_root_name: Option<String>,
+    /// Agent-enforced per-file upload cap (bytes), when advertised.
+    pub temp_max_file_bytes: Option<u64>,
     pub collections_revision: u64,
     pub pending_collections_update: bool,
     pub collections: Vec<CollectionInfo>,
@@ -184,6 +205,7 @@ impl AgentRegistry {
         collections_revision: u64,
         collections: Vec<CollectionConfig>,
         capabilities: Capabilities,
+        temp_root: Option<TempRootInfo>,
     ) {
         let now = Instant::now();
         let epoch = SystemTime::now()
@@ -204,6 +226,7 @@ impl AgentRegistry {
             rtt_ms: None,
             resource_revision,
             roots,
+            temp_root,
             collections_revision,
             collections,
             capabilities,
@@ -452,6 +475,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(),
+            None,
         );
         tx
     }
@@ -460,6 +484,87 @@ mod tests {
     fn new_registry_starts_empty() {
         let reg = AgentRegistry::new();
         assert!(reg.list_all().is_empty());
+    }
+
+    #[test]
+    fn temp_root_surfaces_in_info_alongside_user_roots() {
+        let mut reg = AgentRegistry::new();
+        let mut caps = Capabilities::default();
+        caps.temp_upload = true;
+        reg.register(
+            "a1".to_string(),
+            "agent-a1".to_string(),
+            make_sender(),
+            Arc::new(Notify::new()),
+            0,
+            vec![],
+            0,
+            vec![],
+            caps,
+            Some(TempRootInfo {
+                name: "agent-temp-copied-file".to_string(),
+                path: "/var/lib/filebox/temp/agent-temp-copied-file".to_string(),
+                max_file_bytes: 1024,
+                max_total_bytes: 4096,
+            }),
+        );
+        let info = reg.get("a1").unwrap().to_info();
+        assert!(info.capabilities.temp_upload);
+        assert_eq!(info.temp_root_name.as_deref(), Some("agent-temp-copied-file"));
+        assert_eq!(info.temp_max_file_bytes, Some(1024));
+        assert_eq!(info.roots.len(), 1, "temp root is a synthetic entry");
+        assert_eq!(info.roots[0].name, "agent-temp-copied-file");
+        assert!(info.roots[0].enabled);
+        assert_eq!(
+            info.roots[0].path_display,
+            "/var/lib/filebox/temp/agent-temp-copied-file"
+        );
+    }
+
+    #[test]
+    fn temp_root_is_skipped_when_a_user_root_uses_the_name() {
+        let mut reg = AgentRegistry::new();
+        let mut caps = Capabilities::default();
+        caps.temp_upload = true;
+        reg.register(
+            "a1".to_string(),
+            "agent-a1".to_string(),
+            make_sender(),
+            Arc::new(Notify::new()),
+            0,
+            vec![RootConfig {
+                name: "drop".to_string(),
+                path: "/real/drop".to_string(),
+                enabled: true,
+                pinned_folders: vec![],
+            }],
+            0,
+            vec![],
+            caps,
+            Some(TempRootInfo {
+                name: "drop".to_string(),
+                path: "/data/temp/drop".to_string(),
+                max_file_bytes: 1024,
+                max_total_bytes: 4096,
+            }),
+        );
+        let info = reg.get("a1").unwrap().to_info();
+        // The user root wins; the synthetic root is not duplicated.
+        assert_eq!(info.roots.len(), 1);
+        assert_eq!(info.roots[0].name, "drop");
+        assert_eq!(info.roots[0].path_display, "/real/drop");
+        assert_eq!(info.temp_root_name.as_deref(), Some("drop"));
+    }
+
+    #[test]
+    fn legacy_agent_without_temp_root_serializes_none_fields() {
+        let mut reg = AgentRegistry::new();
+        register_simple(&mut reg, "a1");
+        let info = reg.get("a1").unwrap().to_info();
+        assert!(!info.capabilities.temp_upload);
+        assert_eq!(info.temp_root_name, None);
+        assert_eq!(info.temp_max_file_bytes, None);
+        assert!(info.roots.is_empty());
     }
 
     #[test]
@@ -494,6 +599,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(),
+            None,
         );
 
         let agent = reg.get("a1").unwrap();
@@ -546,6 +652,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(),
+            None,
         );
 
         // Old connection's cleanup runs NOW (after the new register)
@@ -578,6 +685,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(),
+            None,
         );
 
         // Spawn a task that waits on the old notify (simulating the old
@@ -941,6 +1049,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(),
+            None,
         );
         // After register() the fresh entry has NO pending — this is the bug
         // surface, and exactly why ws.rs must re-apply rather than rely on
@@ -1015,6 +1124,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(),
+            None,
         );
 
         let info = reg.get("a1").unwrap().to_info();
@@ -1043,6 +1153,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(),
+            None,
         );
 
         let rev = reg.get("a1").unwrap().to_resource_revision();
@@ -1085,6 +1196,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(),
+            None,
         );
         drop(rx); // simulate dead consumer
 
@@ -1111,6 +1223,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(),
+            None,
         );
 
         assert!(reg.send_to_agent("a1", HubMessage::Ping));

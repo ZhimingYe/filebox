@@ -109,6 +109,13 @@ export function friendlyMessage(error: any): string {
     office_invalid_pdf: 'Office produced an invalid PDF. Retry to rebuild the preview.',
     office_internal_error: 'The Office preview worker failed safely. Please retry.',
     denied: 'Access denied — sensitive file.',
+    temp_file_too_large: 'This file exceeds the agent’s upload limit.',
+    temp_quota_exceeded: 'The temp folder is full. Clean it up and retry.',
+    temp_name_invalid: 'Invalid file name for upload.',
+    temp_name_conflict: 'Could not find a free name for this file.',
+    temp_upload_interrupted: 'The upload was interrupted.',
+    temp_length_required: 'The upload failed: missing length.',
+    temp_upload_incomplete: 'The upload body ended early. Retry.',
   };
   if (code && map[code]) return map[code];
   return 'An unexpected error occurred.';
@@ -298,6 +305,7 @@ export interface AgentCapabilities {
   workspace_search: boolean;
   pinned_folders: boolean;
   collections: boolean;
+  temp_upload: boolean;
 }
 
 export interface AgentInfo {
@@ -311,6 +319,11 @@ export interface AgentInfo {
   pending_resource_update: boolean;
   last_config_error: string | null;
   roots: RootInfo[];
+  /** Name of the agent's temp-upload root (also listed in `roots` unless a
+      user root shadows it). Present on temp-capable agents only. */
+  temp_root_name?: string | null;
+  /** Agent-enforced per-file upload cap (bytes), when advertised. */
+  temp_max_file_bytes?: number | null;
   collections_revision: number;
   pending_collections_update: boolean;
   collections: CollectionInfo[];
@@ -833,4 +846,94 @@ export async function officeConvert(
     size: raw.size ?? primary.size,
     outputs,
   };
+}
+
+// ── Temp upload folder ──────────────────────────────────────────────────────
+
+export interface TempUploadResult {
+  ok: boolean;
+  name: string;
+  size: number;
+}
+
+export interface TempCleanupResult {
+  ok: boolean;
+  removed: number;
+  freed_bytes: number;
+}
+
+/**
+ * Upload one file into the agent's dedicated temp folder. Uses XHR so the
+ * caller can render real upload progress; the CSRF synchronizer rides in the
+ * header exactly like `request()`, and a stale-token 403 retries once after
+ * re-reading the cookie.
+ */
+export function uploadTempFile(
+  agentId: string,
+  file: File,
+  onProgress?: (loaded: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<TempUploadResult> {
+  return new Promise((resolve, reject) => {
+    const attempt = (retried: boolean) => {
+      const xhr = new XMLHttpRequest();
+      const name = file.name.trim();
+      const url = `/api/agents/${encodeURIComponent(agentId)}/temp-upload?name=${encodeURIComponent(name)}`;
+      xhr.open('POST', url);
+      xhr.withCredentials = true;
+      xhr.timeout = 130_000;
+      const csrf = getCsrfToken();
+      if (csrf) xhr.setRequestHeader('X-CSRF-Token', csrf);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress?.(e.loaded, e.total);
+      };
+      const onAbort = () => xhr.abort();
+      signal?.addEventListener('abort', onAbort, { once: true });
+      xhr.onloadend = () => {
+        signal?.removeEventListener('abort', onAbort);
+      };
+      xhr.onerror = () => reject({ error: 'network_error', message: 'Network error during upload.' });
+      xhr.ontimeout = () => reject({ error: 'request_stalled', message: 'The upload stalled.' });
+      xhr.onabort = () => reject({ error: 'cancelled', message: 'Upload cancelled.' });
+      xhr.onload = () => {
+        const body = ((): Record<string, unknown> => {
+          try { return JSON.parse(xhr.responseText) as Record<string, unknown>; } catch { return {}; }
+        })();
+        if (xhr.status >= 200 && xhr.status < 300 && body.ok === true) {
+          resolve({
+            ok: true,
+            name: typeof body.name === 'string' ? body.name : name,
+            size: typeof body.size === 'number' ? body.size : 0,
+          });
+          return;
+        }
+        if (
+          !retried
+          && xhr.status === 403
+          && body.error === 'csrf_denied'
+        ) {
+          setCsrfToken(null);
+          const refreshed = getCsrfToken();
+          if (refreshed && refreshed !== csrf) {
+            attempt(true);
+            return;
+          }
+        }
+        reject({ status: xhr.status, error: body.error, message: body.message, retryable: body.retryable });
+      };
+      xhr.send(file);
+    };
+    attempt(false);
+  });
+}
+
+/** One-click cleanup of the agent's temp upload folder. */
+export async function cleanupTempFolder(agentId: string, signal?: AbortSignal) {
+  return request<TempCleanupResult>(
+    `/api/agents/${encodeURIComponent(agentId)}/temp-cleanup`,
+    { method: 'POST', signal },
+    false,
+    75_000,
+  );
 }

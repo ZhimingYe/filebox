@@ -88,6 +88,19 @@ pub fn create_router(state: AppState) -> Router {
             "/api/agents/{agent_id}/office-convert",
             post(crate::office_proxy::office_convert_handler),
         )
+        // Temp-folder uploads: body limit overridden per-route (the global
+        // router limit is 1 MB; uploads may be up to the hub's 64 MiB cap).
+        .route(
+            "/api/agents/{agent_id}/temp-upload",
+            post(crate::temp_proxy::temp_upload_handler)
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    crate::temp_proxy::TEMP_UPLOAD_MAX_BODY_BYTES,
+                )),
+        )
+        .route(
+            "/api/agents/{agent_id}/temp-cleanup",
+            post(crate::temp_proxy::temp_cleanup_handler),
+        )
         .route("/api/cancel", post(cancel_handler))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -2815,6 +2828,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(),
+            None,
         );
     }
 
@@ -3582,6 +3596,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(), // pinned_folders = false
+            None,
             );
         }
 
@@ -3633,6 +3648,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(),
+            None,
             );
         }
 

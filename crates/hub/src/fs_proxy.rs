@@ -2607,6 +2607,7 @@ mod tests {
             0,
             vec![],
             Capabilities::default(),
+            None,
         );
     }
 

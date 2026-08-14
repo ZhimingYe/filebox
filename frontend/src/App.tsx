@@ -130,6 +130,16 @@ export default function App() {
     anchor: HTMLElement;
   } | null>(null);
 
+  // ── Temp upload folder: app-wide drop zone ──
+  // Dragging files anywhere over the window (temp-capable agent selected)
+  // shows a full-window overlay; dropping navigates to the temp root and
+  // hands the files to FileBrowser via a nonce.
+  const [uploadRequest, setUploadRequest] = useState<{ files: File[]; nonce: number } | null>(null);
+  const [dragOverWindow, setDragOverWindow] = useState(false);
+  const dragDepthRef = useRef(0);
+  // Bumped on SSE `temp_updated` so every tab re-lists the temp folder.
+  const [tempRefreshNonce, setTempRefreshNonce] = useState(0);
+
   // Persist the browsing mode and the selected agent so a refresh restores
   // them. Storage may be unavailable in hardened/private contexts — never
   // let a persistence failure break the session.
@@ -519,6 +529,58 @@ export default function App() {
     }
   }, [selectedAgent]);
 
+  // ── App-wide drag & drop → temp upload folder ──
+  // Only registered when the selected agent is temp-capable. A depth counter
+  // survives dragenter/dragleave noise from child elements; only file drags
+  // (not text/links) arm the overlay. Drop lands in Files on the temp root
+  // and hands the files to FileBrowser via `uploadRequest`.
+  const tempRootName = selectedAgent?.temp_root_name ?? null;
+  const tempCapable = !!selectedAgent?.capabilities?.temp_upload && !!tempRootName;
+  useEffect(() => {
+    if (!tempCapable) return;
+    const hasFiles = (e: DragEvent) =>
+      Array.from(e.dataTransfer?.types ?? []).includes('Files');
+    const onDragEnter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepthRef.current += 1;
+      setDragOverWindow(true);
+    };
+    const onDragOver = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    };
+    const onDragLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+      if (dragDepthRef.current === 0) setDragOverWindow(false);
+    };
+    const onDrop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepthRef.current = 0;
+      setDragOverWindow(false);
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (files.length === 0) return;
+      const root = tempRootName;
+      if (!root) return;
+      setView('files');
+      applyNav(root, '/');
+      setUploadRequest({ files, nonce: Date.now() });
+    };
+    window.addEventListener('dragenter', onDragEnter);
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter);
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [tempCapable, tempRootName, applyNav]);
+
   // Refresh-restore validation: a restored position may point at a folder
   // that vanished since the last visit. Once per (agent, root) pair per
   // session, stat the restored path and fall back to the nearest existing
@@ -629,6 +691,14 @@ export default function App() {
     ) {
       refresh();
     }
+    if (evt.event === 'temp_updated') {
+      // The temp folder changed (upload/cleanup, possibly from another tab):
+      // re-list the open directory.
+      const d = evt.data as { agent_id?: string };
+      if (d?.agent_id && d.agent_id === selectedAgentId) {
+        setTempRefreshNonce((n) => n + 1);
+      }
+    }
     if (evt.event === 'progress') {
       const d = evt.data as unknown as ProgressEvent;
       // Workspace Search owns its own progress panel; skip the global toast
@@ -653,7 +723,7 @@ export default function App() {
         timers.delete(d.req_id);
       }, 5000));
     }
-  }, [refresh]), loggedIn === true);
+  }, [refresh, selectedAgentId]), loggedIn === true);
 
   const openCollectionPicker = useCallback((root: string, path: string, anchor: HTMLElement) => {
     setCollectionPicker({ root, path, anchor });
@@ -926,6 +996,19 @@ export default function App() {
 
   return (
     <div style={styles.app}>
+      {/* App-wide temp-upload drop overlay. Shown while files are dragged
+          over the window (temp-capable agent selected). pointer-events:none
+          keeps the underlying window `drop` listener authoritative. */}
+      {dragOverWindow && tempCapable && tempRootName && (
+        <div style={styles.dropOverlay} aria-hidden>
+          <div style={styles.dropCard}>
+            <span style={styles.dropTitle}>Drop files to upload</span>
+            <span style={styles.dropSub}>
+              Files are written to the agent's &ldquo;{tempRootName}&rdquo; temp folder
+            </span>
+          </div>
+        </div>
+      )}
       {/* Mobile overlay */}
       {isMobile && sidebarOpen && (
         <div
@@ -1100,6 +1183,11 @@ export default function App() {
                         currentPath={currentPath}
                         onApplyNav={applyNav}
                         onSwitchRoot={switchRoot}
+                        tempRootName={tempRootName}
+                        tempMaxFileBytes={selectedAgent.temp_max_file_bytes ?? null}
+                        uploadRequest={uploadRequest}
+                        onUploadsHandled={() => setUploadRequest(null)}
+                        tempRefreshNonce={tempRefreshNonce}
                       />
                     </div>
                   </>
@@ -1122,6 +1210,11 @@ export default function App() {
                         currentPath={currentPath}
                         onApplyNav={applyNav}
                         onSwitchRoot={switchRoot}
+                        tempRootName={tempRootName}
+                        tempMaxFileBytes={selectedAgent.temp_max_file_bytes ?? null}
+                        uploadRequest={uploadRequest}
+                        onUploadsHandled={() => setUploadRequest(null)}
+                        tempRefreshNonce={tempRefreshNonce}
                       />
                     )}
                     preview={view === 'files' && activeTab ? (
@@ -1437,6 +1530,32 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex', height: '100%', background: c.bg, color: c.text,
     fontFamily: font.sans, position: 'relative', overflow: 'hidden',
   },
+  // App-wide temp-upload drop overlay: covers everything while files are
+  // dragged over the window. pointer-events:none — the window drop listener
+  // is the handler; this is purely visual feedback.
+  dropOverlay: {
+    position: 'absolute',
+    inset: 0,
+    zIndex: 200,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: c.accentBg,
+    pointerEvents: 'none',
+  },
+  dropCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 6,
+    padding: '28px 44px',
+    borderRadius: radius.lg,
+    border: `2px dashed ${c.accent}`,
+    background: c.bg,
+    boxShadow: shadow.lg,
+  },
+  dropTitle: { color: c.accent, fontSize: 17, fontWeight: 600, fontFamily: font.sans },
+  dropSub: { color: c.textSecondary, fontSize: 13, fontFamily: font.sans },
   // ── Sidebar ──
   // Compact desktop rail: 180 / collapsed 48. Keeps indigo + bgSubtle language.
   // Mobile drawer stays wider for touch targets via sidebarDrawer.

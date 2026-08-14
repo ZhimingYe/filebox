@@ -268,3 +268,27 @@ export function IconAudit({ style }: SvgProps) {
     </Svg>
   );
 }
+
+/// Upward arrow into a tray — "upload to the temp folder" affordance.
+export function IconUpload({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <path d="M8 11V3.5" />
+      <path d="M4.5 7L8 3.5 11.5 7" />
+      <path d="M2.5 13.5h11" />
+    </Svg>
+  );
+}
+
+/// Trash can — one-click temp folder cleanup.
+export function IconTrash({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <path d="M3 4.5h10" />
+      <path d="M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5" />
+      <path d="M4 4.5l.6 8.5h6.8L12 4.5" />
+      <line x1="6.8" y1="7" x2="6.8" y2="11" />
+      <line x1="9.2" y1="7" x2="9.2" y2="11" />
+    </Svg>
+  );
+}

@@ -8,7 +8,7 @@ import { useIsMobile } from '../state/useIsMobile';
 import { c, radius, font, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import { AddressBar } from './AddressBar';
 import { DirectoryTree } from './DirectoryTree';
-import { IconPin, IconClose, IconRefresh } from './icons';
+import { IconPin, IconClose, IconRefresh, IconTrash, IconUpload, IconCheck } from './icons';
 import { fullServerAddress } from './fullServerAddress';
 import {
   DateFilterControl,
@@ -83,13 +83,38 @@ interface Props {
   onSwitchRoot: (root: string) => void;
   /** Open the collection picker for a file (root + full file path). */
   onAddToCollection?: (root: string, path: string, anchor: HTMLElement) => void;
+  // ── Temp upload folder ──
+  /** Root name of the agent's temp-upload folder (null when unsupported). */
+  tempRootName?: string | null;
+  /** Agent-enforced per-file upload cap in bytes (null = unknown). */
+  tempMaxFileBytes?: number | null;
+  /** Files handed over by the app-level drop zone; nonce re-arms uploads. */
+  uploadRequest?: { files: File[]; nonce: number } | null;
+  onUploadsHandled?: () => void;
+  /** Bumped by the parent on SSE `temp_updated` so other tabs stay in sync. */
+  tempRefreshNonce?: number;
 }
 
 type SortKey = 'name' | 'modified' | 'size';
 
 const PAGE_LIMIT = 200;
 
-export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onRootsChange, navRequest, onNavHandled, selectedRoot, currentPath, onApplyNav, onSwitchRoot, onAddToCollection }: Props) {
+interface UploadItem {
+  id: number;
+  name: string;
+  state: 'uploading' | 'done' | 'error';
+  pct: number | null;
+  message?: string;
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onRootsChange, navRequest, onNavHandled, selectedRoot, currentPath, onApplyNav, onSwitchRoot, onAddToCollection, tempRootName, tempMaxFileBytes, uploadRequest, onUploadsHandled, tempRefreshNonce }: Props) {
   const isMobile = useIsMobile();
   const ROW_HEIGHT = isMobile ? 44 : 32;
   const { copiedPath, copyToClipboard } = useCopyToClipboard();
@@ -240,6 +265,18 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   const [treeRefreshNonce, setTreeRefreshNonce] = useState(0);
   const loadSeq = useRef(0); // request versioning — discard stale responses
   const loadAbortRef = useRef<AbortController | null>(null);
+
+  // ── Temp upload folder ──
+  const isTempRoot = !!tempRootName && selectedRoot === tempRootName;
+  const [uploads, setUploads] = useState<UploadItem[]>([]);
+  const uploadClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [cleanupState, setCleanupState] = useState<{
+    busy: boolean;
+    result?: string;
+    error?: string;
+  }>({ busy: false });
+  const cleanupDismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const enabledRoots = useMemo(() => roots.filter((r) => r.enabled), [roots]);
 
@@ -408,6 +445,109 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
       loadAbortRef.current?.abort();
     };
   }, [agentId, selectedRoot, currentPath]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A remote temp update (other tab, or the agent folder changed) re-lists.
+  useEffect(() => {
+    if (!tempRefreshNonce) return;
+    loadDir(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tempRefreshNonce]);
+
+  const patchUpload = useCallback((id: number, patch: Partial<UploadItem>) => {
+    setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
+  }, []);
+
+  // Upload files sequentially into the temp root. Progress per file, honest
+  // per-file success/error state, and the directory re-lists after each
+  // completed upload so new files appear immediately.
+  const runUploads = useCallback(async (files: File[]) => {
+    if (!tempRootName) return;
+    const base = Date.now();
+    const items: UploadItem[] = files.map((file, i) => ({
+      id: base + i,
+      name: file.name,
+      state: 'uploading',
+      pct: 0,
+    }));
+    setUploads((prev) => [...prev, ...items]);
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const item = items[i];
+      if (tempMaxFileBytes != null && file.size > tempMaxFileBytes) {
+        patchUpload(item.id, {
+          state: 'error',
+          pct: null,
+          message: friendlyMessage({ error: 'temp_file_too_large' }),
+        });
+        continue;
+      }
+      try {
+        await api.uploadTempFile(agentId, file, (loaded, total) => {
+          if (total > 0) {
+            patchUpload(item.id, { pct: Math.min(99, Math.round((loaded / total) * 100)) });
+          }
+        });
+        patchUpload(item.id, { state: 'done', pct: 100 });
+        await loadDir(false);
+      } catch (e) {
+        patchUpload(item.id, { state: 'error', pct: null, message: friendlyMessage(e) });
+      }
+    }
+    // Completed/errored rows stay visible briefly, then fade out.
+    if (uploadClearTimer.current) clearTimeout(uploadClearTimer.current);
+    uploadClearTimer.current = setTimeout(() => {
+      setUploads((prev) => prev.filter((u) => u.state === 'uploading'));
+    }, 8000);
+  }, [agentId, tempRootName, tempMaxFileBytes, loadDir, patchUpload]);
+
+  // App-level drop zone hands files over via this nonce.
+  useEffect(() => {
+    if (!uploadRequest || uploadRequest.nonce === 0) return;
+    void runUploads(uploadRequest.files);
+    onUploadsHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploadRequest?.nonce]);
+
+  // One-click cleanup of the temp folder.
+  const handleCleanup = useCallback(async () => {
+    if (!isTempRoot || cleanupState.busy) return;
+    setCleanupState({ busy: true });
+    try {
+      const res = await api.cleanupTempFolder(agentId);
+      const items = `${res.removed} item${res.removed === 1 ? '' : 's'}`;
+      setCleanupState({
+        busy: false,
+        result: `Cleaned the temp folder: removed ${items} (${formatBytes(res.freed_bytes)})`,
+      });
+      loadDir(false);
+      setTreeRefreshNonce((n) => n + 1);
+    } catch (e) {
+      setCleanupState({ busy: false, error: friendlyMessage(e) });
+    }
+  }, [agentId, isTempRoot, cleanupState.busy, loadDir]);
+
+  // Auto-dismiss the cleanup banner.
+  useEffect(() => {
+    if (!cleanupState.result && !cleanupState.error) return;
+    if (cleanupDismissTimer.current) clearTimeout(cleanupDismissTimer.current);
+    cleanupDismissTimer.current = setTimeout(
+      () => setCleanupState({ busy: false }),
+      6000,
+    );
+    return () => {
+      if (cleanupDismissTimer.current) clearTimeout(cleanupDismissTimer.current);
+    };
+  }, [cleanupState.result, cleanupState.error]);
+
+  const handleDropFiles = useCallback((files: File[]) => {
+    if (files.length === 0) return;
+    void runUploads(files);
+  }, [runUploads]);
+
+  const pickFiles = useCallback((list: FileList | null) => {
+    if (!list) return;
+    handleDropFiles(Array.from(list));
+  }, [handleDropFiles]);
 
   const navigateTo = useCallback((entry: api.FsEntry) => {
     if (entry.denied) return;
@@ -852,8 +992,80 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
             </svg>
           )}
         </button>
+        {isTempRoot && (
+          <>
+            {/* Upload into the temp folder (click fallback for drag & drop,
+                and the only affordance on touch devices). */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={styles.tempBtn}
+              title={`Upload files to ${tempRootName}`}
+              aria-label="Upload files to temp folder"
+            >
+              <IconUpload />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                pickFiles(e.target.files);
+                e.target.value = '';
+              }}
+            />
+            {/* One-click cleanup of the whole temp folder. */}
+            <button
+              onClick={handleCleanup}
+              style={{
+                ...styles.tempBtn,
+                ...(cleanupState.busy ? { opacity: 0.5, cursor: 'wait' } : {}),
+              }}
+              disabled={cleanupState.busy}
+              title={`Clean the ${tempRootName} folder`}
+              aria-label="Clean temp folder"
+            >
+              <IconTrash />
+            </button>
+          </>
+        )}
         {loading && <span style={styles.spinner} />}
       </div>
+      {uploads.length > 0 && (
+        <div style={styles.uploadBanner} role="status">
+          {uploads.map((u) => (
+            <div key={u.id} style={styles.uploadRow}>
+              <span style={styles.uploadName}>{u.name}</span>
+              <span
+                style={{
+                  ...styles.uploadState,
+                  color:
+                    u.state === 'error' ? c.danger
+                      : u.state === 'done' ? c.success
+                        : c.textSecondary,
+                }}
+              >
+                {u.state === 'uploading'
+                  ? u.pct != null ? `${u.pct}%` : '…'
+                  : u.state === 'done'
+                    ? 'Uploaded'
+                    : u.message || 'Upload failed'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {cleanupState.result && (
+        <div style={styles.cleanupBanner} role="status">
+          <IconCheck style={{ width: 14, height: 14 }} />
+          <span>{cleanupState.result}</span>
+        </div>
+      )}
+      {cleanupState.error && (
+        <div style={styles.cleanupBannerError} role="alert">
+          {cleanupState.error}
+        </div>
+      )}
       {/* Visible pin error. The pin button also carries the message in its
           title, but a hover-only cue violates "never freeze silently" — a user
           on touch or who never hovers wouldn't see that the pin was rejected
@@ -1065,7 +1277,57 @@ function globToRegex(glob: string): string {
 // Compact form for narrow mobile rows — see fileListShared.formatDateShort.
 
 const styles: Record<string, React.CSSProperties> = {
-  container: { display: 'flex', flexDirection: 'column', height: '100%', fontFamily: font.sans },
+  container: { display: 'flex', flexDirection: 'column', height: '100%', fontFamily: font.sans, position: 'relative' },
+  uploadBanner: {
+    borderBottom: `1px solid ${c.border}`,
+    background: c.bg,
+    padding: '6px 12px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+    maxHeight: 120,
+    overflowY: 'auto',
+  },
+  uploadRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: 12,
+    fontSize: 12.5,
+    fontFamily: font.sans,
+  },
+  uploadName: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    color: c.text,
+  },
+  uploadState: { flexShrink: 0, fontWeight: 500 },
+  cleanupBanner: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    borderBottom: `1px solid ${c.border}`,
+    background: c.bg,
+    padding: '6px 12px',
+    fontSize: 12.5,
+    fontFamily: font.sans,
+    color: c.success,
+  },
+  cleanupBannerError: {
+    borderBottom: `1px solid ${c.border}`,
+    background: c.bg,
+    padding: '6px 12px',
+    fontSize: 12.5,
+    fontFamily: font.sans,
+    color: c.danger,
+  },
+  tempBtn: {
+    padding: 0, borderRadius: radius.md, border: `1px solid ${c.border}`,
+    background: 'transparent', color: c.textSecondary, cursor: 'pointer',
+    fontSize: 16, lineHeight: 1, transition: 'all 0.15s',
+    width: 34, height: 28, flexShrink: 0, boxSizing: 'border-box',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
   toolbar: {
     padding: '8px 12px', borderBottom: `1px solid ${c.border}`,
     display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',

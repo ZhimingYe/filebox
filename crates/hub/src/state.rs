@@ -160,6 +160,10 @@ pub struct AppState {
     /// Bounds simultaneous streamed raw responses by actual concurrency,
     /// independent of how many files a user has viewed historically.
     pub raw_read_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Bounds concurrent temp-folder uploads hub-wide: each upload holds one
+    /// permit while its body streams to the agent, so a burst of drag-drops
+    /// cannot pile unbounded buffered bodies in memory.
+    pub temp_upload_semaphore: Arc<tokio::sync::Semaphore>,
     /// Serializes full desired-resource rewrites per Agent. Resource updates
     /// carry a revision and a complete root set, so overlapping rewrites for
     /// one Agent would otherwise race while unrelated Agents should proceed.
@@ -270,6 +274,7 @@ impl AppState {
             // rate limit. Memory remains bounded because each stream asks the
             // Agent for at most FILE_CHUNK_MAX_BYTES at a time.
             raw_read_semaphore: Arc::new(tokio::sync::Semaphore::new(96)),
+            temp_upload_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
             resource_update_locks: Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -634,6 +639,7 @@ mod tests {
                 0,
                 vec![],
                 filebox_protocol::resources::Capabilities::default(),
+            None,
             );
         }
         let connection_id = {

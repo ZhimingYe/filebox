@@ -23,7 +23,9 @@ machines need no public IP, inbound port, VPN, or port mapping.
 
 ## Out of Scope (do not resurrect without explicit sign-off)
 
-- Write / edit / delete / rename files
+- Write / edit / delete / rename files — **sole sanctioned exception: the
+  per-agent temp-upload folder** (see "Temp Upload Folder" below). The agent
+  writes ONLY inside `<temp base>/<upload folder>` and nothing else, ever.
 - Shell execution, terminal, remote desktop
 - Arbitrary TCP proxying, LAN scanning, **port forwarding** (an earlier
   draft planned a port-tunnel feature; it was dropped)
@@ -42,7 +44,9 @@ machines need no public IP, inbound port, VPN, or port mapping.
   entire file.
 - **Frontend is the control surface.** Roots, pins, and collections are
   managed from the UI. CLI is bootstrap / automation / recovery only.
-- **Read-only.** Never add writes, shell, or arbitrary proxying.
+- **Read-only.** Never add writes, shell, or arbitrary proxying. The ONLY
+  write path is the temp-upload folder (browser drag-drop → hub relay →
+  agent writes into its dedicated folder). Nothing else writes.
 - **Reconnect forever.** Survives 24h+ outages; identity persists; no
   duplicate backend entries on reconnect.
 - **Never freeze silently.** Long ops are fine, but every one needs visible
@@ -88,7 +92,8 @@ challenges), `net.rs` (`FILEBOX_TRUST_XFF` for client IP),
 `agent_registry.rs` (lifecycle + coalesced pending root/collection
 updates + config_error), `ws.rs` (agent WSS handler with
 abort-on-reregister), `events.rs` (SSE fanout), `fs_proxy.rs` (proxies
-file ops to agent WS), `search_proxy.rs` (workspace search), `health.rs`.
+file ops to agent WS), `search_proxy.rs` (workspace search),
+`temp_proxy.rs` (temp-folder upload relay + cleanup), `health.rs`.
 
 **Agent** (`crates/agent/`): Rust + Tokio + tokio-tungstenite (rustls
 webpki-roots) + sysinfo. Connects outward, reconnects forever.
@@ -98,6 +103,7 @@ bad updates never destroy last good state), `fs.rs` (read-only ops + path
 safety + denylist), `search.rs` (in-process fd/rg-like workspace search),
 `dir_cache.rs` (mtime-keyed directory listing cache, cleared on root
 apply, capped), `sysinfo.rs` (TTL-cached stats — see below),
+`temp_store.rs` (the ONLY write path: dedicated temp-upload folder),
 `config_store.rs` (persists `agent_id`, roots, pins, collections,
 revisions under `data_dir` in `agent_state.json`).
 
@@ -254,6 +260,51 @@ mid-probe doesn't burn the check), and a removed backend is simply not
 re-selected. The Search view stays mounted when hidden so long scans
 survive navigation.
 
+## Temp Upload Folder (the ONLY write path)
+
+The agent maintains a dedicated scratch folder and writes ONLY there:
+`<temp base>/<upload folder>` (defaults `<data_dir>/temp` /
+`agent-temp-copied-file`; env `FILEBOX_AGENT_TEMP_DIR`,
+`FILEBOX_AGENT_TEMP_UPLOAD_NAME`, or agent.toml `temp_dir` /
+`temp_upload_name`). The browser drags small files onto the hub (app-wide
+drop overlay in `App.tsx`; upload/clean buttons in `FileBrowser.tsx`);
+the hub relays bytes over the agent WS; the agent writes them into the
+folder. The folder appears in the root selector as a synthetic root and is
+browsable/readable like any root. "一键清理" = the trash button on that
+root view (`POST /api/agents/{id}/temp-cleanup`), which deletes every
+entry inside the folder (never the folder itself, never symlink targets).
+
+```text
+Drop files → POST /api/agents/{id}/temp-upload?name=…  (body = raw bytes)
+  → Hub validates name + Content-Length, caps body at 64 MiB, 4 concurrent
+    uploads, streams TempUploadBegin/Chunk(done) over WS
+  → Agent temp_store.rs: validates name/quotas, writes into 0700 staging,
+    hard-links (atomic no-clobber) into the 0700 upload folder, verifies
+    the canonical final path stays inside, replies TempUploadResponse
+```
+
+Security invariants (`crates/agent/src/temp_store.rs` is the authority):
+
+- **Only writes inside the folder.** Names are single path components
+  (`crates/protocol/src/temp.rs` validates: no `/` `\` NUL `..`), so a
+  name can never escape. The final published path is canonicalized and
+  re-verified inside the folder before acceptance.
+- **Never overwrites.** Collisions get a ` (2)`-style suffix; publish uses
+  `hard_link` (atomic, fails on existing target).
+- **Quotas.** Per-file cap (`max_file_bytes`, default 20 MiB, hub body cap
+  64 MiB) and total folder quota (default 1 GiB, reservation-based;
+  accounting survives restarts). Exceed → 413 / 507 `temp_quota_exceeded`.
+- **No symlink following.** Staging files open with `O_NOFOLLOW`;
+  cleanup unlinks symlinks instead of their targets and refuses to run if
+  the folder itself was swapped for a symlink. Staging leftovers are
+  reaped at startup; sessions are aborted on Cancel / disconnect.
+- **Privacy of the folder**: 0700 dirs, 0600 files. Reads of uploaded
+  files still go through the standard fs denylist, so a dropped `id_rsa`
+  shows as denied (it can be cleaned up, not re-read).
+- Gated by `capabilities.temp_upload` (false when the folder can't be
+  initialized or for legacy agents → `unsupported_feature`). Uploads also
+  ride the normal session + CSRF protection.
+
 ## Security
 
 - Users: bcrypt-hashed passwords in `hub.json`. Sessions: `HttpOnly;
@@ -397,10 +448,13 @@ filebox/
   crates/
     README.md               # Rust workspace architecture
     protocol/src/           # message.rs, agent.rs, resources.rs (roots/pins/
-                            # collections), search.rs, denylist.rs
+                            # collections), search.rs, denylist.rs, temp.rs
+                            # (shared upload-name validation)
     updater/src/            # --init-config, --update
-    hub/src/                # … + search_proxy.rs, net.rs, audit.rs (login audit)
-    agent/src/              # … + search.rs, dir_cache.rs
+    hub/src/                # … + search_proxy.rs, temp_proxy.rs (upload relay),
+                            # net.rs, audit.rs (login audit)
+    agent/src/              # … + search.rs, dir_cache.rs, temp_store.rs
+                            # (write-scoped temp upload folder)
   frontend/
     vite.config.ts          # manualChunks: react / markdown / tiff
                             # (Monaco stays behind TextPreview lazy import)
