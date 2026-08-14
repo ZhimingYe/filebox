@@ -152,10 +152,27 @@ start_agent() {
 start_agent 1
 
 login() {
+  # Solve the self-hosted proof-of-work challenge first (single-use per
+  # attempt): find a nonce so sha256("{id}:{salt}:{nonce}") has `difficulty`
+  # leading zero bits.
+  POW_JSON="$(curl -sS --noproxy '*' "${BASE}/api/pow/challenge")"
+  POW_ID="$(printf '%s' "${POW_JSON}" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")"
+  POW_NONCE="$(printf '%s' "${POW_JSON}" | python3 -c "
+import sys, json, hashlib
+ch = json.load(sys.stdin)
+prefix = f\"{ch['id']}:{ch['salt']}:\"
+target = ch['difficulty']
+nonce = 0
+while True:
+    digest = hashlib.sha256((prefix + str(nonce)).encode()).digest()
+    if int.from_bytes(digest, 'big') >> (256 - target) == 0:
+        break
+    nonce += 1
+print(nonce)")"
   curl -sS --noproxy '*' -c "${COOKIE_JAR}" -b "${COOKIE_JAR}" \
     -X POST "${BASE}/api/session/exchange" \
     -H 'Content-Type: application/json' \
-    -d '{"username":"admin","password":"dev-password","remember":false}' \
+    -d "{\"username\":\"admin\",\"password\":\"dev-password\",\"remember\":false,\"pow_id\":\"${POW_ID}\",\"pow_nonce\":\"${POW_NONCE}\"}" \
     -o "${WORKDIR}/login.json"
   CSRF="$(python3 -c "import json;print(json.load(open('${WORKDIR}/login.json'))['csrf_token'])")"
   export CSRF

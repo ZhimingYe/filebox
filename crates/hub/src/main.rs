@@ -9,6 +9,7 @@ mod fs_proxy;
 mod health;
 mod net;
 mod office_proxy;
+mod pow;
 mod preview_doc;
 mod routes;
 mod search_proxy;

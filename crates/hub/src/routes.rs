@@ -16,6 +16,7 @@ use tower_http::services::ServeDir;
 
 use crate::agent_registry::AgentStatus;
 use crate::net::client_ip;
+use crate::pow::{VerifyOutcome, CHALLENGE_TTL};
 use crate::state::{
     AppState, AuthenticatedSession, GetAccessPurpose, GetAccessToken, PendingResponse,
     PreviewSession, GET_ACCESS_TOKEN_MAX_TOTAL, GET_ACCESS_TOKEN_TTL_EVENTS,
@@ -28,6 +29,7 @@ pub fn create_router(state: AppState) -> Router {
     // Public routes (no auth required)
     let public = Router::new()
         .route("/api/health", get(health::health_handler))
+        .route("/api/pow/challenge", get(pow_challenge_handler))
         .route("/api/session/exchange", post(session_exchange_handler))
         .route("/ws/agent", get(ws::ws_handler));
 
@@ -604,6 +606,46 @@ struct SessionExchangeRequest {
     username: String,
     password: String,
     remember: Option<bool>,
+    /// Proof-of-work challenge id from `GET /api/pow/challenge`. Required.
+    pow_id: Option<String>,
+    /// Nonce proving the required work for that challenge. Required.
+    pow_nonce: Option<String>,
+}
+
+/// Self-hosted login proof-of-work: issue a fresh challenge. Public (needed
+/// before any session exists), rate-limited per IP, and never cached.
+async fn pow_challenge_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let ip = client_ip(&headers, addr);
+    if let Err(remaining) = state.pow_rate_limiter.check(&ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": "pow_rate_limited",
+                "message": format!("Too many challenge requests. Try again in {} seconds.", remaining),
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+    // Count the issuance toward the per-IP cap (reuses the login limiter's
+    // counter/cooldown semantics).
+    state.pow_rate_limiter.record_failure(&ip);
+
+    let challenge = state.pow.issue(&ip);
+    let mut resp = Json(serde_json::json!({
+        "id": challenge.id,
+        "salt": challenge.salt,
+        "difficulty": challenge.difficulty,
+        "expires_in_secs": CHALLENGE_TTL.as_secs(),
+    }))
+    .into_response();
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
 }
 
 async fn session_exchange_handler(
@@ -615,7 +657,29 @@ async fn session_exchange_handler(
     let ip = client_ip(&headers, addr);
     let user_agent = user_agent(&headers);
 
-    // Rate limit check
+    // Raw request-rate bound. Password attempts are counted separately (the
+    // per-IP 5/30s limiter below), and proof failures deliberately do not
+    // consume that budget — otherwise five zero-work requests could burn the
+    // whole window and lock out a NAT-sharing user. This bound instead caps
+    // how often the endpoint can be hit at all, keeping the per-request
+    // audit/tracing writes bounded.
+    if let Err(remaining) = state.login_request_limiter.check(&ip) {
+        state
+            .audit
+            .record("login_rate_limited", &req.username, &ip, &user_agent);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": "login_rate_limited",
+                "message": format!("Too many login requests. Try again in {} seconds.", remaining),
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+    state.login_request_limiter.record_failure(&ip);
+
+    // Password-attempt rate limit check
     if let Err(remaining) = state.rate_limiter.check(&ip) {
         state
             .audit
@@ -625,6 +689,47 @@ async fn session_exchange_handler(
             Json(serde_json::json!({
                 "error": "login_rate_limited",
                 "message": format!("Too many login attempts. Try again in {} seconds.", remaining),
+                "retryable": true,
+            })),
+        )
+            .into_response();
+    }
+
+    // Proof of work comes before any password verification: a failed proof
+    // burns a login request (bounded above) but NOT a password attempt, so
+    // password guessers still pay ~2^difficulty hashes per guess and hit the
+    // password rate limit, while zero-work garbage cannot lock users out.
+    // The challenge is single-use — the browser must fetch + solve a fresh
+    // one after every attempt.
+    let pow = match (req.pow_id.as_deref(), req.pow_nonce.as_deref()) {
+        (Some(id), Some(nonce)) if !id.is_empty() && !nonce.is_empty() => {
+            state.pow.verify(id, nonce)
+        }
+        _ => VerifyOutcome::UnknownOrExpired,
+    };
+    if pow != VerifyOutcome::Valid {
+        // Usernames are attacker-controlled up to the 1MB body limit — keep
+        // them out of the log untruncated (the audit ring truncates itself).
+        let display_user: String = req.username.chars().take(64).collect();
+        tracing::warn!(target: "audit", ip = %ip, user = %display_user, "pow_failed");
+        state
+            .audit
+            .record("pow_failed", &req.username, &ip, &user_agent);
+        let (status, message) = match pow {
+            VerifyOutcome::Insufficient => (
+                StatusCode::UNAUTHORIZED,
+                "Insufficient proof of work",
+            ),
+            _ => (
+                StatusCode::UNAUTHORIZED,
+                "Verification challenge missing or expired. Refresh and try again.",
+            ),
+        };
+        return (
+            status,
+            Json(serde_json::json!({
+                "error": "pow_failed",
+                "message": message,
                 "retryable": true,
             })),
         )
@@ -657,8 +762,11 @@ async fn session_exchange_handler(
     let csrf_token = session.csrf_token.clone();
     drop(inner);
 
-    // Clear rate limit on successful login
+    // Clear rate limits on successful login (password attempts, login
+    // requests, and challenge fetches — a success proves a human at this IP).
     state.rate_limiter.clear(&ip);
+    state.login_request_limiter.clear(&ip);
+    state.pow_rate_limiter.clear(&ip);
 
     tracing::info!(target: "audit", ip = %ip, user = %req.username, "login_success");
     state

@@ -1,11 +1,21 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { c, radius, shadow, font } from '../theme';
-import { IconBrandMark } from './icons';
+import { IconBrandMark, IconCheck, IconRefresh } from './icons';
 import { useIsMobile } from '../state/useIsMobile';
+import { getPowChallenge, type ApiError } from '../api/client';
+import { solvePow } from '../lib/pow';
 
 interface Props {
-  onLogin: (username: string, password: string, remember: boolean) => Promise<boolean>;
+  onLogin: (
+    username: string,
+    password: string,
+    remember: boolean,
+    powId: string,
+    powNonce: string,
+  ) => Promise<boolean>;
 }
+
+type VerificationStatus = 'loading' | 'solving' | 'ready' | 'error';
 
 export function Login({ onLogin }: Props) {
   const isMobile = useIsMobile();
@@ -17,21 +27,131 @@ export function Login({ onLogin }: Props) {
   const [loading, setLoading] = useState(false);
   const [focused, setFocused] = useState<'user' | 'pass' | null>(null);
   const [btnHover, setBtnHover] = useState(false);
+  const [pow, setPow] = useState<{ id: string; salt: string; difficulty: number } | null>(null);
+  const [powNonce, setPowNonce] = useState<string | null>(null);
+  const [powStatus, setPowStatus] = useState<VerificationStatus>('loading');
+  const [powProgress, setPowProgress] = useState(0);
+  const [powErrorMsg, setPowErrorMsg] = useState<string | null>(null);
+  // Supersedes stale fetches/solves (a new run invalidates the previous one).
+  const powGenRef = useRef(0);
+  const powAbortRef = useRef<AbortController | null>(null);
+  // Synchronous guard so a double-click / Enter+click cannot fire two
+  // exchangeSession calls with the same (single-use) challenge.
+  const submitLockRef = useRef(false);
 
-  const canSubmit = username.trim().length > 0 && password.trim().length > 0 && !loading;
+  const canSubmit =
+    username.trim().length > 0
+    && password.trim().length > 0
+    && powStatus === 'ready'
+    && powNonce !== null
+    && !loading;
+
+  // Fetch a challenge and solve it in the background. Event handlers and the
+  // deferred mount effect may call this; it sets state synchronously, so the
+  // mount effect defers it one tick (react-hooks/set-state-in-effect).
+  const startVerification = useCallback(async () => {
+    const gen = ++powGenRef.current;
+    powAbortRef.current?.abort();
+    const controller = new AbortController();
+    powAbortRef.current = controller;
+    setPow(null);
+    setPowNonce(null);
+    setPowStatus('loading');
+    setPowProgress(0);
+    setPowErrorMsg(null);
+
+    let challenge;
+    try {
+      challenge = await getPowChallenge(controller.signal);
+    } catch (err) {
+      if (powGenRef.current !== gen) return;
+      setPowStatus('error');
+      // Surface rate-limit feedback instead of a bare "Unavailable".
+      const apiError = err as ApiError;
+      if (apiError?.error === 'pow_rate_limited' && apiError?.message) {
+        setPowErrorMsg(apiError.message);
+      }
+      return;
+    }
+    if (powGenRef.current !== gen || controller.signal.aborted) return;
+
+    setPow({ id: challenge.id, salt: challenge.salt, difficulty: challenge.difficulty });
+    setPowStatus('solving');
+    const expected = Math.pow(2, challenge.difficulty);
+    let lastRender = 0;
+    try {
+      const nonce = await solvePow(challenge, {
+        signal: controller.signal,
+        onProgress: (attempts) => {
+          // Throttle to ~4 renders/s — the solver reports per ~16k hashes,
+          // and this text feeds an aria-live region (keep announcements
+          // sparse for screen readers).
+          const now = Date.now();
+          if (now - lastRender < 250) return;
+          lastRender = now;
+          if (powGenRef.current === gen) {
+            setPowProgress(Math.min(99, Math.round((attempts / expected) * 100)));
+          }
+        },
+      });
+      if (powGenRef.current !== gen || controller.signal.aborted) return;
+      setPowNonce(nonce);
+      setPowStatus('ready');
+    } catch (err) {
+      if (powGenRef.current !== gen) return;
+      if ((err as DOMException)?.name === 'AbortError') return;
+      setPowStatus('error');
+    }
+  }, []);
+
+  useEffect(() => {
+    // Deferred one tick so no state update fires synchronously from the
+    // effect; the cleanup aborts any in-flight verification on unmount.
+    const timer = window.setTimeout(() => void startVerification(), 0);
+    return () => {
+      window.clearTimeout(timer);
+      powGenRef.current += 1;
+      powAbortRef.current?.abort();
+    };
+  }, [startVerification]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSubmit) return;
+    if (submitLockRef.current) return;
+    if (!canSubmit || !pow || !powNonce) return;
+    submitLockRef.current = true;
     setLoading(true);
     setError('');
     try {
-      const ok = await onLogin(username, password, remember);
-      if (!ok) setError('Invalid username or password');
-    } catch {
-      setError('Authentication failed. Check the hub is reachable.');
+      const ok = await onLogin(username, password, remember, pow.id, powNonce);
+      if (!ok) {
+        setError('Invalid username or password');
+        void startVerification();
+      }
+    } catch (err) {
+      const apiError = err as ApiError;
+      switch (apiError?.error) {
+        case 'invalid_credentials':
+          setError('Invalid username or password');
+          break;
+        case 'pow_failed':
+          setError(apiError?.message || 'Verification failed');
+          break;
+        case 'login_rate_limited':
+          setError(apiError?.message || 'Too many login attempts. Try again shortly.');
+          break;
+        default:
+          setError('Authentication failed. Check the hub is reachable.');
+          break;
+      }
+      // A consumed challenge can never be retried; the rate-limit pause is
+      // the one failure where the current challenge is not the problem.
+      if (apiError?.error !== 'login_rate_limited') {
+        void startVerification();
+      }
     } finally {
       setLoading(false);
+      submitLockRef.current = false;
     }
   };
 
@@ -112,6 +232,48 @@ export function Login({ onLogin }: Props) {
                   {showPassword ? 'Hide' : 'Show'}
                 </button>
               </div>
+            </div>
+
+            <div style={styles.field}>
+              <label htmlFor="fb-pow" style={styles.label}>Verification</label>
+              <div style={styles.powBadge} aria-live="polite">
+                <span style={styles.powBadgeText}>
+                  {powStatus === 'solving' && `Solving… ${powProgress}%`}
+                  {powStatus === 'ready' && 'Ready'}
+                  {powStatus === 'error' && 'Unavailable'}
+                  {powStatus === 'loading' && '…'}
+                </span>
+                {powStatus === 'ready' && (
+                  <IconCheck style={{ width: 14, height: 14, color: c.success }} />
+                )}
+                <button
+                  type="button"
+                  onClick={() => void startVerification()}
+                  style={styles.powRefresh}
+                  disabled={powStatus === 'loading' || powStatus === 'solving' || loading}
+                  title="Re-run verification"
+                  aria-label="Re-run verification"
+                >
+                  <IconRefresh style={{ width: 14, height: 14 }} />
+                </button>
+              </div>
+              <div style={styles.powHint}>
+                {powStatus === 'solving'
+                  ? 'Proving this is not an automated sign-in attempt…'
+                  : 'Protects the sign-in form from automated attempts.'}
+              </div>
+              {powStatus === 'error' && (
+                <div style={styles.powErrorText}>
+                  {powErrorMsg ?? 'Could not complete verification.'}
+                  <button
+                    type="button"
+                    onClick={() => void startVerification()}
+                    style={styles.powRetry}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
             </div>
 
             <label style={styles.rememberRow}>
@@ -305,6 +467,67 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '4px 8px',
     borderRadius: radius.sm,
     lineHeight: 1,
+  },
+  // Proof-of-work status badge — striped "checking" affordance using theme
+  // tokens only (no external images).
+  powBadge: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    minHeight: 40,
+    padding: '0 6px 0 12px',
+    borderRadius: radius.md,
+    border: `1px solid ${c.border}`,
+    background: `repeating-linear-gradient(-45deg, ${c.bgMuted} 0px, ${c.bgMuted} 6px, ${c.surface} 6px, ${c.surface} 12px)`,
+    boxSizing: 'border-box',
+  },
+  powBadgeText: {
+    flex: 1,
+    fontFamily: font.mono,
+    fontSize: 13.5,
+    fontWeight: 600,
+    color: c.textSecondary,
+    letterSpacing: '0.04em',
+    whiteSpace: 'nowrap',
+    userSelect: 'none' as const,
+  },
+  powRefresh: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 26,
+    height: 26,
+    border: 'none',
+    background: 'transparent',
+    color: c.textMuted,
+    cursor: 'pointer',
+    borderRadius: radius.sm,
+    padding: 0,
+    flexShrink: 0,
+  },
+  powHint: {
+    fontSize: 12,
+    color: c.textMuted,
+    lineHeight: 1.4,
+    letterSpacing: '-0.01em',
+  },
+  powErrorText: {
+    fontSize: 12.5,
+    color: c.danger,
+    lineHeight: 1.4,
+  },
+  powRetry: {
+    border: 'none',
+    background: 'transparent',
+    color: c.accent,
+    fontSize: 12.5,
+    fontWeight: 600,
+    fontFamily: font.sans,
+    cursor: 'pointer',
+    padding: 0,
+    marginLeft: 6,
+    textDecoration: 'underline',
   },
   rememberRow: {
     display: 'flex',

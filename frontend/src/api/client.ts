@@ -194,12 +194,48 @@ async function request<T>(
   }
 }
 
+/** Shape thrown by `request` for non-2xx API responses (`{ status, ...body }`). */
+export interface ApiError {
+  status?: number;
+  error?: string;
+  message?: string;
+  retryable?: boolean;
+}
+
 // ── Session ──────────────────────────────────────────────────────────────────
 
-export async function exchangeSession(username: string, password: string, remember: boolean) {
+/** Self-hosted proof-of-work login challenge. Single-use: a fresh challenge
+ *  must be fetched and solved after every submit attempt. */
+export interface PowChallenge {
+  id: string;
+  salt: string;
+  difficulty: number;
+  expires_in_secs: number;
+}
+
+export async function getPowChallenge(signal?: AbortSignal) {
+  return request<PowChallenge>('/api/pow/challenge', signal ? { signal } : {});
+}
+
+export async function exchangeSession(
+  username: string,
+  password: string,
+  remember: boolean,
+  powId: string,
+  powNonce: string,
+) {
   const result = await request<{ ok: boolean; permissions: string[]; csrf_token?: string }>(
     '/api/session/exchange',
-    { method: 'POST', body: JSON.stringify({ username, password, remember }) },
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        password,
+        remember,
+        pow_id: powId,
+        pow_nonce: powNonce,
+      }),
+    },
   );
   if (result.ok && result.csrf_token) {
     setCsrfToken(result.csrf_token);
@@ -221,6 +257,7 @@ export type LoginAuditEvent =
   | 'login_success'
   | 'login_failed'
   | 'login_rate_limited'
+  | 'pow_failed'
   | 'logout'
   | (string & {});
 

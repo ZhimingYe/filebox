@@ -88,6 +88,7 @@ agent WebSocket.
 |---|---|
 | `routes.rs` | HTTP route table |
 | `auth.rs` | bcrypt users, session cookies, per-IP login rate limit |
+| `pow.rs` | Self-hosted login proof-of-work challenges |
 | `net.rs` | Client IP / `FILEBOX_TRUST_XFF` |
 | `ws.rs` | Agent WSS handler; abort-on-reregister |
 | `agent_registry.rs` | Online/offline lifecycle; coalesced pending root/collection updates; `config_error` |
