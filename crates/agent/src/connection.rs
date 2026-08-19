@@ -530,10 +530,15 @@ async fn run_one_connection(
     let (office_tx, mut office_rx) = mpsc::channel::<AgentMessage>(32);
     let (stats_tx, mut stats_rx) = mpsc::channel::<AgentMessage>(8);
     let (fs_tx, mut fs_rx) = mpsc::channel::<AgentMessage>(128);
+    let (temp_tx, mut temp_rx) = mpsc::channel::<AgentMessage>(16);
     let fs_admission = Arc::new(Semaphore::new(FS_MAX_INFLIGHT));
     let dir_list_admission = Arc::new(Semaphore::new(DIR_LIST_MAX_INFLIGHT));
     let fs_cancellations: FsCancellationMap = Arc::new(Mutex::new(HashMap::new()));
     let mut fs_tasks = JoinSet::new();
+    // Active temp-upload sessions: req_id -> chunk queue owned by that
+    // session's writer task. The read loop only forwards chunks; the blocking
+    // disk I/O happens off the WS loop.
+    let mut temp_writers: HashMap<String, mpsc::Sender<(u64, Vec<u8>, bool)>> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -560,6 +565,12 @@ async fn run_one_connection(
             Some(response) = fs_rx.recv() => {
                 if !send_agent_message(&mut write, &response).await {
                     tracing::warn!("Failed to send file I/O response, reconnecting");
+                    break;
+                }
+            }
+            Some(response) = temp_rx.recv() => {
+                if !send_agent_message(&mut write, &response).await {
+                    tracing::warn!("Failed to send temp upload response, reconnecting");
                     break;
                 }
             }
@@ -1012,6 +1023,9 @@ async fn run_one_connection(
                                 if let Some(store) = temp_store {
                                     store.cancel(&req_id);
                                 }
+                                // Drop the session's chunk queue so its writer
+                                // task wakes from blocking_recv and exits.
+                                temp_writers.remove(&req_id);
                             }
                             Ok(HubMessage::SysStatsRequest { req_id }) => {
                                 tracing::debug!("Sys stats request");
@@ -1304,12 +1318,20 @@ async fn run_one_connection(
                                     name,
                                     total_size
                                 );
-                                let store = temp_store.cloned();
-                                let result = match &store {
-                                    Some(store) => store.begin(&req_id, &name, total_size),
-                                    None => Err("temp_unavailable".to_string()),
+                                let Some(store) = temp_store.cloned() else {
+                                    let response = AgentMessage::TempUploadResponse {
+                                        req_id,
+                                        name: None,
+                                        size: None,
+                                        error: Some("temp_unavailable".to_string()),
+                                    };
+                                    if !send_agent_message(&mut write, &response).await {
+                                        tracing::warn!("Failed to send temp upload response, reconnecting");
+                                        break;
+                                    }
+                                    continue;
                                 };
-                                if let Err(error) = result {
+                                if let Err(error) = store.begin(&req_id, &name, total_size) {
                                     let response = AgentMessage::TempUploadResponse {
                                         req_id,
                                         name: None,
@@ -1320,48 +1342,70 @@ async fn run_one_connection(
                                         tracing::warn!("Failed to send temp upload response, reconnecting");
                                         break;
                                     }
+                                    continue;
                                 }
-                            }
-                            Ok(HubMessage::TempUploadChunk { req_id, offset, data, done }) => {
-                                let store = temp_store.cloned();
-                                let result = match &store {
-                                    Some(store) => store.write_chunk(&req_id, offset, &data, done),
-                                    None => Err("temp_unavailable".to_string()),
-                                };
-                                match result {
-                                    Ok(None) => {}
-                                    Ok(Some((name, size))) => {
-                                        let response = AgentMessage::TempUploadResponse {
-                                            req_id,
-                                            name: Some(name),
-                                            size: Some(size),
-                                            error: None,
+                                // Spawn a dedicated writer for this session: it
+                                // owns the chunk queue and does the blocking
+                                // disk I/O (writes, flush, collision-prone
+                                // publish) off the WS read loop, so heartbeats
+                                // and other traffic keep flowing during
+                                // slow-storage uploads.
+                                let (chunk_tx, chunk_rx) =
+                                    mpsc::channel::<(u64, Vec<u8>, bool)>(16);
+                                temp_writers.insert(req_id.clone(), chunk_tx);
+                                let tx = temp_tx.clone();
+                                let rid = req_id.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    let mut rx = chunk_rx;
+                                    let response = loop {
+                                        let Some((offset, data, done)) = rx.blocking_recv()
+                                        else {
+                                            // Channel closed (cancel or connection
+                                            // teardown) before a terminal chunk —
+                                            // nothing to respond.
+                                            return;
                                         };
-                                        if !send_agent_message(&mut write, &response).await {
-                                            tracing::warn!("Failed to send temp upload response, reconnecting");
-                                            break;
-                                        }
-                                    }
-                                    Err(error) => {
-                                        // `temp_no_session` means a terminal
-                                        // response for this req_id was already
-                                        // sent (Begin failed or the upload
-                                        // finished) — never double-respond.
-                                        if error == "temp_no_session" {
-                                            // nothing to send
-                                        } else {
-                                            let response = AgentMessage::TempUploadResponse {
-                                                req_id,
-                                                name: None,
-                                                size: None,
-                                                error: Some(error),
-                                            };
-                                            if !send_agent_message(&mut write, &response).await {
-                                                tracing::warn!("Failed to send temp upload response, reconnecting");
-                                                break;
+                                        match store.write_chunk(&rid, offset, &data, done) {
+                                            Ok(None) => continue,
+                                            Ok(Some((name, size))) => {
+                                                break AgentMessage::TempUploadResponse {
+                                                    req_id: rid,
+                                                    name: Some(name),
+                                                    size: Some(size),
+                                                    error: None,
+                                                };
+                                            }
+                                            // `temp_no_session` means a terminal
+                                            // response was already sent (Begin
+                                            // failed or the session was
+                                            // cancelled) — never double-respond.
+                                            Err(error) if error == "temp_no_session" => return,
+                                            Err(error) => {
+                                                break AgentMessage::TempUploadResponse {
+                                                    req_id: rid,
+                                                    name: None,
+                                                    size: None,
+                                                    error: Some(error),
+                                                };
                                             }
                                         }
-                                    }
+                                    };
+                                    // After WS teardown drops temp_rx this
+                                    // returns immediately; while the loop is
+                                    // alive it must deliver the terminal msg.
+                                    let _ = tx.blocking_send(response);
+                                });
+                            }
+                            Ok(HubMessage::TempUploadChunk { req_id, offset, data, done }) => {
+                                let Some(tx) = temp_writers.get(&req_id) else {
+                                    // `temp_no_session` semantics: a terminal
+                                    // response was already sent or the session
+                                    // was cancelled — nothing to reply.
+                                    continue;
+                                };
+                                let _ = tx.send((offset, data, done)).await;
+                                if done {
+                                    temp_writers.remove(&req_id);
                                 }
                             }
                             Ok(HubMessage::TempCleanupRequest { req_id }) => {
@@ -1483,6 +1527,7 @@ async fn run_one_connection(
     drop(office_rx);
     drop(stats_rx);
     drop(fs_rx);
+    drop(temp_rx);
 
     // Best-effort Close frame so the hub can run cleanup immediately instead
     // of waiting for TCP timeout. Ignore errors — we're tearing down anyway.

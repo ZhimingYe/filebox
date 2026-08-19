@@ -32,6 +32,7 @@ import { CollectionsView } from './components/CollectionsView';
 import { WorkspaceSplit } from './components/WorkspaceSplit';
 import { CollectionPicker } from './components/CollectionPicker';
 import { NoAgentSelected } from './components/NoAgentSelected';
+import { TempTransferView } from './components/TempTransferView';
 import {
   IconChevronLeft,
   IconFolder,
@@ -45,6 +46,7 @@ import {
   IconClose,
   IconBrandMark,
   IconAudit,
+  IconUpload,
 } from './components/icons';
 import type { FsEntry } from './api/client';
 import * as api from './api/client';
@@ -74,7 +76,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'explorer' | 'collections' | 'settings' | 'stats' | 'audit';
+type View = 'files' | 'explorer' | 'transfer' | 'collections' | 'settings' | 'stats' | 'audit';
 
 interface ProgressEvent {
   req_id: string;
@@ -532,8 +534,8 @@ export default function App() {
   // ── App-wide drag & drop → temp upload folder ──
   // Only registered when the selected agent is temp-capable. A depth counter
   // survives dragenter/dragleave noise from child elements; only file drags
-  // (not text/links) arm the overlay. Drop lands in Files on the temp root
-  // and hands the files to FileBrowser via `uploadRequest`.
+  // (not text/links) arm the overlay. Drop lands in the Transfer view
+  // and hands the files to TempTransferView via `uploadRequest`.
   const tempRootName = selectedAgent?.temp_root_name ?? null;
   const tempCapable = !!selectedAgent?.capabilities?.temp_upload && !!tempRootName;
   useEffect(() => {
@@ -563,10 +565,8 @@ export default function App() {
       setDragOverWindow(false);
       const files = Array.from(e.dataTransfer?.files ?? []);
       if (files.length === 0) return;
-      const root = tempRootName;
-      if (!root) return;
-      setView('files');
-      applyNav(root, '/');
+      // Land in the Transfer view, which owns the upload progress + file list.
+      setView('transfer');
       setUploadRequest({ files, nonce: Date.now() });
     };
     window.addEventListener('dragenter', onDragEnter);
@@ -579,7 +579,7 @@ export default function App() {
       window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', onDrop);
     };
-  }, [tempCapable, tempRootName, applyNav]);
+  }, [tempCapable]);
 
   // Refresh-restore validation: a restored position may point at a folder
   // that vanished since the last visit. Once per (agent, root) pair per
@@ -800,6 +800,8 @@ export default function App() {
     { v: 'files' as const, label: 'Files', Icon: IconFolder },
     { v: 'explorer' as const, label: 'Explorer', Icon: IconExplorer },
     { v: 'collections' as const, label: 'Collections', Icon: IconCollection },
+    // Transfer is only meaningful on a temp-capable agent.
+    { v: 'transfer' as const, label: 'Transfer', Icon: IconUpload },
     { v: 'search' as const, label: 'Search', Icon: IconSearch },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
     { v: 'stats' as const, label: 'System', Icon: IconStats },
@@ -882,7 +884,7 @@ export default function App() {
             <div style={sectionStyle}>
               {!collapsed && <div style={styles.sectionHeader}>Workspace</div>}
               <div style={collapsed ? styles.navCollapsed : styles.nav}>
-                {navItems.map(({ v, label, Icon }) => (
+                {navItems.filter((n) => n.v !== 'transfer' || tempCapable).map(({ v, label, Icon }) => (
                   <SidebarNavButton
                     key={v}
                     label={label}
@@ -1004,7 +1006,7 @@ export default function App() {
           <div style={styles.dropCard}>
             <span style={styles.dropTitle}>Drop files to upload</span>
             <span style={styles.dropSub}>
-              Files are written to the agent's &ldquo;{tempRootName}&rdquo; temp folder
+              Files are copied to the agent&rsquo;s temp folder (Transfer view)
             </span>
           </div>
         </div>
@@ -1183,11 +1185,6 @@ export default function App() {
                         currentPath={currentPath}
                         onApplyNav={applyNav}
                         onSwitchRoot={switchRoot}
-                        tempRootName={tempRootName}
-                        tempMaxFileBytes={selectedAgent.temp_max_file_bytes ?? null}
-                        uploadRequest={uploadRequest}
-                        onUploadsHandled={() => setUploadRequest(null)}
-                        tempRefreshNonce={tempRefreshNonce}
                       />
                     </div>
                   </>
@@ -1210,11 +1207,6 @@ export default function App() {
                         currentPath={currentPath}
                         onApplyNav={applyNav}
                         onSwitchRoot={switchRoot}
-                        tempRootName={tempRootName}
-                        tempMaxFileBytes={selectedAgent.temp_max_file_bytes ?? null}
-                        uploadRequest={uploadRequest}
-                        onUploadsHandled={() => setUploadRequest(null)}
-                        tempRefreshNonce={tempRefreshNonce}
                       />
                     )}
                     preview={view === 'files' && activeTab ? (
@@ -1321,6 +1313,24 @@ export default function App() {
                       officeCapable={!!selectedAgent.capabilities?.office_pdf_preview}
                     />
                   </PreviewErrorBoundary>
+                </div>
+              )}
+              {view === 'transfer' && (
+                <div style={styles.secondaryView}>
+                  {tempCapable ? (
+                    <TempTransferView
+                      agent={selectedAgent}
+                      uploadRequest={uploadRequest}
+                      onUploadsHandled={() => setUploadRequest(null)}
+                      tempRefreshNonce={tempRefreshNonce}
+                    />
+                  ) : (
+                    <div style={styles.transferUnsupported}>
+                      <p style={styles.transferUnsupportedText}>
+                        This agent does not support temp uploads.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
               {view === 'collections' && (
@@ -1845,6 +1855,19 @@ const styles: Record<string, React.CSSProperties> = {
   secondaryView: {
     flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden',
     display: 'flex', flexDirection: 'column',
+  },
+  transferUnsupported: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  transferUnsupportedText: {
+    margin: 0,
+    fontSize: 13,
+    color: c.textMuted,
+    fontFamily: font.sans,
   },
   previewHeader: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,

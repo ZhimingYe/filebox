@@ -116,6 +116,12 @@ export function friendlyMessage(error: any): string {
     temp_upload_interrupted: 'The upload was interrupted.',
     temp_length_required: 'The upload failed: missing length.',
     temp_upload_incomplete: 'The upload body ended early. Retry.',
+    temp_cleanup_too_large: 'The temp folder is too large to clean in one pass. Retry.',
+    temp_write_failed: 'The agent could not write the upload to disk. Retry.',
+    temp_chunk_out_of_order: 'The upload stream was corrupted. Retry.',
+    temp_upload_too_large: 'This file exceeds the agent’s upload limit.',
+    temp_unavailable: 'The temp folder is not available on this agent.',
+    temp_internal_error: 'The upload failed safely. Please retry.',
   };
   if (code && map[code]) return map[code];
   return 'An unexpected error occurred.';
@@ -324,6 +330,9 @@ export interface AgentInfo {
   temp_root_name?: string | null;
   /** Agent-enforced per-file upload cap (bytes), when advertised. */
   temp_max_file_bytes?: number | null;
+  /** Canonical absolute path of the temp folder on the agent (for copying
+      file paths to a CLI agent on that machine). */
+  temp_root_path?: string | null;
   collections_revision: number;
   pending_collections_update: boolean;
   collections: CollectionInfo[];

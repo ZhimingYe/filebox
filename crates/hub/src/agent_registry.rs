@@ -65,6 +65,13 @@ impl AgentConnection {
             .unwrap()
             .as_secs();
 
+        // The synthetic temp root is only usable (and only shown) when no
+        // user root shadows its name — user roots take precedence everywhere.
+        let temp_visible = self
+            .temp_root
+            .as_ref()
+            .is_some_and(|temp| !self.roots.iter().any(|r| r.name == temp.name));
+
         AgentInfoResponse {
             id: self.agent_id.clone(),
             name: self.name.clone(),
@@ -79,9 +86,27 @@ impl AgentConnection {
             resource_revision: self.resource_revision,
             pending_resource_update: self.pending_update.is_some(),
             last_config_error: self.last_config_error.clone(),
-            roots: self.roots_with_temp(),
-            temp_root_name: self.temp_root.as_ref().map(|t| t.name.clone()),
-            temp_max_file_bytes: self.temp_root.as_ref().map(|t| t.max_file_bytes),
+            roots: self.roots_info(),
+            temp_root_name: temp_visible
+                .then(|| self.temp_root.as_ref().map(|t| t.name.clone()))
+                .flatten(),
+            // The effective per-file cap the hub actually enforces: the
+            // agent's advertised limit floored by the hub's body cap, so the
+            // Transfer view advertises what will really be accepted.
+            temp_max_file_bytes: temp_visible
+                .then(|| {
+                    self.temp_root.as_ref().map(|t| {
+                        t.max_file_bytes
+                            .min(crate::temp_proxy::TEMP_UPLOAD_MAX_BODY_BYTES as u64)
+                    })
+                })
+                .flatten(),
+            // Canonical absolute path of the temp folder on the agent — the
+            // Transfer view copies it per file so the user can hand a CLI
+            // agent on that machine a path to read.
+            temp_root_path: temp_visible
+                .then(|| self.temp_root.as_ref().map(|t| t.path.clone()))
+                .flatten(),
             collections_revision: self.collections_revision,
             pending_collections_update: self.pending_collections_update.is_some(),
             collections: {
@@ -111,11 +136,13 @@ impl AgentConnection {
         }
     }
 
-    /// User roots plus the synthetic temp root (when advertised and its name
-    /// does not collide with a user root — user roots take precedence).
-    fn roots_with_temp(&self) -> Vec<RootInfo> {
-        let mut roots: Vec<RootInfo> = self
-            .roots
+    /// User roots only, in the display shape. The synthetic temp root is
+    /// surfaced separately via `temp_root_name` and must never appear here:
+    /// `roots` feeds the root selector, directory tree, search scopes,
+    /// restore-position logic, and the settings/resource endpoints — none of
+    /// which apply to a scratch upload folder.
+    fn roots_info(&self) -> Vec<RootInfo> {
+        self.roots
             .iter()
             .map(|r| RootInfo {
                 name: r.name.clone(),
@@ -123,25 +150,17 @@ impl AgentConnection {
                 enabled: r.enabled,
                 pinned_folders: r.pinned_folders.clone(),
             })
-            .collect();
-        if let Some(temp) = &self.temp_root {
-            if !self.roots.iter().any(|r| r.name == temp.name) {
-                roots.push(RootInfo {
-                    name: temp.name.clone(),
-                    path_display: temp.path.clone(),
-                    enabled: true,
-                    pinned_folders: Vec::new(),
-                });
-            }
-        }
-        roots
+            .collect()
     }
 
+    /// User roots only — the synthetic temp root is not a manageable
+    /// resource, so the settings/resource endpoints must not list it (the
+    /// Transfer view gets it via `temp_root_name`).
     pub fn to_resource_revision(&self) -> ResourceRevision {
         ResourceRevision {
             agent_id: self.agent_id.clone(),
             resource_revision: self.resource_revision,
-            roots: self.roots_with_temp(),
+            roots: self.roots_info(),
         }
     }
 }
@@ -172,11 +191,15 @@ pub struct AgentInfoResponse {
     pub last_config_error: Option<String>,
     pub roots: Vec<RootInfo>,
     /// Name of the synthetic temp-upload root (present when the agent
-    /// advertises one). Also appears in `roots` unless shadowed by a
-    /// user root of the same name.
+    /// advertises one and no user root shadows the name). Never part of
+    /// `roots` — the temp folder is not a workspace root; the Transfer view
+    /// renders it separately.
     pub temp_root_name: Option<String>,
     /// Agent-enforced per-file upload cap (bytes), when advertised.
     pub temp_max_file_bytes: Option<u64>,
+    /// Canonical absolute path of the temp-upload folder on the agent, when
+    /// advertised and not shadowed. Used by the Transfer view to copy paths.
+    pub temp_root_path: Option<String>,
     pub collections_revision: u64,
     pub pending_collections_update: bool,
     pub collections: Vec<CollectionInfo>,
@@ -512,12 +535,44 @@ mod tests {
         assert!(info.capabilities.temp_upload);
         assert_eq!(info.temp_root_name.as_deref(), Some("agent-temp-copied-file"));
         assert_eq!(info.temp_max_file_bytes, Some(1024));
-        assert_eq!(info.roots.len(), 1, "temp root is a synthetic entry");
-        assert_eq!(info.roots[0].name, "agent-temp-copied-file");
-        assert!(info.roots[0].enabled);
         assert_eq!(
-            info.roots[0].path_display,
-            "/var/lib/filebox/temp/agent-temp-copied-file"
+            info.temp_root_path.as_deref(),
+            Some("/var/lib/filebox/temp/agent-temp-copied-file")
+        );
+        // The temp root is surfaced via `temp_root_name` only — it must never
+        // appear in `roots` (root selector / search scopes / settings).
+        assert!(info.roots.is_empty(), "temp root must not be a workspace root");
+    }
+
+    #[test]
+    fn temp_max_file_bytes_is_floored_by_hub_body_cap() {
+        // The agent may advertise a large per-file cap, but the hub can never
+        // relay more than its own body limit — the advertised value must
+        // match what the hub actually enforces.
+        let mut reg = AgentRegistry::new();
+        let mut caps = Capabilities::default();
+        caps.temp_upload = true;
+        reg.register(
+            "a1".to_string(),
+            "agent-a1".to_string(),
+            make_sender(),
+            Arc::new(Notify::new()),
+            0,
+            vec![],
+            0,
+            vec![],
+            caps,
+            Some(TempRootInfo {
+                name: "agent-temp-copied-file".to_string(),
+                path: "/var/lib/filebox/temp/agent-temp-copied-file".to_string(),
+                max_file_bytes: 200 * 1024 * 1024,
+                max_total_bytes: 4096,
+            }),
+        );
+        let info = reg.get("a1").unwrap().to_info();
+        assert_eq!(
+            info.temp_max_file_bytes,
+            Some(crate::temp_proxy::TEMP_UPLOAD_MAX_BODY_BYTES as u64)
         );
     }
 
@@ -549,11 +604,19 @@ mod tests {
             }),
         );
         let info = reg.get("a1").unwrap().to_info();
-        // The user root wins; the synthetic root is not duplicated.
+        // The user root wins; the synthetic root is not duplicated, and the
+        // temp affordances are suppressed so the UI never offers temp actions
+        // on the shadowing user root.
         assert_eq!(info.roots.len(), 1);
         assert_eq!(info.roots[0].name, "drop");
         assert_eq!(info.roots[0].path_display, "/real/drop");
-        assert_eq!(info.temp_root_name.as_deref(), Some("drop"));
+        assert_eq!(info.temp_root_name, None);
+        assert_eq!(info.temp_max_file_bytes, None);
+        assert_eq!(info.temp_root_path, None);
+        // The settings/resource shape never contains the synthetic root.
+        let rev = reg.get("a1").unwrap().to_resource_revision();
+        assert_eq!(rev.roots.len(), 1);
+        assert_eq!(rev.roots[0].path_display, "/real/drop");
     }
 
     #[test]
@@ -564,6 +627,7 @@ mod tests {
         assert!(!info.capabilities.temp_upload);
         assert_eq!(info.temp_root_name, None);
         assert_eq!(info.temp_max_file_bytes, None);
+        assert_eq!(info.temp_root_path, None);
         assert!(info.roots.is_empty());
     }
 

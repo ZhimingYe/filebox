@@ -129,6 +129,11 @@ pub struct TempStore {
     max_file_bytes: u64,
     max_total_bytes: u64,
     sessions: Mutex<HashMap<String, UploadSession>>,
+    /// Serializes `publish` against `cleanup` (both acquire it before the
+    /// `sessions` lock) so a cleanup scan can never wipe a publish's quota
+    /// reservation while its file is landing, and a publish can never land
+    /// between a cleanup's scan and its quota recompute.
+    publish_lock: Mutex<()>,
     /// Reserved total bytes for in-flight + completed uploads.
     total_bytes: AtomicU64,
 }
@@ -181,6 +186,7 @@ impl TempStore {
             max_file_bytes: config.max_file_bytes,
             max_total_bytes: config.max_total_bytes,
             sessions: Mutex::new(HashMap::new()),
+            publish_lock: Mutex::new(()),
             total_bytes: AtomicU64::new(total_bytes),
         })
     }
@@ -268,6 +274,14 @@ impl TempStore {
         data: &[u8],
         done: bool,
     ) -> Result<Option<(String, u64)>, String> {
+        // Serialize the whole chunk write against `cleanup` (same lock, same
+        // order): a publish's quota reservation must survive until its file
+        // is on disk, and a cleanup must not interleave with a session that
+        // is about to publish.
+        let _publish_guard = self
+            .publish_lock
+            .lock()
+            .map_err(|_| "temp_internal_error".to_string())?;
         let mut sessions = self
             .sessions
             .lock()
@@ -319,7 +333,15 @@ impl TempStore {
         sessions.remove(req_id);
         drop(sessions);
 
-        self.publish(&name, total_size, &staging_path)
+        match self.publish(&name, total_size, &staging_path) {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                // The publish consumed the session; its quota reservation must
+                // not leak.
+                self.total_bytes.fetch_sub(total_size, Ordering::AcqRel);
+                Err(error)
+            }
+        }
     }
 
     /// Abort an in-flight upload (Cancel or protocol error) and release its
@@ -357,50 +379,73 @@ impl TempStore {
     /// quota bookkeeping survive. Symlinks are unlinked (never followed) and
     /// directories are removed recursively without following links inside.
     pub fn cleanup(&self, cancelled: Option<&AtomicBool>) -> Result<(u64, u64), String> {
+        // Serialize against `publish` (same lock, same order as write_chunk)
+        // so the scan and the quota recompute below see a stable directory.
+        let _guard = self
+            .publish_lock
+            .lock()
+            .map_err(|_| "temp_internal_error".to_string())?;
         // Refuse if the folder has been swapped for a symlink since startup.
         verify_real_directory(&self.upload_dir)?;
+        // Pin the directory's identity and re-verify it before every removal:
+        // if a local actor swaps the folder mid-cleanup, abort instead of
+        // deleting files through the replacement path.
+        let identity = dir_identity(&self.upload_dir)
+            .ok_or_else(|| "temp_path_violation".to_string())?;
 
-        let entries = fs::read_dir(&self.upload_dir)
-            .map_err(|e| format!("failed to read temp upload dir: {e}"))?;
-        let mut removed = 0u64;
-        let mut freed = 0u64;
-        for (idx, entry) in entries.enumerate() {
-            if idx >= MAX_SCAN_ENTRIES {
-                return Err("temp_cleanup_too_large".to_string());
+        let result = (|| {
+            let entries = fs::read_dir(&self.upload_dir)
+                .map_err(|e| format!("failed to read temp upload dir: {e}"))?;
+            let mut removed = 0u64;
+            let mut freed = 0u64;
+            for (idx, entry) in entries.enumerate() {
+                if idx >= MAX_SCAN_ENTRIES {
+                    return Err("temp_cleanup_too_large".to_string());
+                }
+                if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                    return Err("request_cancelled".to_string());
+                }
+                if dir_identity(&self.upload_dir) != Some(identity) {
+                    return Err("temp_path_violation".to_string());
+                }
+                let entry = entry.map_err(|e| format!("failed to read temp entry: {e}"))?;
+                let path = entry.path();
+                let md = fs::symlink_metadata(&path).map_err(|e| {
+                    format!("failed to stat temp entry '{}': {e}", path.display())
+                })?;
+                if md.file_type().is_symlink() {
+                    // Unlink the link itself — never touch its target.
+                    fs::remove_file(&path)
+                        .map_err(|e| format!("failed to remove '{}': {e}", path.display()))?;
+                    removed += 1;
+                } else if md.is_dir() {
+                    fs::remove_dir_all(&path)
+                        .map_err(|e| format!("failed to remove '{}': {e}", path.display()))?;
+                    removed += 1;
+                } else {
+                    freed += md.len();
+                    fs::remove_file(&path)
+                        .map_err(|e| format!("failed to remove '{}': {e}", path.display()))?;
+                    removed += 1;
+                }
             }
-            if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-                return Err("request_cancelled".to_string());
-            }
-            let entry = entry.map_err(|e| format!("failed to read temp entry: {e}"))?;
-            let path = entry.path();
-            let md = fs::symlink_metadata(&path).map_err(|e| {
-                format!("failed to stat temp entry '{}': {e}", path.display())
-            })?;
-            if md.file_type().is_symlink() {
-                // Unlink the link itself — never touch its target.
-                fs::remove_file(&path)
-                    .map_err(|e| format!("failed to remove '{}': {e}", path.display()))?;
-                removed += 1;
-            } else if md.is_dir() {
-                fs::remove_dir_all(&path)
-                    .map_err(|e| format!("failed to remove '{}': {e}", path.display()))?;
-                removed += 1;
-            } else {
-                freed += md.len();
-                fs::remove_file(&path)
-                    .map_err(|e| format!("failed to remove '{}': {e}", path.display()))?;
-                removed += 1;
-            }
-        }
-        // Everything user-visible is gone; only in-flight staging reservations
-        // (kept in `total_bytes`) may remain.
+            Ok((removed, freed))
+        })();
+
+        // Recompute the quota from disk + in-flight reservations on EVERY
+        // exit: an aborted cleanup (cancelled / too large / path violation)
+        // has already deleted some entries whose bytes must leave the
+        // accounting, and the scan must not wipe a reservation whose file is
+        // still landing (publish holds this lock, so none can interleave).
+        let on_disk = account_directory(&self.upload_dir);
         let in_flight = self
             .sessions
             .lock()
             .map(|s| s.values().map(|v| v.total_size).sum::<u64>())
             .unwrap_or(0);
-        self.total_bytes.store(in_flight, Ordering::Release);
-        Ok((removed, freed))
+        self.total_bytes
+            .store(on_disk.saturating_add(in_flight), Ordering::Release);
+        result
     }
 
     /// Internal: called with the sessions lock HELD. Aborts a session and
@@ -554,12 +599,36 @@ fn split_ext(name: &str) -> (&str, &str) {
     }
 }
 
+/// Identity of a directory for swap detection: (device, inode) on Unix —
+/// stable across renames, changes when the path is replaced. Non-Unix falls
+/// back to size (weak, but this target is Linux).
+fn dir_identity(path: &Path) -> Option<(u64, u64)> {
+    let md = fs::symlink_metadata(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((md.dev(), md.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        Some((0, md.len()))
+    }
+}
+
 /// Remove every direct entry of `dir` (files, dirs, symlinks — never followed).
+/// Aborts silently if the directory is swapped mid-run.
 fn reap_directory(dir: &Path) {
+    let identity = match dir_identity(dir) {
+        Some(identity) => identity,
+        None => return,
+    };
     let Ok(entries) = fs::read_dir(dir) else { return };
     for (idx, entry) in entries.enumerate() {
         if idx >= MAX_SCAN_ENTRIES {
             break;
+        }
+        if dir_identity(dir) != Some(identity) {
+            return;
         }
         let Ok(entry) = entry else { continue };
         let path = entry.path();
@@ -593,6 +662,7 @@ fn account_directory(dir: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn store_in(tmp: &Path, name: &str, max_file: u64, max_total: u64) -> TempStore {
         let cfg = TempStoreConfig {
@@ -774,6 +844,84 @@ mod tests {
         // Reservation released: a full-size upload fits again.
         store.begin("r2", "y.bin", 10).unwrap();
         assert!(store.write_chunk("r2", 0, b"0123456789", true).unwrap().is_some());
+    }
+
+    #[test]
+    fn aborted_cleanup_recomputes_quota_from_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_in(tmp.path(), "drop", 4096, 100);
+        begin_upload(&store, "r1", "a.bin", b"123456"); // 6 bytes on disk
+        // A cancelled cleanup deletes nothing but must still leave the quota
+        // accurate for what remains on disk.
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            store.cleanup(Some(&cancelled)),
+            Err("request_cancelled".to_string())
+        );
+        // 6 bytes still on disk: a 94-byte upload fits, 95 does not.
+        assert!(store.begin("r2", "b.bin", 94).is_ok());
+        assert_eq!(store.begin("r3", "c.bin", 95), Err("temp_quota_exceeded".to_string()));
+        store.cancel("r2");
+        // And a successful cleanup resets the accounting to in-flight only.
+        assert!(store.cleanup(None).is_ok());
+        assert!(store.begin("r4", "d.bin", 100).is_ok());
+        store.cancel("r4");
+    }
+
+    #[test]
+    fn cleanup_mid_publish_never_loses_the_quota_reservation() {
+        // Regression for the publish-vs-cleanup race: a completed upload's
+        // reservation must survive a concurrent cleanup. `cleanup` and
+        // `write_chunk`'s publish path share a lock, so the invariant
+        // `total_bytes == disk bytes + in-flight reservations` must hold
+        // after any interleaving.
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(store_in(tmp.path(), "drop", 4096, 4096));
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut uploaders = Vec::new();
+        for t in 0..3 {
+            let store = store.clone();
+            let stop = stop.clone();
+            uploaders.push(std::thread::spawn(move || {
+                let mut i = 0u64;
+                while !stop.load(Ordering::Acquire) {
+                    let req = format!("t{t}_r{i}");
+                    let name = format!("f{i}.bin");
+                    if store.begin(&req, &name, 8).is_ok() {
+                        let _ = store.write_chunk(&req, 0, b"12345678", true);
+                    }
+                    i += 1;
+                }
+            }));
+        }
+        let store_clone = store.clone();
+        let cleaner = std::thread::spawn(move || {
+            for _ in 0..8 {
+                let _ = store_clone.cleanup(None);
+            }
+        });
+        // Let uploads and cleanups interleave for a bounded window, then stop.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        stop.store(true, Ordering::Release);
+        for handle in uploaders {
+            let _ = handle.join();
+        }
+        let _ = cleaner.join();
+
+        // The folder may have leftovers; the accounting must match disk +
+        // sessions exactly (no lost reservations, no stale bytes).
+        let dir = store.upload_dir.clone();
+        let on_disk = account_directory(&dir);
+        let in_flight = store
+            .sessions
+            .lock()
+            .map(|s| s.values().map(|v| v.total_size).sum::<u64>())
+            .unwrap_or(0);
+        assert_eq!(
+            store.total_bytes.load(Ordering::Acquire),
+            on_disk.saturating_add(in_flight),
+            "quota accounting must match disk + in-flight after interleaved cleanup"
+        );
     }
 
     #[test]

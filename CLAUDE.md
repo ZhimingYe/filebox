@@ -267,12 +267,14 @@ The agent maintains a dedicated scratch folder and writes ONLY there:
 `agent-temp-copied-file`; env `FILEBOX_AGENT_TEMP_DIR`,
 `FILEBOX_AGENT_TEMP_UPLOAD_NAME`, or agent.toml `temp_dir` /
 `temp_upload_name`). The browser drags small files onto the hub (app-wide
-drop overlay in `App.tsx`; upload/clean buttons in `FileBrowser.tsx`);
-the hub relays bytes over the agent WS; the agent writes them into the
-folder. The folder appears in the root selector as a synthetic root and is
-browsable/readable like any root. "一键清理" = the trash button on that
-root view (`POST /api/agents/{id}/temp-cleanup`), which deletes every
-entry inside the folder (never the folder itself, never symlink targets).
+drop overlay in `App.tsx`); the dedicated sidebar **Transfer** view
+(`TempTransferView.tsx`) owns upload progress, the folder listing, copy-
+path, download, and one-click cleanup. The hub relays bytes over the agent
+WS; the agent writes them into the folder. The folder is **not** a Files
+workspace root (no tree, no pins, no search scope). Cleanup is the
+Transfer view's Clean button (`POST /api/agents/{id}/temp-cleanup`),
+which deletes every entry inside the folder (never the folder itself,
+never symlink targets).
 
 ```text
 Drop files → POST /api/agents/{id}/temp-upload?name=…  (body = raw bytes)
@@ -467,7 +469,7 @@ filebox/
       state/                # session, events (SSE), health, useIsMobile
       components/
         Login BackendList FileBrowser FileEntryList WorkspaceSearch
-        CollectionsView CollectionPicker WorkspaceSplit PreviewWorkspace
+        TempTransferView CollectionsView CollectionPicker WorkspaceSplit PreviewWorkspace
         PreviewPane previewShared {Pdf,Text,Markdown,Html,Csv,Image}Preview
         DirectoryTree AddressBar DateFilterControl PinnedFolders
         AgentSettings RootManager HealthPanel SystemStats AboutDialog

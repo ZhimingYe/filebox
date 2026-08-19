@@ -32,6 +32,11 @@ pub const TEMP_UPLOAD_MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// Wall-clock budget for the agent to acknowledge a full upload. Generous for
 /// slow links (the body itself already streamed).
 const TEMP_UPLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+/// Wall-clock budget for the request BODY to arrive/stream. A stalled client
+/// must not hold a permit, a pending slot, and an agent staging session
+/// forever. Above the frontend XHR timeout (130s) is irrelevant — the client
+/// aborts first and the abort path cancels the agent session.
+const TEMP_UPLOAD_BODY_TIMEOUT: Duration = Duration::from_secs(150);
 /// Wall-clock budget for a cleanup round-trip.
 const TEMP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long to wait for an upload permit under load before failing.
@@ -122,6 +127,18 @@ async fn resolve_temp_agent(
             false,
         ));
     };
+    // A user root with the same name shadows the temp folder: reads of that
+    // name resolve to the user root, so an accepted upload would be
+    // unbrowseable. The UI hides the Transfer view in this state
+    // (`temp_root_name` is null) — the endpoint must refuse too.
+    if agent.roots.iter().any(|r| r.name == temp.name) {
+        return Err(error_response(
+            StatusCode::NOT_IMPLEMENTED,
+            "unsupported_feature",
+            "A configured root shadows the temp upload folder name",
+            false,
+        ));
+    }
     let max_file_bytes = temp.max_file_bytes.min(TEMP_UPLOAD_MAX_BODY_BYTES as u64);
     Ok((agent.connection_id, max_file_bytes, temp.max_total_bytes))
 }
@@ -147,7 +164,7 @@ pub async fn temp_upload_handler(
         }
     };
 
-    let (connection_id, max_file_bytes, _max_total) =
+    let (connection_id, max_file_bytes, max_total_bytes) =
         match resolve_temp_agent(&state, &agent_id).await {
             Ok(v) => v,
             Err(resp) => return resp,
@@ -174,6 +191,18 @@ pub async fn temp_upload_handler(
             )
         }
     };
+
+    // Fast-fail when this upload alone exceeds the advertised folder quota
+    // (the agent re-checks the live total; this just spares the client from
+    // relaying a body that cannot fit).
+    if total_size > max_total_bytes {
+        return error_response(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "temp_quota_exceeded",
+            "The temp folder is full. Clean it up and retry.",
+            false,
+        );
+    }
 
     let _permit = match tokio::time::timeout(
         TEMP_PERMIT_TIMEOUT,
@@ -240,67 +269,39 @@ pub async fn temp_upload_handler(
 
     // Stream the body to the agent in bounded chunks. Any failure cancels the
     // agent-side session (the guard stays armed through the failure return).
-    let mut received: u64 = 0;
-    let mut buffer: Vec<u8> = Vec::with_capacity(FILE_CHUNK_MAX_BYTES as usize);
-    let mut failure: Option<Response> = None;
-    let mut stream = body.into_data_stream();
-    'stream: while let Some(frame) = stream.next().await {
-        let bytes = match frame {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                failure = Some(error_response(
-                    StatusCode::BAD_REQUEST,
-                    "temp_upload_interrupted",
-                    "The upload body was interrupted",
-                    false,
-                ));
-                break 'stream;
-            }
-        };
-        match received.checked_add(bytes.len() as u64) {
-            Some(total) if total <= max_file_bytes => received = total,
-            _ => {
-                failure = Some(error_response(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "temp_file_too_large",
-                    &format!("Uploads are limited to {} bytes", max_file_bytes),
-                    false,
-                ));
-                break 'stream;
-            }
-        }
-        buffer.extend_from_slice(&bytes);
-        if (buffer.len() as u64) >= FILE_CHUNK_MAX_BYTES {
-            let data = std::mem::take(&mut buffer);
-            let offset = received - data.len() as u64;
-            let ok = {
-                let inner = state.inner.read().await;
-                inner.agents.send_to_agent(
-                    &agent_id,
-                    HubMessage::TempUploadChunk {
-                        req_id: req_id.clone(),
-                        offset,
-                        data,
-                        done: false,
-                    },
-                )
-            };
-            if !ok {
-                failure = Some(error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "backend_offline",
-                    "Agent went away mid-upload",
-                    true,
-                ));
-                break 'stream;
-            }
-        }
-    }
+    // The whole streaming phase runs under a wall-clock budget so a stalled
+    // client cannot hold the permit / pending slot / agent session forever.
+    let stream_result = tokio::time::timeout(
+        TEMP_UPLOAD_BODY_TIMEOUT,
+        stream_upload_body(
+            &state,
+            &agent_id,
+            &req_id,
+            body,
+            max_file_bytes,
+            &mut resp_rx,
+        ),
+    )
+    .await;
 
-    if let Some(failure) = failure {
-        cleanup_pending(&state, &req_id).await;
-        return failure;
-    }
+    let (received, buffer) = match stream_result {
+        Ok(Ok(ok)) => ok,
+        Ok(Err(response)) => {
+            cleanup_pending(&state, &req_id).await;
+            return response;
+        }
+        Err(_) => {
+            // Body stalled past the budget: cancel the agent session.
+            cleanup_pending(&state, &req_id).await;
+            return error_response(
+                StatusCode::REQUEST_TIMEOUT,
+                "request_timeout",
+                "The upload stalled before the body completed",
+                true,
+            );
+        }
+    };
+
     if received != total_size {
         // Client aborted early or lied about Content-Length.
         cleanup_pending(&state, &req_id).await;
@@ -314,18 +315,17 @@ pub async fn temp_upload_handler(
 
     // Final chunk (may be empty for zero-byte files or exact block multiples).
     let final_offset = received - buffer.len() as u64;
-    let ok = {
-        let inner = state.inner.read().await;
-        inner.agents.send_to_agent(
-            &agent_id,
-            HubMessage::TempUploadChunk {
-                req_id: req_id.clone(),
-                offset: final_offset,
-                data: buffer,
-                done: true,
-            },
-        )
-    };
+    let ok = send_to_agent_await(
+        &state,
+        &agent_id,
+        HubMessage::TempUploadChunk {
+            req_id: req_id.clone(),
+            offset: final_offset,
+            data: buffer,
+            done: true,
+        },
+    )
+    .await;
     if !ok {
         cleanup_pending(&state, &req_id).await;
         return error_response(
@@ -481,8 +481,130 @@ fn content_length(headers: &HeaderMap) -> Option<u64> {
         .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
+/// Send a hub→agent message with backpressure instead of `try_send`: a full
+/// outbound queue must backpressure the upload relay, not abort it with a
+/// spurious "agent went away" while the agent is healthy.
+async fn send_to_agent_await(state: &AppState, agent_id: &str, msg: HubMessage) -> bool {
+    let sender = {
+        let inner = state.inner.read().await;
+        inner.agents.get(agent_id).map(|a| a.sender.clone())
+    };
+    match sender {
+        Some(sender) => sender.send(msg).await.is_ok(),
+        None => false,
+    }
+}
+
+/// Consume the request body and relay it to the agent in ≤
+/// [`FILE_CHUNK_MAX_BYTES`] chunks. Returns `(received_bytes, tail_buffer)`
+/// on clean EOF, or the error response to return. Never sends the final
+/// `done` chunk — the caller does that after the length check. An agent-side
+/// terminal error (e.g. a Begin quota rejection) races the body stream and
+/// aborts the relay as soon as it arrives, so the client is not made to
+/// upload the whole body into a rejection it could have learned upfront.
+async fn stream_upload_body(
+    state: &AppState,
+    agent_id: &str,
+    req_id: &str,
+    body: Body,
+    max_file_bytes: u64,
+    resp_rx: &mut mpsc::Receiver<serde_json::Value>,
+) -> Result<(u64, Vec<u8>), Response> {
+    let mut received: u64 = 0;
+    let mut buffer: Vec<u8> = Vec::with_capacity(FILE_CHUNK_MAX_BYTES as usize);
+    let mut stream = body.into_data_stream();
+    loop {
+        let frame = tokio::select! {
+            resp = resp_rx.recv() => {
+                let Some(value) = resp else {
+                    // The agent connection died while we were relaying.
+                    return Err(error_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "backend_offline",
+                        "Agent went away mid-upload",
+                        true,
+                    ));
+                };
+                let raw_error = value.get("error").and_then(|v| v.as_str());
+                if let Some(error) = raw_error {
+                    // Begin (or a mid-stream chunk) was rejected — stop
+                    // relaying the body and surface the agent's error now.
+                    return Err(temp_error_response(error));
+                }
+                // The agent answered before the body completed with no
+                // error — a protocol violation; abort rather than continue.
+                return Err(error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "agent_internal_error",
+                    "Agent responded before the upload completed",
+                    true,
+                ));
+            }
+            frame = stream.next() => frame,
+        };
+        let Some(frame) = frame else { break };
+        let bytes = match frame {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "temp_upload_interrupted",
+                    "The upload body was interrupted",
+                    false,
+                ))
+            }
+        };
+        match received.checked_add(bytes.len() as u64) {
+            Some(total) if total <= max_file_bytes => received = total,
+            _ => {
+                return Err(error_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "temp_file_too_large",
+                    &format!("Uploads are limited to {} bytes", max_file_bytes),
+                    false,
+                ))
+            }
+        }
+        buffer.extend_from_slice(&bytes);
+        if (buffer.len() as u64) >= FILE_CHUNK_MAX_BYTES {
+            let data = std::mem::take(&mut buffer);
+            let offset = received - data.len() as u64;
+            let ok = send_to_agent_await(
+                state,
+                agent_id,
+                HubMessage::TempUploadChunk {
+                    req_id: req_id.to_string(),
+                    offset,
+                    data,
+                    done: false,
+                },
+            )
+            .await;
+            if !ok {
+                return Err(error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "backend_offline",
+                    "Agent went away mid-upload",
+                    true,
+                ));
+            }
+        }
+    }
+    Ok((received, buffer))
+}
+
 /// Map agent `temp_*` error codes onto HTTP statuses.
 fn temp_error_response(error: &str) -> Response {
+    // Transport-level: agent disconnected/overloaded → retryable 503, never a
+    // client-fault 400.
+    if error == "backend_offline" || error.starts_with("agent_overloaded") {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "backend_offline",
+            "Agent is busy or unreachable. Please retry shortly.",
+            true,
+        );
+    }
     let (status, code) = match error {
         "temp_file_too_large" => (StatusCode::PAYLOAD_TOO_LARGE, "temp_file_too_large"),
         "temp_quota_exceeded" => (StatusCode::INSUFFICIENT_STORAGE, "temp_quota_exceeded"),
