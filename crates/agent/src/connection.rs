@@ -950,6 +950,7 @@ async fn run_one_connection(
                                                 offset,
                                                 length,
                                                 Some(&content_cache_ref),
+                                                Some(cancelled.as_ref()),
                                             )
                                         };
                                         if cancelled.load(Ordering::Acquire) {

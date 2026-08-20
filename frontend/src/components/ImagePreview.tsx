@@ -8,6 +8,8 @@ import {
   LargeFileWarning,
   LoadingOverlay,
   gateLoadingMessage,
+  previewLoadingMessage,
+  readBodyWithProgress,
   PREVIEW_SIZE_THRESHOLDS,
   styles,
 } from './previewShared';
@@ -146,6 +148,8 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
   const [imgLoading, setImgLoading] = useState(false);
   const [imgRetrying, setImgRetrying] = useState(false);
   const [slowLoading, setSlowLoading] = useState(false);
+  const [received, setReceived] = useState(0);
+  const [total, setTotal] = useState<number | null>(null);
   const [imgError, setImgError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [zoom, setZoom] = useState(1);
@@ -220,6 +224,8 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
     setImgLoading(true);
     setImgRetrying(false);
     setSlowLoading(false);
+    setReceived(0);
+    setTotal(null);
     setImgError(null);
 
     const controller = new AbortController();
@@ -239,11 +245,20 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
           // to finish; hub/agent timeouts bound dead connections.
           maxDurationMs: null,
           agentId,
-          consume: async (res) => (
-            isTiff
-              ? await decodeTiff(await res.arrayBuffer(), controller.signal)
-              : await res.blob()
-          ),
+          consume: async (res) => {
+            const bytes = await readBodyWithProgress(res, (receivedBytes, totalBytes) => {
+              if (mounted.current) {
+                setReceived(receivedBytes);
+                setTotal(totalBytes);
+              }
+            });
+            throwIfAborted(controller.signal);
+            if (isTiff) {
+              return await decodeTiff(bytes, controller.signal);
+            }
+            const mime = res.headers.get('content-type') || '';
+            return new Blob([bytes], { type: mime });
+          },
           onRetry: () => {
             if (mounted.current) setImgRetrying(true);
           },
@@ -542,12 +557,14 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
     <div style={styles.imageViewer}>
       {imgLoading && (
         <LoadingOverlay
-          message={imgRetrying
-            ? 'Connection interrupted, retrying…'
-            : slowLoading
-            ? (fileSize ? `Image is large (${(fileSize / (1024 * 1024)).toFixed(1)} MB), still loading...` : 'Image is large, still loading...')
-            : (fileSize ? `Loading image (${(fileSize / (1024 * 1024)).toFixed(1)} MB)...` : 'Loading image...')
-          }
+          message={previewLoadingMessage(
+            imgRetrying,
+            fileSize
+              ? `Loading image (${(fileSize / (1024 * 1024)).toFixed(1)} MB)`
+              : 'Loading image...',
+            { received, total: total ?? fileSize ?? null },
+            slowLoading,
+          )}
           onCancel={cancelLoad}
         />
       )}

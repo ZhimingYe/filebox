@@ -10,18 +10,21 @@
 //!
 //! **How reads work (progressive — the first byte never waits for the whole
 //! file):**
-//! 1. completed entry → served from memory, zero storage access;
-//! 2. an in-flight background fill already read past the requested range →
-//!    served from its buffer;
-//! 3. otherwise the requested range is served with a direct small read,
-//!    and if no fill is running for the file a background thread starts
-//!    reading the whole file in 512 KiB segments to fill the cache.
+//! 1. a recent logical alias (`root` + relative path, restat cooldown) hits
+//!    a completed entry or in-flight fill → served from memory, **no**
+//!    canonicalize / open / stat (the expensive part on NFS);
+//! 2. completed entry after a fresh open → served from memory;
+//! 3. an in-flight fill that has reached the requested offset → wait for a
+//!    full wire chunk (or EOF) from its buffer so one WS round-trip actually
+//!    carries ~512 KiB, not whatever a single `read()` returned;
+//! 4. otherwise a background fill starts and the requested range is read
+//!    directly, looping `read()` on the same fd until the chunk is full.
 //!
-//! On a stalled shared filesystem — exactly the case this cache exists for —
-//! a slow 64 MiB read must not hold a 512 KiB preview hostage: step 3 means
-//! every chunk only ever waits for its own small read, and the fill keeps
-//! the disk busy in the background so retries and repeat previews converge
-//! to memory speed.
+//! On a stalled shared filesystem a slow whole-file fill must not hold the
+//! first byte hostage, but it also must not *compete* with sequential live
+//! reads of the same path: once a fill is running and has reached `offset`,
+//! later chunks wait on it instead of re-opening the file. Retries and
+//! repeat previews converge to memory speed.
 //!
 //! **Validity / safety:**
 //! - size **and** mtime must both match, otherwise the entry is ignored and
@@ -44,8 +47,8 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Default total memory budget for cached file content. HPC nodes have
 /// plenty of RAM, so 1 GiB of hot preview bytes is a reasonable trade.
@@ -57,9 +60,24 @@ const DEFAULT_MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
 /// chunk reads for storage bandwidth, so keep them few; each in-flight fill
 /// may hold up to `max_file_bytes` of memory.
 const MAX_CONCURRENT_FILLS: usize = 4;
-/// Fill segment size: progress is published after every segment so live
-/// chunk reads can start serving from the buffer as soon as it passes them.
+/// Fill segment size: progress is published after every *full* segment so
+/// live chunk reads wake up with a wire-sized buffer, not a short NFS read.
 const FILL_SEGMENT_BYTES: usize = 512 * 1024;
+/// Sequential preview/download chunks of the same logical path skip
+/// canonicalize/open/stat while this recent. 0 = never skip (always restat).
+const LOGICAL_RESTAT_COOLDOWN_MS: u64 = 2000;
+/// Bound on (root, rel-path) aliases. Each is a handful of bytes; this is
+/// just a leak cap if a client walks a huge tree without evicting content.
+const MAX_LOGICAL_ALIASES: usize = 4096;
+
+/// Result of waiting on an in-flight fill. Cancel is distinct from miss so a
+/// cancelled request does not fall through to canonicalize/open.
+#[derive(Debug)]
+pub enum FillWait {
+    Ready(Vec<u8>),
+    Unavailable,
+    Cancelled,
+}
 
 pub struct ContentCache {
     inner: Mutex<Inner>,
@@ -70,6 +88,19 @@ pub struct ContentCache {
     /// Bumped by `clear()`. A fill that started before a clear must not
     /// insert afterwards; checked atomically with the entry-map lock.
     generation: AtomicU64,
+    /// (root name, relative path) → last successful open's canonical key.
+    /// Lets sequential FileReadRequests skip NFS metadata for a few seconds.
+    logical: Mutex<HashMap<(String, String), LogicalAlias>>,
+    restat_cooldown_ms: AtomicU64,
+}
+
+/// Last successful open of a logical (root, rel) path. Validated `size` +
+/// `mtime` are the content-cache key; `last_validated` is the restat clock.
+struct LogicalAlias {
+    path: PathBuf,
+    size: u64,
+    mtime: SystemTime,
+    last_validated: Instant,
 }
 
 struct Inner {
@@ -102,8 +133,12 @@ struct FillState {
     mtime: SystemTime,
     /// Bytes read so far; grows as the fill progresses and is the source of
     /// truth for range coverage.
-    data: Arc<Mutex<Vec<u8>>>,
+    data: Mutex<Vec<u8>>,
     cancelled: AtomicBool,
+    /// Set just before the fill thread drops its in-flight entry so waiters
+    /// can distinguish "still reading" from "gone".
+    finished: AtomicBool,
+    cond: Condvar,
 }
 
 impl ContentCache {
@@ -129,6 +164,8 @@ impl ContentCache {
                 active: 0,
             }),
             generation: AtomicU64::new(0),
+            logical: Mutex::new(HashMap::new()),
+            restat_cooldown_ms: AtomicU64::new(LOGICAL_RESTAT_COOLDOWN_MS),
         }
     }
 
@@ -144,7 +181,24 @@ impl ContentCache {
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(DEFAULT_MAX_FILE_BYTES);
-        Self::new(total, per_file)
+        let cache = Self::new(total, per_file);
+        let cooldown_ms = std::env::var("FILEBOX_AGENT_CONTENT_CACHE_RESTAT_COOLDOWN_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(LOGICAL_RESTAT_COOLDOWN_MS);
+        cache
+            .restat_cooldown_ms
+            .store(cooldown_ms, Ordering::Release);
+        cache
+    }
+
+    fn restat_cooldown(&self) -> Duration {
+        Duration::from_millis(self.restat_cooldown_ms.load(Ordering::Acquire))
+    }
+
+    #[cfg(test)]
+    pub fn set_restat_cooldown_ms(&self, ms: u64) {
+        self.restat_cooldown_ms.store(ms, Ordering::Release);
     }
 
     pub fn max_file_bytes(&self) -> usize {
@@ -227,13 +281,80 @@ impl ContentCache {
         let mut fills = self.fills.lock().unwrap();
         for state in fills.in_flight.values() {
             state.cancelled.store(true, Ordering::Release);
+            state.cond.notify_all();
         }
         fills.in_flight.clear();
         drop(fills);
+        self.logical.lock().unwrap().clear();
         let mut inner = self.inner.lock().unwrap();
         inner.entries.clear();
         inner.total_bytes = 0;
         inner.clock = 0;
+    }
+
+    /// Record that `root`/`rel` resolved to `path` with this stat, so the
+    /// next few sequential chunks can skip canonicalize/open/stat.
+    pub fn remember_logical(
+        &self,
+        root: &str,
+        rel: &str,
+        path: PathBuf,
+        size: u64,
+        mtime: SystemTime,
+    ) {
+        if self.max_total_bytes == 0 {
+            return;
+        }
+        let mut map = self.logical.lock().unwrap();
+        map.insert(
+            (root.to_string(), rel.to_string()),
+            LogicalAlias {
+                path,
+                size,
+                mtime,
+                last_validated: Instant::now(),
+            },
+        );
+        if map.len() > MAX_LOGICAL_ALIASES {
+            let stale = map
+                .iter()
+                .min_by_key(|(_, alias)| alias.last_validated)
+                .map(|(key, _)| key.clone());
+            if let Some(key) = stale {
+                map.remove(&key);
+            }
+        }
+    }
+
+    /// Canonical key + stat from a recent open of this logical path, if the
+    /// restat cooldown has not expired. `None` means "open and stat again".
+    pub fn logical_lookup(&self, root: &str, rel: &str) -> Option<(PathBuf, u64, SystemTime)> {
+        let cooldown = self.restat_cooldown();
+        if self.max_total_bytes == 0 || cooldown.is_zero() {
+            return None;
+        }
+        let map = self.logical.lock().unwrap();
+        let alias = map.get(&(root.to_string(), rel.to_string()))?;
+        if alias.last_validated.elapsed() > cooldown {
+            return None;
+        }
+        Some((alias.path.clone(), alias.size, alias.mtime))
+    }
+
+    /// Slide the restat window after a hot-path serve so a slow sequential
+    /// stream does not fall back to canonicalize/open mid-download.
+    pub fn touch_logical(&self, root: &str, rel: &str) {
+        if self.max_total_bytes == 0 {
+            return;
+        }
+        if let Some(alias) = self
+            .logical
+            .lock()
+            .unwrap()
+            .get_mut(&(root.to_string(), rel.to_string()))
+        {
+            alias.last_validated = Instant::now();
+        }
     }
 
     /// Start a background whole-file fill for `path` (stat key
@@ -266,8 +387,10 @@ impl ContentCache {
             let state = Arc::new(FillState {
                 size,
                 mtime,
-                data: Arc::new(Mutex::new(Vec::new())),
+                data: Mutex::new(Vec::new()),
                 cancelled: AtomicBool::new(false),
+                finished: AtomicBool::new(false),
+                cond: Condvar::new(),
             });
             fills.in_flight.insert(path.clone(), Arc::clone(&state));
             fills.active += 1;
@@ -333,6 +456,90 @@ impl ContentCache {
         }
         let start = offset as usize;
         Some(data[start..start + to_read].to_vec())
+    }
+
+    /// Wait until the in-flight fill covers a full wire chunk at `offset`
+    /// (or EOF / cancellation / the fill finishing). Unlike [`fill_slice`],
+    /// this does not return a short prefix; cancel is distinct from miss so
+    /// callers do not fall through to a fresh open.
+    pub fn wait_fill_slice(
+        &self,
+        path: &Path,
+        size: u64,
+        mtime: SystemTime,
+        offset: u64,
+        length: Option<u64>,
+        max_chunk: usize,
+        cancelled: Option<&AtomicBool>,
+    ) -> FillWait {
+        if cancelled.is_some_and(|c| c.load(Ordering::Acquire)) {
+            return FillWait::Cancelled;
+        }
+        if self.max_total_bytes == 0 {
+            return FillWait::Unavailable;
+        }
+        let Some(state) = self.fills.lock().unwrap().in_flight.get(path).cloned() else {
+            return FillWait::Unavailable;
+        };
+        if state.size != size || state.mtime != mtime {
+            return FillWait::Unavailable;
+        }
+        let want = {
+            if offset >= size {
+                return FillWait::Ready(Vec::new());
+            }
+            let remaining = size - offset;
+            length
+                .unwrap_or(remaining)
+                .min(remaining)
+                .min(max_chunk as u64) as usize
+        };
+        if want == 0 {
+            return FillWait::Ready(Vec::new());
+        }
+        let slack = max_chunk as u64;
+        loop {
+            if cancelled.is_some_and(|c| c.load(Ordering::Acquire)) {
+                return FillWait::Cancelled;
+            }
+            if state.cancelled.load(Ordering::Acquire) {
+                return FillWait::Unavailable;
+            }
+            let guard = state.data.lock().unwrap();
+            let len = guard.len() as u64;
+            if len + slack < offset && !state.finished.load(Ordering::Acquire) {
+                // Fill is still reading from the start; this request jumped
+                // far ahead. Don't wait.
+                return FillWait::Unavailable;
+            }
+            if len >= offset {
+                let available = (len - offset) as usize;
+                let finished = state.finished.load(Ordering::Acquire);
+                if available >= want {
+                    let start = offset as usize;
+                    return FillWait::Ready(guard[start..start + want].to_vec());
+                }
+                if finished {
+                    if available == 0 {
+                        return FillWait::Unavailable;
+                    }
+                    if len >= size {
+                        let start = offset as usize;
+                        return FillWait::Ready(guard[start..start + available].to_vec());
+                    }
+                    return FillWait::Unavailable;
+                }
+            } else if state.finished.load(Ordering::Acquire) {
+                return FillWait::Unavailable;
+            }
+            drop(
+                state
+                    .cond
+                    .wait_timeout(guard, Duration::from_millis(50))
+                    .unwrap()
+                    .0,
+            );
+        }
     }
 
     fn finish_fill(&self, path: &Path, state: &Arc<FillState>) {
@@ -402,20 +609,26 @@ fn fill_thread(cache: Arc<ContentCache>, path: PathBuf, generation: u64, state: 
                 if state.cancelled.load(Ordering::Acquire) {
                     return Ok(());
                 }
-                let n = loop {
-                    match file.read(&mut buf) {
-                        Ok(0) => break 0usize,
-                        Ok(n) => break n,
+                // Fill the whole segment (or EOF) before publishing. A single
+                // `read()` on NFS often returns one rsize (~32–64 KiB); waking
+                // waiters on every short read made live chunks siphon 50 KiB
+                // at a time over the WS.
+                let mut filled = 0usize;
+                while filled < buf.len() {
+                    match file.read(&mut buf[filled..]) {
+                        Ok(0) => break,
+                        Ok(n) => filled += n,
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(e) => return Err(e),
                     }
-                };
-                if n == 0 {
+                }
+                if filled == 0 {
                     break;
                 }
                 {
                     let mut shared = state.data.lock().unwrap();
-                    shared.extend_from_slice(&buf[..n]);
+                    shared.extend_from_slice(&buf[..filled]);
+                    state.cond.notify_all();
                 }
             }
             // Short/oversized reads (file shrank or grew mid-fill) are rejected
@@ -427,6 +640,8 @@ fn fill_thread(cache: Arc<ContentCache>, path: PathBuf, generation: u64, state: 
             Ok(())
         })()
     }));
+    state.finished.store(true, Ordering::Release);
+    state.cond.notify_all();
     match result {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
@@ -664,5 +879,117 @@ mod tests {
             cache.fill_slice(&path, size, mtime, 0, Some(1024), 1024).is_none(),
             "cancelled fill must not serve"
         );
+    }
+
+    #[test]
+    fn wait_fill_slice_returns_a_full_chunk_not_a_short_prefix() {
+        let (_dir, path, mtime, size) = temp_file(FILL_SEGMENT_BYTES * 2);
+        let cache = Arc::new(ContentCache::new(16 * 1024 * 1024, 4 * 1024 * 1024));
+        assert!(cache.begin_fill(path.clone(), size, mtime));
+
+        let data = match cache.wait_fill_slice(
+            &path,
+            size,
+            mtime,
+            0,
+            Some(FILL_SEGMENT_BYTES as u64),
+            FILL_SEGMENT_BYTES,
+            None,
+        ) {
+            FillWait::Ready(data) => data,
+            FillWait::Unavailable | FillWait::Cancelled => cache
+                .get(&path, size, mtime)
+                .map(|whole| whole[..FILL_SEGMENT_BYTES].to_vec())
+                .expect("full first chunk must be servable"),
+        };
+        assert_eq!(data.len(), FILL_SEGMENT_BYTES);
+        assert_eq!(data[0], 0);
+        assert_eq!(
+            data[FILL_SEGMENT_BYTES - 1],
+            ((FILL_SEGMENT_BYTES - 1) % 251) as u8
+        );
+    }
+
+    #[test]
+    fn wait_fill_slice_does_not_block_on_a_far_ahead_range() {
+        let (_dir, path, mtime, size) = temp_file(FILL_SEGMENT_BYTES * 4);
+        let cache = Arc::new(ContentCache::new(16 * 1024 * 1024, 4 * 1024 * 1024));
+        assert!(cache.begin_fill(path.clone(), size, mtime));
+        // A PDF-style range far ahead of a sequential fill must not wait.
+        let far = (FILL_SEGMENT_BYTES * 3) as u64;
+        let start = std::time::Instant::now();
+        let hit = cache.wait_fill_slice(&path, size, mtime, far, Some(1024), 1024, None);
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "far-ahead wait must return immediately"
+        );
+        match hit {
+            FillWait::Ready(data) => assert_eq!(data.len(), 1024),
+            FillWait::Unavailable => {}
+            FillWait::Cancelled => panic!("far-ahead wait must not report cancel"),
+        }
+    }
+
+    #[test]
+    fn logical_lookup_skips_restat_within_cooldown() {
+        let cache = ContentCache::new(1024, 1024);
+        let path = PathBuf::from("/data/a.bin");
+        cache.remember_logical("root", "a.bin", path.clone(), 100, mtime(1));
+        let hit = cache.logical_lookup("root", "a.bin").expect("alias");
+        assert_eq!(hit.0, path);
+        assert_eq!(hit.1, 100);
+
+        cache.set_restat_cooldown_ms(0);
+        assert!(
+            cache.logical_lookup("root", "a.bin").is_none(),
+            "zero cooldown must force a restat"
+        );
+    }
+
+    #[test]
+    fn logical_touch_slides_the_restat_window() {
+        let cache = ContentCache::new(1024, 1024);
+        cache.set_restat_cooldown_ms(50);
+        let path = PathBuf::from("/data/a.bin");
+        cache.remember_logical("root", "a.bin", path.clone(), 100, mtime(1));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(cache.logical_lookup("root", "a.bin").is_some());
+        cache.touch_logical("root", "a.bin");
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(
+            cache.logical_lookup("root", "a.bin").is_some(),
+            "touch must slide the cooldown so a slow stream keeps skipping restat"
+        );
+    }
+
+    #[test]
+    fn wait_fill_slice_cancel_is_distinct_from_miss() {
+        let flag = std::sync::atomic::AtomicBool::new(true);
+        let cache = ContentCache::new(1024, 1024);
+        assert!(matches!(
+            cache.wait_fill_slice(
+                PathBuf::from("/nope").as_path(),
+                1,
+                mtime(1),
+                0,
+                Some(1),
+                1,
+                Some(&flag),
+            ),
+            FillWait::Cancelled
+        ));
+    }
+
+    #[test]
+    fn wait_fill_slice_treats_fill_clear_as_miss_not_request_cancel() {
+        let (_dir, path, mtime, size) = temp_file(FILL_SEGMENT_BYTES * 2);
+        let cache = Arc::new(ContentCache::new(16 * 1024 * 1024, 4 * 1024 * 1024));
+        assert!(cache.begin_fill(path.clone(), size, mtime));
+        cache.clear();
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        assert!(matches!(
+            cache.wait_fill_slice(&path, size, mtime, 0, Some(1024), 1024, Some(&flag)),
+            FillWait::Unavailable
+        ));
     }
 }

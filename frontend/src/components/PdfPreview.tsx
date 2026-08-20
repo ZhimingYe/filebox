@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 
-import { friendlyMessage, mintFileRawAccess } from '../api/client';
+import { fileRawUrl, friendlyMessage, withCsrf } from '../api/client';
+import { fetchWithRetry } from '../api/retry';
 import { c, radius, shadow, font } from '../theme';
 import { FileDownloadLink } from './FileDownloadLink';
 import {
@@ -10,6 +11,8 @@ import {
   useFileGate,
   FileGateError,
   PREVIEW_SIZE_THRESHOLDS,
+  previewLoadingMessage,
+  readBodyWithProgress,
 } from './previewShared';
 
 // Vite bundles the worker with the app via new URL(...). Avoids CDN dep
@@ -23,6 +26,8 @@ interface Props {
   agentId: string;
   root: string;
   path: string;
+  /** Optional cache-busted raw URL (manual refresh). Defaults to fileRawUrl. */
+  url?: string;
   downloadPath?: string;
   onRetry?: (options?: { forceReconvert?: boolean }) => void;
 }
@@ -76,18 +81,6 @@ function writePdfZoomPref(mode: PdfZoomMode) {
   }
 }
 
-/** pdf.js surfaces HTTP auth failures as "Unexpected server response (403)" etc. */
-function isPdfAuthFailure(message: string): boolean {
-  const m = message.toLowerCase();
-  // Match status codes / known hub errors only — NOT bare "Unexpected server
-  // response", which also fires for 5xx and would remint-loop on agent outages.
-  return (
-    /\b(401|403)\b/.test(m)
-    || m.includes('access_token_invalid')
-    || m.includes('csrf_denied')
-  );
-}
-
 function isPdfContentFailure(message: string): boolean {
   const value = message.toLowerCase();
   return (
@@ -117,6 +110,7 @@ export function PdfPreview({
   agentId,
   root,
   path,
+  url,
   downloadPath = path,
   onRetry,
 }: Props) {
@@ -136,53 +130,75 @@ export function PdfPreview({
   // render guard below) depend on it. Declaring it lower would hit the
   // temporal dead zone when the effect dependency arrays evaluate at render.
   const mayLoad = !gate.sizeUnknown && !gate.error && !(gate.isLarge && !gate.bypassed);
-  // pdf.js cannot send X-CSRF-Token; use a short-lived access_token URL instead.
-  // mintNonce bumps to remint after a single auth failure.
-  const [accessUrl, setAccessUrl] = useState<string | null>(null);
-  const [mintNonce, setMintNonce] = useState(0);
+  const rawUrl = url ?? fileRawUrl(agentId, root, path);
+  // Fetch the body ourselves (session cookie + CSRF) instead of giving pdf.js
+  // a URL. pdf.js defaults to 64 KiB Range requests; each one is a Hub stat +
+  // Agent open over the WS, which is the same 50KB-then-stall pattern as
+  // images. One sequential GET rides the agent's 512 KiB chunks + content cache.
+  const [pdfData, setPdfData] = useState<ArrayBuffer | null>(null);
+  const [received, setReceived] = useState(0);
+  const [total, setTotal] = useState<number | null>(null);
+  const [fetchRetrying, setFetchRetrying] = useState(false);
   const [numPages, setNumPages] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [forceReconvertOnRetry, setForceReconvertOnRetry] = useState(false);
   const [containerWidth, setContainerWidth] = useState<number>(0);
   const [slowLoad, setSlowLoad] = useState(false);
   const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set());
-  // At most one automatic remint until the next successful Document load (or
-  // a new file). Must NOT reset on every mintNonce bump — that caused an
-  // unbounded remint loop when the server kept returning 403.
-  const authRemintUsed = useRef(false);
-
-  useEffect(() => {
-    authRemintUsed.current = false;
-  }, [agentId, root, path]);
+  const [fetchNonce, setFetchNonce] = useState(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!mayLoad) {
-      setAccessUrl(null);
+      abortRef.current?.abort();
+      abortRef.current = null;
+      setPdfData(null);
+      setReceived(0);
+      setTotal(null);
+      setFetchRetrying(false);
       return;
     }
     const controller = new AbortController();
+    abortRef.current = controller;
     setError(null);
-    setAccessUrl(null);
-    mintFileRawAccess(agentId, root, path, controller.signal)
-      .then(({ url }) => {
-        if (!controller.signal.aborted) setAccessUrl(url);
-      })
-      .catch((err: { name?: string; message?: string; error?: string }) => {
-        if (!controller.signal.aborted && err?.name !== 'AbortError') {
-          setError(friendlyMessage(err));
-        }
-      });
-    return () => controller.abort();
-  }, [mayLoad, agentId, root, path, mintNonce]);
-
-  const remintAfterAuthFailure = useCallback((message: string): boolean => {
-    if (!isPdfAuthFailure(message) || authRemintUsed.current) return false;
-    authRemintUsed.current = true;
-    setError(null);
+    setPdfData(null);
+    setReceived(0);
+    setTotal(gate.size ?? null);
+    setFetchRetrying(false);
     setNumPages(0);
-    setMintNonce((n) => n + 1);
-    return true;
-  }, []);
+    void (async () => {
+      try {
+        const data = await fetchWithRetry(rawUrl, withCsrf({ signal: controller.signal }), {
+          maxAttempts: 3,
+          maxDurationMs: null,
+          agentId,
+          consume: async (res) => readBodyWithProgress(res, (loaded, length) => {
+            if (!controller.signal.aborted) {
+              setReceived(loaded);
+              setTotal(length);
+            }
+          }),
+          onRetry: () => {
+            if (!controller.signal.aborted) setFetchRetrying(true);
+          },
+        });
+        if (controller.signal.aborted) return;
+        // Hand bytes to pdf.js only after the GET has finished (and
+        // Content-Length matched). Partial bodies make xref/parse errors.
+        setPdfData(data);
+        setFetchRetrying(false);
+      } catch (err: unknown) {
+        const e = err as { name?: string };
+        if (controller.signal.aborted || e?.name === 'AbortError') return;
+        setError(friendlyMessage(err));
+        setFetchRetrying(false);
+      }
+    })();
+    return () => {
+      controller.abort();
+      if (abortRef.current === controller) abortRef.current = null;
+    };
+  }, [mayLoad, rawUrl, agentId, fetchNonce, gate.size]);
   // Store per-page aspect ratio (height / width) instead of absolute height
   // so placeholders stay correct when the container resizes (pageWidth
   // changes) — no need to invalidate the cache on resize.
@@ -306,9 +322,6 @@ export function PdfPreview({
     setNumPages(n);
     setError(null);
     setForceReconvertOnRetry(false);
-    // Successful load restores the one-shot remint budget so a later mid-
-    // scroll token expiry can recover once without looping forever.
-    authRemintUsed.current = false;
     // First page always rendered initially (covers the "open at top" case).
     // The observer will add more as the user scrolls.
     setVisiblePages(new Set([1]));
@@ -318,7 +331,6 @@ export function PdfPreview({
 
   const onLoadError = (err: Error) => {
     const message = err.message || 'Failed to load PDF';
-    if (remintAfterAuthFailure(message)) return;
     // A converted Office PDF that reached pdf.js but cannot be decoded is
     // suspect even when a browser/pdf.js version uses an unfamiliar error
     // string. Do not rebuild for clear network/HTTP failures.
@@ -358,7 +370,6 @@ export function PdfPreview({
 
   const onPageLoadError = (err: Error) => {
     const message = err.message || '';
-    if (remintAfterAuthFailure(message)) return;
     const contentFailure = isPdfContentFailure(message)
       || (!!onRetry && !isPdfTransportFailure(message));
     setForceReconvertOnRetry(contentFailure);
@@ -370,13 +381,21 @@ export function PdfPreview({
   };
 
   const retryLoad = useCallback(() => {
+    abortRef.current?.abort();
     setError(null);
     numPagesRef.current = 0;
     setNumPages(0);
-    setAccessUrl(null);
+    setPdfData(null);
     setForceReconvertOnRetry(false);
-    authRemintUsed.current = false;
-    setMintNonce((n) => n + 1);
+    setFetchNonce((n) => n + 1);
+  }, []);
+
+  const cancelFetch = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setPdfData(null);
+    setError('Cancelled');
+    setFetchRetrying(false);
   }, []);
 
   // Document is mounted only when mayLoad (declared above the effects) is
@@ -422,25 +441,29 @@ export function PdfPreview({
           />
         )}
 
-        {mayLoad && !error && (!accessUrl || numPages === 0) && (
+        {mayLoad && !error && (!pdfData || numPages === 0) && (
           <LoadingOverlay
             message={
-              !accessUrl
-                ? 'Authorizing PDF...'
+              !pdfData
+                ? previewLoadingMessage(
+                    fetchRetrying,
+                    gate.size
+                      ? `Loading PDF (${(gate.size / (1024 * 1024)).toFixed(1)} MB)`
+                      : 'Loading PDF...',
+                    { received, total: total ?? gate.size ?? null },
+                    slowLoad,
+                  )
                 : slowLoad
-                  ? 'PDF is large, still loading...'
-                  : 'Loading PDF...'
+                  ? 'Download finished, still opening PDF...'
+                  : 'Download finished, opening PDF...'
             }
+            onCancel={!pdfData ? cancelFetch : undefined}
           />
         )}
 
         {error && (
           <div style={styles.errorBox}>
-            <p style={styles.errorText}>
-              {isPdfAuthFailure(error)
-                ? 'PDF authorization expired. Please retry.'
-                : error}
-            </p>
+            <p style={styles.errorText}>{error}</p>
             <div style={{ display: 'flex', gap: 12 }}>
               <button
                 type="button"
@@ -465,14 +488,11 @@ export function PdfPreview({
           </div>
         )}
 
-        {mayLoad && accessUrl && !error && (
-          <Document
-            key={accessUrl}
-            file={accessUrl}
+        {mayLoad && pdfData && !error && (
+          <CompletePdfDocument
+            data={pdfData}
             onLoadSuccess={onLoadSuccess}
             onLoadError={onLoadError}
-            loading=""
-            error=""
           >
             <div
               style={{
@@ -480,6 +500,7 @@ export function PdfPreview({
                 alignItems: wideOverflow ? 'flex-start' : 'center',
                 width: wideOverflow ? 'max-content' : '100%',
                 minWidth: '100%',
+                visibility: numPages > 0 ? 'visible' : 'hidden',
               }}
             >
               {numPages > 0 && layoutReady && Array.from({ length: numPages }, (_, i) => {
@@ -542,7 +563,7 @@ export function PdfPreview({
                 );
               })}
             </div>
-          </Document>
+          </CompletePdfDocument>
         )}
       </div>
 
@@ -570,6 +591,33 @@ export function PdfPreview({
         </div>
       )}
     </div>
+  );
+}
+
+// Copy the buffer on this instance's mount so pdf.js transferring it into
+// the worker cannot detach the parent state (React StrictMode remounts).
+function CompletePdfDocument({
+  data,
+  onLoadSuccess,
+  onLoadError,
+  children,
+}: {
+  data: ArrayBuffer;
+  onLoadSuccess: (info: { numPages: number }) => void;
+  onLoadError: (err: Error) => void;
+  children: ReactNode;
+}) {
+  const file = useMemo(() => ({ data: data.slice(0) }), [data]);
+  return (
+    <Document
+      file={file}
+      onLoadSuccess={onLoadSuccess}
+      onLoadError={onLoadError}
+      loading=""
+      error=""
+    >
+      {children}
+    </Document>
   );
 }
 

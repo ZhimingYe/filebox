@@ -1,14 +1,15 @@
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use filebox_protocol::denylist;
 use filebox_protocol::message::FILE_CHUNK_MAX_BYTES;
 use filebox_protocol::resources::{FileStat, FsEntry, FsEntryType, RootConfig};
 
-use crate::content_cache::ContentCache;
+use crate::content_cache::{ContentCache, FillWait};
 
 /// Resolve a root name + relative path to an absolute, canonical path.
 ///
@@ -158,6 +159,7 @@ pub(crate) fn open_resolved_leaf(
         let is_last = idx + 1 == components.len();
         let mut flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
         if is_last {
+            // Avoid hanging open() on a FIFO; cleared for regular files below.
             flags |= libc::O_NONBLOCK;
         } else {
             flags |= libc::O_DIRECTORY;
@@ -481,6 +483,102 @@ pub struct FileReadRange {
     pub modified: Option<String>,
 }
 
+/// Read until `buf` is full or EOF. A single `read()` is allowed to return
+/// far fewer bytes than requested (NFS rsize, FUSE, leftover O_NONBLOCK);
+/// treating that as the whole chunk turns one 512 KiB WS round-trip into a
+/// storm of ~50 KiB ones, each re-opening the file.
+pub(crate) fn read_at_least<R: Read>(reader: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    let mut would_block = 0u32;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                would_block = would_block.saturating_add(1);
+                if would_block > 1_000 {
+                    return Err(e);
+                }
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(filled)
+}
+
+/// `open_resolved_leaf` uses O_NONBLOCK so a FIFO in a root cannot hang the
+/// worker at open. Once `metadata()` has confirmed a regular file, blocking
+/// reads are required or NFS/macOS will short-read ~one page cache slice.
+#[cfg(unix)]
+fn set_file_blocking(file: &fs::File) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    let fd = file.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
+    if flags < 0 {
+        return Err(format!(
+            "Failed to get file flags: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if (flags & libc::O_NONBLOCK) != 0 {
+        let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) };
+        if rc < 0 {
+            return Err(format!(
+                "Failed to set blocking mode: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_file_blocking(_file: &fs::File) -> Result<(), String> {
+    Ok(())
+}
+
+fn serve_from_cache(
+    cache: &Arc<ContentCache>,
+    abs_path: &Path,
+    file_len: u64,
+    mtime: SystemTime,
+    offset: u64,
+    length: Option<u64>,
+    cancelled: Option<&AtomicBool>,
+) -> Result<Option<FileReadRange>, String> {
+    if cancelled.is_some_and(|c| c.load(Ordering::Acquire)) {
+        return Err("request_cancelled".to_string());
+    }
+    let modified = Some(mtime_to_rfc3339(mtime));
+    if let Some(whole) = cache.get(abs_path, file_len, mtime) {
+        return Ok(Some(slice_cached(whole, file_len, modified, offset, length)));
+    }
+    match cache.wait_fill_slice(
+        abs_path,
+        file_len,
+        mtime,
+        offset,
+        length,
+        FILE_CHUNK_MAX_BYTES as usize,
+        cancelled,
+    ) {
+        FillWait::Cancelled => Err("request_cancelled".to_string()),
+        FillWait::Unavailable => Ok(None),
+        FillWait::Ready(data) => {
+            let done = offset + data.len() as u64 >= file_len;
+            Ok(Some(FileReadRange {
+                data,
+                done,
+                file_size: Some(file_len),
+                modified,
+            }))
+        }
+    }
+}
+
 /// Serve a slice of a whole-file cache entry with the same offset / length /
 /// done semantics as the streaming read path.
 fn slice_cached(
@@ -522,7 +620,38 @@ pub fn read_file_range_with_metadata(
     offset: u64,
     length: Option<u64>,
     content_cache: Option<&Arc<ContentCache>>,
+    cancelled: Option<&AtomicBool>,
 ) -> Result<FileReadRange, String> {
+    if cancelled.is_some_and(|c| c.load(Ordering::Acquire)) {
+        return Err("request_cancelled".to_string());
+    }
+
+    let rel_key = path.strip_prefix('/').unwrap_or(path);
+    if is_path_denied(rel_key) {
+        return Err("Access denied: sensitive file".to_string());
+    }
+
+    // Skip canonicalize/open/stat while a recent alias is still fresh.
+    if let Some(cache) = content_cache {
+        if let Some((abs_path, file_len, mtime)) = cache.logical_lookup(root_name, rel_key) {
+            if let Some(range) = serve_from_cache(
+                cache,
+                &abs_path,
+                file_len,
+                mtime,
+                offset,
+                length,
+                cancelled,
+            )? {
+                cache.touch_logical(root_name, rel_key);
+                return Ok(range);
+            }
+            if cancelled.is_some_and(|c| c.load(Ordering::Acquire)) {
+                return Err("request_cancelled".to_string());
+            }
+        }
+    }
+
     let (abs_path, root_canonical) = resolve_path(roots, root_name, path)?;
 
     let rel_path = abs_path
@@ -541,65 +670,46 @@ pub fn read_file_range_with_metadata(
     if !file_metadata.is_file() {
         return Err(format!("Not a file: {}", path));
     }
+    set_file_blocking(&file)?;
 
     let file_len = file_metadata.len();
     let file_mtime = file_metadata.modified().ok();
-    let modified = file_mtime.and_then(|t| {
-        let dt: chrono::DateTime<chrono::Local> = t.into();
-        Some(dt.to_rfc3339())
-    });
+    let modified = file_mtime.map(mtime_to_rfc3339);
 
-    // Small-file fast path. Reads are progressive: a completed cache entry
-    // or an in-flight background fill that already read past the requested
-    // range serve from memory; anything else is answered with a direct
-    // small read while a background thread reads the whole file. The first
-    // byte therefore never waits for a whole-file read — on a stalled
-    // shared filesystem a slow 64 MiB read must not hold a 512 KiB preview
-    // hostage — and repeat previews of the same file stop touching storage
-    // entirely.
+    // Small-file fast path. Prefer the in-flight fill over a competing
+    // direct read: two readers of the same NFS file (live chunk + fill)
+    // were turning each Hub round-trip into another metadata stall.
     let cache_cap = content_cache.map(|c| c.max_file_bytes() as u64).unwrap_or(0);
     if cache_cap > 0 && file_len <= cache_cap {
         if let (Some(cache), Some(mtime)) = (content_cache, file_mtime) {
-            // 1) Completed whole-file entry.
-            if let Some(whole) = cache.get(&abs_path, file_len, mtime) {
-                return Ok(slice_cached(whole, file_len, modified, offset, length));
-            }
-            // 2) An in-flight fill already read past the requested range.
-            if let Some(data) = cache.fill_slice(
+            cache.remember_logical(root_name, rel_key, abs_path.clone(), file_len, mtime);
+            if let Some(range) = serve_from_cache(
+                cache,
                 &abs_path,
                 file_len,
                 mtime,
                 offset,
                 length,
-                FILE_CHUNK_MAX_BYTES as usize,
-            ) {
-                let done = offset + data.len() as u64 >= file_len;
-                return Ok(FileReadRange {
-                    data,
-                    done,
-                    file_size: Some(file_len),
-                    modified,
-                });
+                cancelled,
+            )? {
+                cache.touch_logical(root_name, rel_key);
+                return Ok(range);
             }
-            // 3) Cache miss: serve the range with a direct read and let a
-            //    background thread fill the whole-file entry. The fill
-            //    re-opens the file itself, so it does not hold this worker
-            //    hostage, and it is not tied to the request's lifetime —
-            //    a cancelled request still leaves the cache warming.
-            let range = direct_range_read(&mut file, offset, length, file_len, modified);
-            if range.is_ok() {
-                cache.begin_fill(abs_path.clone(), file_len, mtime);
-            }
-            return range;
+            // Do not wait on this fill: we already hold an open fd.
+            cache.begin_fill(abs_path.clone(), file_len, mtime);
         }
     }
 
+    if cancelled.is_some_and(|c| c.load(Ordering::Acquire)) {
+        return Err("request_cancelled".to_string());
+    }
     direct_range_read(&mut file, offset, length, file_len, modified)
 }
 
 /// Read one range directly from the open file (the streaming path). The
-/// agent never slurps more than one chunk per request; a short read just
-/// means the chunk is smaller, not an error.
+/// agent never slurps more than one WS chunk per request, but a single
+/// `read()` syscall is looped until that chunk is full or EOF — a short
+/// read is not a completed chunk.
 fn direct_range_read(
     file: &mut fs::File,
     offset: u64,
@@ -625,8 +735,7 @@ fn direct_range_read(
     let to_read = to_read.min(FILE_CHUNK_MAX_BYTES);
 
     let mut buf = vec![0u8; to_read as usize];
-    let bytes_read = file
-        .read(&mut buf)
+    let bytes_read = read_at_least(file, &mut buf)
         .map_err(|e| format!("Failed to read: {}", e))?;
 
     buf.truncate(bytes_read);
@@ -648,7 +757,7 @@ pub fn read_file_range(
     offset: u64,
     length: Option<u64>,
 ) -> Result<(Vec<u8>, bool), String> {
-    let result = read_file_range_with_metadata(roots, root_name, path, offset, length, None)?;
+    let result = read_file_range_with_metadata(roots, root_name, path, offset, length, None, None)?;
     Ok((result.data, result.done))
 }
 
@@ -1154,7 +1263,7 @@ mod tests {
 
         // First read serves the slice directly; a background fill then
         // caches the whole file.
-        let first = read_file_range_with_metadata(&roots, "test", "data.bin", 0, Some(100), Some(&cache))
+        let first = read_file_range_with_metadata(&roots, "test", "data.bin", 0, Some(100), Some(&cache), None)
             .unwrap();
         assert_eq!(first.data, payload[..100]);
         assert!(!first.done);
@@ -1166,7 +1275,7 @@ mod tests {
         while cache.len() < 1 && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let tail = read_file_range_with_metadata(&roots, "test", "data.bin", 900, None, Some(&cache))
+        let tail = read_file_range_with_metadata(&roots, "test", "data.bin", 900, None, Some(&cache), None)
             .unwrap();
         assert_eq!(tail.data, payload[900..]);
         assert!(tail.done);
@@ -1174,7 +1283,7 @@ mod tests {
         assert!(cache.len() >= 1);
 
         // Offset at EOF still returns an empty done chunk from the cache.
-        let at_eof = read_file_range_with_metadata(&roots, "test", "data.bin", 1000, None, Some(&cache))
+        let at_eof = read_file_range_with_metadata(&roots, "test", "data.bin", 1000, None, Some(&cache), None)
             .unwrap();
         assert!(at_eof.data.is_empty());
         assert!(at_eof.done);
@@ -1187,15 +1296,18 @@ mod tests {
         let roots = vec![sb.root()];
         let cache = small_cache();
 
-        let first = read_file_range_with_metadata(&roots, "test", "data.bin", 0, None, Some(&cache))
+        let first = read_file_range_with_metadata(&roots, "test", "data.bin", 0, None, Some(&cache), None)
             .unwrap();
         assert_eq!(first.data, b"version one");
 
         // Same size, different content + mtime: the cache must NOT serve the
-        // stale body.
+        // stale body. Disable the logical-path restat cooldown so this
+        // assertion is about content-key invalidation, not the sequential-
+        // stream shortcut.
+        cache.set_restat_cooldown_ms(0);
         std::thread::sleep(std::time::Duration::from_millis(10));
         sb.write_file("data.bin", b"version two");
-        let second = read_file_range_with_metadata(&roots, "test", "data.bin", 0, None, Some(&cache))
+        let second = read_file_range_with_metadata(&roots, "test", "data.bin", 0, None, Some(&cache), None)
             .unwrap();
         assert_eq!(second.data, b"version two");
     }
@@ -1209,7 +1321,7 @@ mod tests {
         // Cap of 1 KiB: the 2 KiB file must stream per chunk, uncached.
         let cache = Arc::new(ContentCache::new(1024 * 1024, 1024));
 
-        let first = read_file_range_with_metadata(&roots, "test", "big.bin", 0, Some(1024), Some(&cache))
+        let first = read_file_range_with_metadata(&roots, "test", "big.bin", 0, Some(1024), Some(&cache), None)
             .unwrap();
         assert_eq!(first.data.len(), 1024);
         assert_eq!(cache.len(), 0, "over-cap files must not be cached");
@@ -1222,8 +1334,106 @@ mod tests {
         let roots = vec![sb.root()];
         let cache = small_cache();
 
-        let result = read_file_range_with_metadata(&roots, "test", "secret.key", 0, None, Some(&cache));
+        let result = read_file_range_with_metadata(&roots, "test", "secret.key", 0, None, Some(&cache), None);
         assert!(result.is_err());
         assert_eq!(cache.len(), 0, "denied files must never reach the cache");
+    }
+
+    struct ShortReader<'a> {
+        data: &'a [u8],
+        max_per_read: usize,
+        pos: usize,
+    }
+
+    impl std::io::Read for ShortReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.data.len() {
+                return Ok(0);
+            }
+            let n = (self.data.len() - self.pos)
+                .min(buf.len())
+                .min(self.max_per_read.max(1));
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn read_at_least_fills_the_buffer_across_short_reads() {
+        let payload: Vec<u8> = (0..10_000).map(|i| (i % 251) as u8).collect();
+        let mut reader = ShortReader {
+            data: &payload,
+            max_per_read: 50,
+            pos: 0,
+        };
+        let mut buf = vec![0u8; 4_000];
+        let n = read_at_least(&mut reader, &mut buf).unwrap();
+        assert_eq!(n, 4_000, "must loop until the requested length is filled");
+        assert_eq!(&buf, &payload[..4_000]);
+        assert_eq!(reader.pos, 4_000);
+    }
+
+    #[test]
+    fn read_at_least_stops_at_eof() {
+        let payload = b"hello";
+        let mut reader = ShortReader {
+            data: payload,
+            max_per_read: 1,
+            pos: 0,
+        };
+        let mut buf = vec![0u8; 100];
+        let n = read_at_least(&mut reader, &mut buf).unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(&buf[..5], payload);
+    }
+
+    #[test]
+    fn sequential_chunks_of_a_cached_file_match_the_source() {
+        let sb = Sandbox::new();
+        let payload: Vec<u8> = (0..8_000).map(|i| (i % 251) as u8).collect();
+        sb.write_file("photo.bin", &payload);
+        let roots = vec![sb.root()];
+        let cache = small_cache();
+
+        let first = read_file_range_with_metadata(
+            &roots, "test", "photo.bin", 0, Some(3_000), Some(&cache), None,
+        )
+        .unwrap();
+        assert_eq!(first.data, payload[..3_000]);
+        assert!(!first.done);
+
+        let second = read_file_range_with_metadata(
+            &roots, "test", "photo.bin", 3_000, Some(3_000), Some(&cache), None,
+        )
+        .unwrap();
+        assert_eq!(second.data, payload[3_000..6_000]);
+
+        let tail = read_file_range_with_metadata(
+            &roots, "test", "photo.bin", 6_000, None, Some(&cache), None,
+        )
+        .unwrap();
+        assert_eq!(tail.data, payload[6_000..]);
+        assert!(tail.done);
+    }
+
+    #[test]
+    fn cancelled_read_returns_before_opening() {
+        let sb = Sandbox::new();
+        sb.write_file("photo.bin", b"hello");
+        let roots = vec![sb.root()];
+        let cache = small_cache();
+        let _ = read_file_range_with_metadata(
+            &roots, "test", "photo.bin", 0, None, Some(&cache), None,
+        )
+        .unwrap();
+        let flag = std::sync::atomic::AtomicBool::new(true);
+        let result = read_file_range_with_metadata(
+            &roots, "test", "photo.bin", 0, None, Some(&cache), Some(&flag),
+        );
+        match result {
+            Err(err) => assert!(err.contains("cancelled"), "{err}"),
+            Ok(_) => panic!("cancelled read must not succeed"),
+        }
     }
 }
