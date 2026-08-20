@@ -369,6 +369,70 @@ async fn send_raw_body_item(
     )
 }
 
+type RawStreamChunk = (Vec<u8>, bool, Option<u64>, Option<String>);
+
+/// One Agent FileRead round-trip, bounded by the hub raw-read semaphore.
+async fn fetch_raw_stream_chunk(
+    state: &AppState,
+    target: &RawFileTarget,
+    offset: u64,
+    length: u64,
+) -> Result<RawStreamChunk, String> {
+    let permit = match tokio::time::timeout(
+        Duration::from_secs(30),
+        state.raw_read_semaphore.clone().acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        _ => return Err("Hub raw stream concurrency limit reached".to_string()),
+    };
+    let result = request_raw_chunk_with_retry(state, target, offset, length).await;
+    drop(permit);
+    result
+}
+
+fn spawn_raw_chunk_prefetch(
+    state: AppState,
+    target: RawFileTarget,
+    offset: u64,
+    length: u64,
+) -> AbortOnDropHandle<Result<RawStreamChunk, String>> {
+    AbortOnDropHandle::new(tokio::spawn(async move {
+        fetch_raw_stream_chunk(&state, &target, offset, length).await
+    }))
+}
+
+/// Tokio JoinHandle does not abort on drop. HTML document collection is the
+/// handler future, so Cancel/unmount must kill an in-flight prefetch or it
+/// keeps a raw-read permit for the retry budget.
+struct AbortOnDropHandle<T>(Option<tokio::task::JoinHandle<T>>);
+
+impl<T> AbortOnDropHandle<T> {
+    fn new(handle: tokio::task::JoinHandle<T>) -> Self {
+        Self(Some(handle))
+    }
+
+    fn abort(&self) {
+        if let Some(handle) = self.0.as_ref() {
+            handle.abort();
+        }
+    }
+
+    async fn join(mut self) -> Result<T, tokio::task::JoinError> {
+        let handle = self.0.take().expect("join once");
+        handle.await
+    }
+}
+
+impl<T> Drop for AbortOnDropHandle<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+        }
+    }
+}
+
 pub async fn file_raw_handler(
     State(state): State<AppState>,
     Extension(session): Extension<AuthenticatedSession>,
@@ -728,66 +792,50 @@ async fn serve_raw_file(
     let body = if is_head {
         axum::body::Body::empty()
     } else {
-        let (body_tx, body_rx) = mpsc::channel(1);
+        // Capacity 2: the producer can queue the next Agent chunk while the
+        // HTTP client is still draining the current one.
+        let (body_tx, body_rx) = mpsc::channel(2);
         let producer_state = state.clone();
         let producer_target = target.clone();
         let producer_modified = initial_modified.clone();
         tokio::spawn(async move {
             let mut sent = 0u64;
-            let mut first_chunk = first_chunk;
             let expected_modified = producer_modified;
+            let mut prefetched: Option<RawStreamChunk> = first_chunk.map(|(chunk, done)| {
+                (chunk, done, Some(file_size), expected_modified.clone())
+            });
+            let mut first_chunk_pending = prefetched.is_some();
             while sent < body_len {
                 // The no-stat flow's first chunk was already fetched (and
                 // preview-budgeted) before the response started; it enters
-                // the loop as the first item instead of a new request. It
-                // carries no per-chunk metadata (agents attach
-                // file_size/modified from their own open), so the values
-                // captured from that same chunk are supplied here to keep
-                // the stream consistent for the shared validator.
-                let first = first_chunk.take();
-                // The no-stat flow's first chunk was already preview-budgeted
-                // inside `fetch_first_chunk`; skip the producer's own reserve
-                // for that item so it is counted exactly once.
-                let pre_reserved = first.is_some();
+                // as `prefetched` instead of a new request.
+                let pre_reserved = first_chunk_pending;
+                first_chunk_pending = false;
                 let (chunk, done, chunk_file_size, chunk_modified) =
-                    if let Some((chunk, done)) = first {
-                        (chunk, done, Some(file_size), expected_modified.clone())
+                    if let Some(chunk) = prefetched.take() {
+                        chunk
                     } else {
-                        let permit = match tokio::time::timeout(
-                            Duration::from_secs(30),
-                            producer_state.raw_read_semaphore.clone().acquire_owned(),
-                        )
-                        .await
-                        {
-                            Ok(Ok(permit)) => permit,
-                            _ => {
-                                let _ = send_raw_body_item(
-                                    &body_tx,
-                                    Err(std::io::Error::new(
-                                        std::io::ErrorKind::TimedOut,
-                                        "Hub raw stream concurrency limit reached",
-                                    )),
-                                )
-                                .await;
-                                return;
-                            }
-                        };
                         let remaining = body_len - sent;
-                        let chunk_result = request_raw_chunk_with_retry(
+                        match fetch_raw_stream_chunk(
                             &producer_state,
                             &producer_target,
                             offset_start + sent,
                             remaining.min(RAW_STREAM_CHUNK_BYTES),
                         )
-                        .await;
-                        drop(permit);
-
-                        match chunk_result {
+                        .await
+                        {
                             Ok(chunk) => chunk,
                             Err(err) => {
                                 let _ = send_raw_body_item(
                                     &body_tx,
-                                    Err(std::io::Error::new(std::io::ErrorKind::Other, err)),
+                                    Err(std::io::Error::new(
+                                        if err.contains("concurrency limit") {
+                                            std::io::ErrorKind::TimedOut
+                                        } else {
+                                            std::io::ErrorKind::Other
+                                        },
+                                        err,
+                                    )),
                                 )
                                 .await;
                                 return;
@@ -824,12 +872,40 @@ async fn serve_raw_file(
                 }
                 sent = sent.saturating_add(chunk.len() as u64);
                 let done_early = done && sent != body_len;
-                if !send_raw_body_item(
+                let prefetch = if !done_early && sent < body_len {
+                    let remaining = body_len - sent;
+                    Some(spawn_raw_chunk_prefetch(
+                        producer_state.clone(),
+                        producer_target.clone(),
+                        offset_start + sent,
+                        remaining.min(RAW_STREAM_CHUNK_BYTES),
+                    ))
+                } else {
+                    None
+                };
+                let send_ok = send_raw_body_item(
                     &body_tx,
                     Ok(axum::body::Bytes::from(chunk)),
                 )
-                .await
-                {
+                .await;
+                if let Some(handle) = prefetch {
+                    if !send_ok {
+                        handle.abort();
+                        return;
+                    }
+                    match handle.join().await {
+                        Ok(Ok(next)) => prefetched = Some(next),
+                        Ok(Err(err)) => {
+                            let _ = send_raw_body_item(
+                                &body_tx,
+                                Err(std::io::Error::new(std::io::ErrorKind::Other, err)),
+                            )
+                            .await;
+                            return;
+                        }
+                        Err(_) => return,
+                    }
+                } else if !send_ok {
                     return;
                 }
                 if done_early {
@@ -967,43 +1043,37 @@ async fn collect_raw_file(
     let mut bytes = Vec::with_capacity(file_size as usize);
     let mut sent = 0u64;
     let expected_modified = initial_modified;
+    let mut prefetched: Option<RawStreamChunk> = None;
     while sent < file_size {
-        let permit = match tokio::time::timeout(
-            Duration::from_secs(30),
-            state.raw_read_semaphore.clone().acquire_owned(),
-        )
-        .await
-        {
-            Ok(Ok(permit)) => permit,
-            _ => {
-                return Err(error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "hub_overloaded",
-                    "The server is busy streaming files. Please retry shortly.",
-                    true,
-                ))
-            }
-        };
         let remaining = file_size - sent;
-        let chunk_result = request_raw_chunk_with_retry(
-            state,
-            target,
-            sent,
-            remaining.min(RAW_STREAM_CHUNK_BYTES),
-        )
-        .await;
-        drop(permit);
+        let chunk_result = if let Some(chunk) = prefetched.take() {
+            Ok(chunk)
+        } else {
+            fetch_raw_stream_chunk(
+                state,
+                target,
+                sent,
+                remaining.min(RAW_STREAM_CHUNK_BYTES),
+            )
+            .await
+        };
 
         let (chunk, done, chunk_file_size, chunk_modified) = match chunk_result {
             Ok(chunk) => chunk,
             Err(err) => {
-                return Err(error_response(
-                    StatusCode::BAD_GATEWAY,
-                    "preview_document_error",
-                    &format!("Failed to read the HTML document: {}", err),
-                    true,
-                ))
+                return Err(collect_raw_chunk_error(&err));
             }
+        };
+        let next_offset = sent.saturating_add(chunk.len() as u64);
+        let prefetch = if !done && next_offset < file_size {
+            Some(spawn_raw_chunk_prefetch(
+                state.clone(),
+                target.clone(),
+                next_offset,
+                (file_size - next_offset).min(RAW_STREAM_CHUNK_BYTES),
+            ))
+        } else {
+            None
         };
         if let Err(failure) = check_raw_chunk(
             &chunk,
@@ -1013,6 +1083,9 @@ async fn collect_raw_file(
             chunk_modified,
             &expected_modified,
         ) {
+            if let Some(handle) = &prefetch {
+                handle.abort();
+            }
             return Err(match failure {
                 RawChunkFailure::FileChanged => error_response(
                     StatusCode::CONFLICT,
@@ -1039,6 +1112,9 @@ async fn collect_raw_file(
                 .await
                 .is_err()
             {
+                if let Some(handle) = &prefetch {
+                    handle.abort();
+                }
                 return Err(error_response(
                     StatusCode::UNAUTHORIZED,
                     "preview_expired",
@@ -1048,8 +1124,11 @@ async fn collect_raw_file(
             }
         }
         bytes.extend_from_slice(&chunk);
-        sent = sent.saturating_add(chunk.len() as u64);
+        sent = next_offset;
         if done && sent != file_size {
+            if let Some(handle) = prefetch {
+                handle.abort();
+            }
             return Err(error_response(
                 StatusCode::BAD_GATEWAY,
                 "file_unavailable",
@@ -1057,8 +1136,39 @@ async fn collect_raw_file(
                 true,
             ));
         }
+        if let Some(handle) = prefetch {
+            match handle.join().await {
+                Ok(Ok(next)) => prefetched = Some(next),
+                Ok(Err(err)) => return Err(collect_raw_chunk_error(&err)),
+                Err(_) => {
+                    return Err(error_response(
+                        StatusCode::BAD_GATEWAY,
+                        "preview_document_error",
+                        "Failed to read the HTML document: prefetch cancelled",
+                        true,
+                    ))
+                }
+            }
+        }
     }
     Ok(bytes)
+}
+
+fn collect_raw_chunk_error(err: &str) -> Response {
+    if err.contains("concurrency limit") {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "hub_overloaded",
+            "The server is busy streaming files. Please retry shortly.",
+            true,
+        );
+    }
+    error_response(
+        StatusCode::BAD_GATEWAY,
+        "preview_document_error",
+        &format!("Failed to read the HTML document: {}", err),
+        true,
+    )
 }
 
 /// First-chunk size discovery for plain full GETs: the agent's first

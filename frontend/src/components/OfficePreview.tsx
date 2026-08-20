@@ -349,7 +349,7 @@ export function OfficePreview({ agentId, root, path }: Props) {
           )}>
             <CsvPreview
               key={derivedPath}
-              url={fileRawUrl(agentId, root, derivedPath)}
+              url={`${fileRawUrl(agentId, root, derivedPath)}&v=${retryToken}`}
               ext="csv"
               path={derivedPath}
               downloadPath={path}
@@ -375,6 +375,7 @@ export function OfficePreview({ agentId, root, path }: Props) {
         agentId={agentId}
         root={root}
         path={derivedPath}
+        url={`${fileRawUrl(agentId, root, derivedPath)}&v=${retryToken}`}
         downloadPath={path}
         onRetry={retryConvert}
       />

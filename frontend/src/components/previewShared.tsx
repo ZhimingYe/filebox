@@ -25,7 +25,8 @@ export function useMounted() {
 // Reports byte progress while the body streams (the hub sends 512 KiB
 // chunks, so a 0.7 MB file on a slow agent link updates several times) and
 // flips `slow` after 8s of no completion — the preview never freezes
-// silently.
+// silently. `text` is set only after the GET finishes (Content-Length
+// matched); consumers must not render until `loading` is false.
 
 export function useFetchText(url: string, enabled = true, agentId?: string) {
   const [text, setText] = useState<string | null>(null);
@@ -85,31 +86,13 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
           maxDurationMs: null,
           agentId,
           consume: async (res) => {
-            const contentLength = Number(res.headers.get('content-length'));
-            setTotal(Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null);
-            const reader = res.body?.getReader();
-            if (!reader) return res.text();
-            // Stream the body so the overlay can show byte progress; decode
-            // at the end (TextDecoder matches res.text()'s UTF-8 + BOM
-            // handling).
-            const chunks: Uint8Array[] = [];
-            let receivedBytes = 0;
-            for (;;) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (value && value.byteLength > 0) {
-                chunks.push(value);
-                receivedBytes += value.byteLength;
-                if (!cancelled) setReceived(receivedBytes);
+            const bytes = await readBodyWithProgress(res, (receivedBytes, totalBytes) => {
+              if (!cancelled) {
+                setReceived(receivedBytes);
+                setTotal(totalBytes);
               }
-            }
-            const merged = new Uint8Array(receivedBytes);
-            let offset = 0;
-            for (const chunk of chunks) {
-              merged.set(chunk, offset);
-              offset += chunk.byteLength;
-            }
-            return new TextDecoder().decode(merged);
+            });
+            return new TextDecoder().decode(bytes);
           },
           onRetry: () => {
             if (!cancelled) setRetrying(true);
@@ -161,6 +144,73 @@ export function useFetchText(url: string, enabled = true, agentId?: string) {
   return {
     text, error, loading: requestLoading, retrying, cancel, retry,
     received, total, slow,
+  };
+}
+
+// Stream a Response body, reporting byte progress as Hub FileChunks arrive.
+// The returned buffer is the complete body: if the hub advertised
+// Content-Length, a short read is an error (retryable) so callers never
+// hand a truncated PDF/image to a decoder.
+export async function readBodyWithProgress(
+  res: Response,
+  onProgress: (received: number, total: number | null) => void,
+): Promise<ArrayBuffer> {
+  const rawLength = res.headers.get('content-length');
+  const parsedLength = rawLength != null && rawLength.trim() !== ''
+    ? Number(rawLength)
+    : NaN;
+  const total = Number.isFinite(parsedLength) && parsedLength >= 0 ? parsedLength : null;
+  onProgress(0, total);
+  const reader = res.body?.getReader();
+  let receivedBytes = 0;
+  const chunks: Uint8Array[] = [];
+  let lastShown = 0;
+  let lastAt = 0;
+  const report = (n: number, force = false) => {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (force || lastShown === 0 || n - lastShown >= 256 * 1024 || now - lastAt >= 100) {
+      onProgress(n, total);
+      lastShown = n;
+      lastAt = now;
+    }
+  };
+  if (!reader) {
+    const buf = await res.arrayBuffer();
+    receivedBytes = buf.byteLength;
+    if (total != null && receivedBytes !== total) {
+      throw incompleteDownloadError(receivedBytes, total);
+    }
+    onProgress(receivedBytes, total ?? receivedBytes);
+    return buf;
+  }
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value && value.byteLength > 0) {
+      chunks.push(value);
+      receivedBytes += value.byteLength;
+      report(receivedBytes);
+    }
+  }
+  if (total != null && receivedBytes !== total) {
+    throw incompleteDownloadError(receivedBytes, total);
+  }
+  const out = new ArrayBuffer(receivedBytes);
+  const view = new Uint8Array(out);
+  let offset = 0;
+  for (const chunk of chunks) {
+    view.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  onProgress(receivedBytes, total ?? receivedBytes);
+  return out;
+}
+
+function incompleteDownloadError(received: number, total: number) {
+  return {
+    error: 'request_stalled',
+    message: `File download incomplete (${received} of ${total} bytes).`,
+    retryable: true,
   };
 }
 

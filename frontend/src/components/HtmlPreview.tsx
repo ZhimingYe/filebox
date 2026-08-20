@@ -71,8 +71,17 @@ const docWarningClose: CSSProperties = {
 export function HtmlPreview({ agentId, root, path, url }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.html });
   const shouldLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
-  const { text, error, loading, retrying, cancel, retry, received, total, slow } = useFetchText(url, shouldLoad, agentId);
-  const previewShouldLoad = shouldLoad && text !== null && !error;
+  const [showSource, setShowSource] = useState(false);
+  const [sourceWanted, setSourceWanted] = useState(false);
+
+  useEffect(() => {
+    setShowSource(false);
+    setSourceWanted(false);
+  }, [url]);
+  const {
+    text, error, loading, retrying, cancel, retry, received, total, slow,
+  } = useFetchText(url, shouldLoad && sourceWanted, agentId);
+  const previewShouldLoad = shouldLoad;
   const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -81,7 +90,6 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
   const [iframeKey, setIframeKey] = useState(0);
   const [iframeLoading, setIframeLoading] = useState(true);
   const [slowRendering, setSlowRendering] = useState(false);
-  const [showSource, setShowSource] = useState(false);
   const [dismissedFileKey, setDismissedFileKey] = useState<string | null>(null);
   const mounted = useMounted();
   const previewCancelRef = useRef<AbortController | null>(null);
@@ -221,8 +229,10 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
     previewCancelRef.current?.abort();
     previewCancelRef.current = null;
     if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
+    setDocumentUrl(null);
     setPreviewLoading(false);
     setSlowPreviewSetup(false);
+    setIframeLoading(false);
     setPreviewError('Cancelled');
   }, []);
 
@@ -250,27 +260,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
     );
   }
 
-  if (loading) {
-    return (
-      <div style={styles.container}>
-        <LoadingOverlay message={previewLoadingMessage(retrying, 'Loading HTML...', { received, total }, slow)} onCancel={cancel} />
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <div style={styles.container}>
-        <div style={styles.largeImageWarning}>
-          <p style={styles.errorText}>{error}</p>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <button onClick={retry} style={styles.retryBtn}>Retry</button>
-            <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
-          </div>
-        </div>
-      </div>
-    );
-  }
-  if (previewLoading || (!showSource && text !== null && !documentUrl && !previewError)) {
+  if (previewLoading || (!showSource && !documentUrl && !previewError && shouldLoad)) {
     return (
       <div style={styles.container}>
         <LoadingOverlay
@@ -300,7 +290,17 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
         <button onClick={handleRefresh} style={styles.toolbarBtn} title="Reload preview">
           &#x21bb;
         </button>
-        <button onClick={() => setShowSource(!showSource)} style={styles.toolbarBtn} title="Toggle source">
+        <button
+          onClick={() => {
+            setShowSource((prev) => {
+              if (prev) setIframeLoading(true);
+              else setSourceWanted(true);
+              return !prev;
+            });
+          }}
+          style={styles.toolbarBtn}
+          title="Toggle source"
+        >
           {showSource ? 'Preview' : 'Source'}
         </button>
         <button onClick={openInNewWindow} style={styles.toolbarBtn} title="Open in new window">
@@ -330,22 +330,37 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
       <div style={styles.htmlContent}>
         {!showSource && iframeLoading && (
           <LoadingOverlay
-            message={slowRendering ? 'Still rendering — large or script-heavy HTML...' : 'Rendering...'}
+            message={slowRendering
+              ? 'Still loading HTML — the agent may be slow or reconnecting...'
+              : 'Loading HTML...'}
+            onCancel={handlePreviewSetupCancel}
           />
         )}
-        {showSource ? (
+        {showSource && loading && (
+          <LoadingOverlay
+            message={previewLoadingMessage(retrying, 'Loading HTML source...', { received, total }, slow)}
+            onCancel={cancel}
+          />
+        )}
+        {showSource && error && (
+          <div style={styles.largeImageWarning}>
+            <p style={styles.errorText}>{error}</p>
+            <button onClick={retry} style={styles.retryBtn}>Retry</button>
+          </div>
+        )}
+        {showSource && text !== null && !loading && !error ? (
           <pre style={styles.sourceCode}>{text}</pre>
-        ) : (
+        ) : !showSource && documentUrl ? (
           <iframe
             key={iframeKey}
-            src={documentUrl || ''}
+            src={documentUrl}
             sandbox={HTML_SANDBOX}
             style={styles.htmlFrame}
             title="HTML Preview"
             onLoad={handleIframeLoad}
             onError={handleIframeError}
           />
-        )}
+        ) : null}
       </div>
     </div>
   );
