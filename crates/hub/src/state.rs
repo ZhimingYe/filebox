@@ -164,6 +164,18 @@ pub struct AppState {
     /// permit while its body streams to the agent, so a burst of drag-drops
     /// cannot pile unbounded buffered bodies in memory.
     pub temp_upload_semaphore: Arc<tokio::sync::Semaphore>,
+    /// TOTP 2FA secrets for remote terminal access (persisted sidecar).
+    pub totp: Arc<crate::totp::TotpStore>,
+    /// Short-lived terminal WS tickets minted after a successful 2FA check.
+    pub terminal_tickets: Arc<crate::terminal_proxy::TerminalTicketStore>,
+    /// Live browser terminal sessions keyed by req_id. `ws.rs` routes agent
+    /// Terminal* messages into the entry's sender; removal closes the browser
+    /// socket.
+    pub terminal_sessions: Arc<
+        std::sync::Mutex<HashMap<String, crate::terminal_proxy::TerminalSessionEntry>>,
+    >,
+    /// Per-IP budget on TOTP verify attempts (failures only; success clears).
+    pub terminal_verify_limiter: Arc<LoginRateLimiter>,
     /// Serializes full desired-resource rewrites per Agent. Resource updates
     /// carry a revision and a complete root set, so overlapping rewrites for
     /// one Agent would otherwise race while unrelated Agents should proceed.
@@ -275,6 +287,12 @@ impl AppState {
             // Agent for at most FILE_CHUNK_MAX_BYTES at a time.
             raw_read_semaphore: Arc::new(tokio::sync::Semaphore::new(96)),
             temp_upload_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            totp: Arc::new(crate::totp::TotpStore::load(crate::totp::default_path(
+                secure_cookies,
+            ))),
+            terminal_tickets: Arc::new(crate::terminal_proxy::TerminalTicketStore::new()),
+            terminal_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            terminal_verify_limiter: Arc::new(LoginRateLimiter::new(5, Duration::from_secs(30))),
             resource_update_locks: Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),

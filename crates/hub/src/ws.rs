@@ -5,6 +5,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, Notify};
 use uuid::Uuid;
@@ -702,6 +703,54 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                     })).await;
                                 }
                             }
+                            Ok(AgentMessage::TerminalOpened { req_id, error }) => {
+                                let failed = error.is_some();
+                                let frame = match error {
+                                    Some(code) => serde_json::json!({
+                                        "type": "error",
+                                        "error": code,
+                                    }),
+                                    None => serde_json::json!({ "type": "opened" }),
+                                };
+                                // A failed open is terminal for the session:
+                                // the agent will not stream output after it.
+                                crate::terminal_proxy::forward_to_terminal_session(
+                                    &state,
+                                    &agent_id_for_msgs,
+                                    connection_id,
+                                    &req_id,
+                                    frame,
+                                    failed,
+                                );
+                            }
+                            Ok(AgentMessage::TerminalOutput { req_id, data }) => {
+                                let frame = serde_json::json!({
+                                    "type": "output",
+                                    "data": base64::engine::general_purpose::STANDARD.encode(&data),
+                                });
+                                crate::terminal_proxy::forward_to_terminal_session(
+                                    &state,
+                                    &agent_id_for_msgs,
+                                    connection_id,
+                                    &req_id,
+                                    frame,
+                                    false,
+                                );
+                            }
+                            Ok(AgentMessage::TerminalClosed { req_id, reason }) => {
+                                let frame = serde_json::json!({
+                                    "type": "closed",
+                                    "reason": reason,
+                                });
+                                crate::terminal_proxy::forward_to_terminal_session(
+                                    &state,
+                                    &agent_id_for_msgs,
+                                    connection_id,
+                                    &req_id,
+                                    frame,
+                                    true,
+                                );
+                            }
                             Ok(AgentMessage::FsListResponse { req_id, .. })
                             | Ok(AgentMessage::FsStatResponse { req_id, .. })
                             | Ok(AgentMessage::FileChunk { req_id, .. })
@@ -784,6 +833,21 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
         tracing::info!(
             "Failed {} pending request(s) for disconnected agent {}",
             failed,
+            agent_id
+        );
+    }
+
+    // Close browser terminals owned by this connection: dropping the session
+    // entries drops their senders, ending each browser socket's pump loop.
+    let closed_terminals = crate::terminal_proxy::close_terminal_sessions_for_connection(
+        &state,
+        &agent_id,
+        connection_id,
+    );
+    if closed_terminals > 0 {
+        tracing::info!(
+            "Closed {} terminal session(s) for disconnected agent {}",
+            closed_terminals,
             agent_id
         );
     }

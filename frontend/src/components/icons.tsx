@@ -292,3 +292,15 @@ export function IconTrash({ style }: SvgProps) {
     </Svg>
   );
 }
+
+/// Terminal window with a `>` prompt chevron and an underscore cursor —
+/// remote-shell nav icon. Outline only, same stroke language as the others.
+export function IconTerminal({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <rect x="2" y="2.5" width="12" height="11" rx="2" />
+      <path d="M5 6.5l2.5 2L5 10.5" />
+      <line x1="8.5" y1="10.5" x2="11" y2="10.5" />
+    </Svg>
+  );
+}

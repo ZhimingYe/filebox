@@ -31,5 +31,9 @@ regex = "1"
 sha2 = { workspace = true }
 hex = { workspace = true }
 
+# PTY for remote terminal sessions — pure-libc, builds on musl.
+[target.'cfg(unix)'.dependencies]
+portable-pty = "0.8"
+
 [dev-dependencies]
 tempfile = { workspace = true }

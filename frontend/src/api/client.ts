@@ -122,6 +122,15 @@ export function friendlyMessage(error: any): string {
     temp_upload_too_large: 'This file exceeds the agent’s upload limit.',
     temp_unavailable: 'The temp folder is not available on this agent.',
     temp_internal_error: 'The upload failed safely. Please retry.',
+    totp_already_bound: 'An authenticator is already bound to this account.',
+    totp_no_pending_bind: 'No binding in progress. Scan the QR code, then retry.',
+    totp_not_bound: 'No authenticator is bound yet. Bind one first.',
+    totp_invalid: 'Incorrect code. Check your authenticator and retry.',
+    totp_rate_limited: 'Too many attempts. Please wait and retry.',
+    terminal_ticket_invalid: 'Terminal authorization expired. Verify again.',
+    terminal_2fa_required: 'This backend requires its own authenticator code.',
+    terminal_2fa_invalid: 'Invalid or already-used backend code — codes rotate every 30 seconds; enter the current one.',
+    terminal_unavailable: 'The terminal is not available on this agent.',
   };
   if (code && map[code]) return map[code];
   return 'An unexpected error occurred.';
@@ -312,6 +321,10 @@ export interface AgentCapabilities {
   pinned_folders: boolean;
   collections: boolean;
   temp_upload: boolean;
+  terminal?: boolean;
+  /** Agent itself requires a second, host-local TOTP code before opening
+      the shell (independent of the hub-side ticket). */
+  terminal_agent_2fa?: boolean;
 }
 
 export interface AgentInfo {
@@ -945,4 +958,72 @@ export async function cleanupTempFolder(agentId: string, signal?: AbortSignal) {
     false,
     75_000,
   );
+}
+
+// ── Terminal (TOTP 2FA + remote shell) ───────────────────────────────────────
+
+export interface Terminal2faStatus {
+  bound: boolean;
+}
+
+export interface TerminalBindStartResult {
+  /** Base32 TOTP secret — show for manual authenticator entry. */
+  secret: string;
+  /** otpauth:// URI — render as a QR code for scanning. */
+  otpauth_uri: string;
+}
+
+export interface TerminalTicket {
+  /** Bearer for the terminal WebSocket. 30 min TTL, never persisted. Bound
+      to the agent it was minted for. */
+  ticket: string;
+  expires_in_sec: number;
+}
+
+export async function getTerminal2faStatus(signal?: AbortSignal) {
+  return request<Terminal2faStatus>('/api/terminal/2fa/status', { signal }, false, 15_000);
+}
+
+export async function terminalBindStart() {
+  return request<TerminalBindStartResult>('/api/terminal/2fa/bind/start', { method: 'POST' });
+}
+
+export async function terminalBindConfirm(code: string, agentId: string) {
+  return request<TerminalTicket>('/api/terminal/2fa/bind/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ code, agent_id: agentId }),
+  });
+}
+
+export async function terminalVerify(code: string, agentId: string) {
+  return request<TerminalTicket>('/api/terminal/2fa/verify', {
+    method: 'POST',
+    body: JSON.stringify({ code, agent_id: agentId }),
+  });
+}
+
+/** Extend a live terminal ticket by another TTL (30 min). Unknown/expired
+    tickets come back 401 `terminal_ticket_invalid`. */
+export async function terminalRenewTicket(ticket: string) {
+  return request<{ expires_in_sec: number }>('/api/terminal/2fa/renew', {
+    method: 'POST',
+    body: JSON.stringify({ ticket }),
+  });
+}
+
+/** ws(s) URL for the terminal channel; `ticket` is the bearer. `agentCode`
+    is the agent's own TOTP (only for `terminal_agent_2fa` agents). */
+export function terminalWsUrl(
+  agentId: string,
+  ticket: string,
+  cols?: number,
+  rows?: number,
+  agentCode?: string,
+) {
+  const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const params = new URLSearchParams({ ticket });
+  if (cols != null) params.set('cols', String(cols));
+  if (rows != null) params.set('rows', String(rows));
+  if (agentCode) params.set('agent_code', agentCode);
+  return `${scheme}//${window.location.host}/api/agents/${encodeURIComponent(agentId)}/terminal/ws?${params}`;
 }

@@ -132,6 +132,8 @@ impl AgentConnection {
                 office_max_pdf_bytes: self.capabilities.office_max_pdf_bytes,
                 office_timeout_secs: self.capabilities.office_timeout_secs,
                 temp_upload: self.capabilities.temp_upload,
+                terminal: self.capabilities.terminal,
+                terminal_agent_2fa: self.capabilities.terminal_agent_2fa,
             },
         }
     }
@@ -176,6 +178,8 @@ pub struct AgentCapabilitiesInfo {
     pub pinned_folders: bool,
     pub collections: bool,
     pub temp_upload: bool,
+    pub terminal: bool,
+    pub terminal_agent_2fa: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

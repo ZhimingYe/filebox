@@ -13,6 +13,11 @@ use crate::search::{SearchMode, SearchResult};
 /// also clamps reads to this size when `length` is omitted or oversized.
 pub const FILE_CHUNK_MAX_BYTES: u64 = 512 * 1024;
 
+/// Max raw bytes per `TerminalOutput` message over the Hub↔Agent WebSocket.
+/// Small on purpose: terminal I/O is latency-sensitive and must never stall
+/// the shared control channel.
+pub const TERMINAL_CHUNK_MAX_BYTES: usize = 16 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficePreviewOutput {
     pub label: String,
@@ -149,6 +154,24 @@ pub enum AgentMessage {
         removed: u64,
         freed_bytes: u64,
         error: Option<String>,
+    },
+    /// Result of opening a remote terminal session. On failure `error`
+    /// carries a machine-readable code (e.g. `terminal_unavailable`,
+    /// `agent_overloaded: …`).
+    TerminalOpened {
+        req_id: String,
+        error: Option<String>,
+    },
+    /// Raw PTY output bytes (base64 on the wire), streamed as produced.
+    TerminalOutput {
+        req_id: String,
+        #[serde(with = "base64_bytes")]
+        data: Vec<u8>,
+    },
+    /// The terminal session ended (shell exited, killed, or closed).
+    TerminalClosed {
+        req_id: String,
+        reason: Option<String>,
     },
 }
 
@@ -320,6 +343,37 @@ pub enum HubMessage {
     /// Delete every entry inside the temp upload folder (the folder itself
     /// survives). One-click cleanup for the scratch space.
     TempCleanupRequest {
+        req_id: String,
+    },
+    /// Open a remote terminal session: spawn a shell on a PTY sized
+    /// `cols` × `rows`. The agent replies `TerminalOpened`, then streams
+    /// `TerminalOutput` until `TerminalClosed`.
+    TerminalOpen {
+        req_id: String,
+        cols: u16,
+        rows: u16,
+        /// Agent-side secondary 2FA: the user's current TOTP code for the
+        /// agent's OWN secret (`terminal_totp_secret` in agent.toml),
+        /// passed through by the hub. The agent verifies it locally and
+        /// rejects with `terminal_2fa_required` / `terminal_2fa_invalid`.
+        /// Additive field — old agents ignore it.
+        #[serde(default)]
+        agent_totp_code: Option<String>,
+    },
+    /// Raw stdin bytes for a terminal session (base64 on the wire).
+    TerminalInput {
+        req_id: String,
+        #[serde(with = "base64_bytes")]
+        data: Vec<u8>,
+    },
+    /// Notify the agent that the browser terminal was resized.
+    TerminalResize {
+        req_id: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// Close a terminal session and kill its shell.
+    TerminalClose {
         req_id: String,
     },
 }
@@ -953,6 +1007,132 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn terminal_messages_round_trip() {
+        let open = HubMessage::TerminalOpen {
+            req_id: "t1".into(),
+            cols: 120,
+            rows: 40,
+            agent_totp_code: None,
+        };
+        let back = round_trip_hub(&open);
+        match back {
+            HubMessage::TerminalOpen {
+                req_id,
+                cols,
+                rows,
+                agent_totp_code,
+            } => {
+                assert_eq!(req_id, "t1");
+                assert_eq!(cols, 120);
+                assert_eq!(rows, 40);
+                assert!(agent_totp_code.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        // Older hubs omit agent_totp_code — defaults to None.
+        let legacy_open = serde_json::json!({
+            "type": "terminal_open",
+            "req_id": "t0",
+            "cols": 80,
+            "rows": 24
+        });
+        let legacy_back: HubMessage = serde_json::from_value(legacy_open).unwrap();
+        match legacy_back {
+            HubMessage::TerminalOpen { agent_totp_code, .. } => {
+                assert!(agent_totp_code.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let input = HubMessage::TerminalInput {
+            req_id: "t1".into(),
+            data: b"ls -la\n".to_vec(),
+        };
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["data"], "bHMgLWxhCg==");
+        let back = round_trip_hub(&input);
+        match back {
+            HubMessage::TerminalInput { data, .. } => assert_eq!(data, b"ls -la\n"),
+            _ => panic!("wrong variant"),
+        }
+
+        let resize = HubMessage::TerminalResize {
+            req_id: "t1".into(),
+            cols: 80,
+            rows: 24,
+        };
+        match round_trip_hub(&resize) {
+            HubMessage::TerminalResize { cols, rows, .. } => {
+                assert_eq!(cols, 80);
+                assert_eq!(rows, 24);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let close = HubMessage::TerminalClose {
+            req_id: "t1".into(),
+        };
+        match round_trip_hub(&close) {
+            HubMessage::TerminalClose { req_id } => assert_eq!(req_id, "t1"),
+            _ => panic!("wrong variant"),
+        }
+
+        let opened = AgentMessage::TerminalOpened {
+            req_id: "t1".into(),
+            error: None,
+        };
+        match round_trip_agent(&opened) {
+            AgentMessage::TerminalOpened { req_id, error } => {
+                assert_eq!(req_id, "t1");
+                assert!(error.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let output = AgentMessage::TerminalOutput {
+            req_id: "t1".into(),
+            data: b"total 0\n".to_vec(),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["type"], "terminal_output");
+        assert_eq!(json["data"], "dG90YWwgMAo=");
+        match round_trip_agent(&output) {
+            AgentMessage::TerminalOutput { data, .. } => assert_eq!(data, b"total 0\n"),
+            _ => panic!("wrong variant"),
+        }
+
+        let closed = AgentMessage::TerminalClosed {
+            req_id: "t1".into(),
+            reason: Some("shell exited".into()),
+        };
+        match round_trip_agent(&closed) {
+            AgentMessage::TerminalClosed { req_id, reason } => {
+                assert_eq!(req_id, "t1");
+                assert_eq!(reason.as_deref(), Some("shell exited"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn capabilities_default_has_terminal_false_and_legacy_agents_omit_it() {
+        assert!(!Capabilities::default().terminal);
+        let legacy = serde_json::json!({
+            "fs_list": true,
+            "fs_stat": true,
+            "fs_read_range": true,
+            "image_preview": false,
+            "pdf_preview": false,
+            "serve_dir": false,
+            "resource_management": true,
+            "sys_stats": true
+        });
+        let caps: Capabilities = serde_json::from_value(legacy).unwrap();
+        assert!(!caps.terminal);
     }
 
     #[test]
