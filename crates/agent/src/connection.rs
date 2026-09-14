@@ -143,6 +143,19 @@ fn stats_ttl() -> Duration {
     Duration::from_secs(secs.max(1))
 }
 
+/// Idle timeout for terminal sessions in seconds; 0 disables the idle
+/// reaper entirely.
+fn terminal_idle_timeout_secs() -> u64 {
+    std::env::var("FILEBOX_AGENT_TERMINAL_IDLE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(1800)
+}
+
+/// How often the idle-terminal reaper scans for sessions past their
+/// inactivity timeout.
+const TERMINAL_REAP_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Send a WS message with a write timeout. Returns false on timeout or
 /// error — caller should treat the connection as dead and reconnect.
 async fn send_with_timeout<W>(write: &mut W, msg: Message) -> bool
@@ -332,9 +345,26 @@ pub async fn run_connection_loop(config: &AgentConfig) {
     // state (last accepted counter) must not be resettable by a hub
     // forcing reconnects. Sessions themselves still die with their
     // connection (close_all at teardown). On non-unix it is a no-op stub.
+    let idle_timeout_secs = terminal_idle_timeout_secs();
     let terminal_manager = Arc::new(crate::terminal::TerminalManager::new(
         config.terminal_totp_secret.clone(),
+        idle_timeout_secs,
     ));
+    // The idle reaper runs for the life of the process — spawned ONCE here,
+    // not per connection, so reconnects cannot leak reaper tasks.
+    if idle_timeout_secs > 0 {
+        let reaper_manager = Arc::clone(&terminal_manager);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(TERMINAL_REAP_INTERVAL);
+            loop {
+                interval.tick().await;
+                let reaped = reaper_manager.reap_idle(crate::terminal::unix_millis());
+                if reaped > 0 {
+                    tracing::info!("Idle reaper closed {} terminal session(s)", reaped);
+                }
+            }
+        });
+    }
 
     tracing::info!(
         "Agent ID: {}, data dir: {:?}",
@@ -512,6 +542,9 @@ async fn run_one_connection(
     // Secondary TOTP check is enforced locally in terminal.rs; advertise it
     // so the hub knows TerminalOpen must carry agent_totp_code.
     capabilities.terminal_agent_2fa = config.terminal_totp_secret.is_some();
+    // Session management (TerminalListRequest + idle reaping) rides the same
+    // unix-only PTY support as `terminal`.
+    capabilities.terminal_manage = cfg!(unix);
     let temp_root = temp_store.map(|store| store.root_info());
     let register = AgentMessage::Register {
         agent_id: Some(stable_agent_id.to_string()),
@@ -1054,7 +1087,7 @@ async fn run_one_connection(
                                 temp_writers.remove(&req_id);
                                 // Terminal sessions also answer to Cancel
                                 // (harmless when req_id isn't a terminal).
-                                terminal_manager.close(&req_id, &term_tx);
+                                terminal_manager.close(&req_id);
                             }
                             Ok(HubMessage::SysStatsRequest { req_id }) => {
                                 tracing::debug!("Sys stats request");
@@ -1530,7 +1563,18 @@ async fn run_one_connection(
                                 terminal_manager.resize(&req_id, cols, rows);
                             }
                             Ok(HubMessage::TerminalClose { req_id }) => {
-                                terminal_manager.close(&req_id, &term_tx);
+                                terminal_manager.close(&req_id);
+                            }
+                            Ok(HubMessage::TerminalListRequest { req_id }) => {
+                                let sessions = terminal_manager.list();
+                                // try_send: a full terminal queue means the
+                                // connection is saturated — drop (with a debug
+                                // log) rather than block the read loop.
+                                if let Err(e) = term_tx.try_send(
+                                    AgentMessage::TerminalListResponse { req_id, sessions },
+                                ) {
+                                    tracing::debug!("TerminalListResponse dropped: {}", e);
+                                }
                             }
                             Ok(HubMessage::Error { message }) => {
                                 tracing::warn!("Hub error: {}", message);

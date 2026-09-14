@@ -134,6 +134,7 @@ impl AgentConnection {
                 temp_upload: self.capabilities.temp_upload,
                 terminal: self.capabilities.terminal,
                 terminal_agent_2fa: self.capabilities.terminal_agent_2fa,
+                terminal_manage: self.capabilities.terminal_manage,
             },
         }
     }
@@ -180,6 +181,7 @@ pub struct AgentCapabilitiesInfo {
     pub temp_upload: bool,
     pub terminal: bool,
     pub terminal_agent_2fa: bool,
+    pub terminal_manage: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

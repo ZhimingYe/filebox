@@ -74,6 +74,173 @@ function CodeEntry({
   );
 }
 
+/** Display form of a session req_id: strip the `term_` prefix, keep ~12 chars. */
+function shortReqId(reqId: string): string {
+  const bare = reqId.startsWith('term_') ? reqId.slice(5) : reqId;
+  return bare.slice(0, 12);
+}
+
+/** Compact duration: `Xm` under an hour, then `Xh Ym`. */
+function formatDurationSecs(secs: number): string {
+  const m = Math.max(0, Math.floor(secs / 60));
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+const IDLE_WARN_SECS = 10 * 60;
+const KILL_CONFIRM_MS = 3000;
+
+/**
+ * Collapsible list of the agent's live terminal sessions with a kill path.
+ * This is the zombie-recovery tool, so it rides the plain session (no 2FA
+ * ticket) and renders in EVERY phase — including before 2FA is passed.
+ * `unsupported_feature` (legacy agent) hides the section permanently.
+ */
+function TerminalSessionsPanel({ agent }: Props) {
+  const [open, setOpen] = useState(false);
+  const [sessions, setSessions] = useState<api.TerminalSessionInfo[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [unsupported, setUnsupported] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [killing, setKilling] = useState<string | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const confirmTimer = useRef<number | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.listTerminals(agent.id);
+      setSessions(res.sessions);
+    } catch (e) {
+      const err = e as api.ApiError;
+      if (err?.error === 'unsupported_feature') {
+        setUnsupported(true);
+        return;
+      }
+      setError(friendlyMessage(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [agent.id]);
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && sessions === null && !loading) void refresh();
+  };
+
+  const armConfirm = (reqId: string) => {
+    setConfirmId(reqId);
+    if (confirmTimer.current !== null) window.clearTimeout(confirmTimer.current);
+    confirmTimer.current = window.setTimeout(() => setConfirmId(null), KILL_CONFIRM_MS);
+  };
+
+  const kill = async (reqId: string) => {
+    if (killing) return;
+    setKilling(reqId);
+    setError(null);
+    try {
+      await api.killTerminalSession(agent.id, reqId);
+      await refresh();
+    } catch (e) {
+      const err = e as api.ApiError;
+      if (err?.error === 'unsupported_feature') {
+        setUnsupported(true);
+        return;
+      }
+      setError(friendlyMessage(e));
+    } finally {
+      setKilling(null);
+      setConfirmId(null);
+    }
+  };
+
+  useEffect(() => () => {
+    if (confirmTimer.current !== null) window.clearTimeout(confirmTimer.current);
+  }, []);
+
+  if (unsupported) return null;
+
+  return (
+    <div style={styles.sessWrap}>
+      <div style={styles.sessCard}>
+        <div style={styles.sessHeader}>
+          <button
+            type="button"
+            style={styles.sessToggle}
+            onClick={toggle}
+            aria-expanded={open}
+          >
+            <span style={styles.sessCaret}>{open ? '▾' : '▸'}</span>
+            Sessions on {agent.name}
+            {sessions !== null && (
+              <span style={styles.sessCount}>{sessions.length}</span>
+            )}
+          </button>
+          <button
+            type="button"
+            style={{ ...styles.sessRefreshBtn, ...(loading ? styles.primaryBtnDisabled : null) }}
+            disabled={loading}
+            onClick={() => void refresh()}
+          >
+            {loading ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
+        {open && (
+          <div style={styles.sessBody}>
+            {loading && sessions === null && !error && (
+              <p style={styles.muted}>Loading sessions…</p>
+            )}
+            {error && (
+              <div style={styles.sessErrorRow}>
+                <p style={styles.formError}>{error}</p>
+                <button
+                  type="button"
+                  style={styles.sessRefreshBtn}
+                  onClick={() => void refresh()}
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+            {sessions !== null && sessions.length === 0 && !error && (
+              <p style={styles.muted}>No active sessions.</p>
+            )}
+            {sessions?.map((s) => (
+              <div key={s.req_id} style={styles.sessRow}>
+                <code style={styles.sessId} title={s.req_id}>{shortReqId(s.req_id)}</code>
+                <span style={styles.sessDim}>{s.cols}×{s.rows}</span>
+                <span style={styles.sessDim}>age {formatDurationSecs(s.age_secs)}</span>
+                <span
+                  style={{
+                    ...styles.sessDim,
+                    ...(s.idle_secs > IDLE_WARN_SECS ? styles.sessIdleWarn : null),
+                  }}
+                >
+                  idle {formatDurationSecs(s.idle_secs)}
+                </span>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.sessKillBtn,
+                    ...(confirmId === s.req_id ? styles.sessKillConfirm : null),
+                    ...(killing === s.req_id ? styles.primaryBtnDisabled : null),
+                  }}
+                  disabled={killing === s.req_id}
+                  onClick={() => (confirmId === s.req_id ? void kill(s.req_id) : armConfirm(s.req_id))}
+                >
+                  {killing === s.req_id ? 'Killing…' : confirmId === s.req_id ? 'Confirm?' : 'Kill'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Remote terminal gated by per-user TOTP 2FA. First visit binds an
  * authenticator (QR + manual secret), later visits verify a 6-digit code;
@@ -197,8 +364,9 @@ export function TerminalView({ agent }: Props) {
     setPhase('verify');
   }, []);
 
+  let content: React.ReactNode;
   if (phase === 'loading') {
-    return (
+    content = (
       <div style={styles.centerWrap}>
         {probeError ? (
           <div style={styles.card}>
@@ -222,7 +390,7 @@ export function TerminalView({ agent }: Props) {
   }
 
   if (phase === 'ready' && ticket) {
-    return (
+    content = (
       <div style={styles.readyWrap}>
         <Suspense fallback={<div style={styles.centerWrap}><p style={styles.muted}>Loading terminal…</p></div>}>
           <TerminalPane
@@ -238,7 +406,7 @@ export function TerminalView({ agent }: Props) {
   }
 
   if (phase === 'agentCode') {
-    return (
+    content = (
       <div style={styles.centerWrap}>
         <div style={styles.card}>
           <h2 style={styles.title}>Backend authenticator code</h2>
@@ -261,7 +429,7 @@ export function TerminalView({ agent }: Props) {
   }
 
   if (phase === 'bind') {
-    return (
+    content = (
       <div style={styles.centerWrap}>
         <div style={styles.card}>
           <h2 style={styles.title}>Set up two-factor authentication</h2>
@@ -308,7 +476,8 @@ export function TerminalView({ agent }: Props) {
   }
 
   // verify
-  return (
+  if (phase === 'verify') {
+    content = (
     <div style={styles.centerWrap}>
       <div style={styles.card}>
         <h2 style={styles.title}>Verify two-factor code</h2>
@@ -324,6 +493,18 @@ export function TerminalView({ agent }: Props) {
           submitLabel="Verify"
         />
       </div>
+    </div>
+    );
+  }
+
+  // The sessions panel is a sibling ABOVE the phase content in every phase —
+  // killing zombie sessions must not require passing 2FA. In `ready` it sits
+  // above `readyWrap` and never touches the TerminalPane's props or key, so
+  // toggling it cannot unmount/remount the live pane.
+  return (
+    <div style={styles.viewWrap}>
+      <TerminalSessionsPanel agent={agent} />
+      {content}
     </div>
   );
 }
@@ -453,5 +634,126 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 12,
     boxSizing: 'border-box',
     background: c.bgSubtle,
+  },
+  viewWrap: {
+    flex: '1 1 auto',
+    minHeight: 0,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    boxSizing: 'border-box',
+  },
+  sessWrap: {
+    flexShrink: 0,
+    padding: '12px 12px 0',
+    boxSizing: 'border-box',
+  },
+  sessCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    borderRadius: radius.md,
+    border: `1px solid ${c.border}`,
+    background: c.bg,
+    boxSizing: 'border-box',
+  },
+  sessHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '4px 6px',
+  },
+  sessToggle: {
+    flex: '1 1 auto',
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '4px 6px',
+    border: 'none',
+    background: 'transparent',
+    cursor: 'pointer',
+    fontSize: 12.5,
+    fontWeight: 500,
+    color: c.textSecondary,
+    fontFamily: font.sans,
+    textAlign: 'left',
+  },
+  sessCaret: {
+    fontSize: 10,
+    color: c.textMuted,
+    width: 10,
+    textAlign: 'center',
+  },
+  sessCount: {
+    padding: '0 6px',
+    borderRadius: radius.pill,
+    background: c.bgMuted,
+    color: c.textMuted,
+    fontSize: 11,
+    fontWeight: 500,
+    lineHeight: '16px',
+  },
+  sessRefreshBtn: {
+    flexShrink: 0,
+    padding: '4px 10px',
+    borderRadius: radius.sm,
+    border: `1px solid ${c.border}`,
+    background: c.bg,
+    color: c.textSecondary,
+    cursor: 'pointer',
+    fontSize: 12,
+    fontWeight: 500,
+    fontFamily: font.sans,
+  },
+  sessBody: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    padding: '0 8px 8px',
+  },
+  sessErrorRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  sessRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '3px 4px',
+    borderRadius: radius.sm,
+  },
+  sessId: {
+    fontFamily: font.mono,
+    fontSize: 12,
+    color: c.text,
+    userSelect: 'all',
+  },
+  sessDim: {
+    fontSize: 12,
+    color: c.textMuted,
+    fontFamily: font.sans,
+  },
+  sessIdleWarn: {
+    color: c.warning,
+    fontWeight: 600,
+  },
+  sessKillBtn: {
+    flexShrink: 0,
+    marginLeft: 'auto',
+    padding: '3px 10px',
+    borderRadius: radius.sm,
+    border: `1px solid ${c.border}`,
+    background: c.bg,
+    color: c.danger,
+    cursor: 'pointer',
+    fontSize: 12,
+    fontWeight: 500,
+    fontFamily: font.sans,
+  },
+  sessKillConfirm: {
+    background: c.danger,
+    border: `1px solid ${c.danger}`,
+    color: c.onAccent,
   },
 };

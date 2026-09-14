@@ -129,6 +129,15 @@ pub fn create_router(state: AppState) -> Router {
             "/api/terminal/2fa/renew",
             post(crate::terminal_proxy::totp_renew_handler),
         )
+        // Terminal session management (zombie recovery): list + force-kill.
+        .route(
+            "/api/agents/{agent_id}/terminals",
+            get(crate::terminal_proxy::terminals_list_handler),
+        )
+        .route(
+            "/api/agents/{agent_id}/terminals/{req_id}",
+            delete(crate::terminal_proxy::terminal_kill_handler),
+        )
         .route("/api/cancel", post(cancel_handler))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

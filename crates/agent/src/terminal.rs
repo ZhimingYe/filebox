@@ -24,17 +24,39 @@
 //!   replayed code is rejected — which is why the manager is created in
 //!   `run_connection_loop` and outlives individual connections: a hub must
 //!   not be able to reset anti-replay by forcing reconnects.
+//! - Session management: each session records its creation time, last INPUT
+//!   time, and geometry; `list()` reports them to the hub and a periodic
+//!   idle reaper (`reap_idle`, driven from connection.rs) closes sessions
+//!   idle past the configured timeout. Sessions store their connection's tx
+//!   so the reaper can deliver TerminalClosed without being handed one.
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Wall-clock milliseconds for terminal idle accounting. last_activity is
+/// stored as UNIX millis so tests can push it into the past without
+/// sleeping.
+pub fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 #[cfg(unix)]
 mod unix_impl {
     use std::collections::HashMap;
     use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
-    use filebox_protocol::message::{AgentMessage, TERMINAL_CHUNK_MAX_BYTES};
+    use filebox_protocol::message::{
+        AgentMessage, TerminalSessionInfo, TERMINAL_CHUNK_MAX_BYTES,
+    };
     use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
     use tokio::sync::mpsc;
+
+    use super::unix_millis;
 
     /// Interactive shells are cheap but each one holds a reader thread and a
     /// process; bound them so a misbehaving client cannot pile them up.
@@ -63,6 +85,17 @@ mod unix_impl {
         /// (reader EOF or an explicit close); gates the single
         /// TerminalClosed message.
         closed: Arc<AtomicBool>,
+        /// This session's connection reply channel, stored so close() and
+        /// the idle reaper can deliver TerminalClosed without being handed
+        /// a tx. Sessions die with their connection (close_all at
+        /// teardown), so this clone never outlives its connection.
+        tx: mpsc::Sender<AgentMessage>,
+        created_at: Instant,
+        /// UNIX millis of the last INPUT (a fresh open counts as activity);
+        /// the idle reaper keys on it.
+        last_activity: Arc<AtomicU64>,
+        cols: AtomicU16,
+        rows: AtomicU16,
         _slot: SlotGuard,
     }
 
@@ -75,15 +108,19 @@ mod unix_impl {
         /// Highest TOTP counter ever accepted — anti-replay. Must survive
         /// reconnects, so the manager is shared across connections.
         last_accepted_counter: Mutex<Option<u64>>,
+        /// Sessions idle longer than this are reaped; 0 disables the
+        /// reaper. Read from env in connection.rs and passed in here.
+        idle_timeout_secs: u64,
     }
 
     impl TerminalManager {
-        pub fn new(totp_secret: Option<String>) -> Self {
+        pub fn new(totp_secret: Option<String>, idle_timeout_secs: u64) -> Self {
             Self {
                 sessions: Mutex::new(HashMap::new()),
                 inflight: Arc::new(AtomicUsize::new(0)),
                 totp_secret,
                 last_accepted_counter: Mutex::new(None),
+                idle_timeout_secs,
             }
         }
 
@@ -226,6 +263,12 @@ mod unix_impl {
                 master: Arc::new(Mutex::new(pair.master)),
                 child: Arc::clone(&child),
                 closed: Arc::clone(&closed),
+                tx: tx.clone(),
+                created_at: Instant::now(),
+                // A fresh open counts as activity.
+                last_activity: Arc::new(AtomicU64::new(unix_millis())),
+                cols: AtomicU16::new(cols),
+                rows: AtomicU16::new(rows),
                 _slot: slot,
             };
             if let Ok(mut map) = self.sessions.lock() {
@@ -249,6 +292,11 @@ mod unix_impl {
                                 req_id: rid.clone(),
                                 data: buf[..n].to_vec(),
                             };
+                            // blocking_send on the bounded term_tx (cap 64)
+                            // is the intended backpressure: a full queue
+                            // stalls this reader, the PTY buffer fills, and
+                            // the shell's write() blocks — nothing grows
+                            // unbounded.
                             if tx_reader.blocking_send(msg).is_err() {
                                 // Connection is gone; teardown / close_all
                                 // owns cleanup — do not try to report the
@@ -295,14 +343,18 @@ mod unix_impl {
         }
 
         pub fn input(&self, req_id: &str, data: &[u8]) {
-            let writer = match self.sessions.lock() {
-                Ok(map) => map.get(req_id).map(|s| Arc::clone(&s.writer)),
+            let refs = match self.sessions.lock() {
+                Ok(map) => map
+                    .get(req_id)
+                    .map(|s| (Arc::clone(&s.writer), Arc::clone(&s.last_activity))),
                 Err(_) => None,
             };
-            let Some(writer) = writer else {
+            let Some((writer, last_activity)) = refs else {
                 tracing::debug!("Terminal input for unknown session {}", req_id);
                 return;
             };
+            // Keyboard input is the liveness signal the idle reaper keys on.
+            last_activity.store(unix_millis(), Ordering::Release);
             if let Ok(mut writer) = writer.lock() {
                 let result = writer.write_all(data).and_then(|_| writer.flush());
                 if let Err(e) = result {
@@ -312,14 +364,20 @@ mod unix_impl {
         }
 
         pub fn resize(&self, req_id: &str, cols: u16, rows: u16) {
+            let cols = cols.clamp(MIN_TERM_DIM, MAX_TERM_DIM);
+            let rows = rows.clamp(MIN_TERM_DIM, MAX_TERM_DIM);
             let master = match self.sessions.lock() {
-                Ok(map) => map.get(req_id).map(|s| Arc::clone(&s.master)),
+                Ok(map) => map.get(req_id).map(|s| {
+                    s.cols.store(cols, Ordering::Release);
+                    s.rows.store(rows, Ordering::Release);
+                    Arc::clone(&s.master)
+                }),
                 Err(_) => None,
             };
             let Some(master) = master else { return };
             let size = PtySize {
-                rows: rows.clamp(MIN_TERM_DIM, MAX_TERM_DIM),
-                cols: cols.clamp(MIN_TERM_DIM, MAX_TERM_DIM),
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             };
@@ -331,7 +389,62 @@ mod unix_impl {
             };
         }
 
-        pub fn close(&self, req_id: &str, tx: &mpsc::Sender<AgentMessage>) {
+        /// Management listing: every live session with age / idle / geometry.
+        pub fn list(&self) -> Vec<TerminalSessionInfo> {
+            let now = unix_millis();
+            match self.sessions.lock() {
+                Ok(map) => map
+                    .iter()
+                    .map(|(id, s)| TerminalSessionInfo {
+                        req_id: id.clone(),
+                        age_secs: s.created_at.elapsed().as_secs(),
+                        idle_secs: now.saturating_sub(s.last_activity.load(Ordering::Acquire))
+                            / 1000,
+                        cols: s.cols.load(Ordering::Acquire),
+                        rows: s.rows.load(Ordering::Acquire),
+                    })
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        }
+
+        /// Close every session idle past the configured timeout; returns how
+        /// many were reaped. The tokio reaper loop in connection.rs calls
+        /// this periodically; tests call it directly after faking
+        /// last_activity into the past (no wall-clock sleeps).
+        pub fn reap_idle(&self, now_millis: u64) -> usize {
+            if self.idle_timeout_secs == 0 {
+                return 0;
+            }
+            let timeout_millis = self.idle_timeout_secs.saturating_mul(1000);
+            let stale: Vec<String> = match self.sessions.lock() {
+                Ok(map) => map
+                    .iter()
+                    .filter(|(_, s)| {
+                        now_millis.saturating_sub(s.last_activity.load(Ordering::Acquire))
+                            > timeout_millis
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
+            let reaped = stale.len();
+            for id in stale {
+                // close_inner notifies via try_send on the session's stored
+                // tx, so the reaper never blocks on a wedged channel.
+                self.close_inner(&id, Some("idle timeout".to_string()));
+            }
+            reaped
+        }
+
+        pub fn close(&self, req_id: &str) {
+            self.close_inner(req_id, None);
+        }
+
+        /// Shared close path: removes the session, claims the closed flag,
+        /// kills the shell, and notifies exactly once via the session's own
+        /// stored tx.
+        fn close_inner(&self, req_id: &str, reason: Option<String>) {
             let session = match self.sessions.lock() {
                 Ok(mut map) => map.remove(req_id),
                 Err(_) => None,
@@ -351,13 +464,13 @@ mod unix_impl {
                 let _ = child.try_wait();
             }
             if first_closer {
-                // try_send: close() can run on the WS loop, where
-                // blocking_send would panic; a full channel means the
-                // connection is saturated and the hub will see the session
-                // die with the connection.
-                if let Err(e) = tx.try_send(AgentMessage::TerminalClosed {
+                // try_send: close() can run on the WS loop (and the reaper on
+                // its own task), where blocking_send would panic; a full
+                // channel means the connection is saturated and the hub will
+                // see the session die with the connection.
+                if let Err(e) = session.tx.try_send(AgentMessage::TerminalClosed {
                     req_id: req_id.to_string(),
-                    reason: None,
+                    reason,
                 }) {
                     tracing::debug!("TerminalClosed for {} not sent: {}", req_id, e);
                 }
@@ -453,7 +566,7 @@ mod unix_impl {
 
         #[test]
         fn open_echo_close_round_trip() {
-            let manager = Arc::new(TerminalManager::new(None));
+            let manager = Arc::new(TerminalManager::new(None, 0));
             let (tx, rx) = mpsc::channel(64);
             let rx = collector(rx);
             let deadline = Instant::now() + TEST_TIMEOUT;
@@ -498,7 +611,7 @@ mod unix_impl {
 
         #[test]
         fn explicit_close_reports_once() {
-            let manager = Arc::new(TerminalManager::new(None));
+            let manager = Arc::new(TerminalManager::new(None, 0));
             let (tx, rx) = mpsc::channel(64);
             let rx = collector(rx);
             let deadline = Instant::now() + TEST_TIMEOUT;
@@ -508,7 +621,7 @@ mod unix_impl {
                 matches!(m, AgentMessage::TerminalOpened { req_id, error: None } if req_id == "t2")
             });
 
-            manager.close("t2", &tx);
+            manager.close("t2");
             let closed = recv_until(&rx, deadline, |m| {
                 matches!(m, AgentMessage::TerminalClosed { req_id, .. } if req_id == "t2")
             });
@@ -534,7 +647,7 @@ mod unix_impl {
 
         #[test]
         fn admission_is_bounded() {
-            let manager = Arc::new(TerminalManager::new(None));
+            let manager = Arc::new(TerminalManager::new(None, 0));
             let (tx, rx) = mpsc::channel(64);
             let rx = collector(rx);
             // Fill every slot without starting PTYs by simulating
@@ -567,7 +680,7 @@ mod unix_impl {
 
         #[test]
         fn totp_missing_code_is_rejected() {
-            let manager = Arc::new(TerminalManager::new(Some(TOTP_TEST_SECRET.to_string())));
+            let manager = Arc::new(TerminalManager::new(Some(TOTP_TEST_SECRET.to_string()), 0));
             let (tx, rx) = mpsc::channel(64);
             let rx = collector(rx);
 
@@ -588,7 +701,7 @@ mod unix_impl {
 
         #[test]
         fn totp_valid_code_opens_and_replay_is_rejected() {
-            let manager = Arc::new(TerminalManager::new(Some(TOTP_TEST_SECRET.to_string())));
+            let manager = Arc::new(TerminalManager::new(Some(TOTP_TEST_SECRET.to_string()), 0));
             let (tx, rx) = mpsc::channel(64);
             let rx = collector(rx);
             let deadline = Instant::now() + TEST_TIMEOUT;
@@ -602,7 +715,7 @@ mod unix_impl {
                 AgentMessage::TerminalOpened { error, .. } => assert!(error.is_none()),
                 _ => unreachable!(),
             }
-            manager.close("t2fa-ok", &tx);
+            manager.close("t2fa-ok");
             recv_until(&rx, deadline, |m| {
                 matches!(m, AgentMessage::TerminalClosed { req_id, .. } if req_id == "t2fa-ok")
             });
@@ -630,7 +743,7 @@ mod unix_impl {
 
         #[test]
         fn totp_wrong_code_is_rejected() {
-            let manager = Arc::new(TerminalManager::new(Some(TOTP_TEST_SECRET.to_string())));
+            let manager = Arc::new(TerminalManager::new(Some(TOTP_TEST_SECRET.to_string()), 0));
             let (tx, rx) = mpsc::channel(64);
             let rx = collector(rx);
 
@@ -662,10 +775,106 @@ mod unix_impl {
                 AgentMessage::TerminalOpened { error, .. } => assert!(error.is_none()),
                 _ => unreachable!(),
             }
-            manager.close("t2fa-good", &tx);
+            manager.close("t2fa-good");
             let deadline = Instant::now() + TEST_TIMEOUT;
             while manager.inflight.load(Ordering::Acquire) != 0 {
                 assert!(Instant::now() < deadline, "slot not released after close");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        #[test]
+        fn list_reports_live_sessions() {
+            let manager = Arc::new(TerminalManager::new(None, 0));
+            let (tx, rx) = mpsc::channel(64);
+            let rx = collector(rx);
+            let deadline = Instant::now() + TEST_TIMEOUT;
+
+            manager.open("l1".to_string(), 100, 30, None, tx.clone());
+            manager.open("l2".to_string(), 80, 24, None, tx.clone());
+            for id in ["l1", "l2"] {
+                recv_until(&rx, deadline, |m| {
+                    matches!(m, AgentMessage::TerminalOpened { req_id, error: None } if req_id == id)
+                });
+            }
+
+            let sessions = manager.list();
+            assert_eq!(sessions.len(), 2);
+            for s in &sessions {
+                assert!(s.age_secs <= 5, "age should be small: {s:?}");
+                // A fresh open counts as activity.
+                assert!(s.idle_secs <= 5, "idle should be small: {s:?}");
+            }
+            let l1 = sessions.iter().find(|s| s.req_id == "l1").unwrap();
+            assert_eq!((l1.cols, l1.rows), (100, 30));
+
+            // Resize updates the reported geometry.
+            manager.resize("l1", 120, 40);
+            let l1 = manager
+                .list()
+                .into_iter()
+                .find(|s| s.req_id == "l1")
+                .unwrap();
+            assert_eq!((l1.cols, l1.rows), (120, 40));
+
+            // Closed sessions leave the listing.
+            manager.close("l1");
+            let sessions = manager.list();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].req_id, "l2");
+            manager.close("l2");
+            assert!(manager.list().is_empty());
+
+            let deadline = Instant::now() + TEST_TIMEOUT;
+            while manager.inflight.load(Ordering::Acquire) != 0 {
+                assert!(Instant::now() < deadline, "slot not released after close");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        #[test]
+        fn idle_reaper_closes_idle_sessions() {
+            // 1s idle timeout; the test fakes last_activity into the past
+            // instead of sleeping.
+            let manager = Arc::new(TerminalManager::new(None, 1));
+            let (tx, rx) = mpsc::channel(64);
+            let rx = collector(rx);
+            let deadline = Instant::now() + TEST_TIMEOUT;
+
+            manager.open("reap1".to_string(), 80, 24, None, tx.clone());
+            recv_until(&rx, deadline, |m| {
+                matches!(m, AgentMessage::TerminalOpened { req_id, error: None } if req_id == "reap1")
+            });
+
+            // Freshly opened: not yet idle, reaping is a no-op.
+            assert_eq!(manager.reap_idle(unix_millis()), 0);
+            assert_eq!(manager.list().len(), 1);
+
+            // Push the last activity 10s into the past — past the 1s timeout.
+            {
+                let map = manager.sessions.lock().unwrap();
+                let session = map.get("reap1").unwrap();
+                session
+                    .last_activity
+                    .store(unix_millis().saturating_sub(10_000), Ordering::Release);
+            }
+
+            assert_eq!(manager.reap_idle(unix_millis()), 1);
+            assert!(manager.list().is_empty());
+            let closed = recv_until(&rx, deadline, |m| {
+                matches!(m, AgentMessage::TerminalClosed { req_id, .. } if req_id == "reap1")
+            });
+            match closed {
+                AgentMessage::TerminalClosed { reason, .. } => {
+                    assert_eq!(reason.as_deref(), Some("idle timeout"))
+                }
+                _ => unreachable!(),
+            }
+
+            // The reaped session released its slot.
+            let deadline = Instant::now() + TEST_TIMEOUT;
+            while manager.inflight.load(Ordering::Acquire) != 0 {
+                assert!(Instant::now() < deadline, "slot not released after reap");
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
@@ -682,13 +891,13 @@ pub use unix_impl::TerminalManager;
 mod stub {
     use std::sync::Arc;
 
-    use filebox_protocol::message::AgentMessage;
+    use filebox_protocol::message::{AgentMessage, TerminalSessionInfo};
     use tokio::sync::mpsc;
 
     pub struct TerminalManager;
 
     impl TerminalManager {
-        pub fn new(_totp_secret: Option<String>) -> Self {
+        pub fn new(_totp_secret: Option<String>, _idle_timeout_secs: u64) -> Self {
             Self
         }
 
@@ -710,7 +919,15 @@ mod stub {
 
         pub fn resize(&self, _req_id: &str, _cols: u16, _rows: u16) {}
 
-        pub fn close(&self, _req_id: &str, _tx: &mpsc::Sender<AgentMessage>) {}
+        pub fn list(&self) -> Vec<TerminalSessionInfo> {
+            Vec::new()
+        }
+
+        pub fn reap_idle(&self, _now_millis: u64) -> usize {
+            0
+        }
+
+        pub fn close(&self, _req_id: &str) {}
 
         pub fn close_all(&self) {}
     }

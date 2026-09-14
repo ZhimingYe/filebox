@@ -164,6 +164,10 @@ pub struct Capabilities {
     /// Defaults to `false` for rolling-upgrade safety.
     #[serde(default)]
     pub terminal_agent_2fa: bool,
+    /// Whether this agent answers `TerminalListRequest` (session management).
+    /// Defaults to `false` for rolling-upgrade safety.
+    #[serde(default)]
+    pub terminal_manage: bool,
 }
 
 impl Default for Capabilities {
@@ -187,6 +191,7 @@ impl Default for Capabilities {
             temp_upload: false,
             terminal: false,
             terminal_agent_2fa: false,
+            terminal_manage: false,
         }
     }
 }

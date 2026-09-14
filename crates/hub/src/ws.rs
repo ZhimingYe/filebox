@@ -758,7 +758,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                             | Ok(AgentMessage::WorkspaceSearchResponse { req_id, .. })
                             | Ok(AgentMessage::OfficeConvertResponse { req_id, .. })
                             | Ok(AgentMessage::TempUploadResponse { req_id, .. })
-                            | Ok(AgentMessage::TempCleanupResponse { req_id, .. }) => {
+                            | Ok(AgentMessage::TempCleanupResponse { req_id, .. })
+                            | Ok(AgentMessage::TerminalListResponse { req_id, .. }) => {
                                 let pending_resp = take_pending_for_connection(
                                     &state,
                                     &req_id,

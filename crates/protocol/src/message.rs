@@ -28,6 +28,18 @@ pub struct OfficePreviewOutput {
 
 // ── Agent → Hub ──────────────────────────────────────────────────────────────
 
+/// One live terminal session as reported by the agent (management listing).
+/// `req_id` is the session id (`term_<uuid>`); `idle_secs` measures time
+/// since the last INPUT (keyboard activity) — the idle reaper keys on it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TerminalSessionInfo {
+    pub req_id: String,
+    pub age_secs: u64,
+    pub idle_secs: u64,
+    pub cols: u16,
+    pub rows: u16,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentMessage {
@@ -172,6 +184,13 @@ pub enum AgentMessage {
     TerminalClosed {
         req_id: String,
         reason: Option<String>,
+    },
+    /// Answer to `TerminalListRequest`: every live session on the agent
+    /// (the agent is the source of truth — it also sees orphans the hub
+    /// forgot about).
+    TerminalListResponse {
+        req_id: String,
+        sessions: Vec<TerminalSessionInfo>,
     },
 }
 
@@ -372,8 +391,15 @@ pub enum HubMessage {
         cols: u16,
         rows: u16,
     },
-    /// Close a terminal session and kill its shell.
+    /// Close a terminal session and kill its shell. Also used by the
+    /// management API to force-kill a (possibly orphaned) session — the
+    /// req_id IS the session id.
     TerminalClose {
+        req_id: String,
+    },
+    /// List the agent's live terminal sessions (management / zombie
+    /// recovery). Gated by `capabilities.terminal_manage`.
+    TerminalListRequest {
         req_id: String,
     },
 }
@@ -1113,6 +1139,42 @@ mod tests {
             AgentMessage::TerminalClosed { req_id, reason } => {
                 assert_eq!(req_id, "t1");
                 assert_eq!(reason.as_deref(), Some("shell exited"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn terminal_list_round_trips() {
+        let req = HubMessage::TerminalListRequest {
+            req_id: "tl1".into(),
+        };
+        match round_trip_hub(&req) {
+            HubMessage::TerminalListRequest { req_id } => assert_eq!(req_id, "tl1"),
+            _ => panic!("wrong variant"),
+        }
+
+        let resp = AgentMessage::TerminalListResponse {
+            req_id: "tl1".into(),
+            sessions: vec![TerminalSessionInfo {
+                req_id: "term_abc".into(),
+                age_secs: 300,
+                idle_secs: 12,
+                cols: 120,
+                rows: 40,
+            }],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["type"], "terminal_list_response");
+        match round_trip_agent(&resp) {
+            AgentMessage::TerminalListResponse { req_id, sessions } => {
+                assert_eq!(req_id, "tl1");
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions[0].req_id, "term_abc");
+                assert_eq!(sessions[0].age_secs, 300);
+                assert_eq!(sessions[0].idle_secs, 12);
+                assert_eq!(sessions[0].cols, 120);
+                assert_eq!(sessions[0].rows, 40);
             }
             _ => panic!("wrong variant"),
         }

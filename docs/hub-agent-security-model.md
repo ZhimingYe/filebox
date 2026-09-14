@@ -211,7 +211,9 @@ Agent                                    Hub
   每 Agent 资源更新串行锁；HTTP body 1 MiB。
 - Agent：FS 32 worker / 256 inflight；目录列表 4/32；工作区搜索同时 1 个
   （9 min deadline）；temp 写队列 16；所有 FS 任务带 cancel 标志，连接断开
-  即取消。
+  即取消；终端最多 8 会话（原子准入）、30 分钟无输入即收割
+  （`FILEBOX_AGENT_TERMINAL_IDLE_TIMEOUT_SECS`）、输出走 64 帧有界通道
+  （满则反压 PTY，shell 的 write 自然阻塞，无无界增长）。
 
 ### 心跳
 

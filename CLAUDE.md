@@ -380,6 +380,20 @@ Browser ◀── {"type":"output","data":<base64>} ◀── TerminalOutput ─
   `terminal_2fa_required` (no code) / `terminal_2fa_invalid` (wrong or
   replayed). A compromised hub can no longer open terminals at will — it
   needs a fresh code per open, and codes can't be replayed.
+- **Session management** (zombie recovery): the agent tracks per-session
+  metadata (created_at, last input activity, geometry). `GET
+  /api/agents/{id}/terminals` lists live sessions (agent is the source of
+  truth — it also sees orphans the hub forgot), `DELETE
+  /api/agents/{id}/terminals/{req_id}` force-kills one (audited
+  `terminal_kill`). Both ride plain session+CSRF — recovery must not
+  require 2FA. Gated by `capabilities.terminal_manage`. The Terminal view
+  shows a collapsible **Sessions** panel (age/idle, idle > 10 min
+  highlighted, two-step kill) in every 2FA phase.
+- **Idle reaper** (the zombie killer): an agent-side task closes any
+  session with no INPUT for `FILEBOX_AGENT_TERMINAL_IDLE_TIMEOUT_SECS`
+  (default 1800s, `0` = disables). Reaped sessions get `TerminalClosed
+  { reason: "idle timeout" }`; the reaper never blocks on a wedged
+  channel (`try_send`) and runs once for the life of the process.
 - **Threat model honesty**: hub-side 2FA protects the browser leg only;
   WITHOUT `terminal_totp_secret` a compromised hub can open terminals at
   will (agents trust hub control messages) — see

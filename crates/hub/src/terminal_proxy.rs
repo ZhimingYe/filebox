@@ -31,7 +31,7 @@ use filebox_protocol::message::HubMessage;
 
 use crate::agent_registry::AgentStatus;
 use crate::net::client_ip;
-use crate::state::{AppState, AuthenticatedSession};
+use crate::state::{AppState, AuthenticatedSession, PendingResponse, MAX_PENDING_RESPONSES};
 use crate::totp::BindConfirm;
 
 /// Terminal tickets authorize a terminal WS upgrade without CSRF headers.
@@ -436,6 +436,170 @@ pub async fn totp_renew_handler(
     }
 }
 
+// ── Terminal session management ─────────────────────────────────────────────
+
+/// A session id is the `term_<uuid>` minted when the session opened. Bounded
+/// length so the path segment can never be an arbitrary relay key.
+fn is_valid_terminal_session_id(req_id: &str) -> bool {
+    req_id.starts_with("term_") && req_id.len() <= 80
+}
+
+/// `GET /api/agents/{id}/terminals` — ask the agent (the source of truth) for
+/// its live terminal sessions. This is the zombie-recovery path: it may list
+/// sessions the hub no longer tracks. No TOTP ticket is required — listing and
+/// killing shells is strictly less dangerous than opening one, and the
+/// endpoint sits behind the login session + CSRF like every other control API.
+pub async fn terminals_list_handler(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
+    Path(agent_id): Path<String>,
+) -> Response {
+    let inner = state.inner.read().await;
+    let Some(agent) = inner.agents.get(&agent_id) else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "backend_offline",
+            &format!("Agent {} not found or offline", agent_id),
+            true,
+        );
+    };
+    if agent.status == AgentStatus::Offline {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "backend_offline",
+            &format!("Agent {} is offline", agent_id),
+            true,
+        );
+    }
+    if !agent.capabilities.terminal_manage {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_feature",
+            "This agent does not support terminal session management — upgrade the agent",
+            false,
+        );
+    }
+
+    let req_id = format!("term_list_{}", Uuid::new_v4());
+    let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let send_ok = {
+        let mut pending = inner.pending_responses.write().await;
+        if pending.len() >= MAX_PENDING_RESPONSES {
+            false
+        } else {
+            pending.insert(
+                req_id.clone(),
+                PendingResponse {
+                    tx: resp_tx,
+                    agent_id: agent_id.clone(),
+                    connection_id: agent.connection_id,
+                    session_id: Some(session.principal_id.clone()),
+                    desired_roots: None,
+                    desired_collections: None,
+                },
+            );
+            inner.agents.send_to_agent(
+                &agent_id,
+                HubMessage::TerminalListRequest {
+                    req_id: req_id.clone(),
+                },
+            )
+        }
+    };
+    drop(inner);
+    if !send_ok {
+        let pending = state.inner.read().await.pending_responses.clone();
+        pending.write().await.remove(&req_id);
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "backend_offline",
+            "Failed to send request to agent",
+            true,
+        );
+    }
+
+    let resp = tokio::time::timeout(Duration::from_secs(30), resp_rx.recv()).await;
+    let pending = state.inner.read().await.pending_responses.clone();
+    pending.write().await.remove(&req_id);
+
+    match resp {
+        Ok(Some(value)) => Json(serde_json::json!({
+            "sessions": value.get("sessions").cloned().unwrap_or_else(|| serde_json::json!([])),
+        }))
+        .into_response(),
+        _ => error_response(
+            StatusCode::GATEWAY_TIMEOUT,
+            "request_timeout",
+            "Agent did not respond in time",
+            true,
+        ),
+    }
+}
+
+/// `DELETE /api/agents/{id}/terminals/{req_id}` — force-kill a live session.
+/// Fire-and-forget like `/api/cancel`: the agent owns the shell, and a lost
+/// `TerminalClose` only means the zombie survives until the next reconnect.
+pub async fn terminal_kill_handler(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
+    Path((agent_id, req_id)): Path<(String, String)>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_valid_terminal_session_id(&req_id) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Invalid terminal session id",
+            false,
+        );
+    }
+
+    let username = session_username(&state, &session).await;
+    let ip = client_ip(&headers, addr);
+
+    {
+        let inner = state.inner.read().await;
+        let Some(agent) = inner.agents.get(&agent_id) else {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "backend_offline",
+                &format!("Agent {} not found or offline", agent_id),
+                true,
+            );
+        };
+        if agent.status == AgentStatus::Offline {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "backend_offline",
+                &format!("Agent {} is offline", agent_id),
+                true,
+            );
+        }
+        if !agent.capabilities.terminal {
+            return error_response(
+                StatusCode::NOT_IMPLEMENTED,
+                "unsupported_feature",
+                "This agent does not support remote terminals — upgrade the agent",
+                false,
+            );
+        }
+        let _ = inner.agents.send_to_agent(
+            &agent_id,
+            HubMessage::TerminalClose {
+                req_id: req_id.clone(),
+            },
+        );
+    }
+
+    tracing::info!(target: "audit", ip = %ip, user = %username, agent_id = %agent_id, req_id = %req_id, "terminal_kill");
+    state
+        .audit
+        .record("terminal_kill", &username, &ip, &user_agent(&headers));
+
+    (StatusCode::ACCEPTED, Json(serde_json::json!({ "ok": true }))).into_response()
+}
+
 // ── Browser terminal WebSocket ──────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -810,6 +974,17 @@ mod tests {
         }
         assert!(store.validate(&token).is_none());
         assert_eq!(store.renew(&token), None);
+    }
+
+    #[test]
+    fn terminal_session_id_validation() {
+        assert!(is_valid_terminal_session_id("term_550e8400-e29b-41d4-a716-446655440000"));
+        assert!(is_valid_terminal_session_id(&format!("term_{}", "x".repeat(75))));
+        // Wrong prefix and over-length ids are rejected.
+        assert!(!is_valid_terminal_session_id("fs_list_abc"));
+        assert!(!is_valid_terminal_session_id("term"));
+        assert!(!is_valid_terminal_session_id(&format!("term_{}", "x".repeat(76))));
+        assert!(!is_valid_terminal_session_id(""));
     }
 
     #[test]

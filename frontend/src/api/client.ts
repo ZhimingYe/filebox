@@ -1011,6 +1011,34 @@ export async function terminalRenewTicket(ticket: string) {
   });
 }
 
+/** One live terminal session on an agent, as listed for zombie recovery. */
+export interface TerminalSessionInfo {
+  req_id: string;
+  age_secs: number;
+  idle_secs: number;
+  cols: number;
+  rows: number;
+}
+
+/** List live terminal sessions on an agent. No 2FA ticket required — this is
+    the zombie-recovery path. 400 `unsupported_feature` on legacy agents. */
+export async function listTerminals(agentId: string, signal?: AbortSignal) {
+  return request<{ sessions: TerminalSessionInfo[] }>(
+    `/api/agents/${encodeURIComponent(agentId)}/terminals`,
+    { signal },
+    false,
+    15_000,
+  );
+}
+
+/** Kill one terminal session by req_id (zombie recovery; no ticket needed). */
+export async function killTerminalSession(agentId: string, reqId: string) {
+  return request<{ ok: boolean }>(
+    `/api/agents/${encodeURIComponent(agentId)}/terminals/${encodeURIComponent(reqId)}`,
+    { method: 'DELETE' },
+  );
+}
+
 /** ws(s) URL for the terminal channel; `ticket` is the bearer. `agentCode`
     is the agent's own TOTP (only for `terminal_agent_2fa` agents). */
 export function terminalWsUrl(
