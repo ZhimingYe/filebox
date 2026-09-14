@@ -2,9 +2,11 @@
 //!
 //! The HTTP endpoints manage the per-user TOTP binding and mint short-lived
 //! terminal tickets. The browser then upgrades
-//! `GET /api/agents/{id}/terminal/ws?ticket=…` (registered outside the
-//! CSRF-protected group because browsers cannot set headers on a WS upgrade);
-//! the handler authenticates the ticket AND the session cookie, then relays
+//! `GET /api/agents/{id}/terminal/ws` (registered outside the CSRF-protected
+//! group because browsers cannot set headers on a WS upgrade) carrying the
+//! ticket as a WebSocket subprotocol — never in the URL, which access logs,
+//! browser history, and proxy logs would all record. The handler
+//! authenticates the ticket AND the session cookie, then relays
 //! JSON frames to the agent as `TerminalInput`/`TerminalResize`/
 //! `TerminalClose` over the existing Hub↔Agent channel. Agent
 //! `TerminalOpened`/`TerminalOutput`/`TerminalClosed` messages are routed
@@ -604,7 +606,6 @@ pub async fn terminal_kill_handler(
 
 #[derive(Deserialize)]
 pub struct TerminalWsParams {
-    pub ticket: String,
     pub cols: Option<u16>,
     pub rows: Option<u16>,
     /// Agent-side secondary 2FA code (6 digits); malformed values are
@@ -642,7 +643,22 @@ pub async fn terminal_ws_handler(
     // 1) Ticket: 256-bit, TTL-bound to the login principal AND the path
     // agent — a ticket minted for another agent must not open a terminal
     // here (same error as unknown/expired to avoid leaking ticket validity).
-    let Some(ticket) = state.terminal_tickets.validate(&params.ticket) else {
+    // It rides the Sec-WebSocket-Protocol handshake header (browsers cannot
+    // set arbitrary WS headers); a URL query ticket would end up in access
+    // logs and browser history.
+    let ticket_token = headers
+        .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').map(str::trim).find(|s| !s.is_empty()));
+    let Some(ticket_token) = ticket_token else {
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "terminal_ticket_invalid",
+            "Terminal ticket missing or expired. Verify 2FA again.",
+            true,
+        );
+    };
+    let Some(ticket) = state.terminal_tickets.validate(ticket_token) else {
         return error_response(
             StatusCode::UNAUTHORIZED,
             "terminal_ticket_invalid",
@@ -730,6 +746,9 @@ pub async fn terminal_ws_handler(
 
     ws.max_message_size(MAX_BROWSER_WS_MESSAGE_SIZE)
         .max_frame_size(MAX_BROWSER_WS_MESSAGE_SIZE)
+        // Echo the ticket subprotocol back so the negotiated protocol
+        // matches what the browser offered in the handshake.
+        .protocols([ticket_token.to_string()])
         .on_upgrade(move |socket| {
             handle_terminal_socket(
                 socket,

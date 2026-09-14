@@ -322,7 +322,7 @@ deliberately crosses the read-only line and was approved explicitly; treat
 it as the highest-impact feature in the system.
 
 ```text
-Browser ──WS /api/agents/{id}/terminal/ws?ticket=…──▶ Hub
+Browser ──WS /api/agents/{id}/terminal/ws (ticket as subprotocol)──▶ Hub
   ──WS TerminalOpen/Input/Resize/Close──▶ Agent terminal.rs ──▶ PTY ($SHELL)
 Browser ◀── {"type":"output","data":<base64>} ◀── TerminalOutput ──┘
 ```
@@ -366,7 +366,10 @@ Browser ◀── {"type":"output","data":<base64>} ◀── TerminalOutput ─
   The terminal WS route lives outside the session middleware (like preview
   resources); the handler validates BOTH the session cookie and the ticket
   (principal AND agent must match), so the ticket doubles as the CSRF
-  proof.
+  proof. The ticket travels as the WebSocket subprotocol
+  (`Sec-WebSocket-Protocol` handshake header, echoed back on upgrade) —
+  never in the URL, which access logs / browser history / proxy logs would
+  record.
 - **Agent-side secondary 2FA** (optional, per agent): set
   `terminal_totp_secret` (base32) in `agent.toml` or
   `FILEBOX_AGENT_TERMINAL_TOTP_SECRET`. The agent then advertises
@@ -391,7 +394,10 @@ Browser ◀── {"type":"output","data":<base64>} ◀── TerminalOutput ─
   highlighted, two-step kill) in every 2FA phase.
 - **Idle reaper** (the zombie killer): an agent-side task closes any
   session with no INPUT for `FILEBOX_AGENT_TERMINAL_IDLE_TIMEOUT_SECS`
-  (default 1800s, `0` = disables). Reaped sessions get `TerminalClosed
+  (default 1800s, `0` = disables). 5 minutes before the reap the session's
+  browser output gets a one-shot warning (re-armed by any keystroke); the
+  notice goes to the output channel, NOT the PTY — writing there would
+  inject keystrokes into the shell. Reaped sessions get `TerminalClosed
   { reason: "idle timeout" }`; the reaper never blocks on a wedged
   channel (`try_send`) and runs once for the life of the process.
 - **Threat model honesty**: hub-side 2FA protects the browser leg only;

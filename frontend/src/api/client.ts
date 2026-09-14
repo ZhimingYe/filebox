@@ -1039,19 +1039,27 @@ export async function killTerminalSession(agentId: string, reqId: string) {
   );
 }
 
-/** ws(s) URL for the terminal channel; `ticket` is the bearer. `agentCode`
-    is the agent's own TOTP (only for `terminal_agent_2fa` agents). */
+/** ws(s) URL for the terminal channel. `agentCode` is the agent's own TOTP
+    (only for `terminal_agent_2fa` agents). The ticket bearer is NOT in the
+    URL — access logs and browser history would record it — it rides the
+    WebSocket subprotocol header instead (see `terminalWsProtocols`). */
 export function terminalWsUrl(
   agentId: string,
-  ticket: string,
   cols?: number,
   rows?: number,
   agentCode?: string,
 ) {
   const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const params = new URLSearchParams({ ticket });
+  const params = new URLSearchParams();
   if (cols != null) params.set('cols', String(cols));
   if (rows != null) params.set('rows', String(rows));
   if (agentCode) params.set('agent_code', agentCode);
-  return `${scheme}//${window.location.host}/api/agents/${encodeURIComponent(agentId)}/terminal/ws?${params}`;
+  const query = params.toString();
+  return `${scheme}//${window.location.host}/api/agents/${encodeURIComponent(agentId)}/terminal/ws${query ? `?${query}` : ''}`;
+}
+
+/** The ticket is offered as the (only) WS subprotocol; the hub validates it
+    from the handshake header and echoes it back. */
+export function terminalWsProtocols(ticket: string): string[] {
+  return [ticket];
 }

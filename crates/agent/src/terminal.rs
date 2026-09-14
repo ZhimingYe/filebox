@@ -67,6 +67,12 @@ mod unix_impl {
     const MIN_TERM_DIM: u16 = 1;
     const MAX_TERM_DIM: u16 = 500;
 
+    /// The idle reaper writes this warning into the session's browser output
+    /// (NOT the PTY — writing there would inject keystrokes into the shell)
+    /// this many seconds before it reaps, once per idle stretch.
+    const IDLE_WARN_BEFORE_SECS: u64 = 300;
+    const IDLE_WARN_OUTPUT: &[u8] = b"\r\n\x1b[1;33m[filebox] session idle - reaping in ~5 minutes, press any key to keep it\x1b[0m\r\n";
+
     /// Releases one admission slot exactly once when the owning session is
     /// dropped.
     struct SlotGuard(Arc<AtomicUsize>);
@@ -94,6 +100,9 @@ mod unix_impl {
         /// UNIX millis of the last INPUT (a fresh open counts as activity);
         /// the idle reaper keys on it.
         last_activity: Arc<AtomicU64>,
+        /// Set once the reaper has warned about an impending reap; cleared
+        /// by the next input so a re-idled session gets warned again.
+        idle_warned: Arc<AtomicBool>,
         cols: AtomicU16,
         rows: AtomicU16,
         _slot: SlotGuard,
@@ -111,6 +120,9 @@ mod unix_impl {
         /// Sessions idle longer than this are reaped; 0 disables the
         /// reaper. Read from env in connection.rs and passed in here.
         idle_timeout_secs: u64,
+        /// How long before the reap the warning fires. Atomic only so tests
+        /// can shrink it without sleeping; production never mutates it.
+        idle_warn_before_secs: AtomicU64,
     }
 
     impl TerminalManager {
@@ -121,6 +133,7 @@ mod unix_impl {
                 totp_secret,
                 last_accepted_counter: Mutex::new(None),
                 idle_timeout_secs,
+                idle_warn_before_secs: AtomicU64::new(IDLE_WARN_BEFORE_SECS),
             }
         }
 
@@ -267,6 +280,7 @@ mod unix_impl {
                 created_at: Instant::now(),
                 // A fresh open counts as activity.
                 last_activity: Arc::new(AtomicU64::new(unix_millis())),
+                idle_warned: Arc::new(AtomicBool::new(false)),
                 cols: AtomicU16::new(cols),
                 rows: AtomicU16::new(rows),
                 _slot: slot,
@@ -344,17 +358,24 @@ mod unix_impl {
 
         pub fn input(&self, req_id: &str, data: &[u8]) {
             let refs = match self.sessions.lock() {
-                Ok(map) => map
-                    .get(req_id)
-                    .map(|s| (Arc::clone(&s.writer), Arc::clone(&s.last_activity))),
+                Ok(map) => map.get(req_id).map(|s| {
+                    (
+                        Arc::clone(&s.writer),
+                        Arc::clone(&s.last_activity),
+                        Arc::clone(&s.idle_warned),
+                    )
+                }),
                 Err(_) => None,
             };
-            let Some((writer, last_activity)) = refs else {
+            let Some((writer, last_activity, idle_warned)) = refs else {
                 tracing::debug!("Terminal input for unknown session {}", req_id);
                 return;
             };
             // Keyboard input is the liveness signal the idle reaper keys on.
             last_activity.store(unix_millis(), Ordering::Release);
+            // Any keystroke answers the reap warning; a later idle stretch
+            // gets warned again.
+            idle_warned.store(false, Ordering::Release);
             if let Ok(mut writer) = writer.lock() {
                 let result = writer.write_all(data).and_then(|_| writer.flush());
                 if let Err(e) = result {
@@ -409,25 +430,47 @@ mod unix_impl {
         }
 
         /// Close every session idle past the configured timeout; returns how
-        /// many were reaped. The tokio reaper loop in connection.rs calls
-        /// this periodically; tests call it directly after faking
-        /// last_activity into the past (no wall-clock sleeps).
+        /// many were reaped. Sessions within `idle_warn_before_secs` of the
+        /// timeout first get a one-shot warning written to their browser
+        /// output (re-armed by the next keystroke). The tokio reaper loop in
+        /// connection.rs calls this periodically; tests call it directly
+        /// after faking last_activity into the past (no wall-clock sleeps).
         pub fn reap_idle(&self, now_millis: u64) -> usize {
             if self.idle_timeout_secs == 0 {
                 return 0;
             }
             let timeout_millis = self.idle_timeout_secs.saturating_mul(1000);
-            let stale: Vec<String> = match self.sessions.lock() {
-                Ok(map) => map
-                    .iter()
-                    .filter(|(_, s)| {
-                        now_millis.saturating_sub(s.last_activity.load(Ordering::Acquire))
-                            > timeout_millis
-                    })
-                    .map(|(id, _)| id.clone())
-                    .collect(),
-                Err(_) => Vec::new(),
-            };
+            let warn_after_millis = timeout_millis.saturating_sub(
+                self.idle_warn_before_secs
+                    .load(Ordering::Acquire)
+                    .saturating_mul(1000),
+            );
+            let mut stale: Vec<String> = Vec::new();
+            let mut warn: Vec<(String, mpsc::Sender<AgentMessage>)> = Vec::new();
+            if let Ok(map) = self.sessions.lock() {
+                for (id, s) in map.iter() {
+                    let idle =
+                        now_millis.saturating_sub(s.last_activity.load(Ordering::Acquire));
+                    if idle > timeout_millis {
+                        stale.push(id.clone());
+                    } else if warn_after_millis > 0
+                        && idle > warn_after_millis
+                        // swap claims the warning under the map lock, so it
+                        // fires exactly once per idle stretch.
+                        && !s.idle_warned.swap(true, Ordering::AcqRel)
+                    {
+                        warn.push((id.clone(), s.tx.clone()));
+                    }
+                }
+            }
+            for (id, tx) in warn {
+                // try_send: the reaper must never block on a wedged channel;
+                // a full queue just skips the courtesy notice.
+                let _ = tx.try_send(AgentMessage::TerminalOutput {
+                    req_id: id,
+                    data: IDLE_WARN_OUTPUT.to_vec(),
+                });
+            }
             let reaped = stale.len();
             for id in stale {
                 // close_inner notifies via try_send on the session's stored
@@ -439,6 +482,13 @@ mod unix_impl {
 
         pub fn close(&self, req_id: &str) {
             self.close_inner(req_id, None);
+        }
+
+        /// Tests shrink the warn window so the warning path can run without
+        /// wall-clock sleeps.
+        #[cfg(test)]
+        pub fn set_idle_warn_before_secs(&self, secs: u64) {
+            self.idle_warn_before_secs.store(secs, Ordering::Release);
         }
 
         /// Shared close path: removes the session, claims the closed flag,
@@ -877,6 +927,65 @@ mod unix_impl {
                 assert!(Instant::now() < deadline, "slot not released after reap");
                 std::thread::sleep(Duration::from_millis(20));
             }
+        }
+
+        #[test]
+        fn idle_reaper_warns_once_then_re_arms_on_input() {
+            // 10s timeout with a 5s warn window; activity is faked into the
+            // past instead of sleeping.
+            let manager = Arc::new(TerminalManager::new(None, 10));
+            manager.set_idle_warn_before_secs(5);
+            let (tx, rx) = mpsc::channel(64);
+            let rx = collector(rx);
+            let deadline = Instant::now() + TEST_TIMEOUT;
+
+            manager.open("warn1".to_string(), 80, 24, None, tx.clone());
+            recv_until(&rx, deadline, |m| {
+                matches!(m, AgentMessage::TerminalOpened { req_id, error: None } if req_id == "warn1")
+            });
+
+            let fake_idle = |millis_ago: u64| {
+                let map = manager.sessions.lock().unwrap();
+                map.get("warn1")
+                    .unwrap()
+                    .last_activity
+                    .store(unix_millis().saturating_sub(millis_ago), Ordering::Release);
+            };
+            let warned = |m: &AgentMessage| {
+                matches!(m, AgentMessage::TerminalOutput { req_id, data }
+                    if req_id == "warn1" && data.windows(12).any(|w| w == b"reaping in ~"))
+            };
+
+            // Inside the warn window (6s idle > 5s threshold, < 10s timeout):
+            // warned, not reaped.
+            fake_idle(6_000);
+            assert_eq!(manager.reap_idle(unix_millis()), 0);
+            recv_until(&rx, deadline, warned);
+
+            // The warning fires exactly once per idle stretch.
+            assert_eq!(manager.reap_idle(unix_millis()), 0);
+            let deadline2 = Instant::now() + Duration::from_millis(300);
+            let mut extra_warning = false;
+            while let Ok(m) = rx.recv_timeout(Duration::from_millis(50)) {
+                extra_warning |= warned(&m);
+                if Instant::now() > deadline2 {
+                    break;
+                }
+            }
+            assert!(!extra_warning, "warning must not repeat within one idle stretch");
+
+            // A keystroke re-arms the warning…
+            manager.input("warn1", b"");
+            fake_idle(6_000);
+            assert_eq!(manager.reap_idle(unix_millis()), 0);
+            recv_until(&rx, deadline, warned);
+
+            // …and past the timeout the session is still reaped.
+            fake_idle(20_000);
+            assert_eq!(manager.reap_idle(unix_millis()), 1);
+            recv_until(&rx, deadline, |m| {
+                matches!(m, AgentMessage::TerminalClosed { req_id, .. } if req_id == "warn1")
+            });
         }
     }
 }

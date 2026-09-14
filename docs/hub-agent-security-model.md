@@ -166,10 +166,11 @@ Agent                                    Hub
   + CSRF 已是边界）；前端只把 ticket 放组件 state（不写 localStorage），
   浏览器刷新即失效 → 每次刷新都要重新输码。verify 有独立 per-IP 限流
   （5/30s，仅失败计数）。
-- 终端 WS 端点 `/api/agents/{id}/terminal/ws?ticket=…` 在 session 中间件
+- 终端 WS 端点 `/api/agents/{id}/terminal/ws` 在 session 中间件
   之外（同 preview 资源的理由：WS 握手无法带 CSRF header），handler 同时
   校验 session cookie 与 ticket 且 principal 必须一致，ticket 兼作 CSRF
-  证明。
+  证明。ticket 走 `Sec-WebSocket-Protocol` 握手头（hub 升级时回显），
+  不放 URL——避免落进 access log / 浏览器历史 / 代理日志。
 - **Agent 侧二次校验（可选，按 agent 开启）**：在 agent.toml 配置
   `terminal_totp_secret`（base32，或 env
   `FILEBOX_AGENT_TERMINAL_TOTP_SECRET`）后，agent 上报

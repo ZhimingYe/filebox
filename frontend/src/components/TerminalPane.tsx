@@ -111,6 +111,20 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
       cursorBlink: true,
       fontFamily: font.mono,
       fontSize: isMobile ? 12 : 13,
+      // A remote shell must not drive browser-side window/reporting
+      // features: no remote resize (DECSLPP/DECCOLM), no size/title reports
+      // back to the shell, no title stack.
+      windowOptions: {
+        getCellSizePixels: false,
+        getIconTitle: false,
+        getScreenSizeChars: false,
+        getScreenSizePixels: false,
+        getWinSizeChars: false,
+        getWinTitle: false,
+        popTitle: false,
+        pushTitle: false,
+        setWinLines: false,
+      },
       theme: {
         // Dark slate surface (c.text) keeps the terminal dark on the light
         // app; ANSI palette stays at xterm defaults.
@@ -123,6 +137,10 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // Swallow OSC 52 (clipboard write): xterm.js 6.0 has no default handler
+    // for it; register a sink anyway so no addon/future default ever lets a
+    // remote shell push text onto the user's clipboard.
+    term.parser.registerOscHandler(52, () => true);
     term.open(el);
     termRef.current = term;
     fitRef.current = fit;
@@ -176,7 +194,10 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
     if (!term) return;
     setStatus('connecting');
     setNotice(null);
-    const ws = new WebSocket(api.terminalWsUrl(agent.id, ticket, term.cols, term.rows, agentCode));
+    const ws = new WebSocket(
+      api.terminalWsUrl(agent.id, term.cols, term.rows, agentCode),
+      api.terminalWsProtocols(ticket),
+    );
     wsRef.current = ws;
 
     ws.onopen = () => {
