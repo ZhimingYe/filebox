@@ -15,6 +15,15 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **Monaco code preview** — read-only Monaco Editor replaces Prism / `react-syntax-highlighter` for code files (Find, wrap, syntax highlight). Lazy-loaded; not placed in Vite `manualChunks` so the ~4MB editor is not preloaded on every page.
 
 ### Changed
+- **Agent stays alive under extreme node load** — the agent now takes the
+  best scheduling and I/O priority the current credentials allow (nice
+  probed from -20, Linux ionice realtime-then-best-effort 0, autogroup,
+  1ns timer slack; never `SCHED_FIFO`), runs a compact Tokio runtime
+  instead of one worker per CPU, and gives heartbeats/pongs their own
+  WebSocket writer so a 512 KiB JSON FileChunk cannot stall liveness on a
+  saturated compute node. LibreOffice children drop the inherited boost
+  so conversion cannot outrank preview I/O. `FILEBOX_AGENT_KEEP_SCHEDULER=1`
+  leaves CPU/I/O policy to the wrapper (including LibreOffice children).
 - **Preview loading is cached end-to-end** — file previews no longer re-read
   storage and re-transfer bytes on every open. The agent now whole-reads and
   caches small files (≤64 MiB by default,

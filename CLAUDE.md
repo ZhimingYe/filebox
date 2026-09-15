@@ -104,6 +104,7 @@ safety + denylist), `search.rs` (in-process fd/rg-like workspace search),
 `dir_cache.rs` (mtime-keyed directory listing cache, cleared on root
 apply, capped), `sysinfo.rs` (TTL-cached stats — see below),
 `temp_store.rs` (the ONLY write path: dedicated temp-upload folder),
+`priority.rs` (rootless nice/ionice boost at startup; see Reconnect),
 `config_store.rs` (persists `agent_id`, roots, pins, collections,
 revisions under `data_dir` in `agent_state.json`).
 
@@ -129,18 +130,38 @@ agent_registry.rs}` before touching this path.
 
 **Agent:**
 
+- Compact Tokio runtime (default 4 workers, 64 blocking threads, capped
+  well below `available_parallelism`) so a 64–128 core HPC node does not
+  spawn one idle runtime thread per CPU to fight the job for CFS slices.
+  `FILEBOX_AGENT_WORKER_THREADS` / `FILEBOX_AGENT_MAX_BLOCKING_THREADS`
+  override; runtime threads re-apply the boost only after
+  `apply_at_startup` (`--update` uses a non-boosted runtime).
+- Rootless scheduler boost at startup (`crates/agent/src/priority.rs`):
+  probe `nice` from -20 upward, Linux `ioprio` RT then best-effort 0,
+  autogroup nice, `PR_SET_TIMERSLACK=1`. Never `SCHED_FIFO` (can starve a
+  shared node). `FILEBOX_AGENT_KEEP_SCHEDULER=1` skips boosting and the
+  LibreOffice child reset. Otherwise children reset to nice 0 in
+  `pre_exec` so conversion cannot outrank the WS loop.
+- Dedicated WS writer: heartbeats and control frames preempt FileChunks
+  (`biased` select). Chunk JSON is encoded on the blocking pool, not the
+  read loop. Data writes use a 20s timeout (control stays 10s) so a slow
+  preview chunk on a saturated CPU does not trip the half-open-TCP
+  detector, while still fitting under the hub's 45s Slow window.
 - `CONNECT_TIMEOUT = 10s` — give up on handshake, retry.
 - `NO_MESSAGE_TIMEOUT = 45s` — proactively reconnect if nothing (data or
   Ping) for 45s. Catches half-open connections the kernel hasn't noticed.
-- `WS_WRITE_TIMEOUT = 10s` — writes blocking longer than 10s abort the
-  connection. Prevents stuck TCP send buffer from freezing the agent.
+- `WS_WRITE_TIMEOUT = 10s` — control-frame writes blocking longer than 10s
+  abort the connection. Prevents stuck TCP send buffer from freezing the
+  agent.
 - `STABLE_CONNECTION_THRESHOLD = 30s` — a connection that lasted ≥30s is
   "stable"; its next disconnect resets backoff to 1s. A flapping
   connection keeps growing backoff.
 - Backoff: 1s base, doubles per consecutive flap, capped at 300s, with
   up-to-half-of-base jitter (so a cohort of agents reconnecting after a
   hub restart doesn't synchronize).
-- Always sends a clean `Close` frame before reconnecting when possible.
+- Always sends a clean `Close` frame before reconnecting when possible
+  (read-loop teardown drops the writer queues first; abort is only if a
+  send is still stuck).
 - URL scheme: `http(s)://` hub URL → `ws(s)://`. TLS via rustls
   webpki-roots (no OS cert store dependency).
 
