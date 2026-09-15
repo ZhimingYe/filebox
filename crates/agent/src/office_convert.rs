@@ -327,13 +327,9 @@ fn probe_soffice_version(soffice: &Path) -> Result<String, String> {
     #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
-        let skip_child_reset = crate::priority::keep_scheduler();
-        command.pre_exec(move || {
+        command.pre_exec(|| {
             if libc::setsid() == -1 {
                 return Err(std::io::Error::last_os_error());
-            }
-            if !skip_child_reset {
-                crate::priority::reset_child_priority();
             }
             Ok(())
         });
@@ -1606,14 +1602,10 @@ fn run_soffice(
         use std::os::unix::process::CommandExt;
         let max_file = cfg.max_pdf_bytes.max(1024 * 1024);
         let cpu_secs = timeout.as_secs().saturating_add(10).max(1);
-        let skip_child_reset = crate::priority::keep_scheduler();
         cmd.pre_exec(move || {
             // New session ⇒ process group id == pid; kill(-pid) reaps children.
             if libc::setsid() == -1 {
                 return Err(std::io::Error::last_os_error());
-            }
-            if !skip_child_reset {
-                crate::priority::reset_child_priority();
             }
             set_process_limit!(libc::RLIMIT_FSIZE, max_file)?;
             set_process_limit!(libc::RLIMIT_NOFILE, OFFICE_NOFILE_LIMIT)?;
