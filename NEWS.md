@@ -4,6 +4,8 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+## v1.8.5 — 2026-09-15
+
 ### Added
 - **Temp upload folder** — the agent now maintains a dedicated write-scoped scratch folder (`<data_dir>/temp/agent-temp-copied-file` by default; `FILEBOX_AGENT_TEMP_DIR` / `FILEBOX_AGENT_TEMP_UPLOAD_NAME` or agent.toml `temp_dir` / `temp_upload_name` to customize). Drag small files anywhere onto the hub (or use the Transfer view) and the agent writes them ONLY inside that folder — single-component name validation, 0700 staging, atomic no-clobber publish with collision suffixes, canonical-path re-verification, per-file (default 20 MiB) and total-folder (default 1 GiB) quotas, symlink-safe one-click cleanup, Cancel/disconnect abort, and startup reaping. Uploads live in a dedicated sidebar **Transfer** view (gated by `capabilities.temp_upload`); Files stays read-only. Other tabs refresh via SSE `temp_updated`.
 - **Login audit** — the hub now records every sign-in (success, failed, and rate-limited) and sign-out with username, client IP, user agent, and timestamp. Records persist in a bounded JSONL sidecar next to the hub config (`audit-log.jsonl`, mode 0600, ~2000 entries, auto-compacted) and survive restarts. A new sidebar **Audit** view (available even without a selected agent) lists the trail newest-first with "Load older" paging, backed by the session-protected `GET /api/audit/logins` endpoint. Write failures never block or reject login — the trail degrades to in-memory-only with a warning.
