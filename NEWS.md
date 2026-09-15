@@ -4,6 +4,13 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+## v1.9.0 — 2026-09-15
+
+### Changed
+- **Identical to v1.8.0.** Withdraws the 1.8.5–1.8.9 agent experiments
+  (scheduler boost, compact runtime, dedicated WS writer, write-timeout
+  reconnects, 64 KiB FileChunk caps).
+
 ## v1.8.9 — 2026-09-15
 
 ### Changed

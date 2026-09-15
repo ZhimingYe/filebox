@@ -104,7 +104,6 @@ safety + denylist), `search.rs` (in-process fd/rg-like workspace search),
 `dir_cache.rs` (mtime-keyed directory listing cache, cleared on root
 apply, capped), `sysinfo.rs` (TTL-cached stats — see below),
 `temp_store.rs` (the ONLY write path: dedicated temp-upload folder),
-`priority.rs` (rootless nice/ionice boost at startup; see Reconnect),
 `config_store.rs` (persists `agent_id`, roots, pins, collections,
 revisions under `data_dir` in `agent_state.json`).
 
@@ -130,15 +129,6 @@ agent_registry.rs}` before touching this path.
 
 **Agent:**
 
-- Rootless scheduler boost at startup (`crates/agent/src/priority.rs`):
-  probe `nice` from -20 upward, Linux `ioprio` RT then best-effort 0,
-  autogroup nice, `PR_SET_TIMERSLACK=1`. Never `SCHED_FIFO` (can starve a
-  shared node). Tokio uses the default multi-thread runtime (one worker
-  per CPU) — do not cap workers to "make room" for other jobs; those jobs
-  already own the load. `FILEBOX_AGENT_KEEP_SCHEDULER=1` skips boosting
-  and the LibreOffice child reset. Otherwise children reset to nice 0 in
-  `pre_exec` so conversion cannot outrank the WS loop. `--update` uses a
-  non-boosted runtime.
 - `CONNECT_TIMEOUT = 10s` — give up on handshake, retry.
 - `NO_MESSAGE_TIMEOUT = 45s` — proactively reconnect if nothing (data or
   Ping) for 45s. Catches half-open connections the kernel hasn't noticed.
