@@ -1,27 +1,10 @@
-//! Best-effort scheduler / I/O boosting for a rootless agent.
-//!
-//! File preview is a latency-sensitive WebSocket relay living on the same
-//! box as CPU-bound jobs. Without this, CFS treats the agent like any other
-//! nice-0 task, heartbeats stall, and the hub marks the agent Slow/Offline
-//! while a local shell still feels fine.
-//!
-//! What an unprivileged process can actually do:
-//! - `setpriority` from -20 upward until the kernel accepts it. Negative
-//!   nice needs `CAP_SYS_NICE` or a raised `RLIMIT_NICE`; otherwise we land
-//!   at 0, which is still the rootless ceiling (we never nice *down*).
-//! - Linux `ioprio_set`: try realtime class, then best-effort class 0
-//!   (highest BE). RT usually needs privilege; BE 0 does not.
-//! - Linux `/proc/self/autogroup` nice, same -20..0 probe.
-//! - Linux `PR_SET_TIMERSLACK=1` so the 15s heartbeat is not deferred by
-//!   the default 50µs slack, which balloons under load.
-//!
-//! We never switch to `SCHED_FIFO` / `SCHED_RR`. Realtime policy on a
-//! shared HPC node can starve the machine even when it is allowed.
+//! Best-effort scheduler / I/O boosting so this process can still run
+//! when other jobs own the CPUs. Rootless cannot take SCHED_FIFO; we
+//! probe `nice` from -20 and Linux ionice RT then best-effort 0.
 //!
 //! `FILEBOX_AGENT_KEEP_SCHEDULER=1` skips boosting and the LibreOffice
-//! child reset (debug / wrapper already applied a policy). Without that
-//! flag, children must call [`reset_child_priority`] from `pre_exec` so
-//! they do not inherit a boosted niceness and then outrank the WS loop.
+//! child reset. Children must call [`reset_child_priority`] from `pre_exec`
+//! so conversion does not inherit the boost and then outrank the WS loop.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -40,52 +23,41 @@ const IOPRIO_CLASS_SHIFT: i32 = 13;
 #[cfg(target_os = "linux")]
 const TIMER_SLACK_NS: libc::c_ulong = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AppliedPriority {
-    nice: Option<i32>,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    ionice: Option<(i32, i32)>,
-    timerslack: bool,
-}
-
 /// Process-wide boost. Call once on the main thread before the Tokio
 /// runtime starts so the first worker/blocking threads inherit it.
 pub fn apply_at_startup() {
     if keep_scheduler() {
-        tracing::info!(
-            "Scheduler boosting skipped ({KEEP_SCHEDULER_ENV} is set)"
-        );
+        tracing::info!("Scheduler boosting skipped ({KEEP_SCHEDULER_ENV} is set)");
         return;
     }
-    let applied = apply_current_thread_inner();
-    let autogroup_nice = apply_autogroup();
+    let nice = apply_best_nice();
+    let ionice = apply_best_ionice();
+    let autogroup = apply_autogroup();
+    let timerslack = apply_timerslack();
     APPLIED.store(true, Ordering::Release);
     tracing::info!(
-        nice = applied.nice.map(|n| n.to_string()).unwrap_or_else(|| "unchanged".into()),
-        ionice = display_ionice(applied.ionice),
-        autogroup = autogroup_nice
+        nice = nice.map(|n| n.to_string()).unwrap_or_else(|| "unchanged".into()),
+        ionice = display_ionice(ionice),
+        autogroup = autogroup
             .map(|n| n.to_string())
             .unwrap_or_else(|| "unchanged".into()),
-        timerslack = applied.timerslack,
-        "Applied rootless-best scheduler boost (nice -20 and ionice RT are used when the kernel allows them)"
+        timerslack,
+        "Applied rootless-best scheduler boost"
     );
 }
 
-/// Per-thread boost for Tokio worker and blocking threads.
-///
-/// Linux niceness and ionice are per-thread; a cloned thread copies the
-/// creator's values, but we re-apply so a pool thread never silently
-/// drops back to default. No-op until [`apply_at_startup`] has opted in
-/// (`--update` and `KEEP_SCHEDULER` never set the flag).
+/// Per-thread boost for Tokio worker and blocking threads. No-op until
+/// [`apply_at_startup`] has opted in (`--update` never sets the flag).
 pub fn apply_current_thread() {
     if !APPLIED.load(Ordering::Acquire) {
         return;
     }
-    let _ = apply_current_thread_inner();
+    let _ = apply_best_nice();
+    let _ = apply_best_ionice();
+    let _ = apply_timerslack();
 }
 
-/// Async-signal-safe reset for `CommandExt::pre_exec`. Drops inherited
-/// boosts so LibreOffice cannot outrank the agent's heartbeat/IO loop.
+/// Async-signal-safe reset for `CommandExt::pre_exec`.
 pub fn reset_child_priority() {
     #[cfg(unix)]
     unsafe {
@@ -103,9 +75,7 @@ pub fn reset_child_priority() {
     }
 }
 
-/// True when a wrapper already owns CPU/I/O policy. Captured in the
-/// parent before `fork`; do not call from `pre_exec` (getenv is not
-/// async-signal-safe).
+/// Captured in the parent before `fork`; do not call from `pre_exec`.
 pub fn keep_scheduler() -> bool {
     std::env::var(KEEP_SCHEDULER_ENV)
         .map(|value| env_flag_is_on(&value))
@@ -117,17 +87,6 @@ fn env_flag_is_on(value: &str) -> bool {
     value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
 }
 
-fn apply_current_thread_inner() -> AppliedPriority {
-    AppliedPriority {
-        nice: apply_best_nice(),
-        ionice: apply_best_ionice(),
-        timerslack: apply_timerslack(),
-    }
-}
-
-/// Probe from -20 (highest CFS weight) toward 19. The first value the
-/// kernel accepts is the best we are allowed; we never continue to a
-/// worse niceness after a success.
 fn apply_best_nice() -> Option<i32> {
     #[cfg(unix)]
     {
@@ -236,6 +195,9 @@ mod tests {
     }
 
     #[cfg(unix)]
+    static NICE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(unix)]
     #[test]
     fn boosting_never_worsens_nice() {
         let _lock = NICE_TEST_LOCK.lock().unwrap();
@@ -245,7 +207,7 @@ mod tests {
         restore_nice(before);
         assert!(
             after <= before,
-            "nice went from {before} to {after} (applied={applied:?}); boosting must not lower CFS weight"
+            "nice went from {before} to {after} (applied={applied:?})"
         );
         if let Some(applied) = applied {
             assert_eq!(applied, after);
@@ -259,15 +221,9 @@ mod tests {
         let before = current_nice();
         let applied = apply_best_nice();
         restore_nice(before);
-        // Unprivileged setpriority cannot improve past the current nice, so
-        // a process already at +5 stays at +5. Only assert the rootless
-        // ceiling when we started at or above it.
         if before <= 0 {
             if let Some(nice) = applied {
-                assert!(
-                    nice <= 0,
-                    "rootless ceiling is nice 0 unless RLIMIT_NICE/CAP_SYS_NICE allows less; got {nice}"
-                );
+                assert!(nice <= 0, "rootless ceiling is nice 0; got {nice}");
             }
         }
     }
@@ -278,11 +234,7 @@ mod tests {
         let _lock = NICE_TEST_LOCK.lock().unwrap();
         let before = current_nice();
         apply_current_thread();
-        assert_eq!(
-            current_nice(),
-            before,
-            "on_thread_start must not boost before apply_at_startup (covers agent --update)"
-        );
+        assert_eq!(current_nice(), before);
     }
 
     #[cfg(target_os = "linux")]
@@ -290,7 +242,10 @@ mod tests {
     fn ioprio_value_packs_class_in_high_bits() {
         assert_eq!(ioprio_value(IOPRIO_CLASS_RT, 0), IOPRIO_CLASS_RT << IOPRIO_CLASS_SHIFT);
         assert_eq!(ioprio_value(IOPRIO_CLASS_BE, 0), IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT);
-        assert_eq!(ioprio_value(IOPRIO_CLASS_BE, 7), (IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 7);
+        assert_eq!(
+            ioprio_value(IOPRIO_CLASS_BE, 7),
+            (IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 7
+        );
     }
 
     #[test]
@@ -311,12 +266,6 @@ mod tests {
         reset_child_priority();
         let nice = current_nice();
         restore_nice(before);
-        assert!(
-            nice >= 0,
-            "child reset must drop a negative inherited nice; got {nice}"
-        );
+        assert!(nice >= 0, "child reset must drop a negative inherited nice; got {nice}");
     }
-
-    #[cfg(unix)]
-    static NICE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }

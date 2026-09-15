@@ -4,6 +4,19 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+## v1.8.9 — 2026-09-15
+
+### Changed
+- **Agent I/O is 1.8.0 again** — 1.8.5/1.8.6 compact Tokio runtime,
+  dedicated WS writer, 20s/90s write timeouts, and 64 KiB FileChunk caps
+  are reverted. Those cancelled in-flight sends on a loaded compute node
+  and flapped the hub connection. Tokio is one worker per CPU; FileChunks
+  stay 512 KiB; connect/write timeouts are the 1.8.0 10s values.
+- **Scheduler grab only** — the agent takes the best rootless nice / Linux
+  ionice / autogroup the kernel allows so it can still run when *other*
+  jobs own the CPUs. LibreOffice children drop the inherited boost.
+  `FILEBOX_AGENT_KEEP_SCHEDULER=1` leaves policy to the wrapper.
+
 ## v1.8.6 — 2026-09-15
 
 ### Fixed

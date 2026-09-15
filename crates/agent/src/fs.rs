@@ -11,21 +11,6 @@ use filebox_protocol::resources::{FileStat, FsEntry, FsEntryType, RootConfig};
 
 use crate::content_cache::{ContentCache, FillWait};
 
-/// Bytes of file payload per WS FileChunk. 512 KiB JSON+base64 on a
-/// CPU-saturated node exceeded the write timeout and tore the connection
-/// down. Hub still asks for `FILE_CHUNK_MAX_BYTES`; returning less is
-/// valid. Override: `FILEBOX_AGENT_FILE_CHUNK_BYTES`.
-const DEFAULT_WIRE_CHUNK_BYTES: u64 = 64 * 1024;
-const MIN_WIRE_CHUNK_BYTES: u64 = 16 * 1024;
-
-pub(crate) fn wire_chunk_bytes() -> u64 {
-    std::env::var("FILEBOX_AGENT_FILE_CHUNK_BYTES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_WIRE_CHUNK_BYTES)
-        .clamp(MIN_WIRE_CHUNK_BYTES, FILE_CHUNK_MAX_BYTES)
-}
-
 /// Resolve a root name + relative path to an absolute, canonical path.
 ///
 /// Returns `(canonical_target, canonical_root)` on success. The canonical_root
@@ -577,7 +562,7 @@ fn serve_from_cache(
         mtime,
         offset,
         length,
-        wire_chunk_bytes() as usize,
+        FILE_CHUNK_MAX_BYTES as usize,
         cancelled,
     ) {
         FillWait::Cancelled => Err("request_cancelled".to_string()),
@@ -616,7 +601,7 @@ fn slice_cached(
     let to_read = length
         .unwrap_or(remaining)
         .min(remaining)
-        .min(wire_chunk_bytes()) as usize;
+        .min(FILE_CHUNK_MAX_BYTES) as usize;
     let start = offset as usize;
     let end = start + to_read;
     let done = offset + to_read as u64 >= file_len;
@@ -746,8 +731,8 @@ fn direct_range_read(
 
     let remaining = file_len - offset;
     let to_read = length.unwrap_or(remaining).min(remaining);
-    // Cap per WS FileChunk so a single JSON frame cannot stall the writer.
-    let to_read = to_read.min(wire_chunk_bytes());
+    // Cap per WS FileChunk so slow/jittery links don't stall a single write.
+    let to_read = to_read.min(FILE_CHUNK_MAX_BYTES);
 
     let mut buf = vec![0u8; to_read as usize];
     let bytes_read = read_at_least(file, &mut buf)
@@ -1018,24 +1003,16 @@ mod tests {
     }
 
     #[test]
-    fn read_file_range_caps_at_wire_chunk_per_chunk() {
+    fn read_file_range_caps_at_file_chunk_max_per_chunk() {
         let sb = Sandbox::new();
-        let cap = super::wire_chunk_bytes() as usize;
         // Create a file larger than one chunk so the cap is observable.
-        let big = vec![0xAAu8; cap + 1024];
+        let big = vec![0xAAu8; (FILE_CHUNK_MAX_BYTES as usize) + 1024];
         sb.write_file("big.bin", &big);
         let roots = vec![sb.root()];
 
         let (data, done) = read_file_range(&roots, "test", "big.bin", 0, None).unwrap();
-        assert_eq!(data.len(), cap);
+        assert_eq!(data.len(), FILE_CHUNK_MAX_BYTES as usize);
         assert!(!done, "done must be false when capped mid-file");
-    }
-
-    #[test]
-    fn wire_chunk_bytes_stays_within_protocol_bounds() {
-        let n = super::wire_chunk_bytes();
-        assert!(n >= super::MIN_WIRE_CHUNK_BYTES);
-        assert!(n <= FILE_CHUNK_MAX_BYTES);
     }
 
     #[test]

@@ -86,14 +86,11 @@ type FsCancellationMap = Arc<Mutex<HashMap<String, Arc<FsCancellation>>>>;
 // reconnect without manual intervention.
 
 /// Hard cap on TCP connect + TLS handshake + WS upgrade. Without this, a
-/// black-holed route can hang `connect_async` indefinitely. 10s was too
-/// tight on a CPU-saturated HPC node (handshakes commonly took 7–11s and
-/// the agent flapped). Override: `FILEBOX_AGENT_CONNECT_TIMEOUT_SECS`.
-const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 30;
+/// black-holed route can hang `connect_async` indefinitely.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long to wait for the hub's AuthResult before giving up.
-/// Override: `FILEBOX_AGENT_AUTH_TIMEOUT_SECS`.
-const DEFAULT_AUTH_TIMEOUT_SECS: u64 = 20;
+const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// If the hub sends nothing (no Ping, no Heartbeat, no message) for this
 /// window, consider the connection dead and reconnect. Hub normally pings
@@ -103,23 +100,10 @@ const DEFAULT_AUTH_TIMEOUT_SECS: u64 = 20;
 /// on `read.next()`.
 const NO_MESSAGE_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// Per-write timeout for heartbeats, pongs, and other control frames.
-/// A blocked write would otherwise stall the writer (and delay the next
-/// heartbeat), so every WS write is bounded.
-/// Override: `FILEBOX_AGENT_WS_WRITE_TIMEOUT_SECS`.
-const DEFAULT_WS_WRITE_TIMEOUT_SECS: u64 = 20;
-
-/// FileChunk / list / search payloads are JSON+base64. Cancelling a send
-/// mid-frame corrupts the socket, so a timeout *must* reconnect — which
-/// is why 20s on a 512 KiB frame produced a reconnect loop under load.
-/// Frames are now capped at 64 KiB; this bound is the dead-TCP detector,
-/// not a "slow HPC" cap. Override: `FILEBOX_AGENT_WS_DATA_WRITE_TIMEOUT_SECS`.
-const DEFAULT_DATA_WRITE_TIMEOUT_SECS: u64 = 90;
-
-/// How long the read loop will wait to enqueue a control frame. The writer
-/// prefers control over data, so this only blocks if the writer itself is
-/// stuck in a send or has died.
-const CTRL_ENQUEUE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Per-write timeout. A blocked write would otherwise stall the entire
+/// `tokio::select!` loop (including the read-side liveness check), so
+/// every WS write is bounded.
+const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Best-effort grace period for sending a Close frame before tearing down.
 /// Close lets the hub detect our disconnect immediately instead of waiting
@@ -152,179 +136,54 @@ fn build_ws_url(hub_url: &str) -> String {
 }
 
 fn stats_ttl() -> Duration {
-    env_duration_secs("FILEBOX_AGENT_STATS_TTL_SECS", 15, 1, 3600)
-}
-
-fn connect_timeout() -> Duration {
-    env_duration_secs("FILEBOX_AGENT_CONNECT_TIMEOUT_SECS", DEFAULT_CONNECT_TIMEOUT_SECS, 5, 120)
-}
-
-fn auth_timeout() -> Duration {
-    env_duration_secs("FILEBOX_AGENT_AUTH_TIMEOUT_SECS", DEFAULT_AUTH_TIMEOUT_SECS, 5, 120)
-}
-
-fn ws_write_timeout() -> Duration {
-    env_duration_secs(
-        "FILEBOX_AGENT_WS_WRITE_TIMEOUT_SECS",
-        DEFAULT_WS_WRITE_TIMEOUT_SECS,
-        5,
-        120,
-    )
-}
-
-fn data_write_timeout() -> Duration {
-    env_duration_secs(
-        "FILEBOX_AGENT_WS_DATA_WRITE_TIMEOUT_SECS",
-        DEFAULT_DATA_WRITE_TIMEOUT_SECS,
-        15,
-        300,
-    )
-}
-
-fn env_duration_secs(name: &str, default: u64, min: u64, max: u64) -> Duration {
-    Duration::from_secs(clamp_secs(
-        std::env::var(name).ok().and_then(|s| s.parse().ok()),
-        default,
-        min,
-        max,
-    ))
-}
-
-fn clamp_secs(parsed: Option<u64>, default: u64, min: u64, max: u64) -> u64 {
-    parsed.unwrap_or(default).clamp(min, max)
+    let secs = std::env::var("FILEBOX_AGENT_STATS_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(15);
+    Duration::from_secs(secs.max(1))
 }
 
 /// Send a WS message with a write timeout. Returns false on timeout or
 /// error — caller should treat the connection as dead and reconnect.
-async fn send_with_timeout<W>(write: &mut W, msg: Message, timeout: Duration) -> bool
+async fn send_with_timeout<W>(write: &mut W, msg: Message) -> bool
 where
     W: SinkExt<Message> + Unpin,
 {
-    let nbytes = match &msg {
-        Message::Text(text) => text.len(),
-        Message::Binary(data) => data.len(),
-        _ => 0,
-    };
-    match tokio::time::timeout(timeout, write.send(msg)).await {
+    match tokio::time::timeout(WS_WRITE_TIMEOUT, write.send(msg)).await {
         Ok(Ok(_)) => true,
         Ok(Err(_)) => {
-            tracing::warn!("WS write failed ({} bytes)", nbytes);
+            tracing::warn!("WS write failed");
             false
         }
         Err(_) => {
-            tracing::warn!(
-                "WS write timed out after {}s ({} bytes)",
-                timeout.as_secs(),
-                nbytes
-            );
+            tracing::warn!("WS write timed out after {}s", WS_WRITE_TIMEOUT.as_secs());
             false
         }
     }
 }
 
-fn encode_agent_message(msg: &AgentMessage) -> Option<Message> {
-    match serde_json::to_string(msg) {
-        Ok(text) => Some(Message::Text(text.into())),
-        Err(error) => {
-            tracing::error!("Failed to serialize agent message: {}", error);
-            None
-        }
-    }
-}
-
-fn try_send_encoded(tx: &mpsc::Sender<Message>, msg: &AgentMessage) {
-    if let Some(encoded) = encode_agent_message(msg) {
-        let _ = tx.try_send(encoded);
-    }
-}
-
-fn blocking_send_encoded(tx: &mpsc::Sender<Message>, msg: &AgentMessage) {
-    if let Some(encoded) = encode_agent_message(msg) {
-        let _ = tx.blocking_send(encoded);
-    }
-}
-
-async fn send_encoded(tx: &mpsc::Sender<Message>, msg: AgentMessage) {
-    if let Some(encoded) = encode_agent_message(&msg) {
-        let _ = tx.send(encoded).await;
-    }
-}
-
-/// Push a control frame (Pong, resource apply, overload errors) onto the
-/// writer's high-priority queue. File chunks never share this queue, so a
-/// preview storm cannot delay heartbeats or pongs.
-async fn enqueue_ctrl(tx: &mpsc::Sender<Message>, msg: &AgentMessage) -> bool {
-    let Some(encoded) = encode_agent_message(msg) else {
-        return false;
-    };
-    matches!(
-        tokio::time::timeout(CTRL_ENQUEUE_TIMEOUT, tx.send(encoded)).await,
-        Ok(Ok(()))
-    )
-}
-
-fn enqueue_ctrl_raw(tx: &mpsc::Sender<Message>, msg: Message) -> bool {
-    tx.try_send(msg).is_ok()
-}
-
-/// Dedicated sink owner. Heartbeats and control frames are selected with
-/// `biased` priority over FileChunks, and JSON encoding of large chunks
-/// happens on the blocking pool *before* they reach this task.
-async fn run_ws_writer<W>(
-    mut write: W,
-    mut ctrl_rx: mpsc::Receiver<Message>,
-    mut data_rx: mpsc::Receiver<Message>,
-) where
+/// Serialize and send an agent message. Returns false when the write fails
+/// or times out — the connection loop must reconnect instead of continuing
+/// as if the hub received the response.
+async fn send_agent_message<W>(write: &mut W, msg: &AgentMessage) -> bool
+where
     W: SinkExt<Message> + Unpin,
 {
-    let ctrl_timeout = ws_write_timeout();
-    let data_timeout = data_write_timeout();
-    let mut send_failed = false;
-    let mut ping_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        tokio::select! {
-            biased;
-            _ = ping_interval.tick() => {
-                let heartbeat = Message::Text(
-                    serde_json::to_string(&AgentMessage::Heartbeat).unwrap().into(),
-                );
-                if !send_with_timeout(&mut write, heartbeat, ctrl_timeout).await {
-                    tracing::warn!("Heartbeat send failed/timed out, reconnecting");
-                    send_failed = true;
-                    break;
-                }
-            }
-            msg = ctrl_rx.recv() => {
-                let Some(msg) = msg else { break };
-                if !send_with_timeout(&mut write, msg, ctrl_timeout).await {
-                    tracing::warn!("WS control write failed/timed out, reconnecting");
-                    send_failed = true;
-                    break;
-                }
-            }
-            msg = data_rx.recv() => {
-                let Some(msg) = msg else { break };
-                if !send_with_timeout(&mut write, msg, data_timeout).await {
-                    tracing::warn!("WS data write failed/timed out, reconnecting");
-                    send_failed = true;
-                    break;
-                }
-            }
+    let text = match serde_json::to_string(msg) {
+        Ok(text) => text,
+        Err(error) => {
+            tracing::error!("Failed to serialize agent message: {}", error);
+            return false;
         }
-    }
-    // A cancelled in-flight send can leave the sink corrupt; skip Close so
-    // reconnect is not delayed by another timeout on a dead socket.
-    if !send_failed {
-        let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, write.send(Message::Close(None))).await;
-    }
+    };
+    send_with_timeout(write, Message::Text(text.into())).await
 }
 
 fn try_spawn_fs_job<F>(
     tasks: &mut JoinSet<()>,
     admission: &Arc<Semaphore>,
     workers: &Arc<Semaphore>,
-    tx: &mpsc::Sender<Message>,
+    tx: &mpsc::Sender<AgentMessage>,
     req_id: String,
     cancellations: &FsCancellationMap,
     job: F,
@@ -357,42 +216,31 @@ where
             }
         };
         let Some(worker_permit) = worker_permit else {
-            if let Some(msg) = encode_agent_message(&cancelled_response) {
-                let _ = tx.send(msg).await;
-            }
+            let _ = tx.send(cancelled_response).await;
             remove_fs_cancellation(&cancellations, &req_id, &cancellation);
             return;
         };
         // Move the permit into the blocking closure. If the WebSocket
         // connection disappears and aborts this async wrapper, a kernel-stuck
         // syscall still owns its global permit until it actually returns.
-        // Serialize on this same blocking thread so the WS writer never
-        // JSON-encodes a 512 KiB FileChunk on an async worker.
         let cancel_flag = cancellation.cancelled.clone();
         let cancelled_in_worker = cancelled_response.clone();
         let blocking = tokio::task::spawn_blocking(move || {
             let _worker_permit = worker_permit;
-            let response = if cancel_flag.load(Ordering::Acquire) {
+            if cancel_flag.load(Ordering::Acquire) {
                 cancelled_in_worker
             } else {
                 job(cancel_flag)
-            };
-            encode_agent_message(&response)
+            }
         });
-        match blocking.await {
-            Ok(Some(msg)) => {
-                let _ = tx.send(msg).await;
-            }
-            Ok(None) => {
-                tracing::error!("File I/O worker produced an unserializable response");
-            }
+        let response = match blocking.await {
+            Ok(response) => response,
             Err(join_error) => {
                 tracing::error!("File I/O worker failed: {}", join_error);
-                if let Some(msg) = encode_agent_message(&panic_response) {
-                    let _ = tx.send(msg).await;
-                }
+                panic_response
             }
-        }
+        };
+        let _ = tx.send(response).await;
         remove_fs_cancellation(&cancellations, &req_id, &cancellation);
     });
     true
@@ -568,8 +416,7 @@ async fn run_one_connection(
 
     // Step 1: Connect with hard timeout. Without this, a black-holed route
     // can leave us hung in DNS/TCP/TLS forever.
-    let connect_to = connect_timeout();
-    let ws_stream = match tokio::time::timeout(connect_to, connect_async(ws_url)).await {
+    let ws_stream = match tokio::time::timeout(CONNECT_TIMEOUT, connect_async(ws_url)).await {
         Ok(Ok((s, _))) => {
             tracing::info!("Connected to Hub");
             s
@@ -579,26 +426,25 @@ async fn run_one_connection(
             return;
         }
         Err(_) => {
-            tracing::warn!("Connection timed out after {}s", connect_to.as_secs());
+            tracing::warn!("Connection timed out after {}s", CONNECT_TIMEOUT.as_secs());
             return;
         }
     };
 
     let (mut write, mut read) = ws_stream.split();
-    let ctrl_timeout = ws_write_timeout();
 
     // Step 2: Send Auth
     let auth = AgentMessage::Auth {
         token: config.token.clone(),
     };
     let auth_msg = Message::Text(serde_json::to_string(&auth).unwrap().into());
-    if !send_with_timeout(&mut write, auth_msg, ctrl_timeout).await {
+    if !send_with_timeout(&mut write, auth_msg).await {
         tracing::warn!("Failed to send auth");
         return;
     }
 
     // Step 3: Wait for AuthResult
-    let auth_result = tokio::time::timeout(auth_timeout(), read.next()).await;
+    let auth_result = tokio::time::timeout(AUTH_TIMEOUT, read.next()).await;
     let assigned_agent_id = match auth_result {
         Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<HubMessage>(&text) {
             Ok(HubMessage::AuthResult {
@@ -663,7 +509,7 @@ async fn run_one_connection(
         temp_root,
     };
     let register_msg = Message::Text(serde_json::to_string(&register).unwrap().into());
-    if !send_with_timeout(&mut write, register_msg, data_write_timeout()).await {
+    if !send_with_timeout(&mut write, register_msg).await {
         tracing::warn!("Failed to send register");
         return;
     }
@@ -674,25 +520,17 @@ async fn run_one_connection(
         resource_mgr.resource_revision()
     );
 
-    // Step 5: Split the sink onto a dedicated writer so FileChunk JSON never
-    // stalls heartbeats or the read-side liveness timer. Control frames
-    // (Pong, apply, overload) preempt data; workers encode before enqueue.
-    let (ctrl_tx, ctrl_rx) = mpsc::channel::<Message>(64);
-    let (data_tx, data_rx) = mpsc::channel::<Message>(128);
-    let (writer_fail_tx, mut writer_fail_rx) = mpsc::channel::<()>(1);
-    let mut writer = tokio::spawn(async move {
-        run_ws_writer(write, ctrl_rx, data_rx).await;
-        let _ = writer_fail_tx.try_send(());
-    });
+    // Step 5: Main message loop with liveness timeout.
+    let mut ping_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
 
     // Workspace search / office convert run off the WS loop so heartbeats
-    // keep working. Completed responses go straight to the data queue.
+    // keep working. Completed responses arrive on worker_rx.
     // Capacity >1 so Progress try_send rarely drops under burst.
-    let search_tx = data_tx.clone();
-    let office_tx = data_tx.clone();
-    let stats_tx = data_tx.clone();
-    let fs_tx = data_tx.clone();
-    let temp_tx = data_tx.clone();
+    let (search_tx, mut search_rx) = mpsc::channel::<AgentMessage>(32);
+    let (office_tx, mut office_rx) = mpsc::channel::<AgentMessage>(32);
+    let (stats_tx, mut stats_rx) = mpsc::channel::<AgentMessage>(8);
+    let (fs_tx, mut fs_rx) = mpsc::channel::<AgentMessage>(128);
+    let (temp_tx, mut temp_rx) = mpsc::channel::<AgentMessage>(16);
     let fs_admission = Arc::new(Semaphore::new(FS_MAX_INFLIGHT));
     let dir_list_admission = Arc::new(Semaphore::new(DIR_LIST_MAX_INFLIGHT));
     let fs_cancellations: FsCancellationMap = Arc::new(Mutex::new(HashMap::new()));
@@ -704,9 +542,37 @@ async fn run_one_connection(
 
     loop {
         tokio::select! {
-            _ = writer_fail_rx.recv() => {
-                tracing::warn!("WS writer stopped, reconnecting");
-                break;
+            // Completed (or failed) workspace search — never block the read loop
+            // waiting on spawn_blocking for these.
+            Some(response) = search_rx.recv() => {
+                if !send_agent_message(&mut write, &response).await {
+                    tracing::warn!("Failed to send search response, reconnecting");
+                    break;
+                }
+            }
+            Some(response) = office_rx.recv() => {
+                if !send_agent_message(&mut write, &response).await {
+                    tracing::warn!("Failed to send office response, reconnecting");
+                    break;
+                }
+            }
+            Some(response) = stats_rx.recv() => {
+                if !send_agent_message(&mut write, &response).await {
+                    tracing::warn!("Failed to send stats response, reconnecting");
+                    break;
+                }
+            }
+            Some(response) = fs_rx.recv() => {
+                if !send_agent_message(&mut write, &response).await {
+                    tracing::warn!("Failed to send file I/O response, reconnecting");
+                    break;
+                }
+            }
+            Some(response) = temp_rx.recv() => {
+                if !send_agent_message(&mut write, &response).await {
+                    tracing::warn!("Failed to send temp upload response, reconnecting");
+                    break;
+                }
             }
             Some(result) = fs_tasks.join_next(), if !fs_tasks.is_empty() => {
                 if let Err(error) = result {
@@ -736,7 +602,7 @@ async fn run_one_connection(
                     Ok(Some(Ok(Message::Text(text)))) => {
                         match serde_json::from_str::<HubMessage>(&text) {
                             Ok(HubMessage::Ping) => {
-                                if !enqueue_ctrl(&ctrl_tx, &AgentMessage::Pong).await {
+                                if !send_agent_message(&mut write, &AgentMessage::Pong).await {
                                     tracing::warn!("Failed to send pong, reconnecting");
                                     break;
                                 }
@@ -771,7 +637,7 @@ async fn run_one_connection(
                                             resource_revision: new_rev,
                                             roots: resource_mgr.roots().to_vec(),
                                         };
-                                        if !enqueue_ctrl(&ctrl_tx, &update).await {
+                                        if !send_agent_message(&mut write, &update).await {
                                             tracing::warn!("Failed to send ResourcesUpdated, reconnecting");
                                             break;
                                         }
@@ -794,7 +660,7 @@ async fn run_one_connection(
                                     }
                                 };
 
-                                if !enqueue_ctrl(&ctrl_tx, &response).await {
+                                if !send_agent_message(&mut write, &response).await {
                                     tracing::warn!("Failed to send resource response, reconnecting");
                                     break;
                                 }
@@ -820,7 +686,7 @@ async fn run_one_connection(
                                             collections_revision: new_rev,
                                             collections: resource_mgr.collections().to_vec(),
                                         };
-                                        if !enqueue_ctrl(&ctrl_tx, &update).await {
+                                        if !send_agent_message(&mut write, &update).await {
                                             tracing::warn!("Failed to send CollectionsUpdated, reconnecting");
                                             break;
                                         }
@@ -844,7 +710,7 @@ async fn run_one_connection(
                                     }
                                 };
 
-                                if !enqueue_ctrl(&ctrl_tx, &response).await {
+                                if !send_agent_message(&mut write, &response).await {
                                     tracing::warn!("Failed to send collections response, reconnecting");
                                     break;
                                 }
@@ -904,7 +770,7 @@ async fn run_one_connection(
                                             "agent_overloaded: file I/O queue is full".to_string(),
                                         ),
                                     };
-                                    if !enqueue_ctrl(&ctrl_tx, &response).await {
+                                    if !send_agent_message(&mut write, &response).await {
                                         tracing::warn!("Failed to send fs list overload response, reconnecting");
                                         break;
                                     }
@@ -1004,7 +870,7 @@ async fn run_one_connection(
                                             "agent_overloaded: file I/O queue is full".to_string(),
                                         ),
                                     };
-                                    if !enqueue_ctrl(&ctrl_tx, &response).await {
+                                    if !send_agent_message(&mut write, &response).await {
                                         tracing::warn!("Failed to send fs stat overload response, reconnecting");
                                         break;
                                     }
@@ -1134,7 +1000,7 @@ async fn run_one_connection(
                                         file_size: None,
                                         modified: None,
                                     };
-                                    if !enqueue_ctrl(&ctrl_tx, &response).await {
+                                    if !send_agent_message(&mut write, &response).await {
                                         tracing::warn!("Failed to send file read overload response, reconnecting");
                                         break;
                                     }
@@ -1173,7 +1039,7 @@ async fn run_one_connection(
                                         stats: Some((*stats).clone()),
                                         error: None,
                                     };
-                                    send_encoded(&tx, response).await;
+                                    let _ = tx.send(response).await;
                                 });
                             }
                             Ok(HubMessage::WorkspaceSearchRequest {
@@ -1208,7 +1074,7 @@ async fn run_one_connection(
                                                 .to_string(),
                                         ),
                                     };
-                                    if !enqueue_ctrl(&ctrl_tx, &busy).await {
+                                    if !send_agent_message(&mut write, &busy).await {
                                         tracing::warn!("Failed to send search busy response, reconnecting");
                                         break;
                                     }
@@ -1241,7 +1107,7 @@ async fn run_one_connection(
                                         // Non-blocking: drop progress if the
                                         // outbound queue is full so search
                                         // never stalls waiting on the WS loop.
-                                        try_send_encoded(&progress_tx, &msg);
+                                        let _ = progress_tx.try_send(msg);
                                     });
                                 let params = crate::search::SearchParams {
                                     mode,
@@ -1259,7 +1125,7 @@ async fn run_one_connection(
                                 // Fire-and-forget worker — WS loop stays free
                                 // for heartbeats, FS ops, and Cancel.
                                 tokio::task::spawn_blocking(move || {
-                                    try_send_encoded(&tx, &AgentMessage::Progress {
+                                    let _ = tx.try_send(AgentMessage::Progress {
                                         req_id: rid.clone(),
                                         phase: "search".to_string(),
                                         processed: 0,
@@ -1298,10 +1164,10 @@ async fn run_one_connection(
                                         map.remove(&rid);
                                     }
                                     inflight.fetch_sub(1, Ordering::AcqRel);
-                                    // After WS teardown aborts the writer this
+                                    // After WS teardown drops search_rx this
                                     // returns immediately; while the loop is
                                     // alive it must deliver the terminal msg.
-                                    blocking_send_encoded(&tx, &response);
+                                    let _ = tx.blocking_send(response);
                                 });
                             }
                             Ok(HubMessage::OfficeConvertRequest {
@@ -1323,7 +1189,7 @@ async fn run_one_connection(
                                         outputs: vec![],
                                         error: Some("unsupported_feature".to_string()),
                                     };
-                                    if !enqueue_ctrl(&ctrl_tx, &resp).await {
+                                    if !send_agent_message(&mut write, &resp).await {
                                         tracing::warn!("Failed to send office unsupported response, reconnecting");
                                         break;
                                     }
@@ -1339,7 +1205,7 @@ async fn run_one_connection(
                                             outputs: vec![],
                                             error: Some(error),
                                         };
-                                        if !enqueue_ctrl(&ctrl_tx, &resp).await {
+                                        if !send_agent_message(&mut write, &resp).await {
                                             tracing::warn!("Failed to send office overload response, reconnecting");
                                             break;
                                         }
@@ -1361,13 +1227,13 @@ async fn run_one_connection(
                                             total: None,
                                             message,
                                         };
-                                        try_send_encoded(&progress_tx, &msg);
+                                        let _ = progress_tx.try_send(msg);
                                     });
                                 let worker_timeout =
                                     rt.config.timeout.saturating_add(Duration::from_secs(5));
                                 let rt_for_timeout = rt.clone();
                                 let worker = tokio::task::spawn_blocking(move || {
-                                    try_send_encoded(&tx, &AgentMessage::Progress {
+                                    let _ = tx.try_send(AgentMessage::Progress {
                                         req_id: rid.clone(),
                                         phase: "preparing".to_string(),
                                         processed: 0,
@@ -1444,7 +1310,7 @@ async fn run_one_connection(
                                             }
                                         }
                                     };
-                                    send_encoded(&terminal_tx, response).await;
+                                    let _ = terminal_tx.send(response).await;
                                 });
                             }
                             Ok(HubMessage::TempUploadBegin { req_id, name, total_size }) => {
@@ -1460,7 +1326,7 @@ async fn run_one_connection(
                                         size: None,
                                         error: Some("temp_unavailable".to_string()),
                                     };
-                                    if !enqueue_ctrl(&ctrl_tx, &response).await {
+                                    if !send_agent_message(&mut write, &response).await {
                                         tracing::warn!("Failed to send temp upload response, reconnecting");
                                         break;
                                     }
@@ -1473,7 +1339,7 @@ async fn run_one_connection(
                                         size: None,
                                         error: Some(error),
                                     };
-                                    if !enqueue_ctrl(&ctrl_tx, &response).await {
+                                    if !send_agent_message(&mut write, &response).await {
                                         tracing::warn!("Failed to send temp upload response, reconnecting");
                                         break;
                                     }
@@ -1525,10 +1391,10 @@ async fn run_one_connection(
                                             }
                                         }
                                     };
-                                    // After WS teardown aborts the writer this
+                                    // After WS teardown drops temp_rx this
                                     // returns immediately; while the loop is
                                     // alive it must deliver the terminal msg.
-                                    blocking_send_encoded(&tx, &response);
+                                    let _ = tx.blocking_send(response);
                                 });
                             }
                             Ok(HubMessage::TempUploadChunk { req_id, offset, data, done }) => {
@@ -1602,7 +1468,7 @@ async fn run_one_connection(
                                             "agent_overloaded: file I/O queue is full".to_string(),
                                         ),
                                     };
-                                    if !enqueue_ctrl(&ctrl_tx, &response).await {
+                                    if !send_agent_message(&mut write, &response).await {
                                         tracing::warn!("Failed to send temp cleanup overload response, reconnecting");
                                         break;
                                     }
@@ -1618,7 +1484,7 @@ async fn run_one_connection(
                         }
                     }
                     Ok(Some(Ok(Message::Ping(data)))) => {
-                        if !enqueue_ctrl_raw(&ctrl_tx, Message::Pong(data)) {
+                        if !send_with_timeout(&mut write, Message::Pong(data)).await {
                             tracing::warn!("Failed to send protocol pong, reconnecting");
                             break;
                         }
@@ -1628,6 +1494,15 @@ async fn run_one_connection(
                         break;
                     }
                     _ => {}
+                }
+            }
+            _ = ping_interval.tick() => {
+                let heartbeat = Message::Text(
+                    serde_json::to_string(&AgentMessage::Heartbeat).unwrap().into(),
+                );
+                if !send_with_timeout(&mut write, heartbeat).await {
+                    tracing::warn!("Heartbeat send failed/timed out, reconnecting");
+                    break;
                 }
             }
         }
@@ -1646,22 +1521,18 @@ async fn run_one_connection(
         store.cancel_all();
     }
     fs_tasks.abort_all();
-    drop(search_tx);
-    drop(office_tx);
-    drop(stats_tx);
-    drop(fs_tx);
-    drop(temp_tx);
-    drop(data_tx);
-    drop(ctrl_tx);
-    // Closed queues make the writer send Close. Abort only if a write is
-    // still stuck past the Close grace period.
-    tokio::select! {
-        _ = &mut writer => {}
-        _ = tokio::time::sleep(CLOSE_SEND_TIMEOUT) => {
-            writer.abort();
-            let _ = writer.await;
-        }
-    }
+    // Drop the search result receiver so a worker blocked on
+    // `blocking_send` (channel full of Progress after the read loop
+    // stopped polling) unblocks immediately instead of hanging forever.
+    drop(search_rx);
+    drop(office_rx);
+    drop(stats_rx);
+    drop(fs_rx);
+    drop(temp_rx);
+
+    // Best-effort Close frame so the hub can run cleanup immediately instead
+    // of waiting for TCP timeout. Ignore errors — we're tearing down anyway.
+    let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, write.send(Message::Close(None))).await;
     tracing::info!("Disconnected from Hub");
 }
 
@@ -1675,16 +1546,8 @@ mod tests {
     use filebox_protocol::message::AgentMessage;
     use tokio::sync::{mpsc, Semaphore};
     use tokio::task::JoinSet;
-    use tokio_tungstenite::tungstenite::Message;
 
-    use super::{build_ws_url, encode_agent_message, run_ws_writer, try_spawn_fs_job};
-
-    fn recv_agent_message(msg: Option<Message>) -> AgentMessage {
-        match msg {
-            Some(Message::Text(text)) => serde_json::from_str(&text).expect("agent json"),
-            other => panic!("expected text agent message, got {other:?}"),
-        }
-    }
+    use super::{build_ws_url, try_spawn_fs_job};
 
     #[test]
     fn translates_https_to_wss() {
@@ -1725,134 +1588,6 @@ mod tests {
     #[test]
     fn falls_back_to_ws_without_scheme() {
         assert_eq!(build_ws_url("hub.example.com:3000"), "ws://hub.example.com:3000/ws/agent");
-    }
-
-    #[test]
-    fn clamp_secs_defaults_and_bounds() {
-        assert_eq!(super::clamp_secs(None, 30, 5, 120), 30);
-        assert_eq!(super::clamp_secs(Some(0), 30, 5, 120), 5);
-        assert_eq!(super::clamp_secs(Some(7), 30, 5, 120), 7);
-        assert_eq!(super::clamp_secs(Some(999), 30, 5, 120), 120);
-    }
-
-    #[test]
-    fn encode_agent_message_round_trips_pong() {
-        let encoded = encode_agent_message(&AgentMessage::Pong).unwrap();
-        assert!(matches!(
-            recv_agent_message(Some(encoded)),
-            AgentMessage::Pong
-        ));
-    }
-
-    struct RecordingSink {
-        tx: tokio::sync::mpsc::UnboundedSender<Message>,
-    }
-
-    impl futures_util::Sink<Message> for RecordingSink {
-        type Error = std::convert::Infallible;
-
-        fn poll_ready(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(Ok(()))
-        }
-
-        fn start_send(
-            self: std::pin::Pin<&mut Self>,
-            item: Message,
-        ) -> Result<(), Self::Error> {
-            let _ = self.tx.send(item);
-            Ok(())
-        }
-
-        fn poll_flush(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(Ok(()))
-        }
-
-        fn poll_close(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(Ok(()))
-        }
-    }
-
-    #[tokio::test]
-    async fn writer_sends_control_ahead_of_queued_data() {
-        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
-        let sink = RecordingSink { tx: out_tx };
-        let (ctrl_tx, ctrl_rx) = mpsc::channel(4);
-        let (data_tx, data_rx) = mpsc::channel(4);
-        let writer = tokio::spawn(run_ws_writer(sink, ctrl_rx, data_rx));
-
-        ctrl_tx
-            .try_send(encode_agent_message(&AgentMessage::Pong).unwrap())
-            .unwrap();
-        data_tx
-            .try_send(encode_agent_message(&AgentMessage::FileChunk {
-                req_id: "chunk".to_string(),
-                offset: 0,
-                data: vec![1, 2, 3],
-                done: true,
-                error: None,
-                file_size: Some(3),
-                modified: None,
-            }).unwrap())
-            .unwrap();
-
-        let mut saw_pong = false;
-        let mut saw_chunk = false;
-        for _ in 0..4 {
-            let frame = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
-                .await
-                .expect("writer should emit promptly")
-                .expect("writer should emit a frame");
-            match recv_agent_message(Some(frame)) {
-                AgentMessage::Heartbeat => {}
-                AgentMessage::Pong => {
-                    assert!(!saw_chunk, "control Pong must be written before a queued FileChunk");
-                    saw_pong = true;
-                }
-                AgentMessage::FileChunk { req_id, .. } if req_id == "chunk" => {
-                    saw_chunk = true;
-                }
-                other => panic!("unexpected frame {other:?}"),
-            }
-            if saw_pong && saw_chunk {
-                break;
-            }
-        }
-        assert!(saw_pong, "control Pong was never written");
-        assert!(saw_chunk, "FileChunk was never written");
-        drop(ctrl_tx);
-        drop(data_tx);
-        let _ = tokio::time::timeout(Duration::from_secs(1), writer).await;
-    }
-
-    #[tokio::test]
-    async fn writer_sends_close_when_queues_drop() {
-        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
-        let sink = RecordingSink { tx: out_tx };
-        let (ctrl_tx, ctrl_rx) = mpsc::channel(4);
-        let (data_tx, data_rx) = mpsc::channel(4);
-        let writer = tokio::spawn(run_ws_writer(sink, ctrl_rx, data_rx));
-        drop(ctrl_tx);
-        drop(data_tx);
-        let mut saw_close = false;
-        while let Ok(Some(frame)) =
-            tokio::time::timeout(Duration::from_secs(1), out_rx.recv()).await
-        {
-            if matches!(frame, Message::Close(_)) {
-                saw_close = true;
-                break;
-            }
-        }
-        assert!(saw_close, "writer must send Close after both queues drop");
-        let _ = tokio::time::timeout(Duration::from_secs(1), writer).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1902,7 +1637,7 @@ mod tests {
         );
 
         for _ in 0..6 {
-            assert!(matches!(recv_agent_message(rx.recv().await), AgentMessage::Pong));
+            assert!(matches!(rx.recv().await, Some(AgentMessage::Pong)));
         }
         while tasks.join_next().await.is_some() {}
         assert!(
@@ -2002,10 +1737,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(matches!(
-            recv_agent_message(rx.recv().await),
-            AgentMessage::Heartbeat
-        ));
+        assert!(matches!(rx.recv().await, Some(AgentMessage::Heartbeat)));
         while tasks.join_next().await.is_some() {}
         assert_eq!(ran.load(Ordering::Acquire), 0);
         assert_eq!(admission.available_permits(), 1);
