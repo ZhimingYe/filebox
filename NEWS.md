@@ -4,6 +4,11 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+## v1.9.5 — 2026-09-15
+
+### Added
+- **Paste images into Transfer** — use Cmd/Ctrl+V to upload screenshots or copied images into the agent's temp folder. Pasting into editable text fields remains available; invalid or overlong image filenames receive timestamped names.
+
 ## v1.9.0 — 2026-09-15
 
 ### Changed
