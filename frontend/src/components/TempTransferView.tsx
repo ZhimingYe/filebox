@@ -7,6 +7,7 @@ import { FileDownloadLink } from './FileDownloadLink';
 import { formatDate, formatSize } from './fileListShared';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { useIsMobile } from '../state/useIsMobile';
+import { filesFromPaste, pasteTargetIsEditable } from './tempPaste';
 
 interface Props {
   agent: api.AgentInfo;
@@ -208,6 +209,21 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
     if (dropped.length > 0) void runUploads(dropped);
   };
 
+  // Cmd/Ctrl+V of a screenshot or copied image. Window-level so it works
+  // without focusing the drop zone; skip when a text field has focus.
+  useEffect(() => {
+    if (!root) return;
+    const onPaste = (e: ClipboardEvent) => {
+      if (pasteTargetIsEditable(e.target)) return;
+      const pasted = filesFromPaste(e.clipboardData);
+      if (pasted.length === 0) return;
+      e.preventDefault();
+      void runUploads(pasted);
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [root, runUploads]);
+
   if (!root) return null;
 
   // Header and rows share one template so SIZE / MODIFIED sit above their
@@ -286,7 +302,7 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
       >
         <IconUpload style={styles.dropIcon} />
         <span style={styles.dropText}>
-          {dragOver ? 'Drop to upload' : 'Drop files here, or click to choose'}
+          {dragOver ? 'Drop to upload' : 'Drop files here, paste an image, or click to choose'}
         </span>
       </button>
       <input
@@ -357,7 +373,7 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
           <div style={styles.empty}>
             <p style={styles.emptyTitle}>No files yet</p>
             <p style={styles.emptyBody}>
-              Drop files above to copy them onto the agent.
+              Drop files or paste an image to copy them onto the agent.
             </p>
           </div>
         ) : (
