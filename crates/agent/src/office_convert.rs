@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use filebox_protocol::message::{OfficePreviewOutput, FILE_CHUNK_MAX_BYTES};
+use filebox_protocol::message::OfficePreviewOutput;
 use filebox_protocol::resources::RootConfig;
 use sha2::{Digest, Sha256};
 
@@ -2026,7 +2026,7 @@ pub fn read_cache_range(
     let to_read = length
         .unwrap_or(remaining)
         .min(remaining)
-        .min(FILE_CHUNK_MAX_BYTES);
+        .min(crate::fs::wire_chunk_bytes());
     let mut buf = vec![0u8; to_read as usize];
     file.read_exact(&mut buf)
         .map_err(|e| diagnostic("office_storage_error", format!("read cache: {e}")))?;

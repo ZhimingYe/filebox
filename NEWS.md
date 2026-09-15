@@ -4,6 +4,17 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+## v1.8.6 — 2026-09-15
+
+### Fixed
+- **Agent reconnect loop on loaded HPC nodes** — 1.8.5's 10s connect timeout
+  and 20s data-write timeout tore down live sockets (handshake commonly
+  took 7–11s; a 512 KiB JSON FileChunk could exceed 20s to flush). Connect
+  waits 30s, control writes 20s, data writes 90s; FileChunks are capped at
+  64 KiB on the wire so heartbeats can interleave. `FILEBOX_AGENT_CONNECT_TIMEOUT_SECS`
+  / `FILEBOX_AGENT_WS_WRITE_TIMEOUT_SECS` / `FILEBOX_AGENT_WS_DATA_WRITE_TIMEOUT_SECS`
+  / `FILEBOX_AGENT_FILE_CHUNK_BYTES` override.
+
 ## v1.8.5 — 2026-09-15
 
 ### Added

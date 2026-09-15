@@ -86,11 +86,14 @@ type FsCancellationMap = Arc<Mutex<HashMap<String, Arc<FsCancellation>>>>;
 // reconnect without manual intervention.
 
 /// Hard cap on TCP connect + TLS handshake + WS upgrade. Without this, a
-/// black-holed route can hang `connect_async` indefinitely.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// black-holed route can hang `connect_async` indefinitely. 10s was too
+/// tight on a CPU-saturated HPC node (handshakes commonly took 7–11s and
+/// the agent flapped). Override: `FILEBOX_AGENT_CONNECT_TIMEOUT_SECS`.
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 30;
 
 /// How long to wait for the hub's AuthResult before giving up.
-const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Override: `FILEBOX_AGENT_AUTH_TIMEOUT_SECS`.
+const DEFAULT_AUTH_TIMEOUT_SECS: u64 = 20;
 
 /// If the hub sends nothing (no Ping, no Heartbeat, no message) for this
 /// window, consider the connection dead and reconnect. Hub normally pings
@@ -103,13 +106,15 @@ const NO_MESSAGE_TIMEOUT: Duration = Duration::from_secs(45);
 /// Per-write timeout for heartbeats, pongs, and other control frames.
 /// A blocked write would otherwise stall the writer (and delay the next
 /// heartbeat), so every WS write is bounded.
-const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Override: `FILEBOX_AGENT_WS_WRITE_TIMEOUT_SECS`.
+const DEFAULT_WS_WRITE_TIMEOUT_SECS: u64 = 20;
 
-/// FileChunk / list / search payloads are JSON+base64 and can take longer
-/// than a control frame on a CPU-saturated node. Bounded separately so a
-/// slow preview chunk does not use the 10s half-open-TCP detector, and
-/// kept under the hub's 45s Slow threshold (15s heartbeat + this).
-const DATA_WRITE_TIMEOUT: Duration = Duration::from_secs(20);
+/// FileChunk / list / search payloads are JSON+base64. Cancelling a send
+/// mid-frame corrupts the socket, so a timeout *must* reconnect — which
+/// is why 20s on a 512 KiB frame produced a reconnect loop under load.
+/// Frames are now capped at 64 KiB; this bound is the dead-TCP detector,
+/// not a "slow HPC" cap. Override: `FILEBOX_AGENT_WS_DATA_WRITE_TIMEOUT_SECS`.
+const DEFAULT_DATA_WRITE_TIMEOUT_SECS: u64 = 90;
 
 /// How long the read loop will wait to enqueue a control frame. The writer
 /// prefers control over data, so this only blocks if the writer itself is
@@ -147,11 +152,46 @@ fn build_ws_url(hub_url: &str) -> String {
 }
 
 fn stats_ttl() -> Duration {
-    let secs = std::env::var("FILEBOX_AGENT_STATS_TTL_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(15);
-    Duration::from_secs(secs.max(1))
+    env_duration_secs("FILEBOX_AGENT_STATS_TTL_SECS", 15, 1, 3600)
+}
+
+fn connect_timeout() -> Duration {
+    env_duration_secs("FILEBOX_AGENT_CONNECT_TIMEOUT_SECS", DEFAULT_CONNECT_TIMEOUT_SECS, 5, 120)
+}
+
+fn auth_timeout() -> Duration {
+    env_duration_secs("FILEBOX_AGENT_AUTH_TIMEOUT_SECS", DEFAULT_AUTH_TIMEOUT_SECS, 5, 120)
+}
+
+fn ws_write_timeout() -> Duration {
+    env_duration_secs(
+        "FILEBOX_AGENT_WS_WRITE_TIMEOUT_SECS",
+        DEFAULT_WS_WRITE_TIMEOUT_SECS,
+        5,
+        120,
+    )
+}
+
+fn data_write_timeout() -> Duration {
+    env_duration_secs(
+        "FILEBOX_AGENT_WS_DATA_WRITE_TIMEOUT_SECS",
+        DEFAULT_DATA_WRITE_TIMEOUT_SECS,
+        15,
+        300,
+    )
+}
+
+fn env_duration_secs(name: &str, default: u64, min: u64, max: u64) -> Duration {
+    Duration::from_secs(clamp_secs(
+        std::env::var(name).ok().and_then(|s| s.parse().ok()),
+        default,
+        min,
+        max,
+    ))
+}
+
+fn clamp_secs(parsed: Option<u64>, default: u64, min: u64, max: u64) -> u64 {
+    parsed.unwrap_or(default).clamp(min, max)
 }
 
 /// Send a WS message with a write timeout. Returns false on timeout or
@@ -160,14 +200,23 @@ async fn send_with_timeout<W>(write: &mut W, msg: Message, timeout: Duration) ->
 where
     W: SinkExt<Message> + Unpin,
 {
+    let nbytes = match &msg {
+        Message::Text(text) => text.len(),
+        Message::Binary(data) => data.len(),
+        _ => 0,
+    };
     match tokio::time::timeout(timeout, write.send(msg)).await {
         Ok(Ok(_)) => true,
         Ok(Err(_)) => {
-            tracing::warn!("WS write failed");
+            tracing::warn!("WS write failed ({} bytes)", nbytes);
             false
         }
         Err(_) => {
-            tracing::warn!("WS write timed out after {}s", timeout.as_secs());
+            tracing::warn!(
+                "WS write timed out after {}s ({} bytes)",
+                timeout.as_secs(),
+                nbytes
+            );
             false
         }
     }
@@ -228,6 +277,9 @@ async fn run_ws_writer<W>(
 ) where
     W: SinkExt<Message> + Unpin,
 {
+    let ctrl_timeout = ws_write_timeout();
+    let data_timeout = data_write_timeout();
+    let mut send_failed = false;
     let mut ping_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -237,28 +289,35 @@ async fn run_ws_writer<W>(
                 let heartbeat = Message::Text(
                     serde_json::to_string(&AgentMessage::Heartbeat).unwrap().into(),
                 );
-                if !send_with_timeout(&mut write, heartbeat, WS_WRITE_TIMEOUT).await {
+                if !send_with_timeout(&mut write, heartbeat, ctrl_timeout).await {
                     tracing::warn!("Heartbeat send failed/timed out, reconnecting");
+                    send_failed = true;
                     break;
                 }
             }
             msg = ctrl_rx.recv() => {
                 let Some(msg) = msg else { break };
-                if !send_with_timeout(&mut write, msg, WS_WRITE_TIMEOUT).await {
+                if !send_with_timeout(&mut write, msg, ctrl_timeout).await {
                     tracing::warn!("WS control write failed/timed out, reconnecting");
+                    send_failed = true;
                     break;
                 }
             }
             msg = data_rx.recv() => {
                 let Some(msg) = msg else { break };
-                if !send_with_timeout(&mut write, msg, DATA_WRITE_TIMEOUT).await {
+                if !send_with_timeout(&mut write, msg, data_timeout).await {
                     tracing::warn!("WS data write failed/timed out, reconnecting");
+                    send_failed = true;
                     break;
                 }
             }
         }
     }
-    let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, write.send(Message::Close(None))).await;
+    // A cancelled in-flight send can leave the sink corrupt; skip Close so
+    // reconnect is not delayed by another timeout on a dead socket.
+    if !send_failed {
+        let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, write.send(Message::Close(None))).await;
+    }
 }
 
 fn try_spawn_fs_job<F>(
@@ -509,7 +568,8 @@ async fn run_one_connection(
 
     // Step 1: Connect with hard timeout. Without this, a black-holed route
     // can leave us hung in DNS/TCP/TLS forever.
-    let ws_stream = match tokio::time::timeout(CONNECT_TIMEOUT, connect_async(ws_url)).await {
+    let connect_to = connect_timeout();
+    let ws_stream = match tokio::time::timeout(connect_to, connect_async(ws_url)).await {
         Ok(Ok((s, _))) => {
             tracing::info!("Connected to Hub");
             s
@@ -519,25 +579,26 @@ async fn run_one_connection(
             return;
         }
         Err(_) => {
-            tracing::warn!("Connection timed out after {}s", CONNECT_TIMEOUT.as_secs());
+            tracing::warn!("Connection timed out after {}s", connect_to.as_secs());
             return;
         }
     };
 
     let (mut write, mut read) = ws_stream.split();
+    let ctrl_timeout = ws_write_timeout();
 
     // Step 2: Send Auth
     let auth = AgentMessage::Auth {
         token: config.token.clone(),
     };
     let auth_msg = Message::Text(serde_json::to_string(&auth).unwrap().into());
-    if !send_with_timeout(&mut write, auth_msg, WS_WRITE_TIMEOUT).await {
+    if !send_with_timeout(&mut write, auth_msg, ctrl_timeout).await {
         tracing::warn!("Failed to send auth");
         return;
     }
 
     // Step 3: Wait for AuthResult
-    let auth_result = tokio::time::timeout(AUTH_TIMEOUT, read.next()).await;
+    let auth_result = tokio::time::timeout(auth_timeout(), read.next()).await;
     let assigned_agent_id = match auth_result {
         Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<HubMessage>(&text) {
             Ok(HubMessage::AuthResult {
@@ -602,7 +663,7 @@ async fn run_one_connection(
         temp_root,
     };
     let register_msg = Message::Text(serde_json::to_string(&register).unwrap().into());
-    if !send_with_timeout(&mut write, register_msg, WS_WRITE_TIMEOUT).await {
+    if !send_with_timeout(&mut write, register_msg, data_write_timeout()).await {
         tracing::warn!("Failed to send register");
         return;
     }
@@ -1664,6 +1725,14 @@ mod tests {
     #[test]
     fn falls_back_to_ws_without_scheme() {
         assert_eq!(build_ws_url("hub.example.com:3000"), "ws://hub.example.com:3000/ws/agent");
+    }
+
+    #[test]
+    fn clamp_secs_defaults_and_bounds() {
+        assert_eq!(super::clamp_secs(None, 30, 5, 120), 30);
+        assert_eq!(super::clamp_secs(Some(0), 30, 5, 120), 5);
+        assert_eq!(super::clamp_secs(Some(7), 30, 5, 120), 7);
+        assert_eq!(super::clamp_secs(Some(999), 30, 5, 120), 120);
     }
 
     #[test]
