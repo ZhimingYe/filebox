@@ -144,15 +144,17 @@ agent_registry.rs}` before touching this path.
   `pre_exec` so conversion cannot outrank the WS loop.
 - Dedicated WS writer: heartbeats and control frames preempt FileChunks
   (`biased` select). Chunk JSON is encoded on the blocking pool, not the
-  read loop. Data writes use a 20s timeout (control stays 10s) so a slow
-  preview chunk on a saturated CPU does not trip the half-open-TCP
-  detector, while still fitting under the hub's 45s Slow window.
-- `CONNECT_TIMEOUT = 10s` — give up on handshake, retry.
+  read loop. FileChunks are capped at 64 KiB on the wire (hub may still
+  ask for 512 KiB; returning less is valid) so one JSON frame cannot
+  stall heartbeats. Data write timeout 90s / control 20s / connect 30s
+  (env-overridable); cancelling a send mid-frame still reconnects, so
+  these bounds are dead-TCP detectors, not "slow HPC" caps.
+- `CONNECT_TIMEOUT = 30s` (was 10s) — give up on handshake, retry.
+  `FILEBOX_AGENT_CONNECT_TIMEOUT_SECS`.
 - `NO_MESSAGE_TIMEOUT = 45s` — proactively reconnect if nothing (data or
   Ping) for 45s. Catches half-open connections the kernel hasn't noticed.
-- `WS_WRITE_TIMEOUT = 10s` — control-frame writes blocking longer than 10s
-  abort the connection. Prevents stuck TCP send buffer from freezing the
-  agent.
+- `WS_WRITE_TIMEOUT = 20s` — control-frame writes blocking longer than
+  this abort the connection. `FILEBOX_AGENT_WS_WRITE_TIMEOUT_SECS`.
 - `STABLE_CONNECTION_THRESHOLD = 30s` — a connection that lasted ≥30s is
   "stable"; its next disconnect resets backoff to 1s. A flapping
   connection keeps growing backoff.
