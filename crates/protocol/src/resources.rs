@@ -153,6 +153,21 @@ pub struct Capabilities {
     /// the folder could not be initialized.
     #[serde(default)]
     pub temp_upload: bool,
+    /// Whether this agent can host remote terminal sessions (PTY shell).
+    /// Defaults to `false` for rolling-upgrade safety and on platforms
+    /// without PTY support.
+    #[serde(default)]
+    pub terminal: bool,
+    /// Whether terminal sessions additionally require a TOTP code verified
+    /// LOCALLY on the agent (its own `terminal_totp_secret`, independent of
+    /// the hub). When true, `TerminalOpen` must carry `agent_totp_code`.
+    /// Defaults to `false` for rolling-upgrade safety.
+    #[serde(default)]
+    pub terminal_agent_2fa: bool,
+    /// Whether this agent answers `TerminalListRequest` (session management).
+    /// Defaults to `false` for rolling-upgrade safety.
+    #[serde(default)]
+    pub terminal_manage: bool,
 }
 
 impl Default for Capabilities {
@@ -174,6 +189,9 @@ impl Default for Capabilities {
             office_max_pdf_bytes: None,
             office_timeout_secs: None,
             temp_upload: false,
+            terminal: false,
+            terminal_agent_2fa: false,
+            terminal_manage: false,
         }
     }
 }

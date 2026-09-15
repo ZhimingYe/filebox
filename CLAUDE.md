@@ -26,7 +26,7 @@ machines need no public IP, inbound port, VPN, or port mapping.
 - Write / edit / delete / rename files — **sole sanctioned exception: the
   per-agent temp-upload folder** (see "Temp Upload Folder" below). The agent
   writes ONLY inside `<temp base>/<upload folder>` and nothing else, ever.
-- Shell execution, terminal, remote desktop
+- Remote desktop
 - Arbitrary TCP proxying, LAN scanning, **port forwarding** (an earlier
   draft planned a port-tunnel feature; it was dropped)
 - WebDAV, sync drive behavior
@@ -44,9 +44,13 @@ machines need no public IP, inbound port, VPN, or port mapping.
   entire file.
 - **Frontend is the control surface.** Roots, pins, and collections are
   managed from the UI. CLI is bootstrap / automation / recovery only.
-- **Read-only.** Never add writes, shell, or arbitrary proxying. The ONLY
-  write path is the temp-upload folder (browser drag-drop → hub relay →
-  agent writes into its dedicated folder). Nothing else writes.
+- **Read-only files.** Never add file writes or arbitrary proxying. The ONLY
+  file write path is the temp-upload folder (browser drag-drop → hub relay →
+  agent writes into its dedicated folder). Nothing else writes files.
+  **Sanctioned exception with explicit sign-off: the 2FA-gated remote
+  terminal** (see "Remote Terminal" below) — a PTY shell on the agent,
+  guarded by per-browser-session TOTP. It is NOT a file write path and must
+  never bypass the fs denylist for previews.
 - **Reconnect forever.** Survives 24h+ outages; identity persists; no
   duplicate backend entries on reconnect.
 - **Never freeze silently.** Long ops are fine, but every one needs visible
@@ -93,7 +97,9 @@ challenges), `net.rs` (`FILEBOX_TRUST_XFF` for client IP),
 updates + config_error), `ws.rs` (agent WSS handler with
 abort-on-reregister), `events.rs` (SSE fanout), `fs_proxy.rs` (proxies
 file ops to agent WS), `search_proxy.rs` (workspace search),
-`temp_proxy.rs` (temp-folder upload relay + cleanup), `health.rs`.
+`temp_proxy.rs` (temp-folder upload relay + cleanup),
+`terminal_proxy.rs` (terminal WS relay + tickets),
+`totp.rs` (RFC 6238 2FA for the terminal), `health.rs`.
 
 **Agent** (`crates/agent/`): Rust + Tokio + tokio-tungstenite (rustls
 webpki-roots) + sysinfo. Connects outward, reconnects forever.
@@ -103,7 +109,9 @@ bad updates never destroy last good state), `fs.rs` (read-only ops + path
 safety + denylist), `search.rs` (in-process fd/rg-like workspace search),
 `dir_cache.rs` (mtime-keyed directory listing cache, cleared on root
 apply, capped), `sysinfo.rs` (TTL-cached stats — see below),
-`temp_store.rs` (the ONLY write path: dedicated temp-upload folder),
+`temp_store.rs` (the ONLY file write path: dedicated temp-upload folder),
+`terminal.rs` (PTY shell sessions — 2FA-gated, unix-only; see "Remote
+Terminal"),
 `config_store.rs` (persists `agent_id`, roots, pins, collections,
 revisions under `data_dir` in `agent_state.json`).
 
@@ -117,7 +125,7 @@ by default; mirrors via `--update-base-url`).
 `Error` / terminal response. File reads stream as `FileChunk { offset,
 data, done }` — agent never slurps whole files. Search types live in
 `search.rs`. `Capabilities` gates real features (`pinned_folders`,
-`collections`, `workspace_search`); vestigial flags (`image_preview`,
+`collections`, `workspace_search`, `terminal`); vestigial flags (`image_preview`,
 `pdf_preview`, `serve_dir`) default `false` and aren't gated on — don't
 read meaning into them.
 
@@ -307,6 +315,104 @@ Security invariants (`crates/agent/src/temp_store.rs` is the authority):
   initialized or for legacy agents → `unsupported_feature`). Uploads also
   ride the normal session + CSRF protection.
 
+## Remote Terminal (2FA-gated exception — explicit sign-off granted)
+
+The sidebar **Terminal** view opens an interactive shell on the agent. This
+deliberately crosses the read-only line and was approved explicitly; treat
+it as the highest-impact feature in the system.
+
+```text
+Browser ──WS /api/agents/{id}/terminal/ws (ticket as subprotocol)──▶ Hub
+  ──WS TerminalOpen/Input/Resize/Close──▶ Agent terminal.rs ──▶ PTY ($SHELL)
+Browser ◀── {"type":"output","data":<base64>} ◀── TerminalOutput ──┘
+```
+
+- **Protocol** (`crates/protocol/src/message.rs`): `TerminalOpen` /
+  `TerminalInput` / `TerminalResize` / `TerminalClose` (hub→agent),
+  `TerminalOpened` / `TerminalOutput` / `TerminalClosed` (agent→hub).
+  Binary I/O rides the shared `base64_bytes` serde module; output chunks
+  cap at `TERMINAL_CHUNK_MAX_BYTES` (16 KiB). Gated by
+  `capabilities.terminal` (`#[serde(default)]` false → legacy agents get
+  `unsupported_feature`).
+- **Agent** (`crates/agent/src/terminal.rs`): `TerminalManager` over
+  `portable-pty` (unix-only; `#[cfg(not(unix))]` stub reports
+  `terminal_unavailable`). Max 8 concurrent sessions (atomic admission,
+  RAII slot guard), shells spawn as `$SHELL` (fallback `/bin/sh`) in the
+  agent's home dir with `TERM=xterm-256color`. `TerminalClosed` is
+  exactly-once (per-session CAS: reader-EOF vs explicit close). All
+  sessions die on WS teardown; `Cancel` with the req_id also closes one.
+- **Hub** (`crates/hub/src/terminal_proxy.rs`): relays browser WS frames to
+  agent messages; sessions live in `state.terminal_sessions` (global cap
+  16, ownership-checked by agent_id + connection_id, torn down on agent
+  disconnect). Agent→browser queue is bounded (256 frames, drop-on-full) so
+  a slow browser never stalls the shared agent read loop.
+- **2FA (TOTP, RFC 6238)** (`crates/protocol/src/totp.rs` — shared core,
+  HMAC-SHA1, 30s step, ±1 window, 6 digits): the hub stores per-user
+  secrets in `totp-secrets.json` next to the hub config (0600, atomic
+  writes, same pattern as `audit-log.jsonl`). Flow: `GET
+  /api/terminal/2fa/status` → first use `bind/start` (returns base32
+  secret + `otpauth://` URI, pending 10 min) → `bind/confirm {code,
+  agent_id}`; afterwards `verify {code, agent_id}`. Success mints a
+  **terminal ticket** (256-bit random, in-memory only, **30-min TTL**,
+  bound to `principal_id` AND `agent_id`). `POST /api/terminal/2fa/renew
+  {ticket}` extends a live ticket by 30 min without a fresh code (the
+  frontend renews every 5 min while the pane is open). Verify is
+  rate-limited per IP (5/30s, failures only) and audited
+  (`terminal_2fa_bound` / `terminal_2fa_failed` / `terminal_opened` /
+  `terminal_closed`).
+- **Per-browser-session enforcement**: the verified state is ONLY the
+  ticket, and the frontend keeps it in component state (never
+  localStorage). A browser refresh wipes it → TOTP code required again.
+  The terminal WS route lives outside the session middleware (like preview
+  resources); the handler validates BOTH the session cookie and the ticket
+  (principal AND agent must match), so the ticket doubles as the CSRF
+  proof. The ticket travels as the WebSocket subprotocol
+  (`Sec-WebSocket-Protocol` handshake header, echoed back on upgrade) —
+  never in the URL, which access logs / browser history / proxy logs would
+  record.
+- **Agent-side secondary 2FA** (optional, per agent): set
+  `terminal_totp_secret` (base32) in `agent.toml` or
+  `FILEBOX_AGENT_TERMINAL_TOTP_SECRET`. The agent then advertises
+  `capabilities.terminal_agent_2fa` and requires `TerminalOpen` to carry
+  `agent_totp_code` — the user's CURRENT code for the agent's OWN secret
+  (a separate authenticator entry), passed through by the hub and verified
+  locally via the shared `protocol::totp` core. Anti-replay: only a code
+  whose 30s counter is strictly newer than the last accepted one passes
+  (the watermark lives on the `TerminalManager`, created in
+  `run_connection_loop` so it survives hub-forced reconnects). Rejects:
+  `terminal_2fa_required` (no code) / `terminal_2fa_invalid` (wrong or
+  replayed). A compromised hub can no longer open terminals at will — it
+  needs a fresh code per open, and codes can't be replayed.
+- **Session management** (zombie recovery): the agent tracks per-session
+  metadata (created_at, last input activity, geometry). `GET
+  /api/agents/{id}/terminals` lists live sessions (agent is the source of
+  truth — it also sees orphans the hub forgot), `DELETE
+  /api/agents/{id}/terminals/{req_id}` force-kills one (audited
+  `terminal_kill`). Both ride plain session+CSRF — recovery must not
+  require 2FA. Gated by `capabilities.terminal_manage`. The Terminal view
+  shows a collapsible **Sessions** panel (age/idle, idle > 10 min
+  highlighted, two-step kill) in every 2FA phase.
+- **Idle reaper** (the zombie killer): an agent-side task closes any
+  session with no INPUT for `FILEBOX_AGENT_TERMINAL_IDLE_TIMEOUT_SECS`
+  (default 1800s, `0` = disables). 5 minutes before the reap the session's
+  browser output gets a one-shot warning (re-armed by any keystroke); the
+  notice goes to the output channel, NOT the PTY — writing there would
+  inject keystrokes into the shell. Reaped sessions get `TerminalClosed
+  { reason: "idle timeout" }`; the reaper never blocks on a wedged
+  channel (`try_send`) and runs once for the life of the process.
+- **Threat model honesty**: hub-side 2FA protects the browser leg only;
+  WITHOUT `terminal_totp_secret` a compromised hub can open terminals at
+  will (agents trust hub control messages) — see
+  `docs/hub-agent-security-model.md`. Even WITH it, the hub sees each
+  code in transit, so within a code's validity window a malicious hub can
+  piggyback — agent-side anti-replay bounds this to codes the user just
+  used, never arbitrary opens.
+- **Frontend**: `TerminalView.tsx` (status probe → bind QR via `qrcode` /
+  verify code entry / agent-code entry when `terminal_agent_2fa` / ready)
+  + lazy-loaded `TerminalPane.tsx` (`@xterm/xterm` + fit addon, own vendor
+  chunk like Monaco; renews the ticket every 5 min while open). Nav item
+  is gated on `capabilities.terminal`.
+
 ## Security
 
 - Users: bcrypt-hashed passwords in `hub.json`. Sessions: `HttpOnly;
@@ -454,9 +560,11 @@ filebox/
                             # (shared upload-name validation)
     updater/src/            # --init-config, --update
     hub/src/                # … + search_proxy.rs, temp_proxy.rs (upload relay),
-                            # net.rs, audit.rs (login audit)
+                            # terminal_proxy.rs (terminal relay + tickets),
+                            # totp.rs (terminal 2FA), net.rs, audit.rs (login audit)
     agent/src/              # … + search.rs, dir_cache.rs, temp_store.rs
-                            # (write-scoped temp upload folder)
+                            # (write-scoped temp upload folder),
+                            # terminal.rs (PTY sessions)
   frontend/
     vite.config.ts          # manualChunks: react / markdown / tiff
                             # (Monaco stays behind TextPreview lazy import)
@@ -469,7 +577,8 @@ filebox/
       state/                # session, events (SSE), health, useIsMobile
       components/
         Login BackendList FileBrowser FileEntryList WorkspaceSearch
-        TempTransferView CollectionsView CollectionPicker WorkspaceSplit PreviewWorkspace
+        TempTransferView TerminalView TerminalPane (lazy, xterm chunk)
+        CollectionsView CollectionPicker WorkspaceSplit PreviewWorkspace
         PreviewPane previewShared {Pdf,Text,Markdown,Html,Csv,Image}Preview
         DirectoryTree AddressBar DateFilterControl PinnedFolders
         AgentSettings RootManager HealthPanel SystemStats AboutDialog

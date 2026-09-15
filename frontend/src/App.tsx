@@ -33,6 +33,7 @@ import { WorkspaceSplit } from './components/WorkspaceSplit';
 import { CollectionPicker } from './components/CollectionPicker';
 import { NoAgentSelected } from './components/NoAgentSelected';
 import { TempTransferView } from './components/TempTransferView';
+import { TerminalView } from './components/TerminalView';
 import {
   IconChevronLeft,
   IconFolder,
@@ -47,6 +48,7 @@ import {
   IconBrandMark,
   IconAudit,
   IconUpload,
+  IconTerminal,
 } from './components/icons';
 import type { FsEntry } from './api/client';
 import * as api from './api/client';
@@ -76,7 +78,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'explorer' | 'transfer' | 'collections' | 'settings' | 'stats' | 'audit';
+type View = 'files' | 'explorer' | 'transfer' | 'terminal' | 'collections' | 'settings' | 'stats' | 'audit';
 
 interface ProgressEvent {
   req_id: string;
@@ -538,6 +540,8 @@ export default function App() {
   // and hands the files to TempTransferView via `uploadRequest`.
   const tempRootName = selectedAgent?.temp_root_name ?? null;
   const tempCapable = !!selectedAgent?.capabilities?.temp_upload && !!tempRootName;
+  // Terminal nav entry is only meaningful on a terminal-capable agent.
+  const terminalCapable = !!selectedAgent?.capabilities?.terminal;
   useEffect(() => {
     if (!tempCapable) return;
     const hasFiles = (e: DragEvent) =>
@@ -802,6 +806,8 @@ export default function App() {
     { v: 'collections' as const, label: 'Collections', Icon: IconCollection },
     // Transfer is only meaningful on a temp-capable agent.
     { v: 'transfer' as const, label: 'Transfer', Icon: IconUpload },
+    // Terminal is only meaningful on a terminal-capable agent.
+    { v: 'terminal' as const, label: 'Terminal', Icon: IconTerminal },
     { v: 'search' as const, label: 'Search', Icon: IconSearch },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
     { v: 'stats' as const, label: 'System', Icon: IconStats },
@@ -884,7 +890,10 @@ export default function App() {
             <div style={sectionStyle}>
               {!collapsed && <div style={styles.sectionHeader}>Workspace</div>}
               <div style={collapsed ? styles.navCollapsed : styles.nav}>
-                {navItems.filter((n) => n.v !== 'transfer' || tempCapable).map(({ v, label, Icon }) => (
+                {navItems.filter((n) =>
+                  (n.v !== 'transfer' || tempCapable)
+                  && (n.v !== 'terminal' || terminalCapable),
+                ).map(({ v, label, Icon }) => (
                   <SidebarNavButton
                     key={v}
                     label={label}
@@ -1328,6 +1337,20 @@ export default function App() {
                     <div style={styles.transferUnsupported}>
                       <p style={styles.transferUnsupportedText}>
                         This agent does not support temp uploads.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+              {view === 'terminal' && (
+                <div style={styles.secondaryView}>
+                  {terminalCapable ? (
+                    // Remount per agent: re-probe 2FA and drop any ticket.
+                    <TerminalView key={selectedAgent.id} agent={selectedAgent} />
+                  ) : (
+                    <div style={styles.transferUnsupported}>
+                      <p style={styles.transferUnsupportedText}>
+                        This agent does not support remote terminals.
                       </p>
                     </div>
                   )}

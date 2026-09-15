@@ -11,6 +11,7 @@ mod resources;
 mod search;
 mod sysinfo;
 mod temp_store;
+mod terminal;
 
 #[tokio::main]
 async fn main() {

@@ -38,6 +38,14 @@ pub fn create_router(state: AppState) -> Router {
         get(fs_proxy::preview_resource_handler).options(fs_proxy::preview_options_handler),
     );
 
+    // Browser terminal WS: outside the protected group (browsers cannot set
+    // CSRF headers on a WS upgrade); the handler authenticates the 2FA ticket
+    // and session cookie itself.
+    let terminal_ws = Router::new().route(
+        "/api/agents/{agent_id}/terminal/ws",
+        get(crate::terminal_proxy::terminal_ws_handler),
+    );
+
     // Protected routes (session cookie required)
     let protected = Router::new()
         .route("/api/events", get(events::sse_handler))
@@ -100,6 +108,35 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/agents/{agent_id}/temp-cleanup",
             post(crate::temp_proxy::temp_cleanup_handler),
+        )
+        .route(
+            "/api/terminal/2fa/status",
+            get(crate::terminal_proxy::totp_status_handler),
+        )
+        .route(
+            "/api/terminal/2fa/bind/start",
+            post(crate::terminal_proxy::totp_bind_start_handler),
+        )
+        .route(
+            "/api/terminal/2fa/bind/confirm",
+            post(crate::terminal_proxy::totp_bind_confirm_handler),
+        )
+        .route(
+            "/api/terminal/2fa/verify",
+            post(crate::terminal_proxy::totp_verify_handler),
+        )
+        .route(
+            "/api/terminal/2fa/renew",
+            post(crate::terminal_proxy::totp_renew_handler),
+        )
+        // Terminal session management (zombie recovery): list + force-kill.
+        .route(
+            "/api/agents/{agent_id}/terminals",
+            get(crate::terminal_proxy::terminals_list_handler),
+        )
+        .route(
+            "/api/agents/{agent_id}/terminals/{req_id}",
+            delete(crate::terminal_proxy::terminal_kill_handler),
         )
         .route("/api/cancel", post(cancel_handler))
         .layer(axum::middleware::from_fn_with_state(
@@ -172,6 +209,7 @@ pub fn create_router(state: AppState) -> Router {
 
     Router::new()
         .merge(preview_resources)
+        .merge(terminal_ws)
         .merge(cors_app)
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)) // 1MB max request body
         .layer(axum::middleware::from_fn(security_headers))
@@ -426,7 +464,7 @@ async fn require_session(
     resp
 }
 
-fn session_cookie(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<String> {
     let cookies = headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())

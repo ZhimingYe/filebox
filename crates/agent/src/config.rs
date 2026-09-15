@@ -19,6 +19,9 @@ struct TomlConfig {
     /// (default `agent-temp-copied-file`). Env `FILEBOX_AGENT_TEMP_UPLOAD_NAME`
     /// wins over this value.
     temp_upload_name: Option<String>,
+    /// Base32 TOTP secret for agent-side secondary 2FA on terminal opens.
+    /// Env `FILEBOX_AGENT_TERMINAL_TOTP_SECRET` wins over this value.
+    terminal_totp_secret: Option<String>,
 }
 
 pub struct AgentConfig {
@@ -28,6 +31,7 @@ pub struct AgentConfig {
     pub data_dir: PathBuf,
     pub temp_dir: Option<String>,
     pub temp_upload_name: Option<String>,
+    pub terminal_totp_secret: Option<String>,
 }
 
 impl AgentConfig {
@@ -53,6 +57,7 @@ impl AgentConfig {
                 data_dir: None,
                 temp_dir: None,
                 temp_upload_name: None,
+                terminal_totp_secret: None,
             }
         };
 
@@ -92,6 +97,21 @@ impl AgentConfig {
                     .join("filebox")
             });
 
+        // Agent-side secondary 2FA for terminal opens. An undecodable
+        // secret is warned about and treated as absent, not fatal.
+        let terminal_totp_secret = std::env::var("FILEBOX_AGENT_TERMINAL_TOTP_SECRET")
+            .ok()
+            .or(toml_config.terminal_totp_secret)
+            .filter(|secret| {
+                let decodable = filebox_protocol::totp::base32_decode(secret).is_some();
+                if !decodable {
+                    tracing::warn!(
+                        "terminal_totp_secret is not valid base32; ignoring it (terminal 2FA disabled)"
+                    );
+                }
+                decodable
+            });
+
         enforce_secure_hub_url(&hub_url);
 
         Self {
@@ -101,6 +121,7 @@ impl AgentConfig {
             data_dir,
             temp_dir: toml_config.temp_dir,
             temp_upload_name: toml_config.temp_upload_name,
+            terminal_totp_secret,
         }
     }
 }
@@ -152,6 +173,7 @@ pub fn init_interactive(request: filebox_updater::ConfigInitRequest) -> Result<(
         data_dir: Some(data_dir.to_string_lossy().into_owned()),
         temp_dir: None,
         temp_upload_name: None,
+        terminal_totp_secret: None,
     };
     let mut contents = toml::to_string_pretty(&config)
         .map_err(|error| format!("failed to serialize agent config: {error}"))?;
@@ -240,6 +262,7 @@ mod tests {
             data_dir: Some("/var/lib/filebox".to_string()),
             temp_dir: Some("/var/tmp/filebox".to_string()),
             temp_upload_name: Some("dropbox".to_string()),
+            terminal_totp_secret: Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".to_string()),
         };
         let contents = toml::to_string_pretty(&config).unwrap();
         let reparsed: TomlConfig = toml::from_str(&contents).unwrap();
@@ -249,5 +272,9 @@ mod tests {
         assert_eq!(reparsed.data_dir.as_deref(), Some("/var/lib/filebox"));
         assert_eq!(reparsed.temp_dir.as_deref(), Some("/var/tmp/filebox"));
         assert_eq!(reparsed.temp_upload_name.as_deref(), Some("dropbox"));
+        assert_eq!(
+            reparsed.terminal_totp_secret.as_deref(),
+            Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+        );
     }
 }
