@@ -4,6 +4,21 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+### Fixed
+- **Agent responsiveness during network stalls** — socket writes run independently of incoming requests, with separate bounded queues for directory metadata and file chunks. Small replies use TCP_NODELAY. Outgoing heartbeats no longer reset the inbound silence deadline, so a half-open connection reconnects instead of remaining stuck.
+- **Transfer clipboard uploads** — a pasted image is collected from one clipboard file source, preventing duplicate uploads when the browser exposes separate objects for the same image.
+- **Login input borders** — restore the theme border color after focus or validation errors clear.
+
+## v1.9.5 — 2026-09-15
+
+### Added
+- **Paste images into Transfer** — use Cmd/Ctrl+V to upload screenshots or copied images into the agent's temp folder. Pasting into editable text fields remains available; invalid or overlong image filenames receive timestamped names.
+
+## v1.9.0 — 2026-09-15
+
+### Changed
+- **Identical to v1.8.0.** Withdraws 1.8.5–1.8.9.
+
 ### Added
 - **Persistent remote terminal with Agent-local 2FA** — local `agent --setup-terminal-2fa` wizard; Hub never enrolls or stores secrets. Every xterm open/resume forwards a fresh code to Agent for verification. Shells survive browser navigation, transport loss, Hub restart and idle time; Sessions provides Resume and explicit End. Agent restart loses sessions. Recent output replay is capped at 256 KiB. Single-use, principal/agent-bound 60s WS tickets replace renewable Hub TOTP tickets.
 - **Temp upload folder** — the agent now maintains a dedicated write-scoped scratch folder (`<data_dir>/temp/agent-temp-copied-file` by default; `FILEBOX_AGENT_TEMP_DIR` / `FILEBOX_AGENT_TEMP_UPLOAD_NAME` or agent.toml `temp_dir` / `temp_upload_name` to customize). Drag small files anywhere onto the hub (or use the Transfer view) and the agent writes them ONLY inside that folder — single-component name validation, 0700 staging, atomic no-clobber publish with collision suffixes, canonical-path re-verification, per-file (default 20 MiB) and total-folder (default 1 GiB) quotas, symlink-safe one-click cleanup, Cancel/disconnect abort, and startup reaping. Uploads live in a dedicated sidebar **Transfer** view (gated by `capabilities.temp_upload`); Files stays read-only. Other tabs refresh via SSE `temp_updated`.
