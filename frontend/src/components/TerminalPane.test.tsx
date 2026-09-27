@@ -64,3 +64,38 @@ it('bounds a stalled handshake and offers retry', async () => {
   expect(container.textContent).toContain('Connection timed out');
   expect(Socket.sockets[0].close).toHaveBeenCalled();
 });
+
+it.each(['error', 'closed', 'disconnect'] as const)('preserves %s state after both connection timers elapse', async (kind) => {
+  await act(async () => root.render(pane()));
+  await act(async () => { vi.advanceTimersByTime(1); });
+  const socket = Socket.sockets[0];
+  await act(async () => {
+    if (kind === 'error') socket.onmessage?.({ data: JSON.stringify({ type: 'error', error: 'agent_overloaded' }) });
+    if (kind === 'closed') socket.onmessage?.({ data: JSON.stringify({ type: 'closed', reason: 'Shell exited' }) });
+    socket.onclose?.();
+  });
+  const notice = container.querySelector('[role="status"]')?.textContent;
+  expect(notice).toContain(kind === 'error' ? 'maximum number' : kind === 'closed' ? 'Shell exited' : 'Disconnected');
+  await act(async () => { vi.advanceTimersByTime(90_000); });
+  expect(container.querySelector('[role="status"]')?.textContent).toBe(notice);
+});
+it('answers heartbeats without keyboard input and detects a silent Hub', async () => {
+  await act(async () => root.render(pane()));
+  await act(async () => { vi.advanceTimersByTime(1); });
+  const socket = Socket.sockets[0]; socket.readyState = Socket.OPEN;
+  await act(async () => socket.onmessage?.({ data: JSON.stringify({ type: 'opened', session_id: 'shell' }) }));
+  for (let i = 0; i < 6; i++) {
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ping', nonce: `probe-${i}` }) });
+    });
+    expect(socket.send).toHaveBeenLastCalledWith(JSON.stringify({ type: 'pong', nonce: `probe-${i}` }));
+  }
+  expect(socket.close).not.toHaveBeenCalled();
+  await act(async () => { vi.advanceTimersByTime(65_000); });
+  expect(container.textContent).toContain('Connection lost');
+  expect(socket.close).toHaveBeenCalledTimes(1);
+  // Late data cannot revive a terminal after a liveness failure.
+  await act(async () => socket.onmessage?.({ data: JSON.stringify({ type: 'opened', session_id: 'shell' }) }));
+  expect(container.textContent).toContain('Connection lost');
+});

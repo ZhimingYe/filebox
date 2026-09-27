@@ -330,23 +330,20 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
     });
 
     // Main message read loop. Three exits:
-    //   1. abort_notify fires — a newer connection for this agent_id has
-    //      replaced this entry, so this read loop must exit to release its
-    //      fd instead of waiting hours for OS TCP timeout.
+    //   1. abort_notify fires — this connection was superseded, or terminal
+    //      cleanup could not deliver a detach and must release attachments.
     //   2. ws_stream ends (TCP drop / close frame) — normal cleanup path.
     //   3. Liveness timeout — agent hasn't sent anything in
     //      NO_AGENT_MESSAGE_TIMEOUT, meaning its TCP is silently dead.
     let agent_id_for_msgs = agent_id.clone();
-    let mut exited_via_abort = false;
     loop {
         tokio::select! {
             biased;  // check abort first so a re-register doesn't race
             _ = abort_notify.notified() => {
                 tracing::info!(
-                    "Agent {} connection superseded by new connection, exiting",
+                    "Agent {} connection interrupted, exiting",
                     agent_id_for_msgs
                 );
-                exited_via_abort = true;
                 break;
             }
             send_result = &mut send_task => {
@@ -879,20 +876,19 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
     // connection. A reconnect may have already replaced the entry with a
     // new sender, in which case marking it offline would break the live
     // connection (reconnect race condition).
+    let was_current = inner.agents.is_current_connection(&agent_id, connection_id);
     inner.agents.unregister(&agent_id, &tx);
-    drop(inner);
-    tracing::info!("Agent disconnected: {} ({})", name, agent_id);
-
-    // If we exited because a new connection replaced this one, the new
-    // connection already emitted "agent_connected" with the same agent_id.
-    // Emitting "agent_disconnected" here would make the frontend briefly
-    // flap the agent's status, so skip it.
-    if !exited_via_abort {
-        state.emit_sse("agent_disconnected", serde_json::json!({
+    // Superseded connections must not announce the replacement as offline.
+    // An abort of the CURRENT connection (stalled terminal cleanup) does
+    // need an offline event while the Agent reconnects.
+    if was_current {
+        AppState::emit_sse_locked(&inner, "agent_disconnected", serde_json::json!({
             "agent_id": agent_id,
             "name": name,
         })).await;
     }
+    drop(inner);
+    tracing::info!("Agent disconnected: {} ({})", name, agent_id);
 }
 
 /// After a successful apply, prefer hub `desired` for the root set (names,

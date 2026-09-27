@@ -15,7 +15,7 @@ use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use rand::Rng;
 use serde::Deserialize;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use uuid::Uuid;
 
 use filebox_protocol::message::{HubMessage, TERMINAL_CHUNK_MAX_BYTES};
@@ -43,6 +43,46 @@ const TERMINAL_WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const TERMINAL_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 /// Browser frames carry base64 input; 64 KiB is far beyond any keystroke.
 const MAX_BROWSER_WS_MESSAGE_SIZE: usize = 64 * 1024;
+const TERMINAL_DETACH_TIMEOUT: Duration = Duration::from_secs(5);
+const BROWSER_PING_INTERVAL: Duration = Duration::from_secs(15);
+const BROWSER_PONG_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Only an answer to our outstanding probe proves the browser is reachable.
+/// Shell output or queued input must not extend the browser's lease.
+struct BrowserHeartbeat {
+    last_pong: Instant,
+    pending: Option<String>,
+}
+
+impl BrowserHeartbeat {
+    fn new(now: Instant) -> Self { Self { last_pong: now, pending: None } }
+    fn probe(&mut self) -> String {
+        self.pending.get_or_insert_with(|| Uuid::new_v4().to_string()).clone()
+    }
+    fn acknowledge(&mut self, nonce: &str, now: Instant) {
+        if self.pending.as_deref() == Some(nonce) {
+            self.pending = None;
+            self.last_pong = now;
+        }
+    }
+    fn deadline(&self) -> Instant { self.last_pong + BROWSER_PONG_TIMEOUT }
+}
+
+/// Use the sender and abort handle captured when this attachment was opened.
+/// Never resolve a replacement connection during delayed cleanup.
+async fn detach_terminal(
+    sender: &mpsc::Sender<HubMessage>,
+    abort: &Notify,
+    req_id: &str,
+    timeout: Duration,
+) {
+    let message = HubMessage::TerminalDetach { req_id: req_id.to_string() };
+    if !matches!(tokio::time::timeout(timeout, sender.send(message)).await, Ok(Ok(()))) {
+        // Closing this transport runs Agent detach_connection(), preserving PTYs.
+        // notify_one retains a permit even if the WS loop is currently writing.
+        abort.notify_one();
+    }
+}
 
 #[derive(Clone)]
 pub struct TerminalTicket {
@@ -551,6 +591,8 @@ enum BrowserTerminalFrame {
     Resize { cols: u16, rows: u16 },
     #[serde(rename = "close")]
     Close,
+    #[serde(rename = "pong")]
+    Pong { nonce: String },
 }
 
 pub async fn terminal_ws_handler(
@@ -733,7 +775,7 @@ async fn handle_terminal_socket(
     // message was actually queued on is what keeps the replies routable.
     // Capturing the id earlier and sending later would make every reply look
     // like it came from a stranger — dropped, slot leaked, pane hung forever.
-    let outcome: Result<(), &'static str> = {
+    let outcome = {
         let inner = state.inner.read().await;
         let mut sessions = state
             .terminal_sessions
@@ -764,17 +806,20 @@ async fn handle_terminal_socket(
                             tx,
                         },
                     );
-                    Ok(())
+                    let agent = inner.agents.get(&agent_id).expect("Agent was just resolved under this registry lock");
+                    Ok((agent.sender.clone(), agent.abort_notify.clone()))
                 }
                 None => Err("backend_offline"),
             }
         }
     };
-    if let Err(code) = outcome {
-        send_terminal_frame(&mut ws_sink, serde_json::json!({"type": "error", "error": code}))
-            .await;
-        return;
-    }
+    let (agent_sender, agent_abort) = match outcome {
+        Ok(connection) => connection,
+        Err(code) => {
+            send_terminal_frame(&mut ws_sink, serde_json::json!({"type": "error", "error": code})).await;
+            return;
+        }
+    };
 
     // `terminal_opened` is audited by `ws.rs` when the agent CONFIRMS the
     // session, so a rejected open (agent-side 2FA, no PTY) is not recorded as
@@ -792,8 +837,22 @@ async fn handle_terminal_socket(
     let open_deadline = tokio::time::sleep(TERMINAL_OPEN_TIMEOUT);
     tokio::pin!(open_deadline);
     let mut confirmed = false;
+    let mut heartbeat = BrowserHeartbeat::new(Instant::now());
+    let mut ping_interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + BROWSER_PING_INTERVAL, BROWSER_PING_INTERVAL,
+    );
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            () = tokio::time::sleep_until(tokio::time::Instant::from_std(heartbeat.deadline())) => {
+                // No keyboard-idle timeout: only a missing heartbeat detaches.
+                break;
+            }
+            _ = ping_interval.tick() => {
+                if !send_terminal_frame(&mut ws_sink, serde_json::json!({
+                    "type": "ping", "nonce": heartbeat.probe(),
+                })).await { break; }
+            }
             () = &mut open_deadline, if !confirmed => {
                 tracing::warn!(
                     "Terminal session {} was not confirmed by agent {} within {:?}; closing",
@@ -872,6 +931,9 @@ async fn handle_terminal_socket(
                                     },
                                 );
                             }
+                            Ok(BrowserTerminalFrame::Pong { nonce }) => {
+                                heartbeat.acknowledge(&nonce, Instant::now());
+                            }
                             Ok(BrowserTerminalFrame::Close) => break,
                             Err(_) => {}
                         }
@@ -882,22 +944,11 @@ async fn handle_terminal_socket(
         }
     }
 
-    // Cleanup: stop agent→browser routing, then detach from the
-    // shell (best effort — the agent may already be gone).
-    state
-        .terminal_sessions
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&req_id);
-    {
-        let inner = state.inner.read().await;
-        let _ = inner.agents.send_to_agent(
-            &agent_id,
-            HubMessage::TerminalDetach {
-                req_id: req_id.clone(),
-            },
-        );
-    }
+    // Stop routing and close the browser transport before bounded Agent cleanup.
+    state.terminal_sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(&req_id);
+    drop(ws_sink);
+    drop(ws_stream);
+    detach_terminal(&agent_sender, &agent_abort, &req_id, TERMINAL_DETACH_TIMEOUT).await;
     tracing::info!(target: "audit", ip = %ip, user = %ticket.username, agent_id = %agent_id, "terminal_detached");
     state
         .audit
@@ -920,6 +971,7 @@ async fn send_terminal_frame(
 
 #[cfg(test)]
 mod tests {
+    use futures_util::FutureExt;
     use super::*;
 
     #[test]
@@ -1030,6 +1082,63 @@ mod tests {
             None
         );
         assert_eq!(agent_code_from_tokens(&["ticket-a".to_string()]), None);
+    }
+
+    #[tokio::test]
+    async fn detach_waits_for_queue_capacity_instead_of_dropping() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        sender.send(HubMessage::Ping).await.unwrap();
+        let abort = std::sync::Arc::new(Notify::new());
+        let task_abort = abort.clone();
+        let cleanup = tokio::spawn(async move {
+            detach_terminal(&sender, &task_abort, "attachment", Duration::from_secs(1)).await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!cleanup.is_finished());
+        assert!(matches!(receiver.recv().await, Some(HubMessage::Ping)));
+        cleanup.await.unwrap();
+        assert!(matches!(receiver.recv().await, Some(HubMessage::TerminalDetach { req_id }) if req_id == "attachment"));
+        assert!(abort.notified().now_or_never().is_none());
+    }
+
+    #[tokio::test]
+    async fn stuck_detach_aborts_only_its_captured_connection() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        sender.send(HubMessage::Ping).await.unwrap();
+        let old_abort = Notify::new();
+        let replacement_abort = Notify::new();
+        detach_terminal(&sender, &old_abort, "old-attachment", Duration::from_millis(10)).await;
+        assert!(old_abort.notified().now_or_never().is_some());
+        assert!(replacement_abort.notified().now_or_never().is_none());
+        assert!(matches!(receiver.recv().await, Some(HubMessage::Ping)));
+        assert!(receiver.try_recv().is_err()); // Timed-out send was cancelled.
+    }
+
+    #[tokio::test]
+    async fn closed_agent_queue_does_not_leave_cleanup_waiting() {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+        let abort = Notify::new();
+        tokio::time::timeout(Duration::from_secs(1), detach_terminal(
+            &sender, &abort, "attachment", Duration::from_secs(5),
+        )).await.unwrap();
+        assert!(abort.notified().now_or_never().is_some());
+    }
+
+    #[test]
+    fn heartbeat_requires_a_matching_fresh_reply_and_does_not_use_shell_activity() {
+        let start = Instant::now();
+        let mut heartbeat = BrowserHeartbeat::new(start);
+        let nonce = heartbeat.probe();
+        assert_eq!(heartbeat.probe(), nonce); // Retries do not replace a pending probe.
+        heartbeat.acknowledge("wrong", start + Duration::from_secs(20));
+        assert_eq!(heartbeat.deadline(), start + BROWSER_PONG_TIMEOUT);
+        heartbeat.acknowledge(&nonce, start + Duration::from_secs(25));
+        let healthy_deadline = start + Duration::from_secs(25) + BROWSER_PONG_TIMEOUT;
+        assert_eq!(heartbeat.deadline(), healthy_deadline);
+        heartbeat.acknowledge(&nonce, start + Duration::from_secs(40));
+        assert_eq!(heartbeat.deadline(), healthy_deadline); // Replayed pong is ignored.
+        assert_ne!(heartbeat.probe(), nonce);
     }
 
     #[test]

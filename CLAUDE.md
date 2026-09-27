@@ -162,8 +162,10 @@ agent_registry.rs}` before touching this path.
 - `unregister` verifies `same_channel()` between caller's sender and
   registry entry before tearing down — a slow old connection can't
   clobber a fresh one's status back to Offline.
-- Only emits `agent_disconnected` SSE on normal-close exits, not on abort,
-  so reconnect-driven rotation doesn't flash spurious offline to the UI.
+- Only the connection still owning the registry entry emits
+  `agent_disconnected` SSE. Superseded connections stay quiet; aborting the
+  current connection for stalled terminal cleanup reports offline until it
+  reconnects.
 
 ## Sysinfo TTL Cache (non-obvious invariant)
 
@@ -357,6 +359,12 @@ explicitly approved exception to read-only browsing.
   re-chunks output defensively and bounds browser queues to 256 frames.
   Opens/attaches have a 30s deadline; browser has a 35s handshake deadline,
   an 8s slow notice and cancellation. xterm stays hidden until Agent confirms.
+  Browser connections use a nonce ping every 15s; no matching pong for 45s
+  detaches the attachment, never the shell. Browser independently reports a
+  lost connection after 60s without server frames (checked every 5s).
+  Terminal detach waits up to 5s for outbound queue capacity; failure aborts
+  only the captured Agent connection so its teardown releases attachments.
+  A replacement Agent connection is never targeted by stale cleanup.
 - Session listing and explicit End require session + CSRF, allowing recovery
   without a code. Listing errors propagate. `terminal_persistent` and
   `terminal_agent_2fa` gate upgrades; `terminal_manage` gates list/end.

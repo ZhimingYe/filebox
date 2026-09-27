@@ -18,7 +18,8 @@ interface Props {
 type ConnStatus = 'connecting' | 'open' | 'closed';
 
 interface ServerFrame {
-  type: 'opened' | 'output' | 'closed' | 'error';
+  type: 'opened' | 'output' | 'closed' | 'error' | 'ping';
+  nonce?: string;
   data?: string;
   reason?: string;
   error?: string;
@@ -231,35 +232,62 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
       api.terminalWsProtocols(ticket, agentCode),
     );
     wsRef.current = ws;
+    let ended = false;
+    let lastReceived = Date.now();
     // Say something before the hub's own 30s open deadline: silence for half a
     // minute looks like a hung app, not a slow backend.
     const slowTimer = window.setTimeout(() => {
-      if (wsRef.current === ws && !confirmedRef.current) {
+      if (!ended && wsRef.current === ws && !confirmedRef.current) {
         setNotice('Still waiting for the backend to start a shell…');
       }
     }, SLOW_CONNECT_MS);
 
     const deadline = window.setTimeout(() => {
-      if (!confirmedRef.current) {
+      if (!ended && !confirmedRef.current) {
+        stopConnection();
         setNotice('Connection timed out. Enter a fresh code to retry.');
         setStatus('closed');
         ws.close();
       }
     }, 35_000);
+    const livenessTimer = window.setInterval(() => {
+      if (!ended && confirmedRef.current && Date.now() - lastReceived >= 60_000) {
+        stopConnection();
+        setNotice('Connection lost. Enter a fresh code to resume the shell.');
+        setStatus('closed');
+        ws.close();
+      }
+    }, 5000);
+    const clearConnectTimers = () => {
+      window.clearTimeout(slowTimer);
+      window.clearTimeout(deadline);
+    };
+    function stopConnection() {
+      ended = true;
+      confirmedRef.current = false;
+      clearConnectTimers();
+      window.clearInterval(livenessTimer);
+    }
     ws.onmessage = (ev) => {
+      if (ended || wsRef.current !== ws) return;
       let frame: ServerFrame;
       try {
         frame = JSON.parse(typeof ev.data === 'string' ? ev.data : '') as ServerFrame;
       } catch {
         return;
       }
+      lastReceived = Date.now();
       switch (frame.type) {
+        case 'ping':
+          if (typeof frame.nonce === 'string' && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'pong', nonce: frame.nonce }));
+          }
+          break;
         case 'opened':
           confirmedRef.current = true;
           setStatus('open');
           setNotice(null);
-          window.clearTimeout(slowTimer);
-          window.clearTimeout(deadline);
+          clearConnectTimers();
           if (frame.session_id) onSessionOpened(frame.session_id);
           ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
           break;
@@ -269,12 +297,14 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
           }
           break;
         case 'closed':
+          stopConnection();
           term.write(`\r\n\x1b[2m[session closed${frame.reason ? `: ${frame.reason}` : ''}]\x1b[0m\r\n`);
           setStatus('closed');
           confirmedRef.current = false;
           setNotice(frame.reason ?? 'Disconnected. Enter a fresh code to resume.');
           break;
         case 'error':
+          stopConnection();
           if (frame.error?.startsWith('terminal_2fa_')) {
             // The agent's own TOTP gate rejected us — hand back to the view
             // for re-entry (it unmounts/remounts this pane).
@@ -288,12 +318,13 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
           // footer, and the generic disconnect text would overwrite it.
           setNotice(terminalErrorMessage(frame.error));
           setStatus('closed');
+          ws.close();
           break;
       }
     };
     ws.onclose = () => {
       if (wsRef.current !== ws) return;
-      confirmedRef.current = false;
+      stopConnection();
       setStatus('closed');
       setNotice((prev) => prev ?? 'Disconnected. Enter a fresh code to resume the shell.');
     };
@@ -302,8 +333,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     };
 
     cleanupSocket = () => {
-      window.clearTimeout(slowTimer);
-      window.clearTimeout(deadline);
+      stopConnection();
       if (wsRef.current === ws) wsRef.current = null;
       if (ws.readyState === WebSocket.OPEN) {
         try { ws.send(JSON.stringify({ type: 'close' })); } catch { /* already gone */ }

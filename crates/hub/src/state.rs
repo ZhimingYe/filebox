@@ -230,6 +230,12 @@ impl AppState {
         // broadcast send, otherwise it can receive a duplicate or miss an
         // event during reconnect.
         let inner = self.inner.write().await;
+        Self::emit_sse_locked(&inner, event, data).await;
+    }
+
+    /// Caller holds the registry write lock: lifecycle changes and their event
+    /// must not be overtaken by a replacement Agent registration.
+    pub(crate) async fn emit_sse_locked(inner: &AppStateInner, event: &str, data: serde_json::Value) {
         let id = inner.sse_next_id.fetch_add(1, Ordering::Relaxed);
         let sse_event = SseEvent {
             id,

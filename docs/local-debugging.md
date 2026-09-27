@@ -278,7 +278,11 @@ curl -s -N -b /tmp/fb.cookie --noproxy '*' \
 4. Close the browser connection; GET `/api/agents/{id}/terminals` must still
    list the shell. Get a new ticket/code and add `session_id` to the WS query
    to resume. A spent code is rejected; wait for the next 30s code.
-5. Restart only the test Hub; Agent reconnects and the shell remains listed.
+5. For liveness testing, answer JSON `{type:"ping",nonce}` frames with
+   `{type:"pong",nonce}`. An idle browser answering probes remains attached;
+   withholding replies detaches it after 45s while its shell stays listed.
+   Resume with a fresh ticket/code to verify shell variables survived.
+6. Restart only the test Hub; Agent reconnects and the shell remains listed.
    Explicit DELETE `/api/agents/{id}/terminals/{session_id}` ends it.
 
 `terminal_open_timeout` means Agent did not confirm within 30s. A missing
