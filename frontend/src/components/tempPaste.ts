@@ -49,23 +49,17 @@ export function namedPastedImage(file: File, index: number, now = new Date()): F
 
 export function filesFromPaste(clipboardData: DataTransfer | null, now = new Date()): File[] {
   if (!clipboardData) return [];
-  const seen = new Set<File>();
-  const raw: File[] = [];
-  for (const item of Array.from(clipboardData.items ?? [])) {
-    if (item.kind !== 'file') continue;
-    const file = item.getAsFile();
-    if (file && isImageFile(file) && !seen.has(file)) {
-      seen.add(file);
-      raw.push(file);
+  // These lists expose the same files, potentially as different File objects.
+  // Read one source only; merging by object identity duplicates pasted images.
+  const raw = Array.from(clipboardData.files ?? []);
+  if (raw.length === 0) {
+    for (const item of Array.from(clipboardData.items ?? [])) {
+      if (item.kind !== 'file') continue;
+      const file = item.getAsFile();
+      if (file) raw.push(file);
     }
   }
-  for (const file of Array.from(clipboardData.files ?? [])) {
-    if (isImageFile(file) && !seen.has(file)) {
-      seen.add(file);
-      raw.push(file);
-    }
-  }
-  return raw.map((file, i) => namedPastedImage(file, i, now));
+  return raw.filter(isImageFile).map((file, i) => namedPastedImage(file, i, now));
 }
 
 function formatStamp(now: Date): string {

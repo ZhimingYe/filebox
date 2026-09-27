@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, Notify, Semaphore};
 use tokio::task::JoinSet;
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
 
 use filebox_protocol::message::{AgentMessage, HubMessage};
@@ -100,9 +100,8 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// on `read.next()`.
 const NO_MESSAGE_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// Per-write timeout. A blocked write would otherwise stall the entire
-/// `tokio::select!` loop (including the read-side liveness check), so
-/// every WS write is bounded.
+/// Per-write timeout. Bound stalled sockets in the independent writer;
+/// short loss bursts still have time for TCP retransmission to recover.
 const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Best-effort grace period for sending a Close frame before tearing down.
@@ -116,6 +115,67 @@ const CLOSE_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const STABLE_CONNECTION_THRESHOLD: Duration = Duration::from_secs(30);
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+
+const CONTROL_QUEUE_CAPACITY: usize = 32;
+// Resource/collection updates emit Updated + Applied; all other branches
+// emit at most one control frame. Only the receive loop produces these frames.
+const CONTROL_REPLY_SLOTS: usize = 2;
+
+// A connection owns its writer, including when its parent future is dropped.
+struct ConnectionWriter(tokio::task::JoinHandle<()>);
+
+impl Drop for ConnectionWriter {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Each response class has a bounded queue. Round-robin polling prevents a
+/// backlog of file chunks from sitting ahead of directory/control responses.
+/// Only this task waits on socket writes; the receiver can still handle Cancel.
+async fn run_connection_writer<W>(
+    mut write: W,
+    control: mpsc::Receiver<Message>,
+    responses: Vec<mpsc::Receiver<AgentMessage>>,
+) where
+    W: SinkExt<Message> + Unpin,
+{
+    let control = futures_util::stream::unfold(control, |mut rx| async {
+        rx.recv().await.map(|msg| (Ok(msg), rx))
+    }).boxed();
+    let mut streams = vec![control];
+    for rx in responses {
+        streams.push(futures_util::stream::unfold(rx, |mut rx| async {
+            rx.recv().await.map(|msg| {
+                (serde_json::to_string(&msg).map(|text| Message::Text(text.into())), rx)
+            })
+        }).boxed());
+    }
+    let mut messages = futures_util::stream::select_all(streams);
+    while let Some(message) = messages.next().await {
+        let message = match message {
+            Ok(message) => message,
+            Err(error) => {
+                tracing::error!("Failed to serialize agent message: {}", error);
+                break;
+            }
+        };
+        let closing = matches!(message, Message::Close(_));
+        if !send_with_timeout(&mut write, message).await || closing {
+            break;
+        }
+    }
+}
+
+fn queue_frame(tx: &mpsc::Sender<Message>, message: Message) -> bool {
+    // The receive loop waits for CONTROL_REPLY_SLOTS before reading another
+    // request, so ordinary congestion cannot reach this failure path.
+    if tx.try_send(message).is_err() {
+        tracing::warn!("Agent control queue closed or reply-slot invariant violated");
+        return false;
+    }
+    true
+}
 
 /// Translate a user-facing hub URL (http/https/ws/wss) into a WebSocket URL
 /// ending in /ws/agent.
@@ -162,13 +222,8 @@ where
     }
 }
 
-/// Serialize and send an agent message. Returns false when the write fails
-/// or times out — the connection loop must reconnect instead of continuing
-/// as if the hub received the response.
-async fn send_agent_message<W>(write: &mut W, msg: &AgentMessage) -> bool
-where
-    W: SinkExt<Message> + Unpin,
-{
+/// Queue a control response without blocking incoming requests on socket I/O.
+fn queue_agent_message(tx: &mpsc::Sender<Message>, msg: &AgentMessage) -> bool {
     let text = match serde_json::to_string(msg) {
         Ok(text) => text,
         Err(error) => {
@@ -176,7 +231,7 @@ where
             return false;
         }
     };
-    send_with_timeout(write, Message::Text(text.into())).await
+    queue_frame(tx, Message::Text(text.into()))
 }
 
 fn try_spawn_fs_job<F>(
@@ -415,8 +470,12 @@ async fn run_one_connection(
     tracing::info!("Connecting to {}", ws_url);
 
     // Step 1: Connect with hard timeout. Without this, a black-holed route
-    // can leave us hung in DNS/TCP/TLS forever.
-    let ws_stream = match tokio::time::timeout(CONNECT_TIMEOUT, connect_async(ws_url)).await {
+    // can leave us hung in DNS/TCP/TLS forever. Disable Nagle so small
+    // replies do not wait for earlier data to be acknowledged.
+    let ws_stream = match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        connect_async_with_config(ws_url, None, true),
+    ).await {
         Ok(Ok((s, _))) => {
             tracing::info!("Connected to Hub");
             s
@@ -526,11 +585,17 @@ async fn run_one_connection(
     // Workspace search / office convert run off the WS loop so heartbeats
     // keep working. Completed responses arrive on worker_rx.
     // Capacity >1 so Progress try_send rarely drops under burst.
-    let (search_tx, mut search_rx) = mpsc::channel::<AgentMessage>(32);
-    let (office_tx, mut office_rx) = mpsc::channel::<AgentMessage>(32);
-    let (stats_tx, mut stats_rx) = mpsc::channel::<AgentMessage>(8);
-    let (fs_tx, mut fs_rx) = mpsc::channel::<AgentMessage>(128);
-    let (temp_tx, mut temp_rx) = mpsc::channel::<AgentMessage>(16);
+    let (search_tx, search_rx) = mpsc::channel::<AgentMessage>(32);
+    let (office_tx, office_rx) = mpsc::channel::<AgentMessage>(32);
+    let (stats_tx, stats_rx) = mpsc::channel::<AgentMessage>(8);
+    let (fs_tx, fs_rx) = mpsc::channel::<AgentMessage>(128);
+    let (temp_tx, temp_rx) = mpsc::channel::<AgentMessage>(16);
+    let (dir_tx, dir_rx) = mpsc::channel::<AgentMessage>(32);
+    let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
+    let mut writer = ConnectionWriter(tokio::spawn(run_connection_writer(
+        write, control_rx, vec![search_rx, office_rx, stats_rx, dir_rx, fs_rx, temp_rx],
+    )));
+    let mut last_message = tokio::time::Instant::now();
     let fs_admission = Arc::new(Semaphore::new(FS_MAX_INFLIGHT));
     let dir_list_admission = Arc::new(Semaphore::new(DIR_LIST_MAX_INFLIGHT));
     let fs_cancellations: FsCancellationMap = Arc::new(Mutex::new(HashMap::new()));
@@ -541,37 +606,22 @@ async fn run_one_connection(
     let mut temp_writers: HashMap<String, mpsc::Sender<(u64, Vec<u8>, bool)>> = HashMap::new();
 
     loop {
+        // Apply backpressure before accepting a request, leaving room for its
+        // complete response. The writer is the only other queue user and only
+        // frees slots. Wait in select so writer failure and inbound silence
+        // still terminate a dead connection even while intake is paused.
+        let control_ready = control_tx.capacity() >= CONTROL_REPLY_SLOTS;
         tokio::select! {
-            // Completed (or failed) workspace search — never block the read loop
-            // waiting on spawn_blocking for these.
-            Some(response) = search_rx.recv() => {
-                if !send_agent_message(&mut write, &response).await {
-                    tracing::warn!("Failed to send search response, reconnecting");
-                    break;
+            result = &mut writer.0 => {
+                if let Err(error) = result {
+                    tracing::warn!("Agent WS writer ended: {}", error);
                 }
+                break;
             }
-            Some(response) = office_rx.recv() => {
-                if !send_agent_message(&mut write, &response).await {
-                    tracing::warn!("Failed to send office response, reconnecting");
-                    break;
-                }
-            }
-            Some(response) = stats_rx.recv() => {
-                if !send_agent_message(&mut write, &response).await {
-                    tracing::warn!("Failed to send stats response, reconnecting");
-                    break;
-                }
-            }
-            Some(response) = fs_rx.recv() => {
-                if !send_agent_message(&mut write, &response).await {
-                    tracing::warn!("Failed to send file I/O response, reconnecting");
-                    break;
-                }
-            }
-            Some(response) = temp_rx.recv() => {
-                if !send_agent_message(&mut write, &response).await {
-                    tracing::warn!("Failed to send temp upload response, reconnecting");
-                    break;
+            capacity = control_tx.reserve_many(CONTROL_REPLY_SLOTS), if !control_ready => {
+                match capacity {
+                    Ok(permits) => drop(permits),
+                    Err(_) => break,
                 }
             }
             Some(result) = fs_tasks.join_next(), if !fs_tasks.is_empty() => {
@@ -579,30 +629,32 @@ async fn run_one_connection(
                     tracing::warn!("File I/O task ended unexpectedly: {}", error);
                 }
             }
-            // Wrap read.next() in a timeout so a silent half-open TCP is
-            // detected within NO_MESSAGE_TIMEOUT rather than waiting for the
-            // OS's TCP keepalive (~2 hours on default Linux).
-            msg = tokio::time::timeout(NO_MESSAGE_TIMEOUT, read.next()) => {
+            // Outgoing heartbeats and completed jobs must not restart this
+            // deadline: only an actual inbound message proves receive liveness.
+            _ = tokio::time::sleep_until(last_message + NO_MESSAGE_TIMEOUT) => {
+                tracing::warn!(
+                    "No message from hub in {}s, reconnecting",
+                    NO_MESSAGE_TIMEOUT.as_secs()
+                );
+                break;
+            }
+            msg = read.next(), if control_ready => {
+                if matches!(&msg, Some(Ok(_))) {
+                    last_message = tokio::time::Instant::now();
+                }
                 match msg {
-                    Err(_) => {
-                        tracing::warn!(
-                            "No message from hub in {}s, reconnecting",
-                            NO_MESSAGE_TIMEOUT.as_secs()
-                        );
-                        break;
-                    }
-                    Ok(None) => {
+                    None => {
                         tracing::info!("Connection stream ended");
                         break;
                     }
-                    Ok(Some(Err(e))) => {
+                    Some(Err(e)) => {
                         tracing::info!("Read error: {}", e);
                         break;
                     }
-                    Ok(Some(Ok(Message::Text(text)))) => {
+                    Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<HubMessage>(&text) {
                             Ok(HubMessage::Ping) => {
-                                if !send_agent_message(&mut write, &AgentMessage::Pong).await {
+                                if !queue_agent_message(&control_tx, &AgentMessage::Pong) {
                                     tracing::warn!("Failed to send pong, reconnecting");
                                     break;
                                 }
@@ -637,7 +689,7 @@ async fn run_one_connection(
                                             resource_revision: new_rev,
                                             roots: resource_mgr.roots().to_vec(),
                                         };
-                                        if !send_agent_message(&mut write, &update).await {
+                                        if !queue_agent_message(&control_tx, &update) {
                                             tracing::warn!("Failed to send ResourcesUpdated, reconnecting");
                                             break;
                                         }
@@ -660,7 +712,7 @@ async fn run_one_connection(
                                     }
                                 };
 
-                                if !send_agent_message(&mut write, &response).await {
+                                if !queue_agent_message(&control_tx, &response) {
                                     tracing::warn!("Failed to send resource response, reconnecting");
                                     break;
                                 }
@@ -686,7 +738,7 @@ async fn run_one_connection(
                                             collections_revision: new_rev,
                                             collections: resource_mgr.collections().to_vec(),
                                         };
-                                        if !send_agent_message(&mut write, &update).await {
+                                        if !queue_agent_message(&control_tx, &update) {
                                             tracing::warn!("Failed to send CollectionsUpdated, reconnecting");
                                             break;
                                         }
@@ -710,7 +762,7 @@ async fn run_one_connection(
                                     }
                                 };
 
-                                if !send_agent_message(&mut write, &response).await {
+                                if !queue_agent_message(&control_tx, &response) {
                                     tracing::warn!("Failed to send collections response, reconnecting");
                                     break;
                                 }
@@ -738,7 +790,7 @@ async fn run_one_connection(
                                     &mut fs_tasks,
                                     &dir_list_admission,
                                     dir_list_workers,
-                                    &fs_tx,
+                                    &dir_tx,
                                     req_id.clone(),
                                     &fs_cancellations,
                                     move |cancelled| match cache_clone.list_with_cancel(
@@ -770,7 +822,7 @@ async fn run_one_connection(
                                             "agent_overloaded: file I/O queue is full".to_string(),
                                         ),
                                     };
-                                    if !send_agent_message(&mut write, &response).await {
+                                    if !queue_agent_message(&control_tx, &response) {
                                         tracing::warn!("Failed to send fs list overload response, reconnecting");
                                         break;
                                     }
@@ -796,7 +848,7 @@ async fn run_one_connection(
                                     &mut fs_tasks,
                                     &fs_admission,
                                     fs_workers,
-                                    &fs_tx,
+                                    &dir_tx,
                                     req_id.clone(),
                                     &fs_cancellations,
                                     move |cancelled| {
@@ -870,7 +922,7 @@ async fn run_one_connection(
                                             "agent_overloaded: file I/O queue is full".to_string(),
                                         ),
                                     };
-                                    if !send_agent_message(&mut write, &response).await {
+                                    if !queue_agent_message(&control_tx, &response) {
                                         tracing::warn!("Failed to send fs stat overload response, reconnecting");
                                         break;
                                     }
@@ -1000,7 +1052,7 @@ async fn run_one_connection(
                                         file_size: None,
                                         modified: None,
                                     };
-                                    if !send_agent_message(&mut write, &response).await {
+                                    if !queue_agent_message(&control_tx, &response) {
                                         tracing::warn!("Failed to send file read overload response, reconnecting");
                                         break;
                                     }
@@ -1074,7 +1126,7 @@ async fn run_one_connection(
                                                 .to_string(),
                                         ),
                                     };
-                                    if !send_agent_message(&mut write, &busy).await {
+                                    if !queue_agent_message(&control_tx, &busy) {
                                         tracing::warn!("Failed to send search busy response, reconnecting");
                                         break;
                                     }
@@ -1189,7 +1241,7 @@ async fn run_one_connection(
                                         outputs: vec![],
                                         error: Some("unsupported_feature".to_string()),
                                     };
-                                    if !send_agent_message(&mut write, &resp).await {
+                                    if !queue_agent_message(&control_tx, &resp) {
                                         tracing::warn!("Failed to send office unsupported response, reconnecting");
                                         break;
                                     }
@@ -1205,7 +1257,7 @@ async fn run_one_connection(
                                             outputs: vec![],
                                             error: Some(error),
                                         };
-                                        if !send_agent_message(&mut write, &resp).await {
+                                        if !queue_agent_message(&control_tx, &resp) {
                                             tracing::warn!("Failed to send office overload response, reconnecting");
                                             break;
                                         }
@@ -1326,7 +1378,7 @@ async fn run_one_connection(
                                         size: None,
                                         error: Some("temp_unavailable".to_string()),
                                     };
-                                    if !send_agent_message(&mut write, &response).await {
+                                    if !queue_agent_message(&control_tx, &response) {
                                         tracing::warn!("Failed to send temp upload response, reconnecting");
                                         break;
                                     }
@@ -1339,7 +1391,7 @@ async fn run_one_connection(
                                         size: None,
                                         error: Some(error),
                                     };
-                                    if !send_agent_message(&mut write, &response).await {
+                                    if !queue_agent_message(&control_tx, &response) {
                                         tracing::warn!("Failed to send temp upload response, reconnecting");
                                         break;
                                     }
@@ -1468,7 +1520,7 @@ async fn run_one_connection(
                                             "agent_overloaded: file I/O queue is full".to_string(),
                                         ),
                                     };
-                                    if !send_agent_message(&mut write, &response).await {
+                                    if !queue_agent_message(&control_tx, &response) {
                                         tracing::warn!("Failed to send temp cleanup overload response, reconnecting");
                                         break;
                                     }
@@ -1483,24 +1535,24 @@ async fn run_one_connection(
                             _ => {}
                         }
                     }
-                    Ok(Some(Ok(Message::Ping(data)))) => {
-                        if !send_with_timeout(&mut write, Message::Pong(data)).await {
+                    Some(Ok(Message::Ping(data))) => {
+                        if !queue_frame(&control_tx, Message::Pong(data)) {
                             tracing::warn!("Failed to send protocol pong, reconnecting");
                             break;
                         }
                     }
-                    Ok(Some(Ok(Message::Close(_)))) => {
+                    Some(Ok(Message::Close(_))) => {
                         tracing::info!("Hub closed connection");
                         break;
                     }
                     _ => {}
                 }
             }
-            _ = ping_interval.tick() => {
+            _ = ping_interval.tick(), if control_ready => {
                 let heartbeat = Message::Text(
                     serde_json::to_string(&AgentMessage::Heartbeat).unwrap().into(),
                 );
-                if !send_with_timeout(&mut write, heartbeat).await {
+                if !queue_frame(&control_tx, heartbeat) {
                     tracing::warn!("Heartbeat send failed/timed out, reconnecting");
                     break;
                 }
@@ -1521,20 +1573,19 @@ async fn run_one_connection(
         store.cancel_all();
     }
     fs_tasks.abort_all();
-    // Drop the search result receiver so a worker blocked on
-    // `blocking_send` (channel full of Progress after the read loop
-    // stopped polling) unblocks immediately instead of hanging forever.
-    drop(search_rx);
-    drop(office_rx);
-    drop(stats_rx);
-    drop(fs_rx);
-    drop(temp_rx);
-
-    // Best-effort Close frame so the hub can run cleanup immediately instead
-    // of waiting for TCP timeout. Ignore errors — we're tearing down anyway.
-    let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, write.send(Message::Close(None))).await;
+    // Best-effort Close, bounded even if TCP is blocked. Dropping the writer
+    // also closes every response receiver and releases blocked worker sends.
+    if !writer.0.is_finished() {
+        let _ = control_tx.try_send(Message::Close(None));
+        let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, &mut writer.0).await;
+    }
+    writer.0.abort();
     tracing::info!("Disconnected from Hub");
 }
+
+#[cfg(test)]
+#[path = "connection_transport_tests.rs"]
+mod transport_tests;
 
 #[cfg(test)]
 mod tests {

@@ -4,6 +4,11 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+### Fixed
+- **Agent responsiveness during network stalls** — socket writes run independently of incoming requests, with separate bounded queues for directory metadata and file chunks. Small replies use TCP_NODELAY. Outgoing heartbeats no longer reset the inbound silence deadline, so a half-open connection reconnects instead of remaining stuck.
+- **Transfer clipboard uploads** — a pasted image is collected from one clipboard file source, preventing duplicate uploads when the browser exposes separate objects for the same image.
+- **Login input borders** — restore the theme border color after focus or validation errors clear.
+
 ## v1.9.5 — 2026-09-15
 
 ### Added

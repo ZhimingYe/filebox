@@ -10,6 +10,47 @@ traps) that reading code will never reveal.
 
 ---
 
+## Intermittent loss and file-transfer stalls
+
+Both Browser → Hub and Agent → Hub use reliable TCP streams. Packet loss is
+retransmitted by TCP; the application cannot infer a count of lost packets
+from a delayed WebSocket message. Measure each leg separately, including RTT,
+stall duration, and whether the problem occurs only during a large download.
+
+The agent keeps socket writes in an independent, bounded task. Directory/stat
+responses have their own queue, so a backlog of file chunks does not have to
+drain before those responses can be selected. Incoming requests and Cancel
+remain processable while a write is blocked, until the bounded control queue
+fills. At that point intake pauses until there is room for a complete reply;
+congestion alone does not disconnect the agent. Writer failure and the inbound
+silence deadline remain monitored during that pause. TCP_NODELAY avoids additional
+small-message batching delays. These changes require updating the **Agent**;
+updating only the Hub/frontend does not activate them.
+
+This does not remove TCP head-of-line blocking: bytes already sent on the same
+connection still wait for retransmission. A blocked write retains the existing
+10-second timeout, and inbound silence is measured from the last actual
+received frame (45 seconds), independent of outgoing heartbeats. Do not shorten
+these timeouts to react to a few lost packets; repeated reconnects discard
+in-flight work and can make intermittent loss worse.
+
+Run the transport regressions with:
+
+```bash
+cargo test -p filebox-agent connection::transport_tests
+```
+
+They cover repeated backpressure pauses, data integrity, directory/heartbeat
+queue fairness, request-burst backpressure, ordered two-frame resource replies,
+write timeout, teardown, and a silent Hub on a real loopback
+WebSocket. Backpressure simulation is **not** a packet-loss benchmark. For
+deployment measurements, compare a large download plus repeated directory
+requests under the same bandwidth/RTT/loss pattern on an isolated test link;
+record throughput, directory latency, reconnect count, and downloaded checksum.
+Do not apply host-wide network impairment to a production machine.
+
+---
+
 ## 0. Mental model (read first)
 
 ```text
