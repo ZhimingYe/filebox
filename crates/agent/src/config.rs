@@ -327,14 +327,16 @@ pub fn setup_terminal_2fa(path: &std::path::Path) -> Result<(), String> {
 struct PrivateConfig {
     path: PathBuf,
     #[cfg(unix)]
-    identity: Option<(u64, u64)>,
+    file: Option<std::fs::File>,
 }
 static PRIVATE_CONFIG: std::sync::OnceLock<PrivateConfig> = std::sync::OnceLock::new();
 fn protect_config(path: &std::path::Path) {
     let path = path.canonicalize().unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(path));
     #[cfg(unix)]
-    let identity = std::fs::metadata(&path).ok().map(|m| { use std::os::unix::fs::MetadataExt; (m.dev(), m.ino()) });
-    let _ = PRIVATE_CONFIG.set(PrivateConfig { path, #[cfg(unix)] identity });
+    // Pin the inode for the lifetime of its protection. Remembering just its
+    // number would deny unrelated files after unlink + inode reuse on Linux.
+    let file = std::fs::File::open(&path).ok();
+    let _ = PRIVATE_CONFIG.set(PrivateConfig { path, #[cfg(unix)] file });
 }
 pub fn is_private_config(path: &std::path::Path) -> bool {
     private_config_matches(path, std::fs::metadata(path).ok().as_ref())
@@ -345,7 +347,9 @@ pub fn private_config_matches(path: &std::path::Path, metadata: Option<&std::fs:
     #[cfg(unix)]
     if let Some(m) = metadata {
         use std::os::unix::fs::MetadataExt;
-        if config.identity == Some((m.dev(), m.ino())) { return true; }
+        if let Some(original) = config.file.as_ref().and_then(|file| file.metadata().ok()) {
+            if (original.dev(), original.ino()) == (m.dev(), m.ino()) { return true; }
+        }
     }
     false
 }
@@ -367,5 +371,17 @@ mod private_config_tests {
         let root = dir.path().canonicalize().unwrap();
         assert!(crate::fs::open_resolved_leaf(&root, std::path::Path::new("innocent.txt"), &alias).is_err());
         assert!(!is_private_config(&dir.path().join("unrelated.txt")));
+        std::fs::remove_file(&config).unwrap();
+        assert!(is_private_config(&alias));
+        std::fs::remove_file(&alias).unwrap();
+        // Even with no links left, the protected inode must stay allocated.
+        use std::os::unix::fs::MetadataExt;
+        let pinned = PRIVATE_CONFIG.get().unwrap().file.as_ref().unwrap().metadata().unwrap();
+        assert_eq!(pinned.nlink(), 0);
+        let unrelated = dir.path().join("unrelated.txt");
+        std::fs::write(&unrelated, "public").unwrap();
+        let fresh = std::fs::metadata(&unrelated).unwrap();
+        assert_ne!((pinned.dev(), pinned.ino()), (fresh.dev(), fresh.ino()));
+        assert!(!is_private_config(&unrelated));
     }
 }
