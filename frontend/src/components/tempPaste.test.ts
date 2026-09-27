@@ -93,6 +93,29 @@ describe('filesFromPaste', () => {
     const out = filesFromPaste(mockClipboard([png, txt]));
     expect(out.map((f) => f.name)).toEqual(['shot.png']);
   });
+
+  it('uploads once when items and files wrap the same image in separate objects', () => {
+    const clipboard = mockClipboard([fakeFile('image.png', 'image/png')]);
+    const file = fakeFile('image.png', 'image/png');
+    const data = { items: clipboard.items, files: [file] } as unknown as DataTransfer;
+    expect(filesFromPaste(data)).toEqual([file]);
+    // A later paste of the same image is still a new upload.
+    expect(filesFromPaste(data)).toEqual([file]);
+  });
+
+  it('preserves multiple images with identical names and metadata', () => {
+    const files = [fakeFile('image.png', 'image/png'), fakeFile('image.png', 'image/png')];
+    const clipboard = mockClipboard(files.map(() => fakeFile('image.png', 'image/png')));
+    expect(filesFromPaste({ items: clipboard.items, files } as unknown as DataTransfer))
+      .toEqual(files);
+  });
+
+  it('falls back to items when the file list is empty', () => {
+    const image = fakeFile('image.png', 'image/png');
+    const clipboard = mockClipboard([image, fakeFile('notes.txt', 'text/plain')]);
+    expect(filesFromPaste({ items: clipboard.items, files: [] } as unknown as DataTransfer))
+      .toEqual([image]);
+  });
 });
 
 describe('pasteTargetIsEditable', () => {
