@@ -23,10 +23,12 @@ machines need no public IP, inbound port, VPN, or port mapping.
 
 ## Out of Scope (do not resurrect without explicit sign-off)
 
-- Write / edit / delete / rename files — **sole sanctioned exception: the
-  per-agent temp-upload folder** (see "Temp Upload Folder" below). The agent
-  writes ONLY inside `<temp base>/<upload folder>` and nothing else, ever.
-- Shell execution, terminal, remote desktop
+- Write / edit / delete / rename files — **two sanctioned exceptions only**:
+  the per-agent temp-upload folder (see "Temp Upload Folder" below; the agent
+  writes ONLY inside `<temp base>/<upload folder>` and nothing else, ever) and
+  the explicit-sign-off **remote terminal** (see "Remote Terminal" below; its
+  shell is NOT sandboxed and can write anywhere the shell user can).
+- Remote desktop
 - Arbitrary TCP proxying, LAN scanning, **port forwarding** (an earlier
   draft planned a port-tunnel feature; it was dropped)
 - WebDAV, sync drive behavior
@@ -44,9 +46,13 @@ machines need no public IP, inbound port, VPN, or port mapping.
   entire file.
 - **Frontend is the control surface.** Roots, pins, and collections are
   managed from the UI. CLI is bootstrap / automation / recovery only.
-- **Read-only.** Never add writes, shell, or arbitrary proxying. The ONLY
-  write path is the temp-upload folder (browser drag-drop → hub relay →
-  agent writes into its dedicated folder). Nothing else writes.
+- **Read-only files.** Never add file writes or arbitrary proxying. The ONLY
+  file write path is the temp-upload folder (browser drag-drop → hub relay →
+  agent writes into its dedicated folder). Nothing else writes files.
+  **Sanctioned exception with explicit sign-off: the 2FA-gated remote
+  terminal** (see "Remote Terminal" below) — a PTY shell on the agent,
+  guarded by per-browser-session TOTP. It is NOT a file write path and must
+  never bypass the fs denylist for previews.
 - **Reconnect forever.** Survives 24h+ outages; identity persists; no
   duplicate backend entries on reconnect.
 - **Never freeze silently.** Long ops are fine, but every one needs visible
@@ -93,7 +99,9 @@ challenges), `net.rs` (`FILEBOX_TRUST_XFF` for client IP),
 updates + config_error), `ws.rs` (agent WSS handler with
 abort-on-reregister), `events.rs` (SSE fanout), `fs_proxy.rs` (proxies
 file ops to agent WS), `search_proxy.rs` (workspace search),
-`temp_proxy.rs` (temp-folder upload relay + cleanup), `health.rs`.
+`temp_proxy.rs` (temp-folder upload relay + cleanup),
+`terminal_proxy.rs` (terminal WS relay + tickets),
+`health.rs`.
 
 **Agent** (`crates/agent/`): Rust + Tokio + tokio-tungstenite (rustls
 webpki-roots) + sysinfo. Connects outward, reconnects forever.
@@ -103,7 +111,9 @@ bad updates never destroy last good state), `fs.rs` (read-only ops + path
 safety + denylist), `search.rs` (in-process fd/rg-like workspace search),
 `dir_cache.rs` (mtime-keyed directory listing cache, cleared on root
 apply, capped), `sysinfo.rs` (TTL-cached stats — see below),
-`temp_store.rs` (the ONLY write path: dedicated temp-upload folder),
+`temp_store.rs` (the ONLY file write path: dedicated temp-upload folder),
+`terminal.rs` (PTY shell sessions — 2FA-gated, unix-only; see "Remote
+Terminal"),
 `config_store.rs` (persists `agent_id`, roots, pins, collections,
 revisions under `data_dir` in `agent_state.json`).
 
@@ -117,7 +127,7 @@ by default; mirrors via `--update-base-url`).
 `Error` / terminal response. File reads stream as `FileChunk { offset,
 data, done }` — agent never slurps whole files. Search types live in
 `search.rs`. `Capabilities` gates real features (`pinned_folders`,
-`collections`, `workspace_search`); vestigial flags (`image_preview`,
+`collections`, `workspace_search`, `terminal`); vestigial flags (`image_preview`,
 `pdf_preview`, `serve_dir`) default `false` and aren't gated on — don't
 read meaning into them.
 
@@ -152,8 +162,10 @@ agent_registry.rs}` before touching this path.
 - `unregister` verifies `same_channel()` between caller's sender and
   registry entry before tearing down — a slow old connection can't
   clobber a fresh one's status back to Offline.
-- Only emits `agent_disconnected` SSE on normal-close exits, not on abort,
-  so reconnect-driven rotation doesn't flash spurious offline to the UI.
+- Only the connection still owning the registry entry emits
+  `agent_disconnected` SSE. Superseded connections stay quiet; aborting the
+  current connection for stalled terminal cleanup reports offline until it
+  reconnects.
 
 ## Sysinfo TTL Cache (non-obvious invariant)
 
@@ -307,6 +319,64 @@ Security invariants (`crates/agent/src/temp_store.rs` is the authority):
   initialized or for legacy agents → `unsupported_feature`). Uploads also
   ride the normal session + CSRF protection.
 
+## Remote Terminal (Agent-local 2FA; persistent PTYs)
+
+The Terminal view runs an unsandboxed shell as the Agent user. This is an
+explicitly approved exception to read-only browsing.
+
+- Configure locally with `agent --setup-terminal-2fa [--config agent.toml]`.
+  The wizard generates a 160-bit key, explains authenticator entry, confirms
+  a hidden six-digit code, and atomically saves the config with mode 0600.
+  `--init-config` offers enrollment too. Restart the Agent to apply changes.
+  Missing secrets disable terminal opens; invalid configured secrets fail
+  startup. Environment overrides remain supported. Hub never provisions,
+  stores, or receives the secret. The active config's path and inode are
+  denied to file reads/search, including custom filenames and hard links.
+- Every open/resume requires a fresh Agent code (SHA1 TOTP, six digits, 30s,
+  ±1 step). Agent tracks accepted counters and limits failures to five per
+  30s across Hub reconnects. A used code cannot authorize another attachment.
+- `POST /api/agents/{id}/terminal/ticket` requires session + CSRF and mints
+  a principal/agent-bound, single-use 60s ticket. This authorizes the WS
+  upgrade only; Agent verifies the code before exposing the shell. Ticket
+  and code travel in WS subprotocols, never URLs. Hub rejects Origin null.
+  No Hub enrollment, verify, renewal, or secret-store API remains.
+- PTYs survive browser navigation/disconnect, Hub outages/restarts and idle
+  time. The Agent process owns them: restarting that process loses sessions.
+  At most eight shells per Agent; sixteen browser connections per Hub.
+  There is no idle reaper. Explicit Sessions → End or shell exit ends a shell.
+- `TerminalOpen` creates a stable session id; `TerminalAttach` authenticates
+  a new routing id; `TerminalDetach` disconnects without killing. Input and
+  resize work only for a live authenticated attachment. One browser may
+  attach to a shell at a time. Cancel/connection teardown detach, including
+  opens still in setup. Explicit `TerminalClose` uses the stable session id.
+- Output keeps a bounded recent 256 KiB tail, coalesced into ≤16 KiB chunks
+  for replay. This is recent byte history, not a full terminal-screen snapshot.
+  Reader threads keep draining detached PTYs. Congestion detaches the browser
+  with a retryable state, preserving the shell. Input uses a bounded 64-frame
+  writer queue (≤48 KiB/frame), never blocking the shared Agent WS loop.
+- Hub routing remains bound to Agent connection generation. Stale senders
+  cannot remove newer entries; insertion/send use one registry read. Hub
+  re-chunks output defensively and bounds browser queues to 256 frames.
+  Opens/attaches have a 30s deadline; browser has a 35s handshake deadline,
+  an 8s slow notice and cancellation. xterm stays hidden until Agent confirms.
+  Browser connections use a nonce ping every 15s; no matching pong for 45s
+  detaches the attachment, never the shell. Browser independently reports a
+  lost connection after 60s without server frames (checked every 5s).
+  Terminal detach waits up to 5s for outbound queue capacity; failure aborts
+  only the captured Agent connection so its teardown releases attachments.
+  A replacement Agent connection is never targeted by stale cleanup.
+- Session listing and explicit End require session + CSRF, allowing recovery
+  without a code. Listing errors propagate. `terminal_persistent` and
+  `terminal_agent_2fa` gate upgrades; `terminal_manage` gates list/end.
+- Audit: `terminal_opened` / `terminal_open_failed` at Agent acknowledgement,
+  `terminal_detached` on browser teardown and `terminal_kill` on explicit End,
+  with username, IP and user agent.
+- Threat model: Hub still sees codes in transit, can spend a fresh code before
+  its user, and can inject commands into an already authorized attachment.
+  Local verification prevents arbitrary fresh opens without a valid code;
+  it is not end-to-end protection from an actively compromised Hub. A shell
+  can access anything its OS user can, independently of browsing roots.
+
 ## Security
 
 - Users: bcrypt-hashed passwords in `hub.json`. Sessions: `HttpOnly;
@@ -454,9 +524,11 @@ filebox/
                             # (shared upload-name validation)
     updater/src/            # --init-config, --update
     hub/src/                # … + search_proxy.rs, temp_proxy.rs (upload relay),
-                            # net.rs, audit.rs (login audit)
+                            # terminal_proxy.rs (terminal relay + tickets),
+                            # net.rs, audit.rs (login/terminal audit)
     agent/src/              # … + search.rs, dir_cache.rs, temp_store.rs
-                            # (write-scoped temp upload folder)
+                            # (write-scoped temp upload folder),
+                            # terminal.rs (PTY sessions)
   frontend/
     vite.config.ts          # manualChunks: react / markdown / tiff
                             # (Monaco stays behind TextPreview lazy import)
@@ -469,7 +541,8 @@ filebox/
       state/                # session, events (SSE), health, useIsMobile
       components/
         Login BackendList FileBrowser FileEntryList WorkspaceSearch
-        TempTransferView CollectionsView CollectionPicker WorkspaceSplit PreviewWorkspace
+        TempTransferView TerminalView TerminalPane (lazy, xterm chunk)
+        CollectionsView CollectionPicker WorkspaceSplit PreviewWorkspace
         PreviewPane previewShared {Pdf,Text,Markdown,Html,Csv,Image}Preview
         DirectoryTree AddressBar DateFilterControl PinnedFolders
         AgentSettings RootManager HealthPanel SystemStats AboutDialog

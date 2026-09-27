@@ -6,7 +6,8 @@ filebox is a read-only remote file browser with system monitoring. Install a
 small agent on each machine you want to reach, host the hub on a server you
 control, and open a single URL — from your desktop or your phone, wherever
 you are. Every machine is one click away, with no VPN, no public IP on the
-target, no port forwarding, and no SSH gymnastics.
+target, no port forwarding, and no SSH gymnastics. The one optional exception
+to "read-only" is a TOTP-guarded **remote terminal** (see Features).
 
 [![Release](https://img.shields.io/github/v/release/ZhimingYe/filebox?sort=semver)](https://github.com/ZhimingYe/filebox/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -83,7 +84,11 @@ on its own, with no duplicate entries and no lost configuration.
 
 ### Security
 
-- Read-only by design: browsing can never modify or delete anything
+- Read-only by design: browsing can never modify or delete anything. The two
+  deliberate exceptions are the per-agent **temp upload folder** (the only
+  place the agent writes files) and the optional, TOTP-guarded **remote
+  terminal** — a shell on the agent that is *not* sandboxed and can do
+  anything that machine's user can
 - Per-user logins; a separate token authenticates each machine
 - Sensitive files (credentials, private keys, shell history, `.env`, and
   more) are denied by default, even inside allowed folders
@@ -97,6 +102,22 @@ on its own, with no duplicate entries and no lost configuration.
 - Live status feed with request progress and cancellation
 - Agents reconnect automatically after outages — identity persists, no duplicates
 - One-command in-place updates
+
+### Temp files and the remote terminal (optional, both off by default in spirit)
+
+- **Transfer** view: drag small files onto the page and the agent stores them
+  in one dedicated scratch folder — the only path where an agent ever writes.
+  Per-file and total quotas, no overwrites, one-click cleanup, and the folder
+  is never browsable as a normal root.
+- **Terminal** view: an interactive shell with Agent-local TOTP verification.
+  Run `agent --setup-terminal-2fa` (or add `--config /path/agent.toml`) on
+  the Agent machine, complete the authenticator wizard, then restart Agent.
+  Every open/resume requires a fresh code. Hub only relays it for local
+  verification; no secret is configured on Hub. Shells survive browser
+  navigation, disconnects, Hub restarts and idle time. Use Sessions → Resume
+  to reconnect or End to stop a shell. Agent restart loses sessions; replay
+  retains the most recent 256 KiB of output. The shell is unsandboxed and
+  can do anything the Agent's OS user can.
 
 ## Quick Start
 
@@ -220,6 +241,7 @@ Most users never need this — see [`docs/`](docs/) for development details.
 | `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Where the agent keeps its state | system data dir + `filebox` |
 | — | `FILEBOX_AGENT_SOFFICE` | Path to `soffice` (enables Office preview) | unset |
 | — | `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` | unset |
+| `terminal_totp_secret` | `FILEBOX_AGENT_TERMINAL_TOTP_SECRET` | Required base32 secret for local 2FA per terminal open/resume (min 16 bytes; the env var wins and an unusable value is a startup error, never a silent downgrade) | unset |
 
 ## Office preview (optional)
 

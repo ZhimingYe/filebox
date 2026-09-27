@@ -13,6 +13,14 @@ use crate::search::{SearchMode, SearchResult};
 /// also clamps reads to this size when `length` is omitted or oversized.
 pub const FILE_CHUNK_MAX_BYTES: u64 = 512 * 1024;
 
+/// Max raw bytes per `TerminalOutput` message over the Hub↔Agent WebSocket.
+/// Small on purpose: terminal I/O is latency-sensitive and must never stall
+/// the shared control channel. Agents MUST chunk to this size; the hub
+/// re-chunks defensively (see `terminal_proxy::forward_terminal_output`) so a
+/// single oversized frame cannot fill the per-session browser queue with
+/// multi-megabyte values.
+pub const TERMINAL_CHUNK_MAX_BYTES: usize = 16 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OfficePreviewOutput {
     pub label: String,
@@ -22,6 +30,25 @@ pub struct OfficePreviewOutput {
 }
 
 // ── Agent → Hub ──────────────────────────────────────────────────────────────
+
+/// One live terminal session as reported by the agent (management listing).
+/// `req_id` is the session id (`term_<uuid>`); `idle_secs` measures time
+/// since the last INPUT (keyboard activity), for the session list.
+/// Every field is `#[serde(default)]` except the id, so an agent that omits
+/// (or a future protocol that drops) a field still yields a usable listing
+/// instead of failing the whole response and timing the caller out.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TerminalSessionInfo {
+    pub req_id: String,
+    #[serde(default)]
+    pub age_secs: u64,
+    #[serde(default)]
+    pub idle_secs: u64,
+    #[serde(default)]
+    pub cols: u16,
+    #[serde(default)]
+    pub rows: u16,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -149,6 +176,33 @@ pub enum AgentMessage {
         removed: u64,
         freed_bytes: u64,
         error: Option<String>,
+    },
+    /// Result of opening a remote terminal session. On failure `error`
+    /// carries a BARE machine-readable code the hub forwards verbatim and the
+    /// frontend switches on (`terminal_unavailable`, `agent_overloaded`,
+    /// `terminal_2fa_required`, `terminal_2fa_invalid`); operator-facing
+    /// detail belongs in the agent log, not on the wire.
+    TerminalOpened {
+        req_id: String,
+        error: Option<String>,
+    },
+    /// Raw PTY output bytes (base64 on the wire), streamed as produced.
+    TerminalOutput {
+        req_id: String,
+        #[serde(with = "base64_bytes")]
+        data: Vec<u8>,
+    },
+    /// The terminal session ended (shell exited, killed, or closed).
+    TerminalClosed {
+        req_id: String,
+        reason: Option<String>,
+    },
+    /// Answer to `TerminalListRequest`: every live session on the agent
+    /// (the agent is the source of truth — it also sees orphans the hub
+    /// forgot about).
+    TerminalListResponse {
+        req_id: String,
+        sessions: Vec<TerminalSessionInfo>,
     },
 }
 
@@ -320,6 +374,53 @@ pub enum HubMessage {
     /// Delete every entry inside the temp upload folder (the folder itself
     /// survives). One-click cleanup for the scratch space.
     TempCleanupRequest {
+        req_id: String,
+    },
+    /// Open a remote terminal session: spawn a shell on a PTY sized
+    /// `cols` × `rows`. The agent replies `TerminalOpened`, then streams
+    /// `TerminalOutput` until `TerminalClosed`.
+    TerminalOpen {
+        req_id: String,
+        cols: u16,
+        rows: u16,
+        /// Required Agent-local 2FA: the user's current TOTP code for the
+        /// agent's OWN secret (`terminal_totp_secret` in agent.toml),
+        /// passed through by the hub. The agent verifies it locally and
+        /// rejects with `terminal_2fa_required` / `terminal_2fa_invalid`.
+        /// Additive field — old agents ignore it.
+        #[serde(default)]
+        agent_totp_code: Option<String>,
+    },
+    /// Authenticate a new attachment to an existing stable session.
+    TerminalAttach {
+        req_id: String,
+        session_id: String,
+        #[serde(default)]
+        agent_totp_code: Option<String>,
+    },
+    /// Remove an attachment without ending its shell.
+    TerminalDetach { req_id: String },
+    /// Raw stdin bytes for an authenticated attachment (base64 on the wire).
+    TerminalInput {
+        req_id: String,
+        #[serde(with = "base64_bytes")]
+        data: Vec<u8>,
+    },
+    /// Notify the agent that the browser terminal was resized.
+    TerminalResize {
+        req_id: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// Close a terminal session and kill its shell. Also used by the
+    /// management API to force-kill a (possibly orphaned) session — the
+    /// req_id IS the session id.
+    TerminalClose {
+        req_id: String,
+    },
+    /// List the agent's live terminal sessions (management / zombie
+    /// recovery). Gated by `capabilities.terminal_manage`.
+    TerminalListRequest {
         req_id: String,
     },
 }
@@ -950,6 +1051,307 @@ mod tests {
                 assert_eq!(processed, 1024);
                 assert_eq!(total, Some(4096));
                 assert_eq!(message.as_deref(), Some("halfway"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn terminal_messages_round_trip() {
+        let open = HubMessage::TerminalOpen {
+            req_id: "t1".into(),
+            cols: 120,
+            rows: 40,
+            agent_totp_code: None,
+        };
+        let back = round_trip_hub(&open);
+        match back {
+            HubMessage::TerminalOpen {
+                req_id,
+                cols,
+                rows,
+                agent_totp_code,
+            } => {
+                assert_eq!(req_id, "t1");
+                assert_eq!(cols, 120);
+                assert_eq!(rows, 40);
+                assert!(agent_totp_code.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        // Older hubs omit agent_totp_code — defaults to None.
+        let legacy_open = serde_json::json!({
+            "type": "terminal_open",
+            "req_id": "t0",
+            "cols": 80,
+            "rows": 24
+        });
+        let legacy_back: HubMessage = serde_json::from_value(legacy_open).unwrap();
+        match legacy_back {
+            HubMessage::TerminalOpen { agent_totp_code, .. } => {
+                assert!(agent_totp_code.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let input = HubMessage::TerminalInput {
+            req_id: "t1".into(),
+            data: b"ls -la\n".to_vec(),
+        };
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["data"], "bHMgLWxhCg==");
+        let back = round_trip_hub(&input);
+        match back {
+            HubMessage::TerminalInput { data, .. } => assert_eq!(data, b"ls -la\n"),
+            _ => panic!("wrong variant"),
+        }
+
+        let resize = HubMessage::TerminalResize {
+            req_id: "t1".into(),
+            cols: 80,
+            rows: 24,
+        };
+        match round_trip_hub(&resize) {
+            HubMessage::TerminalResize { cols, rows, .. } => {
+                assert_eq!(cols, 80);
+                assert_eq!(rows, 24);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let close = HubMessage::TerminalClose {
+            req_id: "t1".into(),
+        };
+        match round_trip_hub(&close) {
+            HubMessage::TerminalClose { req_id } => assert_eq!(req_id, "t1"),
+            _ => panic!("wrong variant"),
+        }
+
+        let opened = AgentMessage::TerminalOpened {
+            req_id: "t1".into(),
+            error: None,
+        };
+        match round_trip_agent(&opened) {
+            AgentMessage::TerminalOpened { req_id, error } => {
+                assert_eq!(req_id, "t1");
+                assert!(error.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let output = AgentMessage::TerminalOutput {
+            req_id: "t1".into(),
+            data: b"total 0\n".to_vec(),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["type"], "terminal_output");
+        assert_eq!(json["data"], "dG90YWwgMAo=");
+        match round_trip_agent(&output) {
+            AgentMessage::TerminalOutput { data, .. } => assert_eq!(data, b"total 0\n"),
+            _ => panic!("wrong variant"),
+        }
+
+        let closed = AgentMessage::TerminalClosed {
+            req_id: "t1".into(),
+            reason: Some("shell exited".into()),
+        };
+        match round_trip_agent(&closed) {
+            AgentMessage::TerminalClosed { req_id, reason } => {
+                assert_eq!(req_id, "t1");
+                assert_eq!(reason.as_deref(), Some("shell exited"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn terminal_list_round_trips() {
+        let req = HubMessage::TerminalListRequest {
+            req_id: "tl1".into(),
+        };
+        match round_trip_hub(&req) {
+            HubMessage::TerminalListRequest { req_id } => assert_eq!(req_id, "tl1"),
+            _ => panic!("wrong variant"),
+        }
+
+        let resp = AgentMessage::TerminalListResponse {
+            req_id: "tl1".into(),
+            sessions: vec![TerminalSessionInfo {
+                req_id: "term_abc".into(),
+                age_secs: 300,
+                idle_secs: 12,
+                cols: 120,
+                rows: 40,
+            }],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["type"], "terminal_list_response");
+        match round_trip_agent(&resp) {
+            AgentMessage::TerminalListResponse { req_id, sessions } => {
+                assert_eq!(req_id, "tl1");
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions[0].req_id, "term_abc");
+                assert_eq!(sessions[0].age_secs, 300);
+                assert_eq!(sessions[0].idle_secs, 12);
+                assert_eq!(sessions[0].cols, 120);
+                assert_eq!(sessions[0].rows, 40);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn capabilities_default_has_terminal_false_and_legacy_agents_omit_it() {
+        assert!(!Capabilities::default().terminal);
+        let legacy = serde_json::json!({
+            "fs_list": true,
+            "fs_stat": true,
+            "fs_read_range": true,
+            "image_preview": false,
+            "pdf_preview": false,
+            "serve_dir": false,
+            "resource_management": true,
+            "sys_stats": true
+        });
+        let caps: Capabilities = serde_json::from_value(legacy).unwrap();
+        assert!(!caps.terminal);
+    }
+
+    /// Frozen wire tags. A renamed variant parses as an unknown `type` on the
+    /// other side and is dropped silently (rolling upgrades cannot catch it),
+    /// so the tags — not just a couple of representative ones — are pinned.
+    #[test]
+    fn terminal_message_tags_are_frozen() {
+        let hub = [
+            (
+                HubMessage::TerminalOpen {
+                    req_id: "t".into(),
+                    cols: 80,
+                    rows: 24,
+                    agent_totp_code: None,
+                },
+                "terminal_open",
+            ),
+            (
+                HubMessage::TerminalInput {
+                    req_id: "t".into(),
+                    data: b"x".to_vec(),
+                },
+                "terminal_input",
+            ),
+            (
+                HubMessage::TerminalResize {
+                    req_id: "t".into(),
+                    cols: 80,
+                    rows: 24,
+                },
+                "terminal_resize",
+            ),
+            (
+                HubMessage::TerminalClose { req_id: "t".into() },
+                "terminal_close",
+            ),
+            (
+                HubMessage::TerminalListRequest { req_id: "t".into() },
+                "terminal_list_request",
+            ),
+        ];
+        for (msg, tag) in hub {
+            assert_eq!(serde_json::to_value(&msg).unwrap()["type"], tag);
+        }
+
+        let agent = [
+            (
+                AgentMessage::TerminalOpened {
+                    req_id: "t".into(),
+                    error: None,
+                },
+                "terminal_opened",
+            ),
+            (
+                AgentMessage::TerminalOutput {
+                    req_id: "t".into(),
+                    data: b"x".to_vec(),
+                },
+                "terminal_output",
+            ),
+            (
+                AgentMessage::TerminalClosed {
+                    req_id: "t".into(),
+                    reason: None,
+                },
+                "terminal_closed",
+            ),
+            (
+                AgentMessage::TerminalListResponse {
+                    req_id: "t".into(),
+                    sessions: Vec::new(),
+                },
+                "terminal_list_response",
+            ),
+        ];
+        for (msg, tag) in agent {
+            assert_eq!(serde_json::to_value(&msg).unwrap()["type"], tag);
+        }
+    }
+
+    /// The terminal byte fields are base64 on the wire; arbitrary binary (not
+    /// just UTF-8) must survive, and garbage must be rejected rather than
+    /// silently becoming empty output.
+    #[test]
+    fn terminal_payload_base64_handles_binary_empty_and_garbage() {
+        let binary = AgentMessage::TerminalOutput {
+            req_id: "t".into(),
+            data: vec![0xde, 0xad, 0xbe, 0xef],
+        };
+        let json = serde_json::to_value(&binary).unwrap();
+        assert_eq!(json["data"], "3q2+7w==");
+        match round_trip_agent(&binary) {
+            AgentMessage::TerminalOutput { data, .. } => {
+                assert_eq!(data, vec![0xde, 0xad, 0xbe, 0xef])
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let empty = AgentMessage::TerminalOutput {
+            req_id: "t".into(),
+            data: Vec::new(),
+        };
+        let json = serde_json::to_value(&empty).unwrap();
+        assert_eq!(json["data"], "");
+        match round_trip_agent(&empty) {
+            AgentMessage::TerminalOutput { data, .. } => assert!(data.is_empty()),
+            _ => panic!("wrong variant"),
+        }
+
+        let garbage: Result<AgentMessage, _> =
+            serde_json::from_str(r#"{"type":"terminal_output","req_id":"t","data":"!!!"}"#);
+        assert!(garbage.is_err(), "invalid base64 must not decode to bytes");
+    }
+
+    /// Additive fields must not break parsing in either direction: a newer
+    /// sender adding one, or an older payload missing a defaulted one.
+    #[test]
+    fn terminal_messages_tolerate_additive_and_missing_fields() {
+        // A future agent adding a field must still parse here.
+        let future: AgentMessage = serde_json::from_str(
+            r#"{"type":"terminal_output","req_id":"t","data":"aGk=","future_field":1}"#,
+        )
+        .unwrap();
+        match future {
+            AgentMessage::TerminalOutput { data, .. } => assert_eq!(data, b"hi"),
+            _ => panic!("wrong variant"),
+        }
+        // A listing that omits the defaulted columns still parses.
+        let partial: AgentMessage = serde_json::from_str(
+            r#"{"type":"terminal_list_response","req_id":"t","sessions":[{"req_id":"term_x"}]}"#,
+        )
+        .unwrap();
+        match partial {
+            AgentMessage::TerminalListResponse { sessions, .. } => {
+                assert_eq!(sessions[0].idle_secs, 0);
+                assert_eq!(sessions[0].cols, 0);
             }
             _ => panic!("wrong variant"),
         }

@@ -132,6 +132,10 @@ impl AgentConnection {
                 office_max_pdf_bytes: self.capabilities.office_max_pdf_bytes,
                 office_timeout_secs: self.capabilities.office_timeout_secs,
                 temp_upload: self.capabilities.temp_upload,
+                terminal: self.capabilities.terminal,
+                terminal_agent_2fa: self.capabilities.terminal_agent_2fa,
+                terminal_manage: self.capabilities.terminal_manage,
+                terminal_persistent: self.capabilities.terminal_persistent,
             },
         }
     }
@@ -176,6 +180,10 @@ pub struct AgentCapabilitiesInfo {
     pub pinned_folders: bool,
     pub collections: bool,
     pub temp_upload: bool,
+    pub terminal: bool,
+    pub terminal_agent_2fa: bool,
+    pub terminal_manage: bool,
+    pub terminal_persistent: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -467,6 +475,22 @@ impl AgentRegistry {
         } else {
             false
         }
+    }
+
+    /// Send to whatever connection is current for `agent_id`, returning the
+    /// `connection_id` the message was queued on.
+    ///
+    /// The lookup and the send happen under one lock so a caller that needs to
+    /// bind state to a connection (the terminal session registry) cannot be
+    /// overtaken by a re-register in between: the agent re-registers on
+    /// every reconnect, and its `connection_id` rotates with it.
+    pub fn send_to_agent_current(&self, agent_id: &str, msg: HubMessage) -> Option<u64> {
+        let agent = self.agents.get(agent_id)?;
+        agent
+            .sender
+            .try_send(msg)
+            .ok()
+            .map(|()| agent.connection_id)
     }
 }
 

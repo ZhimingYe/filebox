@@ -383,6 +383,8 @@ pub async fn run_connection_loop(config: &AgentConfig) {
     let search_inflight = Arc::new(AtomicUsize::new(0));
     let search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    // PTYs and anti-replay state live across every transport connection.
+    let terminal_manager = Arc::new(crate::terminal::TerminalManager::new(config.terminal_totp_secret.clone()));
 
     tracing::info!(
         "Agent ID: {}, data dir: {:?}",
@@ -407,6 +409,7 @@ pub async fn run_connection_loop(config: &AgentConfig) {
             &dir_list_workers,
             &search_inflight,
             &search_cancels,
+            &terminal_manager,
         )
         .await;
 
@@ -466,6 +469,7 @@ async fn run_one_connection(
     dir_list_workers: &Arc<Semaphore>,
     search_inflight: &Arc<AtomicUsize>,
     search_cancels: &Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    terminal_manager: &Arc<crate::terminal::TerminalManager>,
 ) {
     tracing::info!("Connecting to {}", ws_url);
 
@@ -556,6 +560,16 @@ async fn run_one_connection(
     // enters the persisted desired set — the hub surfaces it to the UI from
     // the Register payload, and this agent resolves the name specially.
     capabilities.temp_upload = temp_store.is_some();
+    // Remote terminal sessions spawn a shell on a PTY; unix-only
+    // (portable-pty), so non-unix builds advertise false.
+    capabilities.terminal = cfg!(unix);
+    // Required TOTP check is enforced locally in terminal.rs; advertise it
+    // so the hub knows TerminalOpen must carry agent_totp_code.
+    capabilities.terminal_agent_2fa = config.terminal_totp_secret.is_some();
+    // Session management and persistent attachments ride the same
+    // unix-only PTY support as `terminal`.
+    capabilities.terminal_manage = cfg!(unix);
+    capabilities.terminal_persistent = cfg!(unix);
     let temp_root = temp_store.map(|store| store.root_info());
     let register = AgentMessage::Register {
         agent_id: Some(stable_agent_id.to_string()),
@@ -591,9 +605,12 @@ async fn run_one_connection(
     let (fs_tx, fs_rx) = mpsc::channel::<AgentMessage>(128);
     let (temp_tx, temp_rx) = mpsc::channel::<AgentMessage>(16);
     let (dir_tx, dir_rx) = mpsc::channel::<AgentMessage>(32);
+    // Terminal attachments share the independent writer; transport teardown
+    // detaches them while the manager retains shells, history and anti-replay.
+    let (term_tx, term_rx) = mpsc::channel::<AgentMessage>(64);
     let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
     let mut writer = ConnectionWriter(tokio::spawn(run_connection_writer(
-        write, control_rx, vec![search_rx, office_rx, stats_rx, dir_rx, fs_rx, temp_rx],
+        write, control_rx, vec![search_rx, office_rx, stats_rx, dir_rx, fs_rx, temp_rx, term_rx],
     )));
     let mut last_message = tokio::time::Instant::now();
     let fs_admission = Arc::new(Semaphore::new(FS_MAX_INFLIGHT));
@@ -1079,6 +1096,9 @@ async fn run_one_connection(
                                 // Drop the session's chunk queue so its writer
                                 // task wakes from blocking_recv and exits.
                                 temp_writers.remove(&req_id);
+                                // Terminal sessions also answer to Cancel
+                                // (harmless when req_id isn't a terminal).
+                                terminal_manager.detach(&req_id);
                             }
                             Ok(HubMessage::SysStatsRequest { req_id }) => {
                                 tracing::debug!("Sys stats request");
@@ -1526,6 +1546,51 @@ async fn run_one_connection(
                                     }
                                 }
                             }
+                            Ok(HubMessage::TerminalOpen {
+                                req_id,
+                                cols,
+                                rows,
+                                agent_totp_code,
+                            }) => {
+                                tracing::debug!(
+                                    "Terminal open: cols={}, rows={}",
+                                    cols,
+                                    rows
+                                );
+                                // open() spawns its own thread; the WS loop
+                                // never blocks on PTY setup.
+                                terminal_manager.open(
+                                    req_id,
+                                    cols,
+                                    rows,
+                                    agent_totp_code,
+                                    term_tx.clone(),
+                                );
+                            }
+                            Ok(HubMessage::TerminalAttach { req_id, session_id, agent_totp_code }) => {
+                                terminal_manager.attach(req_id, session_id, agent_totp_code, term_tx.clone());
+                            }
+                            Ok(HubMessage::TerminalDetach { req_id }) => terminal_manager.detach(&req_id),
+                            Ok(HubMessage::TerminalInput { req_id, data }) => {
+                                terminal_manager.input(&req_id, &data);
+                            }
+                            Ok(HubMessage::TerminalResize { req_id, cols, rows }) => {
+                                terminal_manager.resize(&req_id, cols, rows);
+                            }
+                            Ok(HubMessage::TerminalClose { req_id }) => {
+                                terminal_manager.close(&req_id);
+                            }
+                            Ok(HubMessage::TerminalListRequest { req_id }) => {
+                                let sessions = terminal_manager.list();
+                                // try_send: a full terminal queue means the
+                                // connection is saturated — drop (with a debug
+                                // log) rather than block the read loop.
+                                if let Err(e) = term_tx.try_send(
+                                    AgentMessage::TerminalListResponse { req_id, sessions },
+                                ) {
+                                    tracing::debug!("TerminalListResponse dropped: {}", e);
+                                }
+                            }
                             Ok(HubMessage::Error { message }) => {
                                 tracing::warn!("Hub error: {}", message);
                             }
@@ -1572,6 +1637,8 @@ async fn run_one_connection(
     if let Some(store) = temp_store {
         store.cancel_all();
     }
+    // Detach only this connection, retaining shells and replay history.
+    terminal_manager.detach_connection(&term_tx);
     fs_tasks.abort_all();
     // Best-effort Close, bounded even if TCP is blocked. Dropping the writer
     // also closes every response receiver and releases blocked worker sends.

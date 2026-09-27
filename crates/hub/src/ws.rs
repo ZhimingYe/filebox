@@ -330,23 +330,20 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
     });
 
     // Main message read loop. Three exits:
-    //   1. abort_notify fires — a newer connection for this agent_id has
-    //      replaced this entry, so this read loop must exit to release its
-    //      fd instead of waiting hours for OS TCP timeout.
+    //   1. abort_notify fires — this connection was superseded, or terminal
+    //      cleanup could not deliver a detach and must release attachments.
     //   2. ws_stream ends (TCP drop / close frame) — normal cleanup path.
     //   3. Liveness timeout — agent hasn't sent anything in
     //      NO_AGENT_MESSAGE_TIMEOUT, meaning its TCP is silently dead.
     let agent_id_for_msgs = agent_id.clone();
-    let mut exited_via_abort = false;
     loop {
         tokio::select! {
             biased;  // check abort first so a re-register doesn't race
             _ = abort_notify.notified() => {
                 tracing::info!(
-                    "Agent {} connection superseded by new connection, exiting",
+                    "Agent {} connection interrupted, exiting",
                     agent_id_for_msgs
                 );
-                exited_via_abort = true;
                 break;
             }
             send_result = &mut send_task => {
@@ -702,6 +699,76 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                     })).await;
                                 }
                             }
+                            Ok(AgentMessage::TerminalOpened { req_id, error }) => {
+                                let failed = error.is_some();
+                                // Audited here, not when the open was queued:
+                                // only the agent's answer says whether a shell
+                                // was actually handed out. `None` owner means
+                                // the browser left first.
+                                if let Some((username, ip, user_agent)) =
+                                    crate::terminal_proxy::terminal_session_owner(&state, &req_id)
+                                {
+                                    let event = if failed {
+                                        "terminal_open_failed"
+                                    } else {
+                                        "terminal_opened"
+                                    };
+                                    tracing::info!(
+                                        target: "audit",
+                                        ip = %ip,
+                                        user = %username,
+                                        req_id = %req_id,
+                                        error = ?error,
+                                        "{}",
+                                        event
+                                    );
+                                    state.audit.record(event, &username, &ip, &user_agent);
+                                }
+                                let frame = match error {
+                                    Some(code) => serde_json::json!({
+                                        "type": "error",
+                                        "error": code,
+                                    }),
+                                    None => serde_json::json!({ "type": "opened" }),
+                                };
+                                // A failed open is terminal for the session:
+                                // the agent will not stream output after it.
+                                crate::terminal_proxy::forward_to_terminal_session(
+                                    &state,
+                                    &agent_id_for_msgs,
+                                    connection_id,
+                                    &req_id,
+                                    frame,
+                                    failed,
+                                );
+                            }
+                            Ok(AgentMessage::TerminalOutput { req_id, data }) => {
+                                // Re-chunked defensively: the agent caps output
+                                // at TERMINAL_CHUNK_MAX_BYTES, but the hub must
+                                // not let one hostile frame pin multi-megabyte
+                                // values in the bounded browser queue.
+                                crate::terminal_proxy::forward_terminal_output(
+                                    &state,
+                                    &agent_id_for_msgs,
+                                    connection_id,
+                                    &req_id,
+                                    &data,
+                                );
+                            }
+                            Ok(AgentMessage::TerminalClosed { req_id, reason }) => {
+                                let frame = serde_json::json!({
+                                    "type": "closed",
+                                    "reason": reason,
+                                });
+                                crate::terminal_proxy::forward_to_terminal_session(
+                                    &state,
+                                    &agent_id_for_msgs,
+                                    connection_id,
+                                    &req_id,
+                                    frame,
+                                    true,
+                                );
+                            }
                             Ok(AgentMessage::FsListResponse { req_id, .. })
                             | Ok(AgentMessage::FsStatResponse { req_id, .. })
                             | Ok(AgentMessage::FileChunk { req_id, .. })
@@ -709,7 +776,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                             | Ok(AgentMessage::WorkspaceSearchResponse { req_id, .. })
                             | Ok(AgentMessage::OfficeConvertResponse { req_id, .. })
                             | Ok(AgentMessage::TempUploadResponse { req_id, .. })
-                            | Ok(AgentMessage::TempCleanupResponse { req_id, .. }) => {
+                            | Ok(AgentMessage::TempCleanupResponse { req_id, .. })
+                            | Ok(AgentMessage::TerminalListResponse { req_id, .. }) => {
                                 let pending_resp = take_pending_for_connection(
                                     &state,
                                     &req_id,
@@ -788,25 +856,39 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
         );
     }
 
+    // Close browser terminals owned by this connection: dropping the session
+    // entries drops their senders, ending each browser socket's pump loop.
+    let closed_terminals = crate::terminal_proxy::close_terminal_sessions_for_connection(
+        &state,
+        &agent_id,
+        connection_id,
+    );
+    if closed_terminals > 0 {
+        tracing::info!(
+            "Closed {} terminal session(s) for disconnected agent {}",
+            closed_terminals,
+            agent_id
+        );
+    }
+
     let mut inner = state.inner.write().await;
     // Only mark offline if the registry entry still belongs to THIS
     // connection. A reconnect may have already replaced the entry with a
     // new sender, in which case marking it offline would break the live
     // connection (reconnect race condition).
+    let was_current = inner.agents.is_current_connection(&agent_id, connection_id);
     inner.agents.unregister(&agent_id, &tx);
-    drop(inner);
-    tracing::info!("Agent disconnected: {} ({})", name, agent_id);
-
-    // If we exited because a new connection replaced this one, the new
-    // connection already emitted "agent_connected" with the same agent_id.
-    // Emitting "agent_disconnected" here would make the frontend briefly
-    // flap the agent's status, so skip it.
-    if !exited_via_abort {
-        state.emit_sse("agent_disconnected", serde_json::json!({
+    // Superseded connections must not announce the replacement as offline.
+    // An abort of the CURRENT connection (stalled terminal cleanup) does
+    // need an offline event while the Agent reconnects.
+    if was_current {
+        AppState::emit_sse_locked(&inner, "agent_disconnected", serde_json::json!({
             "agent_id": agent_id,
             "name": name,
         })).await;
     }
+    drop(inner);
+    tracing::info!("Agent disconnected: {} ({})", name, agent_id);
 }
 
 /// After a successful apply, prefer hub `desired` for the root set (names,

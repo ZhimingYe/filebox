@@ -164,6 +164,14 @@ pub struct AppState {
     /// permit while its body streams to the agent, so a burst of drag-drops
     /// cannot pile unbounded buffered bodies in memory.
     pub temp_upload_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Single-use WS transport tickets; Agent separately verifies local TOTP.
+    pub terminal_tickets: Arc<crate::terminal_proxy::TerminalTicketStore>,
+    /// Live browser terminal sessions keyed by req_id. `ws.rs` routes agent
+    /// Terminal* messages into the entry's sender; removal closes the browser
+    /// socket.
+    pub terminal_sessions: Arc<
+        std::sync::Mutex<HashMap<String, crate::terminal_proxy::TerminalSessionEntry>>,
+    >,
     /// Serializes full desired-resource rewrites per Agent. Resource updates
     /// carry a revision and a complete root set, so overlapping rewrites for
     /// one Agent would otherwise race while unrelated Agents should proceed.
@@ -222,6 +230,12 @@ impl AppState {
         // broadcast send, otherwise it can receive a duplicate or miss an
         // event during reconnect.
         let inner = self.inner.write().await;
+        Self::emit_sse_locked(&inner, event, data).await;
+    }
+
+    /// Caller holds the registry write lock: lifecycle changes and their event
+    /// must not be overtaken by a replacement Agent registration.
+    pub(crate) async fn emit_sse_locked(inner: &AppStateInner, event: &str, data: serde_json::Value) {
         let id = inner.sse_next_id.fetch_add(1, Ordering::Relaxed);
         let sse_event = SseEvent {
             id,
@@ -275,6 +289,8 @@ impl AppState {
             // Agent for at most FILE_CHUNK_MAX_BYTES at a time.
             raw_read_semaphore: Arc::new(tokio::sync::Semaphore::new(96)),
             temp_upload_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            terminal_tickets: Arc::new(crate::terminal_proxy::TerminalTicketStore::new()),
+            terminal_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             resource_update_locks: Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),

@@ -23,6 +23,10 @@ Thumbs.db
 # Hub login audit sidecar (dev mode writes it to cwd; prod keeps it next to config)
 audit-log.jsonl
 
+# Legacy Hub terminal secrets remain private after migrating to Agent-local 2FA
+totp-secrets.json
+totp-secrets.json.tmp
+
 # Env / secrets
 .env
 .env.*

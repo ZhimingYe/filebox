@@ -8,6 +8,7 @@ const DENIED_EXTENSIONS: &[&str] = &[
 
 const DENIED_EXACT: &[&str] = &[
     ".DS_Store",
+    "agent.toml", "hub.json", "totp-secrets.json",
     ".bashrc", ".bash_profile", ".bash_login", ".profile",
     ".zshrc", ".zprofile", ".zlogin", ".zshenv",
     ".fishrc", ".cshrc", ".tcshrc", ".kshrc",

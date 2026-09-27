@@ -72,6 +72,7 @@ pub(crate) fn resolve_path(
         return Err(format!("Path is outside root: {}/{}", root_name, relative_path));
     }
 
+    if crate::config::is_private_config(&canonical) { return Err("Access denied: private agent configuration".into()); }
     Ok((canonical, root_canonical))
 }
 
@@ -175,7 +176,9 @@ pub(crate) fn open_resolved_leaf(
 
         let child = unsafe { OwnedFd::from_raw_fd(fd) };
         if is_last {
-            return Ok(fs::File::from(child));
+            let file = fs::File::from(child);
+            if crate::config::private_config_matches(_abs_path, file.metadata().ok().as_ref()) { return Err("Access denied: private agent configuration".into()); }
+            return Ok(file);
         }
         dir = child;
     }
@@ -189,7 +192,11 @@ pub(crate) fn open_resolved_leaf(
     _rel_path: &Path,
     abs_path: &Path,
 ) -> Result<fs::File, String> {
-    fs::File::open(abs_path).map_err(|e| format!("Failed to open file: {}", e))
+    let file = fs::File::open(abs_path).map_err(|e| format!("Failed to open file: {}", e))?;
+    if crate::config::private_config_matches(abs_path, file.metadata().ok().as_ref()) {
+        return Err("Access denied: private agent configuration".into());
+    }
+    Ok(file)
 }
 
 /// Read a directory and return ALL of its entries, sorted (directories first,
@@ -340,7 +347,7 @@ where
         let entry_canonical = entry_path
             .canonicalize()
             .unwrap_or_else(|_| entry_path.clone());
-        let denied = is_path_denied(&rel) || is_sensitive_virtual_path(&entry_canonical);
+        let denied = is_path_denied(&rel) || is_sensitive_virtual_path(&entry_canonical) || crate::config::is_private_config(&entry_canonical);
 
         let entry_type = if metadata.is_dir() {
             FsEntryType::Directory
