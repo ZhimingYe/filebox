@@ -1451,7 +1451,10 @@ async fn request_raw_agent(
     }
 }
 
-struct PendingResponseCleanup {
+/// Frees a `pending_responses` slot even when the handler is dropped mid-wait
+/// (client disconnect / timeout); without it a dropped request keeps its slot
+/// until the agent replies. Also used by `terminal_proxy`.
+pub(crate) struct PendingResponseCleanup {
     state: AppState,
     req_id: String,
     cancel_agent_id: Option<String>,
@@ -1459,7 +1462,16 @@ struct PendingResponseCleanup {
 }
 
 impl PendingResponseCleanup {
-    async fn finish(mut self, cancel: bool) {
+    pub(crate) fn new(state: AppState, req_id: String, cancel_agent_id: Option<String>) -> Self {
+        Self {
+            state,
+            req_id,
+            cancel_agent_id,
+            active: true,
+        }
+    }
+
+    pub(crate) async fn finish(mut self, cancel: bool) {
         if cancel {
             if let Some(agent_id) = self.cancel_agent_id.as_deref() {
                 send_cancel(&self.state, agent_id, &self.req_id).await;

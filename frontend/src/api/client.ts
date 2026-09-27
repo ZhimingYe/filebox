@@ -122,15 +122,17 @@ export function friendlyMessage(error: any): string {
     temp_upload_too_large: 'This file exceeds the agent’s upload limit.',
     temp_unavailable: 'The temp folder is not available on this agent.',
     temp_internal_error: 'The upload failed safely. Please retry.',
-    totp_already_bound: 'An authenticator is already bound to this account.',
-    totp_no_pending_bind: 'No binding in progress. Scan the QR code, then retry.',
-    totp_not_bound: 'No authenticator is bound yet. Bind one first.',
-    totp_invalid: 'Incorrect code. Check your authenticator and retry.',
-    totp_rate_limited: 'Too many attempts. Please wait and retry.',
     terminal_ticket_invalid: 'Terminal authorization expired. Verify again.',
+    terminal_2fa_not_configured: 'Configure terminal 2FA locally on the Agent first.',
+    terminal_2fa_rate_limited: 'Too many incorrect codes. Wait 30 seconds and retry.',
+    terminal_session_missing: 'This shell has ended. Open a new session.',
+    terminal_session_attached: 'This shell is open in another browser. Disconnect it before resuming.',
     terminal_2fa_required: 'This backend requires its own authenticator code.',
     terminal_2fa_invalid: 'Invalid or already-used backend code — codes rotate every 30 seconds; enter the current one.',
     terminal_unavailable: 'The terminal is not available on this agent.',
+    terminal_overloaded: 'The hub is already running the maximum number of terminal sessions.',
+    terminal_open_timeout: 'The backend did not confirm the session in time.',
+    terminal_open_failed: 'The backend refused to open a terminal session.',
   };
   if (code && map[code]) return map[code];
   return 'An unexpected error occurred.';
@@ -325,6 +327,10 @@ export interface AgentCapabilities {
   /** Agent itself requires a second, host-local TOTP code before opening
       the shell (independent of the hub-side ticket). */
   terminal_agent_2fa?: boolean;
+  /** Agent can list/kill its live terminal sessions (zombie recovery).
+      Gated separately from `terminal`, so probe before showing the panel. */
+  terminal_manage?: boolean;
+  terminal_persistent?: boolean;
 }
 
 export interface AgentInfo {
@@ -962,53 +968,10 @@ export async function cleanupTempFolder(agentId: string, signal?: AbortSignal) {
 
 // ── Terminal (TOTP 2FA + remote shell) ───────────────────────────────────────
 
-export interface Terminal2faStatus {
-  bound: boolean;
-}
-
-export interface TerminalBindStartResult {
-  /** Base32 TOTP secret — show for manual authenticator entry. */
-  secret: string;
-  /** otpauth:// URI — render as a QR code for scanning. */
-  otpauth_uri: string;
-}
-
-export interface TerminalTicket {
-  /** Bearer for the terminal WebSocket. 30 min TTL, never persisted. Bound
-      to the agent it was minted for. */
-  ticket: string;
-  expires_in_sec: number;
-}
-
-export async function getTerminal2faStatus(signal?: AbortSignal) {
-  return request<Terminal2faStatus>('/api/terminal/2fa/status', { signal }, false, 15_000);
-}
-
-export async function terminalBindStart() {
-  return request<TerminalBindStartResult>('/api/terminal/2fa/bind/start', { method: 'POST' });
-}
-
-export async function terminalBindConfirm(code: string, agentId: string) {
-  return request<TerminalTicket>('/api/terminal/2fa/bind/confirm', {
-    method: 'POST',
-    body: JSON.stringify({ code, agent_id: agentId }),
-  });
-}
-
-export async function terminalVerify(code: string, agentId: string) {
-  return request<TerminalTicket>('/api/terminal/2fa/verify', {
-    method: 'POST',
-    body: JSON.stringify({ code, agent_id: agentId }),
-  });
-}
-
-/** Extend a live terminal ticket by another TTL (30 min). Unknown/expired
-    tickets come back 401 `terminal_ticket_invalid`. */
-export async function terminalRenewTicket(ticket: string) {
-  return request<{ expires_in_sec: number }>('/api/terminal/2fa/renew', {
-    method: 'POST',
-    body: JSON.stringify({ ticket }),
-  });
+export async function terminalTicket(agentId: string) {
+  return request<{ ticket: string; expires_in_sec: number }>(
+    `/api/agents/${encodeURIComponent(agentId)}/terminal/ticket`, { method: 'POST' }, false, 15_000,
+  );
 }
 
 /** One live terminal session on an agent, as listed for zombie recovery. */
@@ -1039,27 +1002,23 @@ export async function killTerminalSession(agentId: string, reqId: string) {
   );
 }
 
-/** ws(s) URL for the terminal channel. `agentCode` is the agent's own TOTP
-    (only for `terminal_agent_2fa` agents). The ticket bearer is NOT in the
-    URL — access logs and browser history would record it — it rides the
+/** ws(s) URL for the terminal channel. Only geometry and a session id travel here: the ticket
+    bearer and the agent's own TOTP code are credentials, and a query string is
+    recorded by every proxy access log (browser history too), so both ride the
     WebSocket subprotocol header instead (see `terminalWsProtocols`). */
-export function terminalWsUrl(
-  agentId: string,
-  cols?: number,
-  rows?: number,
-  agentCode?: string,
-) {
+export function terminalWsUrl(agentId: string, cols?: number, rows?: number, sessionId?: string) {
   const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const params = new URLSearchParams();
   if (cols != null) params.set('cols', String(cols));
   if (rows != null) params.set('rows', String(rows));
-  if (agentCode) params.set('agent_code', agentCode);
+  if (sessionId) params.set('session_id', sessionId);
   const query = params.toString();
   return `${scheme}//${window.location.host}/api/agents/${encodeURIComponent(agentId)}/terminal/ws${query ? `?${query}` : ''}`;
 }
 
-/** The ticket is offered as the (only) WS subprotocol; the hub validates it
-    from the handshake header and echoes it back. */
-export function terminalWsProtocols(ticket: string): string[] {
-  return [ticket];
+/** WS subprotocols offered in the handshake: the ticket (validated by the hub,
+    which echoes it back) and, for `terminal_agent_2fa` agents, that agent's
+    own single-use TOTP code under a namespaced prefix the hub strips off. */
+export function terminalWsProtocols(ticket: string, agentCode?: string): string[] {
+  return agentCode ? [ticket, `filebox-agent-code.${agentCode}`] : [ticket];
 }

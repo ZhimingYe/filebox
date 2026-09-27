@@ -155,36 +155,31 @@ Agent                                    Hub
 
 **远程终端（显式批准的例外，2FA 门控的唯一命令执行通道）**：
 
+- **终端不做沙箱**：PTY 以 Agent 用户的身份、在 Agent 的环境里运行，root
+  白名单、canonicalize 防逃逸、denylist、只读打开这套「纵深防御」对它**完全
+  不适用**——一个通过 2FA 的用户可以 `cat ~/.ssh/id_rsa`、读 Agent 自己的
+  `agent.toml`（内含 token），以及该用户能碰的一切。上面 §5/§8 的读侧加固
+  只约束浏览/预览路径，不要把它当成终端的防线。
 - Agent `terminal.rs` 在 unix 上用 `portable-pty` 起 PTY（`$SHELL`，
   cwd 为 Agent 用户的 home，注入 `TERM=xterm-256color`），最多 8 个并发
   会话；`capabilities.terminal` 门控，非 unix / 老 Agent 一律
   `unsupported_feature`。Hub 侧全局上限 16 个会话。
-- 浏览器侧强制 TOTP（RFC 6238，HMAC-SHA1，30s ±1 步）：secret 按用户存
-  在 Hub 配置旁的 `totp-secrets.json`（0600，原子写）。`verify` 成功只发
-  一个 **30 分钟内存 ticket**（256-bit 随机，绑定 `principal_id` 与
-  `agent_id`，不落盘）；页内每 5 分钟 `renew` 续期（不需要新码，session
-  + CSRF 已是边界）；前端只把 ticket 放组件 state（不写 localStorage），
-  浏览器刷新即失效 → 每次刷新都要重新输码。verify 有独立 per-IP 限流
-  （5/30s，仅失败计数）。
-- 终端 WS 端点 `/api/agents/{id}/terminal/ws` 在 session 中间件
-  之外（同 preview 资源的理由：WS 握手无法带 CSRF header），handler 同时
-  校验 session cookie 与 ticket 且 principal 必须一致，ticket 兼作 CSRF
-  证明。ticket 走 `Sec-WebSocket-Protocol` 握手头（hub 升级时回显），
-  不放 URL——避免落进 access log / 浏览器历史 / 代理日志。
-- **Agent 侧二次校验（可选，按 agent 开启）**：在 agent.toml 配置
-  `terminal_totp_secret`（base32，或 env
-  `FILEBOX_AGENT_TERMINAL_TOTP_SECRET`）后，agent 上报
-  `capabilities.terminal_agent_2fa`，并要求 `TerminalOpen` 携带
-  `agent_totp_code`——用户验证器里**另一个条目**的当前 6 位码，由 hub
-  透传、agent 用共享的 `protocol::totp` 本地校验。防重放：只接受 30s
-  计数器严格大于上次已接受值的码（水位线挂在 `TerminalManager` 上，跨
-  重连存活）。拒绝码：`terminal_2fa_required` / `terminal_2fa_invalid`。
-  开启后 **hub 被攻破也无法随意开终端**——每次开都需要用户的新鲜验证码，
-  且不能重放。残余风险：hub 能在传输途中看到码，可在该码的约 90s 有效
-  窗口内搭便车，但 agent 防重放把它限制在"用户刚用过的那个码"上。
-- 审计事件：`terminal_2fa_bound` / `terminal_2fa_failed` /
-  `terminal_opened` / `terminal_closed`（含 username、IP、UA），与登录
-  审计同一 JSONL 通道。
+- **密钥只在 Agent 配置**：本地 `agent --setup-terminal-2fa` 向导生成并验证
+  密钥，以 0600 原子保存。未配置时拒绝终端；无效配置拒绝启动。Hub 没有
+  配置、绑定或重置接口。Agent 配置文件的路径及 inode（包括硬链接）受读侧保护。
+- 每次打开/恢复 xterm，浏览器提交当前 Agent 验证码，Hub 转发，由 Agent
+  校验。SHA1 TOTP，6 位，30s ±1 步；只接受比上次更大的 counter，失败
+  5 次/30s 限流，均跨 Hub 重连保留。
+- Hub 的 ticket 仅供 WS 握手：session + CSRF 获取，256-bit，绑定 principal
+  和 Agent，60s、单次消费。ticket 和验证码走 WS 子协议，不进 URL。
+  xterm 在 Agent 确认后才显示，没有 Hub 续期接口。
+- Shell 在 Agent 内持久：浏览器离开、掉线、Hub 重启、空闲均只 detach。
+  新 attachment 需要新码；输入只路由到已验证的 attachment。显式 End 或
+  shell 自身退出才结束会话。Agent 重启不保留会话。最近 256 KiB 输出可重放。
+- **残余风险**：Hub 可看到传输中的码并抢先消费，也能对已授权的 attachment
+  注入命令；本地 2FA 不能保护正在使用的终端免受恶意 Hub 控制。
+- 审计记录 `terminal_opened`、`terminal_open_failed`、`terminal_detached`、
+  `terminal_kill`，带用户名、IP、UA。列表和显式结束使用 session + CSRF。
 
 ## 7. 活性检测与资源边界（防僵死 / 防 DoS）
 
@@ -214,7 +209,7 @@ Agent                                    Hub
   （9 min deadline）；temp 写队列 16；所有 FS 任务带 cancel 标志，连接断开
   即取消；终端最多 8 会话（原子准入）、30 分钟无输入即收割
   （`FILEBOX_AGENT_TERMINAL_IDLE_TIMEOUT_SECS`）、输出走 64 帧有界通道
-  （满则反压 PTY，shell 的 write 自然阻塞，无无界增长）。
+  （拥塞时断开浏览器，Shell 保留；最近输出上限 256 KiB）。
 
 ### 心跳
 
@@ -227,8 +222,8 @@ Agent 通道相关的审计事件（`audit.rs`，JSONL 侧文件，0600）：
 
 - `agent_auth_failed`（ip）
 - `agent_registered`（ip、agent_id、name）
-- 远程终端：`terminal_2fa_bound`、`terminal_2fa_failed`、
-  `terminal_opened`、`terminal_closed`（username、ip、UA）
+- 远程终端：`terminal_opened`、`terminal_open_failed`、
+  `terminal_detached`、`terminal_kill`（username、ip、UA）
 - 与登录审计同一通道，只读 API `GET /api/audit/logins` 暴露（session+CSRF
   保护）。
 
@@ -245,7 +240,7 @@ Agent 通道相关的审计事件（`audit.rs`，JSONL 侧文件，0600）：
 | 7 | Hub 信任 Agent 的文件数据 | Agent 返回什么前端看到什么 | 读权限本来就是 Agent 的；信任边界在 Agent 主机 |
 | 8 | 无逐请求的 Hub→Agent 消息签名 | 仅 TLS 完整性保护 | 依赖 TLS 通道本身（webpki-roots 校验） |
 | 9 | token 受 bcrypt 72 字节限制 | 超长 token 校验行为不直观 | 生成 token 时控制长度 ≤72 字节 |
-| 10 | 远程终端存在（2FA 门控） | 未配 agent 侧 secret 时，Hub 被攻破 = 在 Agent 主机执行任意命令；即使配了，Hub 可在码的 ~90s 窗口内搭便车 | agent.toml 设 `terminal_totp_secret` 开启 agent 本地校验 + 防重放；审计四个 terminal_* 事件；提高 Hub 本体防护 |
+| 10 | 远程终端（Agent 本地 2FA） | Hub 可抢先消费新码或控制已授权 attachment；Shell 无沙箱 | 本地配置/校验、跨重连防重放和限流；保护 Hub 本身 |
 
 ## 10. 一句话总结
 
@@ -254,5 +249,7 @@ Agent 通道相关的审计事件（`audit.rs`，JSONL 侧文件，0600）：
 > 信任不对称——Agent 完全信任 Hub 的控制消息，Hub 完全信任 Agent 的数据
 > 响应，而**真正的纵深防御在 Agent 侧**：root 白名单、canonicalize 防逃逸、
 > denylist、只读打开、唯一写路径（temp 文件夹）+ 配额。唯一的命令执行通道
-> 是 2FA 门控的远程终端（ticket 校验在浏览器侧，Agent 不验 2FA）。整条
+> 是 2FA 门控的远程终端——Hub 校验 session/ticket，每次新连接均由 Agent 校验本地 TOTP；
+> 必须配置 `terminal_totp_secret`，且这条通道**不受**
+> 上面那套读侧加固约束（PTY 是完整 shell）。整条
 > 链路的健壮性靠双向心跳、分层超时、退避重连和资源上限兜底。

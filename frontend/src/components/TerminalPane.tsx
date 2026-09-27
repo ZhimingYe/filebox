@@ -9,12 +9,10 @@ import { c, radius, font } from '../theme';
 interface Props {
   ticket: string;
   agent: api.AgentInfo;
-  /** Agent's own TOTP code, only for `terminal_agent_2fa` agents. */
-  agentCode?: string;
-  /** Ticket renewal failed with 401 — drop the ticket and re-verify. */
-  onTicketExpired: () => void;
-  /** The agent rejected/missed its own code (`terminal_2fa_*` frames). */
-  onAgentCodeError?: (code: string) => void;
+  agentCode: string;
+  sessionId?: string;
+  onSessionOpened: (id: string) => void;
+  onReconnect: (code?: string) => void;
 }
 
 type ConnStatus = 'connecting' | 'open' | 'closed';
@@ -24,6 +22,7 @@ interface ServerFrame {
   data?: string;
   reason?: string;
   error?: string;
+  session_id?: string;
 }
 
 /** UTF-8-safe base64 for terminal input. */
@@ -42,13 +41,37 @@ function base64Decode(b64: string): Uint8Array {
   return bytes;
 }
 
+/** How long "Connecting…" may look motionless before we say something. */
+const SLOW_CONNECT_MS = 8000;
+
 /**
- * Live terminal pane: xterm.js on top of the per-agent terminal WebSocket.
- * The TOTP ticket is the WS bearer; it never leaves JS memory. Reconnect
- * reuses the same ticket (and agent code, when set) without losing
- * scrollback. While mounted, the ticket is renewed every 5 minutes.
+ * Hub/agent error codes are contractual but not prose. Everything a user can
+ * act on gets a sentence; an unknown code is shown verbatim rather than
+ * swallowed by the generic fallback.
  */
-export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgentCodeError }: Props) {
+function terminalErrorMessage(code: string | undefined): string {
+  switch (code) {
+    case 'terminal_overloaded':
+      return 'The hub is already running the maximum number of terminal sessions. Close one and retry.';
+    case 'agent_overloaded':
+      return 'This backend is already running the maximum number of terminal sessions. Retry shortly.';
+    case 'terminal_open_timeout':
+      return 'The backend did not confirm the session in time. Retry, or check that the agent is healthy.';
+    case 'terminal_unavailable':
+      return 'This backend cannot open a shell (unsupported platform or no PTY support).';
+    case 'unsupported_feature':
+      return 'This backend does not support remote terminals.';
+    case 'backend_offline':
+      return 'The backend went offline before the shell opened.';
+    case undefined:
+      return 'Terminal error.';
+    default:
+      return `Terminal error: ${code}`;
+  }
+}
+
+/** A fresh, single-use ticket and Agent code authorize one socket attachment. */
+export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpened, onReconnect }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -64,12 +87,14 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
   const isMobile = useIsMobile();
   const [status, setStatus] = useState<ConnStatus>('connecting');
   const [notice, setNotice] = useState<string | null>(null);
-  // Bumped by Reconnect to re-open the socket against the same terminal.
-  const [connNonce, setConnNonce] = useState(0);
+  // Input remains disabled until the Agent confirms local verification.
+  const confirmedRef = useRef(false);
+  const mobileRef = useRef(isMobile);
+  useEffect(() => { mobileRef.current = isMobile; }, [isMobile]);
 
   const sendInput = (s: string) => {
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    if (confirmedRef.current && ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'input', data: base64Encode(s) }));
     }
   };
@@ -110,7 +135,7 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
     const term = new Terminal({
       cursorBlink: true,
       fontFamily: font.mono,
-      fontSize: isMobile ? 12 : 13,
+      fontSize: mobileRef.current ? 12 : 13,
       // A remote shell must not drive browser-side window/reporting
       // features: no remote resize (DECSLPP/DECCOLM), no size/title reports
       // back to the shell, no title stack.
@@ -150,11 +175,11 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
     safeFit();
     // Don't auto-focus on touch devices: that pops the soft keyboard before
     // the user asked for it. They tap the terminal to type.
-    if (!isMobile) term.focus();
+    if (!mobileRef.current) term.focus();
 
     const sendResize = () => {
       const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (confirmedRef.current && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
       }
     };
@@ -185,27 +210,42 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [agent.id, ticket, isMobile]);
+  }, [agent.id, ticket]);
 
-  // Socket lifecycle: re-runs on Reconnect (connNonce) without touching the
-  // terminal, so scrollback survives a reconnect.
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.fontSize = isMobile ? 12 : 13;
+    try { fitRef.current?.fit(); } catch { /* ResizeObserver refits later. */ }
+  }, [isMobile]);
+
+  // Defer the handshake one tick so StrictMode cleanup cannot spend a ticket.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
+    confirmedRef.current = false;
     setStatus('connecting');
     setNotice(null);
+    let cleanupSocket = () => {};
+    const startTimer = window.setTimeout(() => {
     const ws = new WebSocket(
-      api.terminalWsUrl(agent.id, term.cols, term.rows, agentCode),
-      api.terminalWsProtocols(ticket),
+      api.terminalWsUrl(agent.id, term.cols, term.rows, sessionId),
+      api.terminalWsProtocols(ticket, agentCode),
     );
     wsRef.current = ws;
+    // Say something before the hub's own 30s open deadline: silence for half a
+    // minute looks like a hung app, not a slow backend.
+    const slowTimer = window.setTimeout(() => {
+      if (wsRef.current === ws && !confirmedRef.current) {
+        setNotice('Still waiting for the backend to start a shell…');
+      }
+    }, SLOW_CONNECT_MS);
 
-    ws.onopen = () => {
-      setStatus('open');
-      // The PTY was sized from the query params; re-send in case the pane
-      // resized (or a reconnect happened at a different size).
-      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-    };
+    const deadline = window.setTimeout(() => {
+      if (!confirmedRef.current) {
+        setNotice('Connection timed out. Enter a fresh code to retry.');
+        setStatus('closed');
+        ws.close();
+      }
+    }, 35_000);
     ws.onmessage = (ev) => {
       let frame: ServerFrame;
       try {
@@ -215,6 +255,13 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
       }
       switch (frame.type) {
         case 'opened':
+          confirmedRef.current = true;
+          setStatus('open');
+          setNotice(null);
+          window.clearTimeout(slowTimer);
+          window.clearTimeout(deadline);
+          if (frame.session_id) onSessionOpened(frame.session_id);
+          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
           break;
         case 'output':
           if (typeof frame.data === 'string') {
@@ -224,58 +271,48 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
         case 'closed':
           term.write(`\r\n\x1b[2m[session closed${frame.reason ? `: ${frame.reason}` : ''}]\x1b[0m\r\n`);
           setStatus('closed');
-          setNotice('Session closed. Reconnect starts a new shell.');
+          confirmedRef.current = false;
+          setNotice(frame.reason ?? 'Disconnected. Enter a fresh code to resume.');
           break;
         case 'error':
-          if (frame.error === 'terminal_2fa_required' || frame.error === 'terminal_2fa_invalid') {
+          if (frame.error?.startsWith('terminal_2fa_')) {
             // The agent's own TOTP gate rejected us — hand back to the view
             // for re-entry (it unmounts/remounts this pane).
             const code = frame.error;
             try { ws.close(); } catch { /* already gone */ }
-            onAgentCodeError?.(code);
+            onReconnect(code);
             break;
           }
-          setNotice(frame.error ? `Terminal error: ${frame.error}` : 'Terminal error.');
+          // Surface hub/agent failures (overload, offline, open timeout) as a
+          // closed session with the reason kept: 'connecting' would hide the
+          // footer, and the generic disconnect text would overwrite it.
+          setNotice(terminalErrorMessage(frame.error));
+          setStatus('closed');
           break;
       }
     };
     ws.onclose = () => {
       if (wsRef.current !== ws) return;
-      setStatus((prev) => {
-        if (prev !== 'closed') {
-          setNotice('Disconnected. Reconnect with the same authorization, or go back and re-verify.');
-        }
-        return 'closed';
-      });
+      confirmedRef.current = false;
+      setStatus('closed');
+      setNotice((prev) => prev ?? 'Disconnected. Enter a fresh code to resume the shell.');
     };
     ws.onerror = () => {
       // onclose follows and flips the state; nothing extra to do here.
     };
 
-    return () => {
+    cleanupSocket = () => {
+      window.clearTimeout(slowTimer);
+      window.clearTimeout(deadline);
       if (wsRef.current === ws) wsRef.current = null;
       if (ws.readyState === WebSocket.OPEN) {
         try { ws.send(JSON.stringify({ type: 'close' })); } catch { /* already gone */ }
       }
       ws.close();
     };
-  }, [agent.id, ticket, agentCode, connNonce, onAgentCodeError]);
-
-  // Ticket renewal: keep the 30-min ticket alive while the pane is mounted.
-  // A 401 / terminal_ticket_invalid means the ticket is dead — stop and hand
-  // back to re-verify; transient failures just retry at the next interval.
-  useEffect(() => {
-    const interval = setInterval(() => {
-      api.terminalRenewTicket(ticket).catch((e) => {
-        const err = e as { status?: number; error?: string };
-        if (err?.status === 401 || err?.error === 'terminal_ticket_invalid') {
-          clearInterval(interval);
-          onTicketExpired();
-        }
-      });
-    }, 5 * 60_000);
-    return () => clearInterval(interval);
-  }, [ticket, onTicketExpired]);
+    }, 0);
+    return () => { window.clearTimeout(startTimer); cleanupSocket(); };
+  }, [agent.id, ticket, agentCode, sessionId, onSessionOpened, onReconnect]);
 
   const keyBtnStyle = (armed = false): React.CSSProperties => ({
     ...(armed ? { ...styles.keyBtn, ...styles.keyBtnArmed } : styles.keyBtn),
@@ -284,7 +321,7 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
 
   return (
     <div style={styles.wrap}>
-      <div ref={containerRef} style={{ ...styles.termHost, ...(isMobile ? styles.termHostMobile : null) }} />
+      <div ref={containerRef} style={{ ...styles.termHost, visibility: status === 'open' ? 'visible' : 'hidden', ...(isMobile ? styles.termHostMobile : null) }} />
       {/* Aux keys for keyboards without Esc/Tab/Ctrl/arrows (mobile), and a
           convenience row on desktop. Ctrl/Alt are sticky one-shot modifiers. */}
       <div style={{ ...styles.toolbar, ...(isMobile ? styles.toolbarMobile : null) }}>
@@ -292,6 +329,7 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
         <KeyButton label="Tab" style={keyBtnStyle()} onPress={() => sendInput('\t')} />
         <KeyButton
           label="Ctrl"
+          ariaPressed={ctrlArmed}
           style={keyBtnStyle(ctrlArmed)}
           onPress={() => {
             ctrlRef.current = !ctrlRef.current;
@@ -300,6 +338,7 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
         />
         <KeyButton
           label="Alt"
+          ariaPressed={altArmed}
           style={keyBtnStyle(altArmed)}
           onPress={() => {
             altRef.current = !altRef.current;
@@ -312,20 +351,14 @@ export function TerminalPane({ ticket, agent, agentCode, onTicketExpired, onAgen
         <KeyButton label="↓" style={keyBtnStyle()} onPress={() => sendArrow('down')} />
         <KeyButton label="→" style={keyBtnStyle()} onPress={() => sendArrow('right')} />
       </div>
-      {status !== 'open' && (
+      {(status !== 'open' || notice) && (
         <div style={styles.footer}>
-          <span style={styles.footerText}>
-            {status === 'connecting' ? 'Connecting…' : (notice ?? 'Disconnected.')}
+          <span role="status" style={styles.footerText}>
+            {status === 'connecting' ? (notice ?? 'Connecting…') : (notice ?? 'Disconnected.')}
           </span>
-          {status === 'closed' && (
-            <button
-              type="button"
-              style={styles.reconnectBtn}
-              onClick={() => setConnNonce((n) => n + 1)}
-            >
-              Reconnect
-            </button>
-          )}
+          <button type="button" style={styles.reconnectBtn} onClick={() => onReconnect()}>
+            {status === 'connecting' ? 'Cancel connection' : 'Enter new backend code'}
+          </button>
         </div>
       )}
     </div>
@@ -341,15 +374,18 @@ function KeyButton({
   label,
   style,
   onPress,
+  ariaPressed,
 }: {
   label: string;
   style: React.CSSProperties;
   onPress: () => void;
+  ariaPressed?: boolean;
 }) {
   return (
     <button
       type="button"
       style={style}
+      aria-pressed={ariaPressed}
       onPointerDown={(e) => e.preventDefault()}
       onClick={onPress}
     >

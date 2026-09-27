@@ -110,26 +110,9 @@ pub fn create_router(state: AppState) -> Router {
             post(crate::temp_proxy::temp_cleanup_handler),
         )
         .route(
-            "/api/terminal/2fa/status",
-            get(crate::terminal_proxy::totp_status_handler),
+            "/api/agents/{agent_id}/terminal/ticket",
+            post(crate::terminal_proxy::terminal_ticket_handler),
         )
-        .route(
-            "/api/terminal/2fa/bind/start",
-            post(crate::terminal_proxy::totp_bind_start_handler),
-        )
-        .route(
-            "/api/terminal/2fa/bind/confirm",
-            post(crate::terminal_proxy::totp_bind_confirm_handler),
-        )
-        .route(
-            "/api/terminal/2fa/verify",
-            post(crate::terminal_proxy::totp_verify_handler),
-        )
-        .route(
-            "/api/terminal/2fa/renew",
-            post(crate::terminal_proxy::totp_renew_handler),
-        )
-        // Terminal session management (zombie recovery): list + force-kill.
         .route(
             "/api/agents/{agent_id}/terminals",
             get(crate::terminal_proxy::terminals_list_handler),

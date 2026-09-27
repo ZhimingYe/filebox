@@ -73,9 +73,11 @@ and free of I/O.
 | `agent.rs` | Agent identity / info shapes used at register time |
 | `denylist.rs` | Default-deny sensitive paths even inside allowed roots |
 | `temp.rs` | Shared temp-upload name validation (single path component) |
+| `totp.rs` | RFC 6238 TOTP core for Agent-local verification |
 
 **Capability flags that matter:** `pinned_folders`, `collections`,
-`workspace_search`, `temp_upload`. Older agents omit them; the Hub returns
+`workspace_search`, `temp_upload`, `terminal`, `terminal_agent_2fa`,
+`terminal_manage`, `terminal_persistent`. Older agents omit them; the Hub returns
 unsupported rather than silently no-op'ing. Vestigial flags
 (`image_preview`, `pdf_preview`, `serve_dir`) default `false` and are not
 gated on.
@@ -97,6 +99,8 @@ agent WebSocket.
 | `fs_proxy.rs` | List / stat / raw file proxy to agent WS |
 | `search_proxy.rs` | Workspace Search proxy (long timeout, cancel binding) |
 | `temp_proxy.rs` | Temp-folder upload relay (streams body → WS chunks) + one-click cleanup |
+| `terminal_proxy.rs` | Terminal WS relay, single-use transport tickets, session list/end |
+| `audit.rs` | Login/terminal audit trail (`audit-log.jsonl`, bounded, never blocks auth) |
 | `events.rs` | SSE fanout to browsers |
 | `health.rs` | Liveness + version |
 | `config.rs` / `state.rs` | Config load + shared `AppState` |
@@ -125,6 +129,7 @@ Persists identity and desired config under `data_dir` (`agent_state.json`).
 | `search.rs` | In-process fd/rg-like Workspace Search (`ignore` + `regex`) |
 | `sysinfo.rs` | TTL-cached system stats (HPC-safe refresh) |
 | `temp_store.rs` | The ONLY write path: dedicated temp-upload folder (staging, quotas, no-clobber publish, symlink-safe cleanup) |
+| `terminal.rs` | PTY shell sessions (unix-only): persistent sessions, bounded history/writer queues, local TOTP anti-replay and failure limit |
 | `config.rs` | TOML / env bootstrap |
 
 Path safety on every FS/search op: resolve root → join → normalize /

@@ -161,7 +161,7 @@ pub fn run_search(roots: &[RootConfig], params: SearchParams) -> Result<SearchRe
                 return false;
             }
             let rel_str = format_rel(rel);
-            !denylist::is_denied(&rel_str)
+            !denylist::is_denied(&rel_str) && !crate::config::is_private_config(abs)
         });
     // walkdir: depth 0 = start path; depth 1 = its immediate children.
     // UI "max depth" N means search at most N levels under the start folder.

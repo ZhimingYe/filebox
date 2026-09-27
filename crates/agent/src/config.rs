@@ -40,6 +40,7 @@ impl AgentConfig {
             .unwrap_or_else(|_| "./agent.toml".to_string());
 
         let path = PathBuf::from(&config_path);
+        protect_config(&path);
         let toml_config = if path.exists() {
             let contents = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("Failed to read agent config '{}': {}", config_path, e));
@@ -97,19 +98,29 @@ impl AgentConfig {
                     .join("filebox")
             });
 
-        // Agent-side secondary 2FA for terminal opens. An undecodable
-        // secret is warned about and treated as absent, not fatal.
+        // Agent-side secondary 2FA for terminal opens. A configured secret
+        // that cannot be used is FATAL rather than silently ignored: dropping
+        // it would advertise `terminal_agent_2fa = false` and quietly accept
+        // terminal opens with no code at all — a fail-open on the control
+        // whose whole job is to stop a compromised hub from getting a shell.
         let terminal_totp_secret = std::env::var("FILEBOX_AGENT_TERMINAL_TOTP_SECRET")
             .ok()
             .or(toml_config.terminal_totp_secret)
-            .filter(|secret| {
-                let decodable = filebox_protocol::totp::base32_decode(secret).is_some();
-                if !decodable {
-                    tracing::warn!(
-                        "terminal_totp_secret is not valid base32; ignoring it (terminal 2FA disabled)"
+            .inspect(|secret| {
+                if !filebox_protocol::totp::secret_is_acceptable(secret) {
+                    eprintln!(
+                        "[agent] FATAL: terminal_totp_secret / FILEBOX_AGENT_TERMINAL_TOTP_SECRET is not usable."
                     );
+                    eprintln!(
+                        "[agent] It must be RFC 4648 base32 (no padding) of at least {} random bytes, e.g.",
+                        filebox_protocol::totp::MIN_SECRET_BYTES
+                    );
+                    eprintln!("[agent]   head -c 20 /dev/urandom | base32 | tr -d '='");
+                    eprintln!(
+                        "[agent] Refusing to start rather than silently disabling agent-side terminal 2FA."
+                    );
+                    std::process::exit(1);
                 }
-                decodable
             });
 
         enforce_secure_hub_url(&hub_url);
@@ -186,6 +197,7 @@ pub fn init_interactive(request: filebox_updater::ConfigInitRequest) -> Result<(
 
     eprintln!();
     eprintln!("Created {}", output.display());
+    if prompt_yes_no("Configure remote terminal authenticator now", true)? { setup_terminal_2fa(&output)?; }
     if insecure {
         eprintln!("Plaintext URL selected; start with FILEBOX_ALLOW_INSECURE_HUB=1.");
     }
@@ -276,5 +288,84 @@ mod tests {
             reparsed.terminal_totp_secret.as_deref(),
             Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
         );
+    }
+}
+
+
+/// Enrollment is local only; no secret or configuration passes through Hub.
+pub fn setup_terminal_2fa(path: &std::path::Path) -> Result<(), String> {
+    if std::env::var_os("FILEBOX_AGENT_TERMINAL_TOTP_SECRET").is_some() {
+        return Err("Unset FILEBOX_AGENT_TERMINAL_TOTP_SECRET before configuring the file; it overrides the saved secret".into());
+    }
+    let original = std::fs::read_to_string(path).map_err(|e| format!("Read {}: {e}. Run agent --init-config first", path.display()))?;
+    let mut value: toml::Value = toml::from_str(&original).map_err(|e| format!("Invalid config: {e}"))?;
+    if value.get("terminal_totp_secret").is_some() && !prompt_yes_no("Replace existing terminal authenticator", false)? { return Ok(()); }
+    let secret = filebox_protocol::totp::base32_encode(&filebox_protocol::totp::generate_secret());
+    eprintln!("Add a new entry in your authenticator app (Filebox Agent).");
+    eprintln!("Choose time-based (TOTP), SHA1, 6 digits, 30 seconds.");
+    eprintln!("Secret key: {secret}");
+    eprintln!("Keep this key private. Enter a code from the new entry to confirm; Ctrl-C cancels.");
+    let mut confirmed = false;
+    for _ in 0..5 {
+        let code = prompt_nonempty_secret("Authenticator code")?;
+        if filebox_protocol::totp::matching_counter_at(&secret, code.trim(), filebox_protocol::totp::current_counter()).is_some() {
+            confirmed = true; break;
+        }
+        eprintln!("Code did not match. Check the entry and your device clock.");
+    }
+    if !confirmed { return Err("Too many incorrect codes; config unchanged".into()); }
+    value.as_table_mut().ok_or("Config must be a TOML table")?.insert("terminal_totp_secret".into(), toml::Value::String(secret));
+    let contents = toml::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    if std::fs::read_to_string(path).map_err(|e| e.to_string())? != original { return Err("Config changed during setup; retry".into()); }
+    let temporary = path.with_file_name(format!(".filebox-2fa-{}.tmp", uuid::Uuid::new_v4()));
+    write_private_file(&temporary, contents.as_bytes(), false)?;
+    if let Err(e) = std::fs::rename(&temporary, path) { let _ = std::fs::remove_file(&temporary); return Err(e.to_string()); }
+    eprintln!("Terminal 2FA saved locally to {} (0600). Restart the Agent to apply it. Agent restart ends existing shells.", path.display());
+    Ok(())
+}
+
+struct PrivateConfig {
+    path: PathBuf,
+    #[cfg(unix)]
+    identity: Option<(u64, u64)>,
+}
+static PRIVATE_CONFIG: std::sync::OnceLock<PrivateConfig> = std::sync::OnceLock::new();
+fn protect_config(path: &std::path::Path) {
+    let path = path.canonicalize().unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(path));
+    #[cfg(unix)]
+    let identity = std::fs::metadata(&path).ok().map(|m| { use std::os::unix::fs::MetadataExt; (m.dev(), m.ino()) });
+    let _ = PRIVATE_CONFIG.set(PrivateConfig { path, #[cfg(unix)] identity });
+}
+pub fn is_private_config(path: &std::path::Path) -> bool {
+    private_config_matches(path, std::fs::metadata(path).ok().as_ref())
+}
+pub fn private_config_matches(path: &std::path::Path, metadata: Option<&std::fs::Metadata>) -> bool {
+    let Some(config) = PRIVATE_CONFIG.get() else { return false; };
+    if path.canonicalize().unwrap_or_else(|_| path.to_path_buf()) == config.path { return true; }
+    #[cfg(unix)]
+    if let Some(m) = metadata {
+        use std::os::unix::fs::MetadataExt;
+        if config.identity == Some((m.dev(), m.ino())) { return true; }
+    }
+    false
+}
+
+
+#[cfg(all(test, unix))]
+mod private_config_tests {
+    use super::*;
+    #[test]
+    fn custom_config_and_hardlink_are_not_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("custom-settings.toml");
+        let alias = dir.path().join("innocent.txt");
+        std::fs::write(&config, "synthetic secret").unwrap();
+        std::fs::hard_link(&config, &alias).unwrap();
+        protect_config(&config);
+        assert!(is_private_config(&config));
+        assert!(is_private_config(&alias));
+        let root = dir.path().canonicalize().unwrap();
+        assert!(crate::fs::open_resolved_leaf(&root, std::path::Path::new("innocent.txt"), &alias).is_err());
+        assert!(!is_private_config(&dir.path().join("unrelated.txt")));
     }
 }

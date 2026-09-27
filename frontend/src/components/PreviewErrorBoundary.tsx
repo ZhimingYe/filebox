@@ -3,6 +3,8 @@ import { c, radius } from '../theme';
 
 interface Props {
   children: ReactNode;
+  /** What failed, for the fallback copy. Defaults to the preview wording. */
+  label?: string;
 }
 
 interface State {
@@ -11,6 +13,8 @@ interface State {
 
 // A preview can fail while rendering or while a lazy viewer chunk is loading.
 // Keep that failure inside the active preview instead of unmounting the app.
+// Also used for the lazy terminal pane, where the same failure mode (a chunk
+// that never loads, a viewer that throws) would otherwise blank the whole app.
 export class PreviewErrorBoundary extends Component<Props, State> {
   state: State = { error: null };
 
@@ -19,18 +23,19 @@ export class PreviewErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('Preview failed', error, info.componentStack);
+    console.error(`${this.props.label ?? 'Preview'} failed`, error, info.componentStack);
   }
 
   render() {
     if (!this.state.error) return this.props.children;
+    const label = this.props.label ?? 'Preview';
 
     return (
       <div style={styles.container} role="alert">
         <div style={styles.errorBox}>
-          <p style={styles.title}>Preview failed</p>
+          <p style={styles.title}>{label} failed</p>
           <p style={styles.message}>
-            {this.state.error.message || 'The file could not be previewed.'}
+            {this.state.error.message || `The ${label.toLowerCase()} could not be loaded.`}
           </p>
           <button
             style={styles.retryBtn}

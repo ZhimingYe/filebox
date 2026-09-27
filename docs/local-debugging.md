@@ -261,7 +261,32 @@ curl -s -N -b /tmp/fb.cookie --noproxy '*' \
 | GET | `/api/agents/{id}/sys-stats` | yes | CPU/mem/etc |
 | POST | `/api/cancel` | yes | Cancel in-flight request |
 | GET | `/api/events` | yes + CSRF header, or `access_token` | SSE stream of agent events |
+| POST | `/api/agents/{id}/terminal/ticket` | yes + CSRF | Single-use 60s WS ticket; no TOTP secret/code in this request |
+| GET | `/api/agents/{id}/terminals` | yes + CSRF | Live sessions from the agent (no 2FA needed) |
+| DELETE | `/api/agents/{id}/terminals/{req_id}` | yes + CSRF | Force-kill one (202 + refetch) |
+| WS | `/api/agents/{id}/terminal/ws` | session cookie + ticket subprotocol | Terminal channel (NOT behind the session middleware) |
 | WS | `/ws/agent` | token | Agent → Hub (agents only) |
+
+### Terminal verification
+
+1. On the Agent host run `agent --setup-terminal-2fa --config agent.toml`.
+   Follow the local wizard and restart Agent. Do not send its secret to Hub.
+2. With login cookie and CSRF header, POST `/api/agents/{id}/terminal/ticket`.
+3. Connect `/api/agents/{id}/terminal/ws?cols=80&rows=24` with the cookie
+   and WS subprotocols `[ticket, filebox-agent-code.<current six digits>]`.
+   Wait for `opened` before input. Save the returned `session_id`.
+4. Close the browser connection; GET `/api/agents/{id}/terminals` must still
+   list the shell. Get a new ticket/code and add `session_id` to the WS query
+   to resume. A spent code is rejected; wait for the next 30s code.
+5. Restart only the test Hub; Agent reconnects and the shell remains listed.
+   Explicit DELETE `/api/agents/{id}/terminals/{session_id}` ends it.
+
+`terminal_open_timeout` means Agent did not confirm within 30s. A missing
+local secret yields `terminal_2fa_not_configured`; five incorrect codes cause
+a 30s local failure budget. Recover a lost authenticator using the local
+wizard; restarting Agent applies it and loses existing sessions. Hub has no
+2FA reset/enrollment API. Use isolated test processes and data directories;
+never stop an unrelated Hub or Agent during a smoke test.
 
 ---
 
@@ -632,6 +657,7 @@ Env vars (verified):
 | `FILEBOX_AGENT_OFFICE_MAX_LOG_BYTES` | Max captured stdout/stderr per conversion |
 | `FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES` | LibreOffice resident process-tree limit on Linux |
 | `FILEBOX_AGENT_OFFICE_CACHE_BYTES` | On-disk derived preview cache budget (LRU) |
+| `FILEBOX_AGENT_TERMINAL_TOTP_SECRET` | Base32 secret for the agent's own terminal 2FA (≥16 bytes); an unusable value makes the agent refuse to start rather than silently disabling it |
 | `FILEBOX_UPDATE_BASE_URL` | `--update` mirror base URL |
 | `FILEBOX_ALLOW_INSECURE_UPDATE` | Allow `http://` update source |
 | `FILEBOX_ALLOW_DOWNGRADE` | Allow updater downgrade |

@@ -1,17 +1,6 @@
-//! Remote terminal: TOTP 2FA endpoints and the browser↔hub terminal WS relay.
-//!
-//! The HTTP endpoints manage the per-user TOTP binding and mint short-lived
-//! terminal tickets. The browser then upgrades
-//! `GET /api/agents/{id}/terminal/ws` (registered outside the CSRF-protected
-//! group because browsers cannot set headers on a WS upgrade) carrying the
-//! ticket as a WebSocket subprotocol — never in the URL, which access logs,
-//! browser history, and proxy logs would all record. The handler
-//! authenticates the ticket AND the session cookie, then relays
-//! JSON frames to the agent as `TerminalInput`/`TerminalResize`/
-//! `TerminalClose` over the existing Hub↔Agent channel. Agent
-//! `TerminalOpened`/`TerminalOutput`/`TerminalClosed` messages are routed
-//! back into the browser socket via the session entry in
-//! `state.terminal_sessions` (see `ws.rs`).
+//! Browser↔Hub↔Agent terminal relay. Hub authenticates the browser session
+//! and single-use transport ticket; Agent alone enrolls and verifies TOTP.
+//! Browser disconnect removes its attachment, never the Agent-owned shell.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -29,27 +18,29 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use filebox_protocol::message::HubMessage;
+use filebox_protocol::message::{HubMessage, TERMINAL_CHUNK_MAX_BYTES};
 
 use crate::agent_registry::AgentStatus;
+use crate::fs_proxy::PendingResponseCleanup;
 use crate::net::client_ip;
 use crate::state::{AppState, AuthenticatedSession, PendingResponse, MAX_PENDING_RESPONSES};
-use crate::totp::BindConfirm;
 
-/// Terminal tickets authorize a terminal WS upgrade without CSRF headers.
-/// 30 minutes keeps a browser refresh (which loses the in-memory ticket)
-/// from leaving a long-lived bearer token behind; the page renews it while
-/// the session is alive.
-pub const TERMINAL_TICKET_TTL_SECS: u64 = 30 * 60;
+
+/// Single-use transport authorization; this ticket is not proof of TOTP.
+pub const TERMINAL_TICKET_TTL_SECS: u64 = 60;
 const TERMINAL_TICKET_TTL: Duration = Duration::from_secs(TERMINAL_TICKET_TTL_SECS);
 const MAX_TERMINAL_TICKETS: usize = 1024;
 /// Hub-wide bound on concurrent terminal sessions.
 pub const MAX_TERMINAL_SESSIONS: usize = 16;
 /// Buffered agent→browser frames per session. A slow browser must never stall
-/// the agent's read loop: when this fills, output frames are dropped.
+/// the agent's read loop: when this fills, the browser detaches.
 const TERMINAL_BROWSER_QUEUE_CAPACITY: usize = 256;
 /// Per-write timeout for outbound browser WS frames (see `ws.rs`).
 const TERMINAL_WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the browser waits for the agent to confirm an open before the hub
+/// gives up and reports it. Generous (a loaded node can take seconds to fork a
+/// shell) but finite: the alternative is a pane stuck on "Connecting…".
+const TERMINAL_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 /// Browser frames carry base64 input; 64 KiB is far beyond any keystroke.
 const MAX_BROWSER_WS_MESSAGE_SIZE: usize = 64 * 1024;
 
@@ -74,7 +65,7 @@ impl TerminalTicketStore {
     }
 
     /// Mint a 256-bit ticket bound to the login principal and one agent.
-    /// Reusable within its TTL (a page may open several tabs/sessions).
+    /// Single-use within its TTL. Each attachment needs a new ticket.
     /// Returns `None` when the store is full of unexpired tickets.
     pub fn mint(&self, principal_id: &str, username: &str, agent_id: &str) -> Option<String> {
         let mut tickets = self.tickets.lock().unwrap_or_else(|e| e.into_inner());
@@ -110,21 +101,15 @@ impl TerminalTicketStore {
         Some(ticket)
     }
 
-    /// Extend a live ticket by the full TTL, returning the new lifetime in
-    /// seconds. No fresh TOTP code is required — the session cookie + CSRF
-    /// on this endpoint is the security boundary; the short TTL exists so a
-    /// browser REFRESH (which loses the in-memory ticket) revokes access.
-    pub fn renew(&self, token: &str) -> Option<u64> {
+    /// Consume only a ticket belonging to this browser principal and agent.
+    pub fn consume(&self, token: &str, principal: &str, agent: &str) -> bool {
         let mut tickets = self.tickets.lock().unwrap_or_else(|e| e.into_inner());
-        let now = Instant::now();
-        if tickets.get(token)?.expires_at <= now {
+        if tickets.get(token).is_some_and(|t| t.principal_id == principal && t.agent_id == agent && t.expires_at > Instant::now()) {
             tickets.remove(token);
-            return None;
-        }
-        let ticket = tickets.get_mut(token)?;
-        ticket.expires_at = now + TERMINAL_TICKET_TTL;
-        Some(TERMINAL_TICKET_TTL_SECS)
+            true
+        } else { false }
     }
+
 }
 
 /// A live browser terminal session. `ws.rs` routes agent terminal messages
@@ -134,9 +119,54 @@ pub struct TerminalSessionEntry {
     pub connection_id: u64,
     #[allow(dead_code)]
     pub principal_id: String,
-    #[allow(dead_code)]
+    /// Audit attribution: the session owner and where it came from.
     pub username: String,
+    pub ip: String,
+    pub user_agent: String,
     pub tx: mpsc::Sender<serde_json::Value>,
+}
+
+/// Owner details for audit records, looked up by session id. `None` when the
+/// session is already gone (e.g. the browser left before the agent replied).
+pub fn terminal_session_owner(state: &AppState, req_id: &str) -> Option<(String, String, String)> {
+    let sessions = state
+        .terminal_sessions
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    sessions
+        .get(req_id)
+        .map(|entry| (entry.username.clone(), entry.ip.clone(), entry.user_agent.clone()))
+}
+
+/// Relay agent terminal output to the browser, splitting anything larger than
+/// the protocol chunk cap.
+///
+/// `TERMINAL_CHUNK_MAX_BYTES` is a contract the agent honors, but the hub is
+/// the trust boundary: a buggy or hostile agent can send one frame up to the
+/// 24 MiB agent-WebSocket cap, and the per-session browser queue holds 256
+/// frames — so a single oversized message could otherwise pin hundreds of
+/// megabytes of hub memory. Splitting keeps the queue bounded by bytes and
+/// loses no output.
+pub fn forward_terminal_output(
+    state: &AppState,
+    agent_id: &str,
+    connection_id: u64,
+    req_id: &str,
+    data: &[u8],
+) {
+    for chunk in output_chunks(data) {
+        let frame = serde_json::json!({
+            "type": "output",
+            "data": base64::engine::general_purpose::STANDARD.encode(chunk),
+        });
+        forward_to_terminal_session(state, agent_id, connection_id, req_id, frame, false);
+    }
+}
+
+/// Split one agent output payload into protocol-sized chunks. Empty input
+/// produces no frames.
+fn output_chunks(data: &[u8]) -> impl Iterator<Item = &[u8]> {
+    data.chunks(TERMINAL_CHUNK_MAX_BYTES)
 }
 
 /// Forward an agent terminal frame to the owning browser socket. Verifies the
@@ -152,13 +182,20 @@ pub fn forward_to_terminal_session(
     close: bool,
 ) {
     let tx = {
-        let sessions = state
+        let mut sessions = state
             .terminal_sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         match sessions.get(req_id) {
             Some(entry) if entry.agent_id == agent_id && entry.connection_id == connection_id => {
-                Some(entry.tx.clone())
+                let tx = entry.tx.clone();
+                if close {
+                    // Remove only for the verified owner. A superseded agent
+                    // connection relaying a late frame must not be able to
+                    // tear down the session that replaced it.
+                    sessions.remove(req_id);
+                }
+                Some(tx)
             }
             Some(_) => {
                 tracing::warn!(
@@ -174,18 +211,11 @@ pub fn forward_to_terminal_session(
     };
     if let Some(tx) = tx {
         if tx.try_send(frame).is_err() {
-            tracing::warn!(
-                "Terminal session {} browser queue full or closed; dropping frame",
-                req_id
-            );
+            let mut sessions = state.terminal_sessions.lock().unwrap_or_else(|e| e.into_inner());
+            if sessions.get(req_id).is_some_and(|entry| entry.agent_id == agent_id && entry.connection_id == connection_id) {
+                sessions.remove(req_id);
+            }
         }
-    }
-    if close {
-        state
-            .terminal_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(req_id);
     }
 }
 
@@ -259,191 +289,36 @@ fn mint_ticket_response(
     }
 }
 
-/// Validate the agent a ticket will be bound to: must name a known agent
-/// (any status — the ticket may outlive a transient disconnect).
-async fn validate_ticket_agent(state: &AppState, agent_id: &str) -> Option<Response> {
-    if agent_id.trim().is_empty() {
-        return Some(error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "agent_id is required",
-            false,
-        ));
-    }
+/// Session + CSRF-protected transport ticket. TOTP is checked only by Agent.
+pub async fn terminal_ticket_handler(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
+    Path(agent_id): Path<String>,
+) -> Response {
     let inner = state.inner.read().await;
-    if inner.agents.get(agent_id).is_none() {
-        return Some(error_response(
-            StatusCode::NOT_FOUND,
-            "backend_offline",
-            &format!("Agent {} not found or offline", agent_id),
-            true,
-        ));
+    let Some(agent) = inner.agents.get(&agent_id) else {
+        return error_response(StatusCode::NOT_FOUND, "backend_offline", "Agent unavailable", true);
+    };
+    if !agent.capabilities.terminal_persistent || !agent.capabilities.terminal_agent_2fa {
+        return error_response(StatusCode::BAD_REQUEST, "terminal_2fa_not_configured", "Upgrade the Agent and run agent --setup-terminal-2fa locally", false);
     }
-    None
-}
-
-pub async fn totp_status_handler(
-    State(state): State<AppState>,
-    Extension(session): Extension<AuthenticatedSession>,
-) -> Response {
+    drop(inner);
     let username = session_username(&state, &session).await;
-    Json(serde_json::json!({
-        "bound": state.totp.is_bound(&username),
-    }))
-    .into_response()
-}
-
-pub async fn totp_bind_start_handler(
-    State(state): State<AppState>,
-    Extension(session): Extension<AuthenticatedSession>,
-) -> Response {
-    let username = session_username(&state, &session).await;
-    match state.totp.start_bind(&username) {
-        Ok(secret) => Json(serde_json::json!({
-            "secret": secret,
-            "otpauth_uri": crate::totp::otpauth_uri(&username, &secret),
-        }))
-        .into_response(),
-        Err(()) => error_response(
-            StatusCode::CONFLICT,
-            "totp_already_bound",
-            "An authenticator is already bound to this account",
-            false,
-        ),
-    }
-}
-
-#[derive(Deserialize)]
-pub struct TotpCodeRequest {
-    pub code: String,
-    #[serde(default)]
-    pub agent_id: String,
-}
-
-pub async fn totp_bind_confirm_handler(
-    State(state): State<AppState>,
-    Extension(session): Extension<AuthenticatedSession>,
-    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
-    headers: HeaderMap,
-    Json(req): Json<TotpCodeRequest>,
-) -> Response {
-    let username = session_username(&state, &session).await;
-    let ip = client_ip(&headers, addr);
-    if let Some(error) = validate_ticket_agent(&state, &req.agent_id).await {
-        return error;
-    }
-    match state.totp.confirm_bind(&username, &req.code) {
-        BindConfirm::Confirmed => {
-            tracing::info!(target: "audit", ip = %ip, user = %username, "terminal_2fa_bound");
-            state
-                .audit
-                .record("terminal_2fa_bound", &username, &ip, &user_agent(&headers));
-            mint_ticket_response(&state, &session.principal_id, &username, &req.agent_id)
-        }
-        BindConfirm::NoPendingBind => error_response(
-            StatusCode::BAD_REQUEST,
-            "totp_no_pending_bind",
-            "No authenticator bind is in progress. Start one first.",
-            false,
-        ),
-        BindConfirm::InvalidCode => {
-            tracing::warn!(target: "audit", ip = %ip, user = %username, "terminal_2fa_failed");
-            state
-                .audit
-                .record("terminal_2fa_failed", &username, &ip, &user_agent(&headers));
-            error_response(
-                StatusCode::UNAUTHORIZED,
-                "totp_invalid",
-                "Invalid code",
-                false,
-            )
-        }
-    }
-}
-
-pub async fn totp_verify_handler(
-    State(state): State<AppState>,
-    Extension(session): Extension<AuthenticatedSession>,
-    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
-    headers: HeaderMap,
-    Json(req): Json<TotpCodeRequest>,
-) -> Response {
-    let username = session_username(&state, &session).await;
-    let ip = client_ip(&headers, addr);
-    if !state.totp.is_bound(&username) {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "totp_not_bound",
-            "No authenticator is bound to this account",
-            false,
-        );
-    }
-    if let Some(error) = validate_ticket_agent(&state, &req.agent_id).await {
-        return error;
-    }
-    // Per-IP budget on code guesses; only failures consume it.
-    if let Err(remaining) = state.terminal_verify_limiter.check(&ip) {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({
-                "error": "totp_rate_limited",
-                "message": format!("Too many attempts. Try again in {} seconds.", remaining),
-                "retryable": true,
-                "retry_after": remaining,
-            })),
-        )
-            .into_response();
-    }
-    if !state.totp.verify_code(&username, &req.code) {
-        state.terminal_verify_limiter.record_failure(&ip);
-        tracing::warn!(target: "audit", ip = %ip, user = %username, "terminal_2fa_failed");
-        state
-            .audit
-            .record("terminal_2fa_failed", &username, &ip, &user_agent(&headers));
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "totp_invalid",
-            "Invalid code",
-            false,
-        );
-    }
-    state.terminal_verify_limiter.clear(&ip);
-    mint_ticket_response(&state, &session.principal_id, &username, &req.agent_id)
-}
-
-#[derive(Deserialize)]
-pub struct TotpRenewRequest {
-    pub ticket: String,
-}
-
-/// Extend a live terminal ticket by the full TTL. No rate limiter and no
-/// fresh TOTP code: the session cookie + CSRF middleware is the boundary,
-/// and the ticket itself is the proof of a recent 2FA check.
-pub async fn totp_renew_handler(
-    State(state): State<AppState>,
-    Extension(_session): Extension<AuthenticatedSession>,
-    Json(req): Json<TotpRenewRequest>,
-) -> Response {
-    match state.terminal_tickets.renew(&req.ticket) {
-        Some(expires_in_sec) => Json(serde_json::json!({
-            "expires_in_sec": expires_in_sec,
-        }))
-        .into_response(),
-        None => error_response(
-            StatusCode::UNAUTHORIZED,
-            "terminal_ticket_invalid",
-            "Terminal ticket missing or expired. Verify 2FA again.",
-            true,
-        ),
-    }
+    mint_ticket_response(&state, &session.principal_id, &username, &agent_id)
 }
 
 // ── Terminal session management ─────────────────────────────────────────────
 
 /// A session id is the `term_<uuid>` minted when the session opened. Bounded
-/// length so the path segment can never be an arbitrary relay key.
+/// length and charset so the path segment can never be an arbitrary relay key.
 fn is_valid_terminal_session_id(req_id: &str) -> bool {
-    req_id.starts_with("term_") && req_id.len() <= 80
+    let Some(rest) = req_id.strip_prefix("term_") else {
+        return false;
+    };
+    (8..=48).contains(&rest.len())
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// `GET /api/agents/{id}/terminals` — ask the agent (the source of truth) for
@@ -520,15 +395,31 @@ pub async fn terminals_list_handler(
         );
     }
 
+    // Frees the pending slot even if this handler is dropped mid-wait.
+    let cleanup = PendingResponseCleanup::new(state.clone(), req_id.clone(), Some(agent_id.clone()));
     let resp = tokio::time::timeout(Duration::from_secs(30), resp_rx.recv()).await;
-    let pending = state.inner.read().await.pending_responses.clone();
-    pending.write().await.remove(&req_id);
+    let cancelled = !matches!(resp, Ok(Some(_)));
+    cleanup.finish(cancelled).await;
 
     match resp {
-        Ok(Some(value)) => Json(serde_json::json!({
-            "sessions": value.get("sessions").cloned().unwrap_or_else(|| serde_json::json!([])),
-        }))
-        .into_response(),
+        Ok(Some(value)) => {
+            // The connection teardown (`fail_pending_for_connection`) and the
+            // agent both report failures as an `error` payload. Answering 200
+            // with an empty list here would be a lie exactly when the operator
+            // is hunting zombie sessions.
+            if let Some(error) = value.get("error").and_then(|e| e.as_str()) {
+                return error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    error,
+                    "The backend could not list its terminal sessions",
+                    true,
+                );
+            }
+            Json(serde_json::json!({
+                "sessions": value.get("sessions").cloned().unwrap_or_else(|| serde_json::json!([])),
+            }))
+            .into_response()
+        }
         _ => error_response(
             StatusCode::GATEWAY_TIMEOUT,
             "request_timeout",
@@ -539,8 +430,7 @@ pub async fn terminals_list_handler(
 }
 
 /// `DELETE /api/agents/{id}/terminals/{req_id}` — force-kill a live session.
-/// Fire-and-forget like `/api/cancel`: the agent owns the shell, and a lost
-/// `TerminalClose` only means the zombie survives until the next reconnect.
+/// The Agent owns the shell; refetch to confirm delivery before retrying.
 pub async fn terminal_kill_handler(
     State(state): State<AppState>,
     Extension(session): Extension<AuthenticatedSession>,
@@ -578,20 +468,23 @@ pub async fn terminal_kill_handler(
                 true,
             );
         }
-        if !agent.capabilities.terminal {
+        if !agent.capabilities.terminal_manage {
             return error_response(
                 StatusCode::NOT_IMPLEMENTED,
                 "unsupported_feature",
-                "This agent does not support remote terminals — upgrade the agent",
+                "This agent does not support terminal session management — upgrade the agent",
                 false,
             );
         }
-        let _ = inner.agents.send_to_agent(
+        let sent = inner.agents.send_to_agent(
             &agent_id,
             HubMessage::TerminalClose {
                 req_id: req_id.clone(),
             },
         );
+        if !sent {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "backend_offline", "Could not deliver the end request; retry", true);
+        }
     }
 
     tracing::info!(target: "audit", ip = %ip, user = %username, agent_id = %agent_id, req_id = %req_id, "terminal_kill");
@@ -604,18 +497,48 @@ pub async fn terminal_kill_handler(
 
 // ── Browser terminal WebSocket ──────────────────────────────────────────────
 
+/// Prefix of the subprotocol token carrying the agent-side TOTP code. The
+/// WebSocket handshake is the only place a browser may put a header, and a
+/// query parameter would be recorded by every proxy access log — the same
+/// reason the terminal ticket travels here instead of in the URL.
+const AGENT_CODE_PROTOCOL_PREFIX: &str = "filebox-agent-code.";
+
 #[derive(Deserialize)]
 pub struct TerminalWsParams {
     pub cols: Option<u16>,
     pub rows: Option<u16>,
-    /// Agent-side secondary 2FA code (6 digits); malformed values are
-    /// treated as absent and rejected agent-side if the agent requires one.
-    pub agent_code: Option<String>,
+    pub session_id: Option<String>,
+}
+
+/// The `Sec-WebSocket-Protocol` tokens the browser offered, in order.
+fn subprotocol_tokens(headers: &HeaderMap) -> Vec<String> {
+    headers
+        .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Pass through only a well-formed 6-digit agent TOTP code.
 fn sanitize_agent_code(code: Option<String>) -> Option<String> {
     code.filter(|c| c.len() == 6 && c.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The agent code offered as a subprotocol token, when well-formed.
+fn agent_code_from_tokens(tokens: &[String]) -> Option<String> {
+    sanitize_agent_code(
+        tokens
+            .iter()
+            .find_map(|token| token.strip_prefix(AGENT_CODE_PROTOCOL_PREFIX))
+            .map(str::to_string),
+    )
 }
 
 /// Browser→hub terminal frames (JSON text).
@@ -640,17 +563,39 @@ pub async fn terminal_ws_handler(
 ) -> Response {
     let ip = client_ip(&headers, addr);
 
+    // Same sandbox guard as every protected route: a sandboxed preview iframe
+    // (Origin: null) must not be able to drive the terminal API even with a
+    // ticket it somehow obtained.
+    if headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        == Some("null")
+    {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "permission_denied",
+            "Sandboxed previews cannot open terminals",
+            false,
+        );
+    }
+
     // 1) Ticket: 256-bit, TTL-bound to the login principal AND the path
     // agent — a ticket minted for another agent must not open a terminal
     // here (same error as unknown/expired to avoid leaking ticket validity).
     // It rides the Sec-WebSocket-Protocol handshake header (browsers cannot
     // set arbitrary WS headers); a URL query ticket would end up in access
     // logs and browser history.
-    let ticket_token = headers
-        .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').map(str::trim).find(|s| !s.is_empty()));
-    let Some(ticket_token) = ticket_token else {
+    //
+    // Every offered token is tried: an intermediary may list another protocol
+    // first, and only the ticket store knows which token is a live ticket.
+    let tokens = subprotocol_tokens(&headers);
+    let Some((ticket_token, ticket)) = tokens.iter().find_map(|token| {
+        state
+            .terminal_tickets
+            .validate(token)
+            .filter(|ticket| ticket.agent_id == agent_id)
+            .map(|ticket| (token.clone(), ticket))
+    }) else {
         return error_response(
             StatusCode::UNAUTHORIZED,
             "terminal_ticket_invalid",
@@ -658,22 +603,6 @@ pub async fn terminal_ws_handler(
             true,
         );
     };
-    let Some(ticket) = state.terminal_tickets.validate(ticket_token) else {
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "terminal_ticket_invalid",
-            "Terminal ticket missing or expired. Verify 2FA again.",
-            true,
-        );
-    };
-    if ticket.agent_id != agent_id {
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "terminal_ticket_invalid",
-            "Terminal ticket missing or expired. Verify 2FA again.",
-            true,
-        );
-    }
 
     // 2) Session cookie must be present, valid, and owned by the ticket's
     // principal — the ticket alone must not suffice from another browser.
@@ -696,7 +625,7 @@ pub async fn terminal_ws_handler(
         );
     }
 
-    let connection_id = {
+    {
         let inner = state.inner.read().await;
         let Some(agent) = inner.agents.get(&agent_id) else {
             return error_response(
@@ -714,7 +643,7 @@ pub async fn terminal_ws_handler(
                 true,
             );
         }
-        if !agent.capabilities.terminal {
+        if !agent.capabilities.terminal || !agent.capabilities.terminal_persistent || !agent.capabilities.terminal_agent_2fa {
             return error_response(
                 StatusCode::NOT_IMPLEMENTED,
                 "unsupported_feature",
@@ -722,9 +651,15 @@ pub async fn terminal_ws_handler(
                 false,
             );
         }
-        agent.connection_id
-    };
+        // `connection_id` is deliberately NOT captured here: the agent may
+        // re-register before the open below, which rotates it. It is resolved
+        // under the same lock as the send (see `handle_terminal_socket`).
+    }
 
+    // Advisory only. The authoritative capacity check runs after the upgrade,
+    // under the session-registry lock, because only there can the failure be
+    // reported to the browser as an in-band error frame (an HTTP 503 body is
+    // unreadable by `new WebSocket`).
     {
         let sessions = state
             .terminal_sessions
@@ -742,118 +677,149 @@ pub async fn terminal_ws_handler(
 
     let cols = params.cols.unwrap_or(80).clamp(1, 500);
     let rows = params.rows.unwrap_or(24).clamp(1, 500);
-    let agent_totp_code = sanitize_agent_code(params.agent_code);
+    let agent_totp_code =
+        agent_code_from_tokens(&tokens);
+    if params.session_id.as_ref().is_some_and(|id| !is_valid_terminal_session_id(id)) {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", "Invalid terminal session id", false);
+    }
+    if !state.terminal_tickets.consume(&ticket_token, &ticket.principal_id, &agent_id) {
+        return error_response(StatusCode::UNAUTHORIZED, "terminal_ticket_invalid", "Ticket already used or expired", true);
+    }
+    let agent_ua = user_agent(&headers);
 
     ws.max_message_size(MAX_BROWSER_WS_MESSAGE_SIZE)
         .max_frame_size(MAX_BROWSER_WS_MESSAGE_SIZE)
         // Echo the ticket subprotocol back so the negotiated protocol
         // matches what the browser offered in the handshake.
-        .protocols([ticket_token.to_string()])
+        .protocols([ticket_token])
         .on_upgrade(move |socket| {
             handle_terminal_socket(
                 socket,
                 state,
                 agent_id,
-                connection_id,
                 ticket,
                 cols,
                 rows,
                 agent_totp_code,
                 ip,
+                agent_ua,
+                params.session_id,
             )
         })
         .into_response()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_terminal_socket(
     socket: WebSocket,
     state: AppState,
     agent_id: String,
-    connection_id: u64,
     ticket: TerminalTicket,
     cols: u16,
     rows: u16,
     agent_totp_code: Option<String>,
     ip: String,
+    user_agent: String,
+    session_id: Option<String>,
 ) {
     let req_id = format!("term_{}", Uuid::new_v4());
+    let stable_id = session_id.clone().unwrap_or_else(|| req_id.clone());
     let (tx, mut rx) = mpsc::channel::<serde_json::Value>(TERMINAL_BROWSER_QUEUE_CAPACITY);
     let (mut ws_sink, mut ws_stream) = socket.split();
 
-    let inserted = {
+    // Register the session and queue the open under ONE registry read. The
+    // agent can re-register at any moment (abort-on-reregister is routine),
+    // which rotates its `connection_id`; binding the entry to the id the
+    // message was actually queued on is what keeps the replies routable.
+    // Capturing the id earlier and sending later would make every reply look
+    // like it came from a stranger — dropped, slot leaked, pane hung forever.
+    let outcome: Result<(), &'static str> = {
+        let inner = state.inner.read().await;
         let mut sessions = state
             .terminal_sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if sessions.len() >= MAX_TERMINAL_SESSIONS {
-            false
+        if !inner.agents.get(&agent_id).is_some_and(|a| a.capabilities.terminal_persistent && a.capabilities.terminal_agent_2fa) {
+            Err("unsupported_feature")
+        } else if sessions.len() >= MAX_TERMINAL_SESSIONS {
+            Err("terminal_overloaded")
         } else {
-            sessions.insert(
-                req_id.clone(),
-                TerminalSessionEntry {
-                    agent_id: agent_id.clone(),
-                    connection_id,
-                    principal_id: ticket.principal_id.clone(),
-                    username: ticket.username.clone(),
-                    tx,
+            match inner.agents.send_to_agent_current(
+                &agent_id,
+                match session_id {
+                    Some(session_id) => HubMessage::TerminalAttach { req_id: req_id.clone(), session_id, agent_totp_code },
+                    None => HubMessage::TerminalOpen { req_id: req_id.clone(), cols, rows, agent_totp_code },
                 },
-            );
-            true
+            ) {
+                Some(connection_id) => {
+                    sessions.insert(
+                        req_id.clone(),
+                        TerminalSessionEntry {
+                            agent_id: agent_id.clone(),
+                            connection_id,
+                            principal_id: ticket.principal_id.clone(),
+                            username: ticket.username.clone(),
+                            ip: ip.clone(),
+                            user_agent: user_agent.clone(),
+                            tx,
+                        },
+                    );
+                    Ok(())
+                }
+                None => Err("backend_offline"),
+            }
         }
     };
-    if !inserted {
-        send_terminal_frame(
-            &mut ws_sink,
-            serde_json::json!({"type": "error", "error": "terminal_overloaded"}),
-        )
-        .await;
+    if let Err(code) = outcome {
+        send_terminal_frame(&mut ws_sink, serde_json::json!({"type": "error", "error": code}))
+            .await;
         return;
     }
 
-    let sent = {
-        let inner = state.inner.read().await;
-        inner.agents.send_to_agent(
-            &agent_id,
-            HubMessage::TerminalOpen {
-                req_id: req_id.clone(),
-                cols,
-                rows,
-                agent_totp_code,
-            },
-        )
-    };
-    if !sent {
-        state
-            .terminal_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&req_id);
-        send_terminal_frame(
-            &mut ws_sink,
-            serde_json::json!({"type": "error", "error": "backend_offline"}),
-        )
-        .await;
-        return;
-    }
-
-    tracing::info!(target: "audit", ip = %ip, user = %ticket.username, agent_id = %agent_id, "terminal_opened");
-    state.audit.record(
-        "terminal_opened",
-        &ticket.username,
-        &ip,
-        "",
-    );
+    // `terminal_opened` is audited by `ws.rs` when the agent CONFIRMS the
+    // session, so a rejected open (agent-side 2FA, no PTY) is not recorded as
+    // a shell that was handed out.
 
     // Pump both directions in one loop: agent→browser frames arrive on `rx`
     // (routed from ws.rs via the session entry); browser→agent frames are
     // parsed here and forwarded as Terminal* hub messages. The loop ends when
     // the browser socket closes/errors, or when `rx` closes because the
     // session entry was removed (agent TerminalClosed / agent disconnect).
+    //
+    // The open itself is on a deadline: without one a lost reply (wedged
+    // agent, dropped frame) leaves the browser on "Connecting…" forever and
+    // holds one of the 16 session slots.
+    let open_deadline = tokio::time::sleep(TERMINAL_OPEN_TIMEOUT);
+    tokio::pin!(open_deadline);
+    let mut confirmed = false;
     loop {
         tokio::select! {
+            () = &mut open_deadline, if !confirmed => {
+                tracing::warn!(
+                    "Terminal session {} was not confirmed by agent {} within {:?}; closing",
+                    req_id,
+                    agent_id,
+                    TERMINAL_OPEN_TIMEOUT
+                );
+                let _ = send_terminal_frame(
+                    &mut ws_sink,
+                    serde_json::json!({"type": "error", "error": "terminal_open_timeout"}),
+                )
+                .await;
+                break;
+            }
             frame = rx.recv() => {
                 match frame {
-                    Some(value) => {
+                    Some(mut value) => {
+                        if value.get("type").and_then(|v| v.as_str()) == Some("opened") { value["session_id"] = serde_json::json!(stable_id); }
+                        // The open is confirmed by the agent's first word on the
+                        // session (`opened`, or an `error` about the open).
+                        if matches!(
+                            value.get("type").and_then(|kind| kind.as_str()),
+                            Some("opened") | Some("error")
+                        ) {
+                            confirmed = true;
+                        }
                         if !send_terminal_frame(&mut ws_sink, value).await {
                             break;
                         }
@@ -916,7 +882,7 @@ async fn handle_terminal_socket(
         }
     }
 
-    // Cleanup: stop agent→browser routing, then tell the agent to kill the
+    // Cleanup: stop agent→browser routing, then detach from the
     // shell (best effort — the agent may already be gone).
     state
         .terminal_sessions
@@ -927,15 +893,15 @@ async fn handle_terminal_socket(
         let inner = state.inner.read().await;
         let _ = inner.agents.send_to_agent(
             &agent_id,
-            HubMessage::TerminalClose {
+            HubMessage::TerminalDetach {
                 req_id: req_id.clone(),
             },
         );
     }
-    tracing::info!(target: "audit", ip = %ip, user = %ticket.username, agent_id = %agent_id, "terminal_closed");
+    tracing::info!(target: "audit", ip = %ip, user = %ticket.username, agent_id = %agent_id, "terminal_detached");
     state
         .audit
-        .record("terminal_closed", &ticket.username, &ip, "");
+        .record("terminal_detached", &ticket.username, &ip, &user_agent);
 }
 
 async fn send_terminal_frame(
@@ -957,19 +923,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mint_validate_and_renew_round_trip() {
+    fn tickets_are_single_use_and_principal_bound() {
         let store = TerminalTicketStore::new();
         let token = store.mint("p1", "alice", "agent-a").unwrap();
         let ticket = store.validate(&token).unwrap();
         assert_eq!(ticket.principal_id, "p1");
         assert_eq!(ticket.username, "alice");
         assert_eq!(ticket.agent_id, "agent-a");
-        // Renew extends the ticket and reports the full TTL.
-        assert_eq!(store.renew(&token), Some(TERMINAL_TICKET_TTL_SECS));
+        // A different principal cannot consume the ticket.
+        assert!(!store.consume(&token, "p2", "agent-a"));
         assert!(store.validate(&token).is_some());
-        // Unknown tokens neither validate nor renew.
+        // Another principal must not be able to keep someone else's ticket
+        // alive, even though it holds a valid session of its own.
+        assert!(store.consume(&token, "p1", "agent-a"));
+        assert!(!store.consume(&token, "p1", "agent-a"));
+        // Unknown tokens cannot validate or be consumed.
         assert!(store.validate("nope").is_none());
-        assert_eq!(store.renew("nope"), None);
+        assert!(!store.consume("nope", "p1", "agent-a"));
     }
 
     #[test]
@@ -983,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn expired_ticket_neither_validates_nor_renews() {
+    fn expired_ticket_cannot_be_consumed() {
         let store = TerminalTicketStore::new();
         let token = store.mint("p1", "alice", "agent-a").unwrap();
         {
@@ -992,17 +962,23 @@ mod tests {
                 Instant::now() - Duration::from_secs(1);
         }
         assert!(store.validate(&token).is_none());
-        assert_eq!(store.renew(&token), None);
+        assert!(!store.consume(&token, "p1", "agent-a"));
     }
 
     #[test]
     fn terminal_session_id_validation() {
-        assert!(is_valid_terminal_session_id("term_550e8400-e29b-41d4-a716-446655440000"));
-        assert!(is_valid_terminal_session_id(&format!("term_{}", "x".repeat(75))));
-        // Wrong prefix and over-length ids are rejected.
+        assert!(is_valid_terminal_session_id(
+            "term_550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(is_valid_terminal_session_id("term_0123456789abcdef"));
+        // Wrong prefix, empty/short payloads, over-length ids and path-ish
+        // payloads are all rejected (the id becomes a relay key).
         assert!(!is_valid_terminal_session_id("fs_list_abc"));
         assert!(!is_valid_terminal_session_id("term"));
-        assert!(!is_valid_terminal_session_id(&format!("term_{}", "x".repeat(76))));
+        assert!(!is_valid_terminal_session_id("term_"));
+        assert!(!is_valid_terminal_session_id("term_short"));
+        assert!(!is_valid_terminal_session_id(&format!("term_{}", "x".repeat(49))));
+        assert!(!is_valid_terminal_session_id("term_../../etc/passwd"));
         assert!(!is_valid_terminal_session_id(""));
     }
 
@@ -1016,5 +992,64 @@ mod tests {
         assert_eq!(sanitize_agent_code(Some("1234567".to_string())), None);
         assert_eq!(sanitize_agent_code(Some("abcdef".to_string())), None);
         assert_eq!(sanitize_agent_code(None), None);
+    }
+
+    #[test]
+    fn subprotocol_tokens_are_read_in_order() {
+        let mut headers = HeaderMap::new();
+        assert!(subprotocol_tokens(&headers).is_empty());
+        headers.insert(
+            axum::http::header::SEC_WEBSOCKET_PROTOCOL,
+            axum::http::HeaderValue::from_static(" filebox-agent-code.123456 , ticket-a,,ticket-b "),
+        );
+        assert_eq!(
+            subprotocol_tokens(&headers),
+            vec![
+                "filebox-agent-code.123456".to_string(),
+                "ticket-a".to_string(),
+                "ticket-b".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_code_comes_from_the_handshake_not_the_url() {
+        let tokens = vec![
+            "filebox-agent-code.123456".to_string(),
+            "ticket-a".to_string(),
+        ];
+        assert_eq!(agent_code_from_tokens(&tokens), Some("123456".to_string()));
+        // A malformed or absent code is passed through as "no code", which the
+        // agent rejects when it requires one.
+        assert_eq!(
+            agent_code_from_tokens(&["filebox-agent-code.12345".to_string()]),
+            None
+        );
+        assert_eq!(
+            agent_code_from_tokens(&["filebox-agent-code.abcdef".to_string()]),
+            None
+        );
+        assert_eq!(agent_code_from_tokens(&["ticket-a".to_string()]), None);
+    }
+
+    #[test]
+    fn output_chunks_split_at_the_protocol_cap() {
+        let sizes = |len: usize| {
+            output_chunks(&vec![0u8; len])
+                .map(<[u8]>::len)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sizes(0), Vec::<usize>::new());
+        assert_eq!(sizes(16), vec![16]);
+        assert_eq!(
+            sizes(TERMINAL_CHUNK_MAX_BYTES),
+            vec![TERMINAL_CHUNK_MAX_BYTES]
+        );
+        assert_eq!(
+            sizes(TERMINAL_CHUNK_MAX_BYTES + 1),
+            vec![TERMINAL_CHUNK_MAX_BYTES, 1]
+        );
+        // 40 KiB must not survive as one frame in a 256-deep queue.
+        assert_eq!(sizes(40 * 1024), vec![16384, 16384, 8192]);
     }
 }

@@ -1,9 +1,4 @@
-//! Shared TOTP (RFC 6238) core used by BOTH the hub (browser-side 2FA for
-//! the remote terminal) and the agent (optional agent-side secondary check).
-//!
-//! The algorithm lives here — not in either binary — so both sides compute
-//! codes byte-for-byte identically. Storage/policy (hub's `TotpStore`,
-//! agent's anti-replay) stays with the respective binary.
+//! TOTP core for Agent-local enrollment, verification and anti-replay.
 //!
 //! HMAC-SHA1, 30s time step, 6 digits (the RFC 4226 truncated value mod
 //! 10^6). Secrets are 160-bit random values, base32-encoded (RFC 4648, no
@@ -18,6 +13,10 @@ use rand::Rng;
 pub const TOTP_STEP_SECS: u64 = 30;
 /// Codes are 6 digits (the RFC 4226 truncated value mod 10^6).
 const TOTP_MODULO: u32 = 1_000_000;
+/// Shortest operator-supplied secret we accept (RFC 4226 §4 recommends 128
+/// bits; wizard-generated secrets are 160). A one-character base32 key would
+/// otherwise be advertised as "2FA enabled" while being trivially guessable.
+pub const MIN_SECRET_BYTES: usize = 16;
 
 /// Fresh 160-bit TOTP secret (raw bytes; base32-encode for display/storage).
 pub fn generate_secret() -> [u8; 20] {
@@ -67,23 +66,33 @@ pub fn current_counter() -> u64 {
 /// Returning the matched counter (rather than a bool) lets the AGENT enforce
 /// anti-replay: a code is only accepted if its counter is strictly newer
 /// than the last accepted one.
+///
+/// The NEWEST permitted step is tried first. Two adjacent steps collide (produce the
+/// same 6 digits) about once in 10^6 pairs, and reporting the older counter
+/// for such a collision would leave the agent's anti-replay watermark one
+/// step behind, letting the same code be spent twice.
 pub fn matching_counter_at(secret_b32: &str, code: &str, counter: u64) -> Option<u64> {
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     let code_value = code.parse::<u32>().ok()?;
     let secret = base32_decode(secret_b32)?;
-    for step in [-1i64, 0, 1] {
-        let candidate = (counter as i64).checked_add(step)?;
-        if candidate < 0 {
-            continue;
-        }
-        let candidate = candidate as u64;
-        if totp_at(&secret, candidate) == code_value {
-            return Some(candidate);
-        }
-    }
-    None
+    candidate_counters(counter).find(|&candidate| totp_at(&secret, candidate) == code_value)
+}
+
+/// Counters to try, newest first within the ±1 skew window. `checked_sub` drops the previous
+/// step at counter 0 instead of wrapping.
+fn candidate_counters(counter: u64) -> impl Iterator<Item = u64> {
+    [counter.checked_add(1), Some(counter), counter.checked_sub(1)]
+        .into_iter()
+        .flatten()
+}
+
+/// True when `secret_b32` is decodable base32 AND long enough to be worth
+/// trusting. Use this for secrets that come from an operator (agent.toml /
+/// env var) rather than ones this process generated.
+pub fn secret_is_acceptable(secret_b32: &str) -> bool {
+    base32_decode(secret_b32).is_some_and(|bytes| bytes.len() >= MIN_SECRET_BYTES)
 }
 
 /// Verify a user-submitted code at an explicit counter (±1 step window).
@@ -99,8 +108,26 @@ pub fn verify(secret_b32: &str, code: &str) -> bool {
 pub fn otpauth_uri(username: &str, secret_b32: &str) -> String {
     format!(
         "otpauth://totp/filebox:{}?secret={}&issuer=filebox",
-        username, secret_b32
+        percent_encode_label(username),
+        secret_b32
     )
+}
+
+/// Percent-encode everything outside RFC 3986 unreserved. An authenticator
+/// label may be free-form, and an unescaped `?`/`&`/space/`#` would
+/// corrupt the otpauth label or inject query parameters — which would break
+/// (or silently redirect) the QR scan during authenticator binding.
+fn percent_encode_label(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -170,5 +197,53 @@ mod tests {
         let secret = generate_secret();
         let b32 = base32_encode(&secret);
         assert_eq!(base32_decode(&b32).unwrap(), secret);
+    }
+
+    /// RFC 6238 gives 8-digit values; our 6-digit variant keeps the leading
+    /// zeros, and the wire format is a STRING. Both must verify as written.
+    #[test]
+    fn leading_zero_codes_verify_as_strings() {
+        let b32 = base32_encode(RFC_SECRET);
+        let counter = counter_at(1111111109);
+        assert!(verify_at(&b32, "081804", counter));
+        assert_eq!(matching_counter_at(&b32, "081804", counter), Some(counter));
+        let counter = counter_at(1234567890);
+        assert!(verify_at(&b32, "005924", counter));
+        assert_eq!(matching_counter_at(&b32, "005924", counter), Some(counter));
+    }
+
+    /// The newest step must win ties, so the agent's anti-replay watermark
+    /// always advances to the newest counter the code could belong to.
+    /// (A real collision is ~1e-6 per step, so the preference order is what
+    /// gets tested; `matching_counter_at` takes the first candidate that
+    /// matches.)
+    #[test]
+    fn candidate_counters_prefer_the_newest_step() {
+        assert_eq!(candidate_counters(5).collect::<Vec<_>>(), vec![6, 5, 4]);
+        // Counter 0 has no previous step — and must not wrap to u64::MAX.
+        assert_eq!(candidate_counters(0).collect::<Vec<_>>(), vec![1, 0]);
+    }
+
+    #[test]
+    fn weak_operator_secrets_are_rejected() {
+        // "A" decodes to zero bytes — an empty HMAC key would still have been
+        // advertised as "2FA enabled".
+        assert!(!secret_is_acceptable("A"));
+        assert!(!secret_is_acceptable("GEZDGNBVGY3TQOJQ")); // 10 bytes
+        assert!(!secret_is_acceptable("not-base32!!"));
+        assert!(secret_is_acceptable("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")); // 20
+    }
+
+    #[test]
+    fn otpauth_label_escapes_hostile_usernames() {
+        let uri = otpauth_uri("john doe", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+        assert!(uri.contains("filebox:john%20doe?"), "{uri}");
+        let uri = otpauth_uri("a?secret=evil&x=1", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+        assert!(uri.contains("filebox:a%3Fsecret%3Devil%26x%3D1?"), "{uri}");
+        assert_eq!(
+            uri.matches("secret=").count(),
+            1,
+            "username must not inject a second secret parameter: {uri}"
+        );
     }
 }

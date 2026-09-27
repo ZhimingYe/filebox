@@ -168,6 +168,9 @@ pub struct Capabilities {
     /// Defaults to `false` for rolling-upgrade safety.
     #[serde(default)]
     pub terminal_manage: bool,
+    /// Supports authenticated attachment and detach without terminating PTYs.
+    #[serde(default)]
+    pub terminal_persistent: bool,
 }
 
 impl Default for Capabilities {
@@ -192,6 +195,7 @@ impl Default for Capabilities {
             terminal: false,
             terminal_agent_2fa: false,
             terminal_manage: false,
+            terminal_persistent: false,
         }
     }
 }

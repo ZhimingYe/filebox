@@ -5,7 +5,6 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, Notify};
 use uuid::Uuid;
@@ -705,6 +704,29 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                             }
                             Ok(AgentMessage::TerminalOpened { req_id, error }) => {
                                 let failed = error.is_some();
+                                // Audited here, not when the open was queued:
+                                // only the agent's answer says whether a shell
+                                // was actually handed out. `None` owner means
+                                // the browser left first.
+                                if let Some((username, ip, user_agent)) =
+                                    crate::terminal_proxy::terminal_session_owner(&state, &req_id)
+                                {
+                                    let event = if failed {
+                                        "terminal_open_failed"
+                                    } else {
+                                        "terminal_opened"
+                                    };
+                                    tracing::info!(
+                                        target: "audit",
+                                        ip = %ip,
+                                        user = %username,
+                                        req_id = %req_id,
+                                        error = ?error,
+                                        "{}",
+                                        event
+                                    );
+                                    state.audit.record(event, &username, &ip, &user_agent);
+                                }
                                 let frame = match error {
                                     Some(code) => serde_json::json!({
                                         "type": "error",
@@ -724,17 +746,16 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                 );
                             }
                             Ok(AgentMessage::TerminalOutput { req_id, data }) => {
-                                let frame = serde_json::json!({
-                                    "type": "output",
-                                    "data": base64::engine::general_purpose::STANDARD.encode(&data),
-                                });
-                                crate::terminal_proxy::forward_to_terminal_session(
+                                // Re-chunked defensively: the agent caps output
+                                // at TERMINAL_CHUNK_MAX_BYTES, but the hub must
+                                // not let one hostile frame pin multi-megabyte
+                                // values in the bounded browser queue.
+                                crate::terminal_proxy::forward_terminal_output(
                                     &state,
                                     &agent_id_for_msgs,
                                     connection_id,
                                     &req_id,
-                                    frame,
-                                    false,
+                                    &data,
                                 );
                             }
                             Ok(AgentMessage::TerminalClosed { req_id, reason }) => {

@@ -15,7 +15,10 @@ pub const FILE_CHUNK_MAX_BYTES: u64 = 512 * 1024;
 
 /// Max raw bytes per `TerminalOutput` message over the Hub↔Agent WebSocket.
 /// Small on purpose: terminal I/O is latency-sensitive and must never stall
-/// the shared control channel.
+/// the shared control channel. Agents MUST chunk to this size; the hub
+/// re-chunks defensively (see `terminal_proxy::forward_terminal_output`) so a
+/// single oversized frame cannot fill the per-session browser queue with
+/// multi-megabyte values.
 pub const TERMINAL_CHUNK_MAX_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,13 +33,20 @@ pub struct OfficePreviewOutput {
 
 /// One live terminal session as reported by the agent (management listing).
 /// `req_id` is the session id (`term_<uuid>`); `idle_secs` measures time
-/// since the last INPUT (keyboard activity) — the idle reaper keys on it.
+/// since the last INPUT (keyboard activity), for the session list.
+/// Every field is `#[serde(default)]` except the id, so an agent that omits
+/// (or a future protocol that drops) a field still yields a usable listing
+/// instead of failing the whole response and timing the caller out.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TerminalSessionInfo {
     pub req_id: String,
+    #[serde(default)]
     pub age_secs: u64,
+    #[serde(default)]
     pub idle_secs: u64,
+    #[serde(default)]
     pub cols: u16,
+    #[serde(default)]
     pub rows: u16,
 }
 
@@ -168,8 +178,10 @@ pub enum AgentMessage {
         error: Option<String>,
     },
     /// Result of opening a remote terminal session. On failure `error`
-    /// carries a machine-readable code (e.g. `terminal_unavailable`,
-    /// `agent_overloaded: …`).
+    /// carries a BARE machine-readable code the hub forwards verbatim and the
+    /// frontend switches on (`terminal_unavailable`, `agent_overloaded`,
+    /// `terminal_2fa_required`, `terminal_2fa_invalid`); operator-facing
+    /// detail belongs in the agent log, not on the wire.
     TerminalOpened {
         req_id: String,
         error: Option<String>,
@@ -371,7 +383,7 @@ pub enum HubMessage {
         req_id: String,
         cols: u16,
         rows: u16,
-        /// Agent-side secondary 2FA: the user's current TOTP code for the
+        /// Required Agent-local 2FA: the user's current TOTP code for the
         /// agent's OWN secret (`terminal_totp_secret` in agent.toml),
         /// passed through by the hub. The agent verifies it locally and
         /// rejects with `terminal_2fa_required` / `terminal_2fa_invalid`.
@@ -379,7 +391,16 @@ pub enum HubMessage {
         #[serde(default)]
         agent_totp_code: Option<String>,
     },
-    /// Raw stdin bytes for a terminal session (base64 on the wire).
+    /// Authenticate a new attachment to an existing stable session.
+    TerminalAttach {
+        req_id: String,
+        session_id: String,
+        #[serde(default)]
+        agent_totp_code: Option<String>,
+    },
+    /// Remove an attachment without ending its shell.
+    TerminalDetach { req_id: String },
+    /// Raw stdin bytes for an authenticated attachment (base64 on the wire).
     TerminalInput {
         req_id: String,
         #[serde(with = "base64_bytes")]
@@ -1195,6 +1216,145 @@ mod tests {
         });
         let caps: Capabilities = serde_json::from_value(legacy).unwrap();
         assert!(!caps.terminal);
+    }
+
+    /// Frozen wire tags. A renamed variant parses as an unknown `type` on the
+    /// other side and is dropped silently (rolling upgrades cannot catch it),
+    /// so the tags — not just a couple of representative ones — are pinned.
+    #[test]
+    fn terminal_message_tags_are_frozen() {
+        let hub = [
+            (
+                HubMessage::TerminalOpen {
+                    req_id: "t".into(),
+                    cols: 80,
+                    rows: 24,
+                    agent_totp_code: None,
+                },
+                "terminal_open",
+            ),
+            (
+                HubMessage::TerminalInput {
+                    req_id: "t".into(),
+                    data: b"x".to_vec(),
+                },
+                "terminal_input",
+            ),
+            (
+                HubMessage::TerminalResize {
+                    req_id: "t".into(),
+                    cols: 80,
+                    rows: 24,
+                },
+                "terminal_resize",
+            ),
+            (
+                HubMessage::TerminalClose { req_id: "t".into() },
+                "terminal_close",
+            ),
+            (
+                HubMessage::TerminalListRequest { req_id: "t".into() },
+                "terminal_list_request",
+            ),
+        ];
+        for (msg, tag) in hub {
+            assert_eq!(serde_json::to_value(&msg).unwrap()["type"], tag);
+        }
+
+        let agent = [
+            (
+                AgentMessage::TerminalOpened {
+                    req_id: "t".into(),
+                    error: None,
+                },
+                "terminal_opened",
+            ),
+            (
+                AgentMessage::TerminalOutput {
+                    req_id: "t".into(),
+                    data: b"x".to_vec(),
+                },
+                "terminal_output",
+            ),
+            (
+                AgentMessage::TerminalClosed {
+                    req_id: "t".into(),
+                    reason: None,
+                },
+                "terminal_closed",
+            ),
+            (
+                AgentMessage::TerminalListResponse {
+                    req_id: "t".into(),
+                    sessions: Vec::new(),
+                },
+                "terminal_list_response",
+            ),
+        ];
+        for (msg, tag) in agent {
+            assert_eq!(serde_json::to_value(&msg).unwrap()["type"], tag);
+        }
+    }
+
+    /// The terminal byte fields are base64 on the wire; arbitrary binary (not
+    /// just UTF-8) must survive, and garbage must be rejected rather than
+    /// silently becoming empty output.
+    #[test]
+    fn terminal_payload_base64_handles_binary_empty_and_garbage() {
+        let binary = AgentMessage::TerminalOutput {
+            req_id: "t".into(),
+            data: vec![0xde, 0xad, 0xbe, 0xef],
+        };
+        let json = serde_json::to_value(&binary).unwrap();
+        assert_eq!(json["data"], "3q2+7w==");
+        match round_trip_agent(&binary) {
+            AgentMessage::TerminalOutput { data, .. } => {
+                assert_eq!(data, vec![0xde, 0xad, 0xbe, 0xef])
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let empty = AgentMessage::TerminalOutput {
+            req_id: "t".into(),
+            data: Vec::new(),
+        };
+        let json = serde_json::to_value(&empty).unwrap();
+        assert_eq!(json["data"], "");
+        match round_trip_agent(&empty) {
+            AgentMessage::TerminalOutput { data, .. } => assert!(data.is_empty()),
+            _ => panic!("wrong variant"),
+        }
+
+        let garbage: Result<AgentMessage, _> =
+            serde_json::from_str(r#"{"type":"terminal_output","req_id":"t","data":"!!!"}"#);
+        assert!(garbage.is_err(), "invalid base64 must not decode to bytes");
+    }
+
+    /// Additive fields must not break parsing in either direction: a newer
+    /// sender adding one, or an older payload missing a defaulted one.
+    #[test]
+    fn terminal_messages_tolerate_additive_and_missing_fields() {
+        // A future agent adding a field must still parse here.
+        let future: AgentMessage = serde_json::from_str(
+            r#"{"type":"terminal_output","req_id":"t","data":"aGk=","future_field":1}"#,
+        )
+        .unwrap();
+        match future {
+            AgentMessage::TerminalOutput { data, .. } => assert_eq!(data, b"hi"),
+            _ => panic!("wrong variant"),
+        }
+        // A listing that omits the defaulted columns still parses.
+        let partial: AgentMessage = serde_json::from_str(
+            r#"{"type":"terminal_list_response","req_id":"t","sessions":[{"req_id":"term_x"}]}"#,
+        )
+        .unwrap();
+        match partial {
+            AgentMessage::TerminalListResponse { sessions, .. } => {
+                assert_eq!(sessions[0].idle_secs, 0);
+                assert_eq!(sessions[0].cols, 0);
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 
     #[test]
