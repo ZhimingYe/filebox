@@ -46,6 +46,7 @@ const MAX_BROWSER_WS_MESSAGE_SIZE: usize = 64 * 1024;
 const TERMINAL_DETACH_TIMEOUT: Duration = Duration::from_secs(5);
 const BROWSER_PING_INTERVAL: Duration = Duration::from_secs(15);
 const BROWSER_PONG_TIMEOUT: Duration = Duration::from_secs(45);
+const SESSION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Only an answer to our outstanding probe proves the browser is reachable.
 /// Shell output or queued input must not extend the browser's lease.
@@ -157,8 +158,8 @@ impl TerminalTicketStore {
 pub struct TerminalSessionEntry {
     pub agent_id: String,
     pub connection_id: u64,
-    #[allow(dead_code)]
     pub principal_id: String,
+    pub revoked: std::sync::Arc<Notify>,
     /// Audit attribution: the session owner and where it came from.
     pub username: String,
     pub ip: String,
@@ -275,6 +276,33 @@ pub fn close_terminal_sessions_for_connection(
         !(entry.agent_id == agent_id && entry.connection_id == connection_id)
     });
     before - sessions.len()
+}
+
+/// Wake pumps immediately, bypassing any queued output. Shells are detached,
+/// not killed; each pump cleans up only its captured Agent connection.
+pub fn revoke_terminal_sessions(state: &AppState, principal_id: &str) {
+    let mut sessions = state.terminal_sessions.lock().unwrap_or_else(|e| e.into_inner());
+    sessions.retain(|_, entry| {
+        if entry.principal_id != principal_id { return true; }
+        entry.revoked.notify_one();
+        false
+    });
+}
+
+async fn terminal_session_valid(state: &AppState, principal_id: &str) -> bool {
+    state.inner.read().await.sessions.get_session_by_principal(principal_id).is_some()
+}
+
+async fn forward_terminal_input(
+    state: &AppState, principal_id: &str, agent_id: &str, connection_id: u64,
+    sender: &mpsc::Sender<HubMessage>, message: HubMessage,
+) -> Result<(), &'static str> {
+    // Validation and enqueue share the registry read: logout cannot complete
+    // between them, and reconnect cannot redirect stale attachment input.
+    let inner = state.inner.read().await;
+    if inner.sessions.get_session_by_principal(principal_id).is_none() { return Err("unauthorized"); }
+    if !inner.agents.is_current_connection(agent_id, connection_id) { return Err("backend_offline"); }
+    sender.try_send(message).map_err(|_| "terminal_input_stalled")
 }
 
 // ── TOTP 2FA HTTP endpoints ─────────────────────────────────────────────────
@@ -586,7 +614,7 @@ fn agent_code_from_tokens(tokens: &[String]) -> Option<String> {
 #[serde(tag = "type")]
 enum BrowserTerminalFrame {
     #[serde(rename = "input")]
-    Input { data: String },
+    Input { data: String, #[serde(default)] seq: Option<u64> },
     #[serde(rename = "resize")]
     Resize { cols: u16, rows: u16 },
     #[serde(rename = "close")]
@@ -768,6 +796,7 @@ async fn handle_terminal_socket(
     let stable_id = session_id.clone().unwrap_or_else(|| req_id.clone());
     let (tx, mut rx) = mpsc::channel::<serde_json::Value>(TERMINAL_BROWSER_QUEUE_CAPACITY);
     let (mut ws_sink, mut ws_stream) = socket.split();
+    let revoked = std::sync::Arc::new(Notify::new());
 
     // Register the session and queue the open under ONE registry read. The
     // agent can re-register at any moment (abort-on-reregister is routine),
@@ -781,7 +810,9 @@ async fn handle_terminal_socket(
             .terminal_sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if !inner.agents.get(&agent_id).is_some_and(|a| a.capabilities.terminal_persistent && a.capabilities.terminal_agent_2fa) {
+        if inner.sessions.get_session_by_principal(&ticket.principal_id).is_none() {
+            Err("unauthorized")
+        } else if !inner.agents.get(&agent_id).is_some_and(|a| a.capabilities.terminal_persistent && a.capabilities.terminal_agent_2fa) {
             Err("unsupported_feature")
         } else if sessions.len() >= MAX_TERMINAL_SESSIONS {
             Err("terminal_overloaded")
@@ -800,6 +831,7 @@ async fn handle_terminal_socket(
                             agent_id: agent_id.clone(),
                             connection_id,
                             principal_id: ticket.principal_id.clone(),
+                            revoked: revoked.clone(),
                             username: ticket.username.clone(),
                             ip: ip.clone(),
                             user_agent: user_agent.clone(),
@@ -807,13 +839,13 @@ async fn handle_terminal_socket(
                         },
                     );
                     let agent = inner.agents.get(&agent_id).expect("Agent was just resolved under this registry lock");
-                    Ok((agent.sender.clone(), agent.abort_notify.clone()))
+                    Ok((agent.sender.clone(), agent.abort_notify.clone(), connection_id))
                 }
                 None => Err("backend_offline"),
             }
         }
     };
-    let (agent_sender, agent_abort) = match outcome {
+    let (agent_sender, agent_abort, connection_id) = match outcome {
         Ok(connection) => connection,
         Err(code) => {
             send_terminal_frame(&mut ws_sink, serde_json::json!({"type": "error", "error": code})).await;
@@ -838,12 +870,23 @@ async fn handle_terminal_socket(
     tokio::pin!(open_deadline);
     let mut confirmed = false;
     let mut heartbeat = BrowserHeartbeat::new(Instant::now());
+    let mut session_check = tokio::time::interval(SESSION_CHECK_INTERVAL);
     let mut ping_interval = tokio::time::interval_at(
         tokio::time::Instant::now() + BROWSER_PING_INTERVAL, BROWSER_PING_INTERVAL,
     );
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            () = revoked.notified() => {
+                send_terminal_frame(&mut ws_sink, serde_json::json!({"type": "error", "error": "unauthorized"})).await;
+                break;
+            }
+            _ = session_check.tick() => {
+                if !terminal_session_valid(&state, &ticket.principal_id).await {
+                    send_terminal_frame(&mut ws_sink, serde_json::json!({"type": "error", "error": "unauthorized"})).await;
+                    break;
+                }
+            }
             () = tokio::time::sleep_until(tokio::time::Instant::from_std(heartbeat.deadline())) => {
                 // No keyboard-idle timeout: only a missing heartbeat detaches.
                 break;
@@ -870,6 +913,10 @@ async fn handle_terminal_socket(
             frame = rx.recv() => {
                 match frame {
                     Some(mut value) => {
+                        if !terminal_session_valid(&state, &ticket.principal_id).await {
+                            send_terminal_frame(&mut ws_sink, serde_json::json!({"type": "error", "error": "unauthorized"})).await;
+                            break;
+                        }
                         if value.get("type").and_then(|v| v.as_str()) == Some("opened") { value["session_id"] = serde_json::json!(stable_id); }
                         // The open is confirmed by the agent's first word on the
                         // session (`opened`, or an `error` about the open).
@@ -900,36 +947,28 @@ async fn handle_terminal_socket(
                     Some(Ok(Message::Close(_))) => break,
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<BrowserTerminalFrame>(&text) {
-                            Ok(BrowserTerminalFrame::Input { data }) => {
+                            Ok(BrowserTerminalFrame::Input { data, seq }) => {
                                 let Ok(bytes) =
                                     base64::engine::general_purpose::STANDARD.decode(&data)
                                 else {
                                     continue;
                                 };
-                                let sent = {
-                                    let inner = state.inner.read().await;
-                                    inner.agents.send_to_agent(
-                                        &agent_id,
-                                        HubMessage::TerminalInput {
-                                            req_id: req_id.clone(),
-                                            data: bytes,
-                                        },
-                                    )
-                                };
-                                if !sent {
+                                if let Err(error) = forward_terminal_input(
+                                    &state, &ticket.principal_id, &agent_id, connection_id, &agent_sender,
+                                    HubMessage::TerminalInput { req_id: req_id.clone(), data: bytes, seq },
+                                ).await {
+                                    send_terminal_frame(&mut ws_sink, serde_json::json!({"type": "error", "error": error})).await;
                                     break;
                                 }
                             }
                             Ok(BrowserTerminalFrame::Resize { cols, rows }) => {
-                                let inner = state.inner.read().await;
-                                let _ = inner.agents.send_to_agent(
-                                    &agent_id,
-                                    HubMessage::TerminalResize {
-                                        req_id: req_id.clone(),
-                                        cols: cols.clamp(1, 500),
-                                        rows: rows.clamp(1, 500),
-                                    },
-                                );
+                                if let Err(error) = forward_terminal_input(
+                                    &state, &ticket.principal_id, &agent_id, connection_id, &agent_sender,
+                                    HubMessage::TerminalResize { req_id: req_id.clone(), cols: cols.clamp(1, 500), rows: rows.clamp(1, 500) },
+                                ).await {
+                                    send_terminal_frame(&mut ws_sink, serde_json::json!({"type": "error", "error": error})).await;
+                                    break;
+                                }
                             }
                             Ok(BrowserTerminalFrame::Pong { nonce }) => {
                                 heartbeat.acknowledge(&nonce, Instant::now());
@@ -973,6 +1012,57 @@ async fn send_terminal_frame(
 mod tests {
     use futures_util::FutureExt;
     use super::*;
+
+    fn test_state() -> AppState {
+        AppState::new(&crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(), agent_token_hash: "fake-hash".into(), users: vec![],
+        }, false)
+    }
+
+    #[tokio::test]
+    async fn terminal_input_checks_live_principal_and_captured_connection() {
+        let state = test_state();
+        let (sender, mut receiver) = mpsc::channel(8);
+        let (mut session, connection_id) = {
+            let mut inner = state.inner.write().await;
+            let (session, _) = inner.sessions.create_session("alice", false);
+            inner.agents.register("a".into(), "agent".into(), sender.clone(),
+                std::sync::Arc::new(Notify::new()), 0, vec![], 0, vec![], Default::default(), None);
+            (session, inner.agents.get("a").unwrap().connection_id)
+        };
+        let input = || HubMessage::TerminalInput { req_id: "route".into(), data: b"command".to_vec(), seq: Some(1) };
+        assert_eq!(forward_terminal_input(&state, &session.principal_id, "a", connection_id, &sender, input()).await, Ok(()));
+        assert!(matches!(receiver.try_recv(), Ok(HubMessage::TerminalInput { seq: Some(1), .. })));
+        // Cookie rotation retains the stable principal authorizing the socket.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        session.created_at = now - 100;
+        session.expires_at = now + 10;
+        {
+            let mut inner = state.inner.write().await;
+            inner.sessions.sessions_insert_for_test(session.clone());
+            let (rotated, cookie) = inner.sessions.refresh_session_after_auth(&session.session_id).unwrap();
+            assert!(cookie.is_some());
+            assert_ne!(rotated.session_id, session.session_id);
+            session = rotated;
+        }
+        assert!(terminal_session_valid(&state, &session.principal_id).await);
+        assert_eq!(forward_terminal_input(&state, &session.principal_id, "a", connection_id, &sender, input()).await, Ok(()));
+        receiver.try_recv().unwrap();
+        session.expires_at = 0;
+        state.inner.write().await.sessions.sessions_insert_for_test(session.clone());
+        assert!(!terminal_session_valid(&state, &session.principal_id).await);
+        assert_eq!(forward_terminal_input(&state, &session.principal_id, "a", connection_id, &sender, input()).await, Err("unauthorized"));
+        session.expires_at = now + 100;
+        state.inner.write().await.sessions.sessions_insert_for_test(session.clone());
+        let (replacement, mut replacement_rx) = mpsc::channel(8);
+        state.inner.write().await.agents.register("a".into(), "replacement".into(), replacement,
+            std::sync::Arc::new(Notify::new()), 0, vec![], 0, vec![], Default::default(), None);
+        assert_eq!(forward_terminal_input(&state, &session.principal_id, "a", connection_id, &sender, input()).await, Err("backend_offline"));
+        state.inner.write().await.sessions.remove(&session.session_id);
+        assert_eq!(forward_terminal_input(&state, &session.principal_id, "a", connection_id, &sender, input()).await, Err("unauthorized"));
+        assert!(receiver.try_recv().is_err());
+        assert!(replacement_rx.try_recv().is_err());
+    }
 
     #[test]
     fn tickets_are_single_use_and_principal_bound() {

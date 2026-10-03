@@ -37,7 +37,8 @@ in-flight work and can make intermittent loss worse.
 Run the transport regressions with:
 
 ```bash
-cargo test -p filebox-agent connection::transport_tests
+cargo test -p filebox-agent connection::
+cargo test -p filebox-hub temp_proxy::
 ```
 
 They cover repeated backpressure pauses, data integrity, directory/heartbeat
@@ -319,12 +320,76 @@ curl -s -N -b /tmp/fb.cookie --noproxy '*' \
 4. Close the browser connection; GET `/api/agents/{id}/terminals` must still
    list the shell. Get a new ticket/code and add `session_id` to the WS query
    to resume. A spent code is rejected; wait for the next 30s code.
+   `opened.replay_bytes` gives the exact number of historical output bytes
+   following the acknowledgement (zero for a fresh shell). The browser must
+   keep input disabled until xterm's write callback confirms all replay bytes
+   are parsed: old OSC color/CSI device queries otherwise send fresh replies
+   into the current shell. `opened.input_ack` must also be true: send input as
+   `{type:"input",data:<base64 UTF-8>,seq:<increasing number>}` with at most
+   16 KiB of decoded bytes per frame. Wait for `{type:"input_ack",seq}` before
+   sending the next frame; Agent acknowledges only after writing and flushing
+   to the PTY. Update Hub/frontend/Agent together; the new browser declines
+   connections missing input acknowledgement support, and resumes missing replay metadata.
 5. For liveness testing, answer JSON `{type:"ping",nonce}` frames with
    `{type:"pong",nonce}`. An idle browser answering probes remains attached;
    withholding replies detaches it after 45s while its shell stays listed.
    Resume with a fresh ticket/code to verify shell variables survived.
 6. Restart only the test Hub; Agent reconnects and the shell remains listed.
    Explicit DELETE `/api/agents/{id}/terminals/{session_id}` ends it.
+7. Paste more than 50 KiB (including non-ASCII text): it must arrive intact,
+   with sending progress and a cancel button. The browser caps queued UTF-8
+   input at 2 MiB and rejects an oversized paste in its entirety. Cancel or a
+   15s acknowledgement stall detaches and discards unsent input; already sent
+   input may have been written. Resume and inspect the shell before retrying.
+   Withhold xterm parse completion: more than 1 MiB of pending output must
+   detach with an explicit recovery notice, preserving the shell.
+8. POST `/api/session/logout` while a terminal is connected: it must detach,
+   stop forwarding commands, and leave its shell running. Session expiry is
+   checked before input/output and every 30s on idle connections; refreshing
+   a login's rotating cookie must keep the same principal attached.
+9. For brief output congestion, pause the Agent terminal queue consumer and
+   resume it within 5s: the attachment must stay live and retain every byte.
+   Dedicated PTY/replay workers wait for queue capacity; the shared WS read
+   loop remains available for input, heartbeat and detach. Detached readers
+   keep draining. Resume uses a snapshot of at most 256 KiB and holds live
+   output behind its replay frames; an old pending frame must not be sent
+   again to a replacement attachment. A continuing queue stall detaches with
+   a recovery reason, preserving the shell and bounded recent history.
+10. Keep sending browser heartbeats but withhold xterm write callbacks on a
+    small output: after 8s the browser must show a slow display notice with
+    Disconnect, and after 30s without parser progress it must detach. Only
+    parser completion resets that deadline; an empty parser queue clears it.
+    In Sessions, cancel a refresh or End a shell while an older refresh is
+    pending: late responses must neither restore old rows nor overwrite the
+    cancellation notice. Leaving Terminal aborts list/ticket/End HTTP waits;
+    aborting an End request does not undo a kill already delivered to Agent.
+
+11. Saturate the terminal output queue and burst session-list requests: every
+    management reply must arrive through reserved control capacity. Stall an
+    upload writer until its sixteen-frame queue fills: the upload fails with
+    `temp_upload_stalled` while Ping and Cancel still work. Cancel or disconnect
+    after queuing the final upload chunk: work not yet writing must not publish,
+    and partial staging/quota must be cleaned by the worker. A native syscall
+    already in progress may finish before cancellation is observed; its global
+    worker slot stays occupied across reconnects until it returns.
+
+12. Resume with slow but continuing replay while the shell produces live
+    output: live bytes and input confirmations must follow all historical
+    frames without a five-second total replay limit. Stopping replay progress
+    still detaches after the queue-wait budget; closing the transport interrupts
+    the wait. Upload bodies with HTTP frames above or across 512 KiB must be
+    re-chunked with correct offsets, including an empty final frame for exact
+    multiples. Upload congestion must return HTTP 503, `retryable: true`, and a
+    Transfer notice asking the user to wait briefly and retry.
+
+Regression checks for these terminal paths:
+
+```bash
+cargo test -p filebox-agent terminal::
+cargo test -p filebox-agent connection::
+cargo test -p filebox-hub temp_proxy::
+npm --prefix frontend test -- TerminalPane.test.tsx TerminalView.test.tsx terminalInput.test.ts client.test.ts
+```
 
 `terminal_open_timeout` means Agent did not confirm within 30s. A missing
 local secret yields `terminal_2fa_not_configured`; five incorrect codes cause

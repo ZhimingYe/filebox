@@ -107,14 +107,28 @@ function TerminalSessionsPanel({ agent, onResume }: Props & { onResume: (id: str
   const [killing, setKilling] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const confirmTimer = useRef<number | null>(null);
+  const refreshRequest = useRef(0);
+  const refreshController = useRef<AbortController | null>(null);
+  const killController = useRef<AbortController | null>(null);
+  const [refreshSlow, setRefreshSlow] = useState(false);
 
   const refresh = useCallback(async () => {
+    const current = ++refreshRequest.current;
+    refreshController.current?.abort();
+    const controller = new AbortController();
+    refreshController.current = controller;
     setLoading(true);
+    setRefreshSlow(false);
     setError(null);
+    const slowTimer = window.setTimeout(() => {
+      if (current === refreshRequest.current && !controller.signal.aborted) setRefreshSlow(true);
+    }, 8000);
     try {
-      const res = await api.listTerminals(agent.id);
+      const res = await api.listTerminals(agent.id, controller.signal);
+      if (current !== refreshRequest.current || controller.signal.aborted) return;
       setSessions(res.sessions);
     } catch (e) {
+      if (current !== refreshRequest.current || controller.signal.aborted) return;
       const err = e as api.ApiError;
       if (err?.error === 'unsupported_feature') {
         setUnsupported(true);
@@ -122,9 +136,23 @@ function TerminalSessionsPanel({ agent, onResume }: Props & { onResume: (id: str
       }
       setError(friendlyMessage(e));
     } finally {
-      setLoading(false);
+      window.clearTimeout(slowTimer);
+      if (current === refreshRequest.current) {
+        refreshController.current = null;
+        setLoading(false);
+        setRefreshSlow(false);
+      }
     }
   }, [agent.id]);
+
+  const cancelRefresh = () => {
+    ++refreshRequest.current;
+    refreshController.current?.abort();
+    refreshController.current = null;
+    setLoading(false);
+    setRefreshSlow(false);
+    setError('Session refresh cancelled. Retry when ready.');
+  };
 
   const toggle = () => {
     const next = !open;
@@ -139,26 +167,42 @@ function TerminalSessionsPanel({ agent, onResume }: Props & { onResume: (id: str
   };
 
   const kill = async (reqId: string) => {
-    if (killing) return;
+    if (killController.current) return;
+    const controller = new AbortController();
+    killController.current = controller;
+    ++refreshRequest.current;
+    refreshController.current?.abort();
+    refreshController.current = null;
+    setLoading(false);
+    setRefreshSlow(false);
     setKilling(reqId);
     setError(null);
     try {
-      await api.killTerminalSession(agent.id, reqId);
+      await api.killTerminalSession(agent.id, reqId, controller.signal);
+      if (controller.signal.aborted) return;
       await refresh();
     } catch (e) {
+      if (controller.signal.aborted) return;
       const err = e as api.ApiError;
       if (err?.error === 'unsupported_feature') {
         setUnsupported(true);
         return;
       }
-      setError(friendlyMessage(e));
+      setError(`Ending this session was not confirmed. Refresh Sessions to check whether it ended. ${friendlyMessage(e)}`);
     } finally {
-      setKilling(null);
-      setConfirmId(null);
+      if (killController.current === controller) killController.current = null;
+      if (!controller.signal.aborted) {
+        setKilling(null);
+        setConfirmId(null);
+      }
     }
   };
 
   useEffect(() => () => {
+    ++refreshRequest.current;
+    refreshController.current?.abort();
+    killController.current?.abort();
+    killController.current = null;
     if (confirmTimer.current !== null) window.clearTimeout(confirmTimer.current);
   }, []);
 
@@ -186,17 +230,16 @@ function TerminalSessionsPanel({ agent, onResume }: Props & { onResume: (id: str
           </button>
           <button
             type="button"
-            style={{ ...styles.sessRefreshBtn, ...(loading ? styles.primaryBtnDisabled : null) }}
-            disabled={loading}
-            onClick={() => void refresh()}
+            style={styles.sessRefreshBtn}
+            onClick={() => loading ? cancelRefresh() : void refresh()}
           >
-            {loading ? 'Refreshing…' : 'Refresh'}
+            {loading ? 'Cancel refresh' : 'Refresh'}
           </button>
         </div>
         {open && (
           <div style={styles.sessBody}>
-            {loading && sessions === null && !error && (
-              <p style={styles.muted}>Loading sessions…</p>
+            {loading && !error && (sessions === null || refreshSlow) && (
+              <p role="status" style={styles.muted}>{refreshSlow ? 'Still waiting for the backend’s sessions…' : 'Loading sessions…'}</p>
             )}
             {error && (
               <div style={styles.sessErrorRow}>
@@ -258,9 +301,12 @@ export function TerminalView({ agent }: Props) {
   const [nonce, setNonce] = useState(0);
   const request = useRef(0);
   const submitting = useRef(false);
-  useEffect(() => () => { request.current++; }, []);
+  const ticketController = useRef<AbortController | null>(null);
+  useEffect(() => () => { request.current++; ticketController.current?.abort(); }, []);
   const choose = useCallback((id?: string) => {
     request.current++;
+    ticketController.current?.abort();
+    ticketController.current = null;
     submitting.current = false;
     setPending(false);
     setAuthorization(null);
@@ -278,15 +324,17 @@ export function TerminalView({ agent }: Props) {
     if (submitting.current) return;
     submitting.current = true;
     const current = ++request.current;
+    const controller = new AbortController();
+    ticketController.current = controller;
     setPending(true);
     setError(null);
     try {
-      const { ticket } = await api.terminalTicket(agent.id);
+      const { ticket } = await api.terminalTicket(agent.id, controller.signal);
       if (request.current === current) setAuthorization({ ticket, code });
     } catch (e) {
       if (request.current === current) { setError(friendlyMessage(e)); setNonce(n => n + 1); }
     } finally {
-      if (request.current === current) { submitting.current = false; setPending(false); }
+      if (request.current === current) { ticketController.current = null; submitting.current = false; setPending(false); }
     }
   };
   const configured = agent.capabilities?.terminal_agent_2fa && agent.capabilities?.terminal_persistent;

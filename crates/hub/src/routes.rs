@@ -839,6 +839,7 @@ async fn session_logout_handler(
         .map(|s| s.username.clone())
         .unwrap_or_default();
     inner.sessions.remove(&session.id);
+    crate::terminal_proxy::revoke_terminal_sessions(&state, &session.principal_id);
     let preview_sessions = inner.preview_sessions.clone();
     let get_access_tokens = inner.get_access_tokens.clone();
     drop(inner);
@@ -3496,6 +3497,42 @@ mod tests {
         let tokens = state.inner.read().await.get_access_tokens.clone();
         let map = tokens.read().await;
         assert!(!map.contains_key(&token));
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_only_its_principals_terminal_attachments() {
+        let state = AppState::new(&test_config(), false);
+        let (session, _) = state.inner.write().await.sessions.create_session("admin", false);
+        let revoked = Arc::new(tokio::sync::Notify::new());
+        let other_revoked = Arc::new(tokio::sync::Notify::new());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.try_send(serde_json::json!({ "type": "output", "data": "queued" })).unwrap();
+        {
+            let mut terminals = state.terminal_sessions.lock().unwrap();
+            for (id, principal, notify) in [
+                ("mine", session.principal_id.clone(), revoked.clone()),
+                ("other", "other-principal".into(), other_revoked.clone()),
+            ] {
+                terminals.insert(id.into(), crate::terminal_proxy::TerminalSessionEntry {
+                    agent_id: "a".into(), connection_id: 1, principal_id: principal, revoked: notify,
+                    username: "admin".into(), ip: "127.0.0.1".into(), user_agent: String::new(), tx: tx.clone(),
+                });
+            }
+        }
+        let mut req = axum::http::Request::builder().method(Method::POST).uri("/api/session/logout")
+            .header(header::COOKIE, format!("filebox_session={}", session.session_id))
+            .header("x-csrf-token", &session.csrf_token).body(axum::body::Body::empty()).unwrap();
+        req.extensions_mut().insert(axum::extract::ConnectInfo(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
+        ));
+        assert_eq!(create_router(state.clone()).oneshot(req).await.unwrap().status(), StatusCode::OK);
+        tokio::time::timeout(std::time::Duration::from_secs(1), revoked.notified()).await.unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), other_revoked.notified()).await.is_err());
+        let terminals = state.terminal_sessions.lock().unwrap();
+        assert!(!terminals.contains_key("mine"));
+        assert!(terminals.contains_key("other"));
+        // Immediate notification did not require consuming queued output.
+        assert_eq!(rx.try_recv().unwrap()["data"], "queued");
     }
 
     #[test]

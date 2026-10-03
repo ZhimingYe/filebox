@@ -359,22 +359,6 @@ impl TempStore {
         }
     }
 
-    /// Abort every in-flight upload (connection teardown). Staging files are
-    /// unlinked; startup reaping also covers crash leftovers.
-    pub fn cancel_all(&self) {
-        let mut sessions = match self.sessions.lock() {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let drained: Vec<UploadSession> = sessions.drain().map(|(_, s)| s).collect();
-        for session in drained {
-            drop(session.file);
-            let _ = fs::remove_file(&session.staging_path);
-            self.total_bytes
-                .fetch_sub(session.total_size, Ordering::AcqRel);
-        }
-    }
-
     /// Remove every entry inside the upload folder. The folder itself and the
     /// quota bookkeeping survive. Symlinks are unlinked (never followed) and
     /// directories are removed recursively without following links inside.

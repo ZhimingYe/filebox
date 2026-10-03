@@ -123,17 +123,9 @@ async fn start_test_connection() -> (
         agent_name: "test-agent".into(), data_dir: temp.path().to_path_buf(),
         temp_dir: None, temp_upload_name: None, terminal_totp_secret: None,
     };
-    let mut resources = ResourceManager::new(temp.path().to_path_buf());
-    let agent_id = resources.agent_id().to_string();
+    let mut runtime = AgentRuntime::for_tests(temp.path());
     let agent = tokio::spawn(async move {
-        run_one_connection(
-            &format!("ws://{address}/ws/agent"), &config, &mut resources, &agent_id,
-            &StatsCache::new(Duration::from_secs(60)), &DirCache::new(),
-            &Arc::new(ContentCache::new(4096, 4096)), None, None,
-            &Arc::new(Semaphore::new(1)), &Arc::new(Semaphore::new(1)),
-            &Arc::new(AtomicUsize::new(0)), &Arc::new(Mutex::new(HashMap::new())),
-            &Arc::new(crate::terminal::TerminalManager::new(None)),
-        ).await;
+        run_one_connection(&format!("ws://{address}/ws/agent"), &config, &mut runtime).await;
     });
     let (socket, _) = listener.accept().await.unwrap();
     let mut hub = tokio_tungstenite::accept_async(socket).await.unwrap();
