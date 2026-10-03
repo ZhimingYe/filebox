@@ -185,7 +185,17 @@ pub enum AgentMessage {
     TerminalOpened {
         req_id: String,
         error: Option<String>,
+        /// Number of historical output bytes queued before live output on
+        /// attachment. The browser must suppress input (including terminal
+        /// query replies) until these bytes have been parsed. None denotes
+        /// a legacy agent that cannot provide a safe replay boundary.
+        #[serde(default)]
+        replay_bytes: Option<usize>,
+        /// Input sequence acknowledgements are emitted only after PTY writes.
+        #[serde(default)]
+        input_ack: bool,
     },
+    TerminalInputAck { req_id: String, seq: u64 },
     /// Raw PTY output bytes (base64 on the wire), streamed as produced.
     TerminalOutput {
         req_id: String,
@@ -405,6 +415,8 @@ pub enum HubMessage {
         req_id: String,
         #[serde(with = "base64_bytes")]
         data: Vec<u8>,
+        #[serde(default)]
+        seq: Option<u64>,
     },
     /// Notify the agent that the browser terminal was resized.
     TerminalResize {
@@ -1098,6 +1110,7 @@ mod tests {
         let input = HubMessage::TerminalInput {
             req_id: "t1".into(),
             data: b"ls -la\n".to_vec(),
+            seq: Some(1),
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["data"], "bHMgLWxhCg==");
@@ -1131,11 +1144,15 @@ mod tests {
         let opened = AgentMessage::TerminalOpened {
             req_id: "t1".into(),
             error: None,
+            replay_bytes: Some(123),
+            input_ack: true,
         };
         match round_trip_agent(&opened) {
-            AgentMessage::TerminalOpened { req_id, error } => {
+            AgentMessage::TerminalOpened { req_id, error, replay_bytes, input_ack } => {
                 assert_eq!(req_id, "t1");
                 assert!(error.is_none());
+                assert_eq!(replay_bytes, Some(123));
+                assert!(input_ack);
             }
             _ => panic!("wrong variant"),
         }
@@ -1237,6 +1254,7 @@ mod tests {
                 HubMessage::TerminalInput {
                     req_id: "t".into(),
                     data: b"x".to_vec(),
+                    seq: None,
                 },
                 "terminal_input",
             ),
@@ -1263,9 +1281,15 @@ mod tests {
 
         let agent = [
             (
+                AgentMessage::TerminalInputAck { req_id: "t".into(), seq: 7 },
+                "terminal_input_ack",
+            ),
+            (
                 AgentMessage::TerminalOpened {
                     req_id: "t".into(),
                     error: None,
+                    replay_bytes: Some(0),
+                    input_ack: true,
                 },
                 "terminal_opened",
             ),
@@ -1334,6 +1358,19 @@ mod tests {
     /// sender adding one, or an older payload missing a defaulted one.
     #[test]
     fn terminal_messages_tolerate_additive_and_missing_fields() {
+        // Missing replay metadata stays distinguishable from empty history:
+        // a new browser can decline unsafe resumes against a legacy agent.
+        let legacy: AgentMessage = serde_json::from_str(
+            r#"{"type":"terminal_opened","req_id":"t","error":null}"#,
+        ).unwrap();
+        assert!(matches!(legacy, AgentMessage::TerminalOpened { replay_bytes: None, input_ack: false, .. }));
+        let legacy_input: HubMessage = serde_json::from_str(
+            r#"{"type":"terminal_input","req_id":"t","data":"aGk="}"#,
+        ).unwrap();
+        assert!(matches!(legacy_input, HubMessage::TerminalInput { seq: None, .. }));
+        let ack = AgentMessage::TerminalInputAck { req_id: "t".into(), seq: 123 };
+        let decoded: AgentMessage = serde_json::from_str(&serde_json::to_string(&ack).unwrap()).unwrap();
+        assert!(matches!(decoded, AgentMessage::TerminalInputAck { req_id, seq: 123 } if req_id == "t"));
         // A future agent adding a field must still parse here.
         let future: AgentMessage = serde_json::from_str(
             r#"{"type":"terminal_output","req_id":"t","data":"aGk=","future_field":1}"#,

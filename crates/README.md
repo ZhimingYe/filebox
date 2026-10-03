@@ -121,7 +121,11 @@ Persists identity and desired config under `data_dir` (`agent_state.json`).
 
 | Module | Responsibility |
 |---|---|
-| `connection.rs` | Dial Hub, reconnect loop, ping/liveness, write timeouts |
+| `connection.rs` | Reconnect/backoff, fair bounded writer, shared filesystem job admission |
+| `connection/runtime.rs` | Resource state, caches, PTYs/TOTP and worker limits that survive reconnects |
+| `connection/handshake.rs` | Bounded connect/auth/register and capability advertisement |
+| `connection/session.rs` | Transport queues, liveness, dispatch, shutdown/Drop cancellation |
+| `connection/{resources,filesystem,search,office,uploads,terminal,control}.rs` | Business handlers borrowing the connection context |
 | `resources.rs` | Validate + atomically apply roots / pins / collections |
 | `config_store.rs` | Persist `agent_id`, roots, pins, collections, revisions |
 | `fs.rs` | Read-only list/stat/read with path safety + denylist |
@@ -131,6 +135,17 @@ Persists identity and desired config under `data_dir` (`agent_state.json`).
 | `temp_store.rs` | The ONLY write path: dedicated temp-upload folder (staging, quotas, no-clobber publish, symlink-safe cleanup) |
 | `terminal.rs` | PTY shell sessions (unix-only): persistent sessions, bounded history/writer queues, local TOTP anti-replay and failure limit |
 | `config.rs` | TOML / env bootstrap |
+
+The receive loop reserves two control reply slots before accepting a request,
+so resource/collection `Updated` always precedes its `Applied` reply. Business
+handlers never await socket writes or upload queue capacity. Temp uploads use
+four worker permits shared across reconnects, at most sixteen 512 KiB chunks
+per upload, and worker-owned staging cleanup. Queue congestion terminates only
+the upload with `temp_upload_stalled`; PTY sessions remain available for resume.
+`ConnectionSession::Drop` sets cancellation flags, detaches only its terminal
+sender and aborts its async wrappers/writer. Native filesystem calls cannot be
+forcibly stopped; they retain global worker permits until they return.
+
 
 Path safety on every FS/search op: resolve root → join → normalize /
 canonicalize → stay inside root → reject symlink escape → denylist →

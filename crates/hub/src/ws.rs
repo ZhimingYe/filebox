@@ -699,7 +699,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                     })).await;
                                 }
                             }
-                            Ok(AgentMessage::TerminalOpened { req_id, error }) => {
+                            Ok(AgentMessage::TerminalOpened { req_id, error, replay_bytes, input_ack }) => {
                                 let failed = error.is_some();
                                 // Audited here, not when the open was queued:
                                 // only the agent's answer says whether a shell
@@ -729,7 +729,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                         "type": "error",
                                         "error": code,
                                     }),
-                                    None => serde_json::json!({ "type": "opened" }),
+                                    None => serde_json::json!({ "type": "opened", "replay_bytes": replay_bytes, "input_ack": input_ack }),
                                 };
                                 // A failed open is terminal for the session:
                                 // the agent will not stream output after it.
@@ -753,6 +753,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, client_ip: String) {
                                     connection_id,
                                     &req_id,
                                     &data,
+                                );
+                            }
+                            Ok(AgentMessage::TerminalInputAck { req_id, seq }) => {
+                                crate::terminal_proxy::forward_to_terminal_session(
+                                    &state, &agent_id_for_msgs, connection_id, &req_id,
+                                    serde_json::json!({ "type": "input_ack", "seq": seq }), false,
                                 );
                             }
                             Ok(AgentMessage::TerminalClosed { req_id, reason }) => {

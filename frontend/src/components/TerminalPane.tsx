@@ -5,6 +5,7 @@ import '@xterm/xterm/css/xterm.css';
 import * as api from '../api/client';
 import { useIsMobile } from '../state/useIsMobile';
 import { c, radius, font } from '../theme';
+import { TerminalInputQueue } from '../lib/terminalInput';
 
 interface Props {
   ticket: string;
@@ -18,17 +19,19 @@ interface Props {
 type ConnStatus = 'connecting' | 'open' | 'closed';
 
 interface ServerFrame {
-  type: 'opened' | 'output' | 'closed' | 'error' | 'ping';
+  type: 'opened' | 'output' | 'closed' | 'error' | 'ping' | 'input_ack';
   nonce?: string;
   data?: string;
   reason?: string;
   error?: string;
   session_id?: string;
+  replay_bytes?: number | null;
+  input_ack?: boolean;
+  seq?: number;
 }
 
 /** UTF-8-safe base64 for terminal input. */
-function base64Encode(str: string): string {
-  const bytes = new TextEncoder().encode(str);
+function base64Encode(bytes: Uint8Array): string {
   let bin = '';
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
   return btoa(bin);
@@ -44,6 +47,9 @@ function base64Decode(b64: string): Uint8Array {
 
 /** How long "Connecting…" may look motionless before we say something. */
 const SLOW_CONNECT_MS = 8000;
+const MAX_REPLAY_BYTES = 256 * 1024;
+const MAX_PENDING_OUTPUT_BYTES = 1024 * 1024;
+const OUTPUT_PARSE_STALL_MS = 30_000;
 
 /**
  * Hub/agent error codes are contractual but not prose. Everything a user can
@@ -64,6 +70,10 @@ function terminalErrorMessage(code: string | undefined): string {
       return 'This backend does not support remote terminals.';
     case 'backend_offline':
       return 'The backend went offline before the shell opened.';
+    case 'unauthorized':
+      return 'Your login session ended. Sign in again to resume the shell.';
+    case 'terminal_input_stalled':
+      return 'Input delivery stalled. Some input may have reached the shell. Resume to check its state.';
     case undefined:
       return 'Terminal error.';
     default:
@@ -77,6 +87,10 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const inputRef = useRef<TerminalInputQueue | null>(null);
+  const cancelInputRef = useRef<(() => void) | null>(null);
+  const cancelOutputRef = useRef<(() => void) | null>(null);
+  const sendFrameRef = useRef<((frame: object) => boolean) | null>(null);
   const resizeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Sticky modifier keys (aux toolbar): armed state lives in refs so the
   // onData closure always sees the current value; useState mirrors it for
@@ -88,15 +102,16 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
   const isMobile = useIsMobile();
   const [status, setStatus] = useState<ConnStatus>('connecting');
   const [notice, setNotice] = useState<string | null>(null);
+  const [pendingInputBytes, setPendingInputBytes] = useState(0);
+  const [outputSlow, setOutputSlow] = useState(false);
   // Input remains disabled until the Agent confirms local verification.
   const confirmedRef = useRef(false);
   const mobileRef = useRef(isMobile);
   useEffect(() => { mobileRef.current = isMobile; }, [isMobile]);
 
   const sendInput = (s: string) => {
-    const ws = wsRef.current;
-    if (confirmedRef.current && ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'input', data: base64Encode(s) }));
+    if (confirmedRef.current && inputRef.current && !inputRef.current.enqueue(s)) {
+      setNotice('Input queue is full (2 MiB). This input was not sent; wait for the current input to finish and retry a smaller paste.');
     }
   };
 
@@ -181,7 +196,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     const sendResize = () => {
       const ws = wsRef.current;
       if (confirmedRef.current && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        sendFrameRef.current?.({ type: 'resize', cols: term.cols, rows: term.rows });
       }
     };
     const debouncedRefit = () => {
@@ -199,7 +214,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     vv?.addEventListener('resize', debouncedRefit);
 
     const dataSub = term.onData((d) => {
-      sendInput(applyStickyModifiers(d));
+      if (confirmedRef.current) sendInput(applyStickyModifiers(d));
     });
 
     return () => {
@@ -225,6 +240,8 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     confirmedRef.current = false;
     setStatus('connecting');
     setNotice(null);
+    setPendingInputBytes(0);
+    setOutputSlow(false);
     let cleanupSocket = () => {};
     const startTimer = window.setTimeout(() => {
     const ws = new WebSocket(
@@ -233,6 +250,10 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     );
     wsRef.current = ws;
     let ended = false;
+    let replayRemaining = 0;
+    let pendingOutputBytes = 0;
+    let outputSlowTimer: ReturnType<typeof setTimeout> | null = null;
+    let outputDeadline: ReturnType<typeof setTimeout> | null = null;
     let lastReceived = Date.now();
     // Say something before the hub's own 30s open deadline: silence for half a
     // minute looks like a hung app, not a slow backend.
@@ -262,12 +283,89 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
       window.clearTimeout(slowTimer);
       window.clearTimeout(deadline);
     };
+    const clearOutputTimers = () => {
+      if (outputSlowTimer !== null) clearTimeout(outputSlowTimer);
+      if (outputDeadline !== null) clearTimeout(outputDeadline);
+      outputSlowTimer = null;
+      outputDeadline = null;
+    };
     function stopConnection() {
       ended = true;
       confirmedRef.current = false;
       clearConnectTimers();
+      clearOutputTimers();
       window.clearInterval(livenessTimer);
+      input.dispose();
+      if (inputRef.current === input) inputRef.current = null;
+      cancelInputRef.current = null;
+      cancelOutputRef.current = null;
+      sendFrameRef.current = null;
+      setPendingInputBytes(0);
+      setOutputSlow(false);
     }
+    const failConnection = (message: string) => {
+      if (ended || wsRef.current !== ws) return;
+      stopConnection();
+      setStatus('closed');
+      setNotice(message);
+      ws.close();
+    };
+    const sendFrame = (frame: object) => {
+      if (ended || wsRef.current !== ws) return false;
+      try {
+        if (ws.readyState !== WebSocket.OPEN) throw new Error('Disconnected');
+        ws.send(JSON.stringify(frame));
+        return true;
+      } catch {
+        failConnection('Connection lost while sending. Some input may have reached the shell. Resume to check its state.');
+        return false;
+      }
+    };
+    sendFrameRef.current = sendFrame;
+    const input = new TerminalInputQueue({
+      send: (bytes, seq) => {
+        if (!sendFrame({ type: 'input', data: base64Encode(bytes), seq })) throw new Error('Disconnected');
+      },
+      progress: setPendingInputBytes,
+      fail: () => failConnection('Input delivery stalled. Some input may have reached the shell. Resume to check its state.'),
+    });
+    inputRef.current = input;
+    cancelInputRef.current = () => failConnection('Input sending cancelled. Some input may have reached the shell. Resume to check its state.');
+    cancelOutputRef.current = () => failConnection('Disconnected while displaying output. The shell is still running; resume to see its recent output. Some queued input may not have been sent.');
+    const outputProgress = () => {
+      clearOutputTimers();
+      setOutputSlow(false);
+      if (pendingOutputBytes === 0) return;
+      outputSlowTimer = setTimeout(() => setOutputSlow(true), SLOW_CONNECT_MS);
+      outputDeadline = setTimeout(() => {
+        failConnection('Terminal output display stalled. The shell is still running; resume to see its recent output. Some queued input may not have been sent.');
+      }, OUTPUT_PARSE_STALL_MS);
+    };
+    const writeOutput = (bytes: Uint8Array, callback?: () => void) => {
+      if (ended) return;
+      if (pendingOutputBytes + bytes.length > MAX_PENDING_OUTPUT_BYTES) {
+        failConnection('Terminal output is arriving faster than it can be displayed. The shell is still running; resume to see its recent output. Some queued input may not have been sent.');
+        return;
+      }
+      const wasEmpty = pendingOutputBytes === 0;
+      pendingOutputBytes += bytes.length;
+      if (wasEmpty && bytes.length > 0) outputProgress();
+      term.write(bytes, () => {
+        if (ended || wsRef.current !== ws || termRef.current !== term) return;
+        pendingOutputBytes -= bytes.length;
+        outputProgress();
+        callback?.();
+      });
+    };
+    const finishOpen = () => {
+      // write callbacks can outlive a closed socket or a replaced pane.
+      if (ended || wsRef.current !== ws || termRef.current !== term) return;
+      confirmedRef.current = true;
+      setStatus('open');
+      setNotice(null);
+      clearConnectTimers();
+      sendFrame({ type: 'resize', cols: term.cols, rows: term.rows });
+    };
     ws.onmessage = (ev) => {
       if (ended || wsRef.current !== ws) return;
       let frame: ServerFrame;
@@ -280,25 +378,55 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
       switch (frame.type) {
         case 'ping':
           if (typeof frame.nonce === 'string' && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'pong', nonce: frame.nonce }));
+            sendFrame({ type: 'pong', nonce: frame.nonce });
           }
           break;
         case 'opened':
-          confirmedRef.current = true;
-          setStatus('open');
-          setNotice(null);
-          clearConnectTimers();
+          // Require paced input support, and a replay boundary on resume,
+          // before exposing the shell or forwarding terminal query replies.
+          if (frame.input_ack !== true || (sessionId && frame.replay_bytes == null) ||
+              (frame.replay_bytes != null && (!Number.isSafeInteger(frame.replay_bytes) ||
+                frame.replay_bytes < 0 || frame.replay_bytes > MAX_REPLAY_BYTES))) {
+            stopConnection();
+            setStatus('closed');
+            setNotice('Update the hub and backend to safely send input and resume terminal history.');
+            ws.close();
+            break;
+          }
           if (frame.session_id) onSessionOpened(frame.session_id);
-          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+          replayRemaining = frame.replay_bytes ?? 0;
+          if (replayRemaining > 0) {
+            window.clearTimeout(slowTimer);
+            setNotice('Restoring terminal history…');
+          } else {
+            finishOpen();
+          }
           break;
         case 'output':
           if (typeof frame.data === 'string') {
-            try { term.write(base64Decode(frame.data)); } catch { /* drop corrupt frame */ }
+            try {
+              const bytes = base64Decode(frame.data);
+              if (replayRemaining > 0) {
+                const replayLength = Math.min(replayRemaining, bytes.length);
+                replayRemaining -= replayLength;
+                // xterm parses asynchronously. Keep onData/toolbar input
+                // gated until the LAST replay byte is parsed, not received.
+                // Split defensively if a relay combines replay and live IO.
+                writeOutput(bytes.subarray(0, replayLength), replayRemaining === 0 ? finishOpen : undefined);
+                if (replayLength < bytes.length) writeOutput(bytes.subarray(replayLength));
+              } else {
+                writeOutput(bytes);
+              }
+            } catch {
+              failConnection('Terminal output could not be displayed. The shell is still running; resume to retry. Some queued input may not have been sent.');
+            }
           }
+          break;
+        case 'input_ack':
+          if (typeof frame.seq === 'number') input.acknowledge(frame.seq);
           break;
         case 'closed':
           stopConnection();
-          term.write(`\r\n\x1b[2m[session closed${frame.reason ? `: ${frame.reason}` : ''}]\x1b[0m\r\n`);
           setStatus('closed');
           confirmedRef.current = false;
           setNotice(frame.reason ?? 'Disconnected. Enter a fresh code to resume.');
@@ -326,7 +454,8 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
       if (wsRef.current !== ws) return;
       stopConnection();
       setStatus('closed');
-      setNotice((prev) => prev ?? 'Disconnected. Enter a fresh code to resume the shell.');
+      setNotice((prev) => prev && prev !== 'Restoring terminal history…'
+        ? prev : 'Disconnected. Enter a fresh code to resume the shell.');
     };
     ws.onerror = () => {
       // onclose follows and flips the state; nothing extra to do here.
@@ -351,7 +480,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
 
   return (
     <div style={styles.wrap}>
-      <div ref={containerRef} style={{ ...styles.termHost, visibility: status === 'open' ? 'visible' : 'hidden', ...(isMobile ? styles.termHostMobile : null) }} />
+      <div ref={containerRef} style={{ ...styles.termHost, visibility: status === 'connecting' ? 'hidden' : 'visible', ...(isMobile ? styles.termHostMobile : null) }} />
       {/* Aux keys for keyboards without Esc/Tab/Ctrl/arrows (mobile), and a
           convenience row on desktop. Ctrl/Alt are sticky one-shot modifiers. */}
       <div style={{ ...styles.toolbar, ...(isMobile ? styles.toolbarMobile : null) }}>
@@ -381,13 +510,19 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
         <KeyButton label="↓" style={keyBtnStyle()} onPress={() => sendArrow('down')} />
         <KeyButton label="→" style={keyBtnStyle()} onPress={() => sendArrow('right')} />
       </div>
-      {(status !== 'open' || notice) && (
+      {(status !== 'open' || notice || pendingInputBytes > 0 || outputSlow) && (
         <div style={styles.footer}>
           <span role="status" style={styles.footerText}>
-            {status === 'connecting' ? (notice ?? 'Connecting…') : (notice ?? 'Disconnected.')}
+            {notice ?? (outputSlow ? 'Terminal output is taking longer to display…' : pendingInputBytes > 0 ? `Sending input… ${pendingInputBytes.toLocaleString()} bytes remaining.` : status === 'connecting' ? 'Connecting…' : 'Disconnected.')}
           </span>
-          <button type="button" style={styles.reconnectBtn} onClick={() => onReconnect()}>
-            {status === 'connecting' ? 'Cancel connection' : 'Enter new backend code'}
+          <button type="button" style={styles.reconnectBtn} onClick={() => {
+            if (status === 'open') {
+              if (outputSlow) cancelOutputRef.current?.();
+              else if (pendingInputBytes > 0) cancelInputRef.current?.();
+              else setNotice(null);
+            } else onReconnect();
+          }}>
+            {status === 'open' ? (outputSlow ? 'Disconnect' : pendingInputBytes > 0 ? 'Cancel input' : 'Dismiss') : status === 'connecting' ? 'Cancel connection' : 'Enter new backend code'}
           </button>
         </div>
       )}

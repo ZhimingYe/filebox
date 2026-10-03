@@ -516,29 +516,7 @@ async fn stream_upload_body(
     loop {
         let frame = tokio::select! {
             resp = resp_rx.recv() => {
-                let Some(value) = resp else {
-                    // The agent connection died while we were relaying.
-                    return Err(error_response(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "backend_offline",
-                        "Agent went away mid-upload",
-                        true,
-                    ));
-                };
-                let raw_error = value.get("error").and_then(|v| v.as_str());
-                if let Some(error) = raw_error {
-                    // Begin (or a mid-stream chunk) was rejected — stop
-                    // relaying the body and surface the agent's error now.
-                    return Err(temp_error_response(error));
-                }
-                // The agent answered before the body completed with no
-                // error — a protocol violation; abort rather than continue.
-                return Err(error_response(
-                    StatusCode::BAD_GATEWAY,
-                    "agent_internal_error",
-                    "Agent responded before the upload completed",
-                    true,
-                ));
+                return Err(upload_stream_response_error(resp));
             }
             frame = stream.next() => frame,
         };
@@ -565,36 +543,58 @@ async fn stream_upload_body(
                 ))
             }
         }
-        buffer.extend_from_slice(&bytes);
-        if (buffer.len() as u64) >= FILE_CHUNK_MAX_BYTES {
-            let data = std::mem::take(&mut buffer);
-            let offset = received - data.len() as u64;
-            let ok = send_to_agent_await(
-                state,
-                agent_id,
-                HubMessage::TempUploadChunk {
-                    req_id: req_id.to_string(),
-                    offset,
-                    data,
-                    done: false,
-                },
-            )
-            .await;
-            if !ok {
-                return Err(error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "backend_offline",
-                    "Agent went away mid-upload",
-                    true,
-                ));
+        // HTTP data-frame boundaries are arbitrary. Fill and send exactly
+        // one protocol block at a time; keep only a sub-block tail in memory.
+        let mut remaining = bytes.as_ref();
+        while !remaining.is_empty() {
+            let take = remaining.len().min(FILE_CHUNK_MAX_BYTES as usize - buffer.len());
+            buffer.extend_from_slice(&remaining[..take]);
+            remaining = &remaining[take..];
+            if buffer.len() == FILE_CHUNK_MAX_BYTES as usize {
+                let data = std::mem::replace(&mut buffer, Vec::with_capacity(FILE_CHUNK_MAX_BYTES as usize));
+                let offset = received - remaining.len() as u64 - data.len() as u64;
+                let ok = tokio::select! {
+                    resp = resp_rx.recv() => return Err(upload_stream_response_error(resp)),
+                    ok = send_to_agent_await(
+                        state, agent_id,
+                        HubMessage::TempUploadChunk { req_id: req_id.to_string(), offset, data, done: false },
+                    ) => ok,
+                };
+                if !ok {
+                    return Err(error_response(
+                        StatusCode::SERVICE_UNAVAILABLE, "backend_offline",
+                        "Agent went away mid-upload", true,
+                    ));
+                }
             }
         }
     }
     Ok((received, buffer))
 }
 
+// Used between HTTP frames and while a large frame is being re-chunked, so
+// an Agent rejection can interrupt a blocked outbound send immediately.
+fn upload_stream_response_error(value: Option<serde_json::Value>) -> Response {
+    match value {
+        None => error_response(StatusCode::SERVICE_UNAVAILABLE, "backend_offline", "Agent went away mid-upload", true),
+        Some(value) => match value.get("error").and_then(|v| v.as_str()) {
+            Some(error) => temp_error_response(error),
+            None => error_response(
+                StatusCode::BAD_GATEWAY, "agent_internal_error",
+                "Agent responded before the upload completed", true,
+            ),
+        },
+    }
+}
+
 /// Map agent `temp_*` error codes onto HTTP statuses.
 fn temp_error_response(error: &str) -> Response {
+    if error.split(':').next() == Some("temp_upload_stalled") {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE, "temp_upload_stalled",
+            "The agent could not keep up with the upload. Retry shortly.", true,
+        );
+    }
     // Transport-level: agent disconnected/overloaded → retryable 503, never a
     // client-fault 400.
     if error == "backend_offline" || error.starts_with("agent_overloaded") {
@@ -637,4 +637,90 @@ fn error_response(status: StatusCode, error: &str, message: &str, retryable: boo
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn registered_agent(capacity: usize) -> (AppState, mpsc::Receiver<HubMessage>) {
+        let state = AppState::new(&crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(), agent_token_hash: "fake".into(), users: vec![],
+        }, false);
+        let (sender, receiver) = mpsc::channel(capacity);
+        state.inner.write().await.agents.register("agent".into(), "agent".into(), sender,
+            std::sync::Arc::new(tokio::sync::Notify::new()), 0, vec![], 0, vec![], Default::default(), None);
+        (state, receiver)
+    }
+
+    #[tokio::test]
+    async fn arbitrary_http_frames_relay_as_bounded_sequential_chunks() {
+        let cap = FILE_CHUNK_MAX_BYTES as usize;
+        for sizes in [vec![0], vec![1], vec![cap], vec![2 * cap], vec![cap - 3, 10, 2 * cap + 7]] {
+            let (state, mut agent) = registered_agent(16).await;
+            let (_reply_tx, mut replies) = mpsc::channel(8);
+            let total: usize = sizes.iter().sum();
+            let expected: Vec<_> = (0..total).map(|offset| (offset % 251) as u8).collect();
+            let mut offset = 0;
+            let frames: Vec<Result<Vec<u8>, std::io::Error>> = sizes.iter().map(|size| {
+                let frame = expected[offset..offset + size].to_vec();
+                offset += size;
+                Ok(frame)
+            }).collect();
+            let body = Body::from_stream(futures_util::stream::iter(frames));
+            let (received, tail) = stream_upload_body(&state, "agent", "upload", body,
+                8 * FILE_CHUNK_MAX_BYTES, &mut replies).await.unwrap();
+            assert_eq!(received, total as u64);
+            assert!(tail.len() < cap);
+            let mut delivered = Vec::new();
+            while let Ok(message) = agent.try_recv() {
+                match message {
+                    HubMessage::TempUploadChunk { req_id, offset, data, done } => {
+                        assert_eq!(req_id, "upload");
+                        assert_eq!(offset, delivered.len() as u64);
+                        assert_eq!(data.len(), cap);
+                        assert!(!done);
+                        delivered.extend(data);
+                    }
+                    other => panic!("unexpected message {other:?}"),
+                }
+            }
+            // The caller sends this tail as the final done frame, including
+            // an empty one for zero-byte files and exact block multiples.
+            assert_eq!(received - tail.len() as u64, delivered.len() as u64);
+            delivered.extend(tail);
+            assert_eq!(delivered, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_rejection_interrupts_a_large_frame_waiting_for_send_capacity() {
+        let (state, mut agent) = registered_agent(1).await;
+        assert!(send_to_agent_await(&state, "agent", HubMessage::Ping).await);
+        let (reply_tx, mut replies) = mpsc::channel(8);
+        let relay = stream_upload_body(&state, "agent", "upload",
+            Body::from(vec![1u8; 3 * FILE_CHUNK_MAX_BYTES as usize]),
+            4 * FILE_CHUNK_MAX_BYTES, &mut replies);
+        tokio::pin!(relay);
+        assert!(tokio::time::timeout(Duration::from_millis(20), relay.as_mut()).await.is_err());
+        reply_tx.send(serde_json::json!({ "error": "temp_upload_stalled" })).await.unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(1), relay).await.unwrap().unwrap_err();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(matches!(agent.try_recv(), Ok(HubMessage::Ping)));
+        assert!(agent.try_recv().is_err(), "relay continued sending after rejection");
+    }
+
+    #[tokio::test]
+    async fn upload_congestion_has_a_stable_retryable_error_contract() {
+        for error in ["temp_upload_stalled", "temp_upload_stalled: upload queue is full; retry upload"] {
+            let response = temp_error_response(error);
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["error"], "temp_upload_stalled");
+            assert_eq!(value["retryable"], true);
+            assert!(value["message"].as_str().unwrap().contains("Retry"));
+        }
+        assert_eq!(temp_error_response("temp_name_invalid").status(), StatusCode::BAD_REQUEST);
+    }
 }

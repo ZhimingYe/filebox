@@ -51,8 +51,11 @@ export function withCsrf(init?: RequestInit): RequestInit {
   return { ...init, credentials: 'include', headers };
 }
 
-export function friendlyMessage(error: any): string {
-  const raw = error?.error || error?.message || '';
+export function friendlyMessage(error: unknown): string {
+  const details = error !== null && typeof error === 'object'
+    ? error as { error?: unknown; message?: unknown }
+    : undefined;
+  const raw = details?.error || details?.message || '';
   // Agent may return "agent_busy: ..." — match on prefix.
   const code = typeof raw === 'string' && raw.includes(':')
     ? raw.split(':')[0]
@@ -95,6 +98,7 @@ export function friendlyMessage(error: any): string {
     invalid_collection_path: 'Invalid collection file path.',
     collection_name_conflict: 'A collection with this name already exists.',
     resource_rejected: 'Agent rejected this change. The folder may be missing or the root changed.',
+    collection_rejected: 'Agent rejected this collection change. Refresh the collection and retry.',
     unsupported_feature: 'This agent does not support that feature.',
     unsupported_format: 'This file type cannot be converted for preview.',
     office_unavailable: 'Office preview is temporarily unavailable. You can still download the original.',
@@ -114,6 +118,7 @@ export function friendlyMessage(error: any): string {
     temp_name_invalid: 'Invalid file name for upload.',
     temp_name_conflict: 'Could not find a free name for this file.',
     temp_upload_interrupted: 'The upload was interrupted.',
+    temp_upload_stalled: 'The agent could not keep up with the upload. Wait briefly, then retry.',
     temp_length_required: 'The upload failed: missing length.',
     temp_upload_incomplete: 'The upload body ended early. Retry.',
     temp_cleanup_too_large: 'The temp folder is too large to clean in one pass. Retry.',
@@ -134,7 +139,7 @@ export function friendlyMessage(error: any): string {
     terminal_open_timeout: 'The backend did not confirm the session in time.',
     terminal_open_failed: 'The backend refused to open a terminal session.',
   };
-  if (code && map[code]) return map[code];
+  if (typeof code === 'string' && Object.hasOwn(map, code)) return map[code];
   return 'An unexpected error occurred.';
 }
 
@@ -224,6 +229,14 @@ export interface ApiError {
   error?: string;
   message?: string;
   retryable?: boolean;
+}
+
+/** Desired-state changes can be applied, queued offline, or rejected with HTTP 200. */
+export interface DesiredStateResponse extends ApiError {
+  ok?: boolean;
+  state?: 'applied' | 'pending_agent_reconnect' | 'rejected';
+  resource_revision?: number;
+  collections_revision?: number;
 }
 
 // ── Session ──────────────────────────────────────────────────────────────────
@@ -544,7 +557,7 @@ function emptyStats(): SysStats {
 }
 
 export async function getAgentResources(agentId: string) {
-  return request<{ agent_id: string; resource_revision: number; roots: any[] }>(
+  return request<{ agent_id: string; resource_revision: number; roots: RootInfo[] }>(
     `/api/agents/${agentId}/resources`,
   );
 }
@@ -552,10 +565,11 @@ export async function getAgentResources(agentId: string) {
 // ── Resource Management ─────────────────────────────────────────────────────
 
 export async function addRoot(agentId: string, name: string, path: string, enabled = true) {
-  return request<any>(`/api/agents/${agentId}/roots`, {
+  const res = await request<DesiredStateResponse>(`/api/agents/${agentId}/roots`, {
     method: 'POST',
     body: JSON.stringify({ name, path, enabled }),
   });
+  return throwIfResourceRejected(res);
 }
 
 export async function patchRoot(
@@ -572,42 +586,47 @@ export async function patchRoot(
     pin_remove?: string;
   },
 ) {
-  const res = await request<any>(`/api/agents/${agentId}/roots/${rootName}`, {
+  const res = await request<DesiredStateResponse>(`/api/agents/${agentId}/roots/${rootName}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
+  return throwIfResourceRejected(res);
+}
+
+function throwIfResourceRejected(res: DesiredStateResponse) {
   // The agent can REJECT the new resource state (e.g. a pinned path whose
   // shape is bad, or a root path that vanished) while the hub still returns
   // HTTP 200 with `{ ok: false, state: "rejected", error, message }`. A
   // 2xx-only check in the shared `request()` would let that through as success,
-  // so togglePin / handleUnpin would refresh the UI as if the change landed.
-  // Throw here so callers' catch arms surface the rejection instead.
-  if (res && typeof res === 'object' && (res.ok === false || res.state === 'rejected')) {
+  // so root creation, deletion and pin changes would refresh the UI as if
+  // the change landed. Throw so callers surface the rejection instead.
+  if (res && typeof res === 'object' && (res.ok === false || res.state === 'rejected' || res.error)) {
     throw {
       status: 200,
       error: res.error || 'resource_rejected',
       message: res.message || 'Agent rejected the resource update.',
-      retryable: true,
+      retryable: res.retryable ?? true,
     };
   }
   return res;
 }
 
 export async function deleteRoot(agentId: string, rootName: string) {
-  return request<any>(`/api/agents/${agentId}/roots/${rootName}`, {
+  const res = await request<DesiredStateResponse>(`/api/agents/${agentId}/roots/${rootName}`, {
     method: 'DELETE',
   });
+  return throwIfResourceRejected(res);
 }
 
 // ── Virtual Collections ─────────────────────────────────────────────────────
 
-async function throwIfCollectionRejected(res: any) {
-  if (res && typeof res === 'object' && (res.ok === false || res.state === 'rejected')) {
+function throwIfCollectionRejected(res: DesiredStateResponse) {
+  if (res && typeof res === 'object' && (res.ok === false || res.state === 'rejected' || res.error)) {
     throw {
       status: 200,
       error: res.error || 'collection_rejected',
       message: res.message || 'Agent rejected the collection update.',
-      retryable: true,
+      retryable: res.retryable ?? true,
     };
   }
   return res;
@@ -619,7 +638,7 @@ export async function createCollection(
   /** Optional initial item — create+add in one desired-state rewrite. */
   item?: CollectionItem,
 ) {
-  const res = await request<any>(`/api/agents/${agentId}/collections`, {
+  const res = await request<DesiredStateResponse>(`/api/agents/${agentId}/collections`, {
     method: 'POST',
     body: JSON.stringify(item ? { name, item } : { name }),
   });
@@ -636,7 +655,7 @@ export async function patchCollection(
     items?: CollectionItem[];
   },
 ) {
-  const res = await request<any>(`/api/agents/${agentId}/collections/${encodeURIComponent(collectionName)}`, {
+  const res = await request<DesiredStateResponse>(`/api/agents/${agentId}/collections/${encodeURIComponent(collectionName)}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
@@ -644,7 +663,7 @@ export async function patchCollection(
 }
 
 export async function deleteCollection(agentId: string, collectionName: string) {
-  const res = await request<any>(`/api/agents/${agentId}/collections/${encodeURIComponent(collectionName)}`, {
+  const res = await request<DesiredStateResponse>(`/api/agents/${agentId}/collections/${encodeURIComponent(collectionName)}`, {
     method: 'DELETE',
   });
   return throwIfCollectionRejected(res);
@@ -968,9 +987,9 @@ export async function cleanupTempFolder(agentId: string, signal?: AbortSignal) {
 
 // ── Terminal (TOTP 2FA + remote shell) ───────────────────────────────────────
 
-export async function terminalTicket(agentId: string) {
+export async function terminalTicket(agentId: string, signal?: AbortSignal) {
   return request<{ ticket: string; expires_in_sec: number }>(
-    `/api/agents/${encodeURIComponent(agentId)}/terminal/ticket`, { method: 'POST' }, false, 15_000,
+    `/api/agents/${encodeURIComponent(agentId)}/terminal/ticket`, { method: 'POST', signal }, false, 15_000,
   );
 }
 
@@ -995,10 +1014,10 @@ export async function listTerminals(agentId: string, signal?: AbortSignal) {
 }
 
 /** Kill one terminal session by req_id (zombie recovery; no ticket needed). */
-export async function killTerminalSession(agentId: string, reqId: string) {
+export async function killTerminalSession(agentId: string, reqId: string, signal?: AbortSignal) {
   return request<{ ok: boolean }>(
     `/api/agents/${encodeURIComponent(agentId)}/terminals/${encodeURIComponent(reqId)}`,
-    { method: 'DELETE' },
+    { method: 'DELETE', signal }, false, 15_000,
   );
 }
 
