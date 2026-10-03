@@ -684,7 +684,9 @@ mod unix_impl {
             let (tx, mut rx) = mpsc::channel(1);
             manager.open("burst".into(), 80, 24, Some(code(0)), tx);
             assert_eq!(opened(&mut rx).await, None);
-            manager.input("burst", b"i=0; while [ \"$i\" -lt 256 ]; do printf 'FB-BURST-%s\\n' \"$i\"; i=$((i+1)); done\n", Some(1));
+            // Linux /bin/sh may leave its prompt on the same line as the
+            // first output. Start the burst on its own line on every shell.
+            manager.input("burst", b"printf '\\n'; i=0; while [ \"$i\" -lt 256 ]; do printf 'FB-BURST-%s\\n' \"$i\"; i=$((i+1)); done\n", Some(1));
             tokio::time::sleep(Duration::from_millis(100)).await;
             let mut bytes = Vec::new();
             let mut ack = false;
