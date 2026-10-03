@@ -4,6 +4,8 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+## v2.0.1
+
 ### Changed
 - **Agent connection lifecycle** — persistent caches, resource state, PTYs/TOTP and global worker limits now belong to `AgentRuntime`; each `ConnectionSession` owns its queues, routing and async tasks. Handshake, dispatch and business handlers are separate modules. Normal shutdown and task cancellation both cancel connection work and detach its terminal attachments while preserving shells. Disconnect logs include a structured reason.
 
