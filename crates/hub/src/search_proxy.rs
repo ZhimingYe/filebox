@@ -1,3 +1,4 @@
+use crate::agent_requests::{cleanup_pending, PendingResponseCleanup};
 use std::time::Duration;
 
 use axum::extract::{Extension, Path, State};
@@ -7,7 +8,6 @@ use axum::Json;
 use filebox_protocol::message::HubMessage;
 use filebox_protocol::search::SearchMode;
 use serde::Deserialize;
-use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::state::{
@@ -44,47 +44,7 @@ const MAX_IGNORE_NAMES: usize = 128;
 const MAX_IGNORE_NAME_LEN: usize = 128;
 const HARD_MAX_DEPTH: u32 = 256;
 
-/// Sends Cancel to the agent + clears pending when the HTTP waiter goes away
-/// (client abort / timeout) so the agent does not keep burning CPU.
-struct CancelOnDrop {
-    state: AppState,
-    agent_id: String,
-    req_id: String,
-    armed: bool,
-}
-
-impl CancelOnDrop {
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let state = self.state.clone();
-        let agent_id = self.agent_id.clone();
-        let req_id = self.req_id.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let inner = state.inner.read().await;
-                let _ = inner.agents.send_to_agent(
-                    &agent_id,
-                    HubMessage::Cancel {
-                        req_id: req_id.clone(),
-                    },
-                );
-                drop(inner);
-                let pending = state.inner.read().await.pending_responses.clone();
-                let mut map = pending.write().await;
-                map.remove(&req_id);
-            });
-        }
-    }
-}
-
+/// Workspace search with bounded waiting and cancellation on client disconnect.
 pub async fn workspace_search_handler(
     State(state): State<AppState>,
     Extension(session): Extension<AuthenticatedSession>,
@@ -216,7 +176,7 @@ pub async fn workspace_search_handler(
         max_depth,
     };
 
-    let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
     let send_ok = {
         let mut pending = inner.pending_responses.write().await;
         if pending.len() >= MAX_PENDING_RESPONSES {
@@ -250,6 +210,8 @@ pub async fn workspace_search_handler(
         );
     }
 
+    let guard = PendingResponseCleanup::new(state.clone(), req_id.clone(), Some(agent_id.clone()), response_owner);
+
     // Publish req_id immediately so the UI can Cancel via /api/cancel without
     // waiting for the final JSON body (long searches). Echo client_nonce when
     // present so the UI can ignore late progress from a superseded search.
@@ -267,21 +229,14 @@ pub async fn workspace_search_handler(
         )
         .await;
 
-    let mut guard = CancelOnDrop {
-        state: state.clone(),
-        agent_id: agent_id.clone(),
-        req_id: req_id.clone(),
-        armed: true,
-    };
 
     // Long trees are expected; client Cancel / disconnect still aborts via
-    // CancelOnDrop. Soft ceiling keeps a stuck agent from holding the slot forever.
+    // the request guard. Soft ceiling keeps a stuck agent from holding the slot forever.
     let resp = tokio::time::timeout(Duration::from_secs(10 * 60), resp_rx.recv()).await;
-    cleanup_pending(&state, &req_id).await;
+    guard.finish(!matches!(resp, Ok(Some(_)))).await;
 
     match resp {
         Ok(Some(value)) => {
-            guard.disarm();
             // Compact payload + req_id so the UI can cancel via /api/cancel.
             let result = value.get("result").cloned().unwrap_or(serde_json::Value::Null);
             let raw_error = value.get("error").and_then(|v| v.as_str());
@@ -307,7 +262,7 @@ pub async fn workspace_search_handler(
             .into_response()
         }
         _ => {
-            // Timeout: leave guard armed so Drop cancels the agent worker.
+            // Timeout: the request guard has cancelled the agent worker.
             error_response(
                 StatusCode::GATEWAY_TIMEOUT,
                 "request_timeout",
@@ -352,11 +307,7 @@ fn normalize_search_path(path: &str) -> String {
     }
 }
 
-async fn cleanup_pending(state: &AppState, req_id: &str) {
-    let pending = state.inner.read().await.pending_responses.clone();
-    let mut map = pending.write().await;
-    map.remove(req_id);
-}
+
 
 fn path_has_dotdot(path: &str) -> bool {
     path.split(['/', '\\']).any(|part| part == "..")

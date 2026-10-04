@@ -4,6 +4,15 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+### Changed
+- **Hub lifecycle and API boundaries** — WebSocket handshake, registration, session ownership, dispatch and state acknowledgements are separate modules; HTTP routing is split into middleware, session, access-token, preview, cancel, root and collection modules. File, preview, search, Office, upload and terminal-list requests share one cleanup guard, bound to their response channel and Agent generation.
+- **File relay overhead** — incoming JSON is parsed once and file chunks avoid a redundant Hub-side base64 decode. Wire format and legacy byte-array compatibility are preserved.
+
+### Fixed
+- **Interrupted cancellation and slow audit storage** — congested Cancel deliveries continue after their HTTP/prefetch waiter is dropped, with bounded background admission and a 5s fallback targeting only the captured connection. Cancelled Office IDs are reserved before releasing admission locks. Terminal acknowledgements enqueue audit persistence on a bounded single-worker queue, preserving acknowledgement timestamps; slow disk no longer stalls terminal output or the Agent registry. Audit queue overflow emits a warning while the terminal remains usable.
+- **Reconnect ordering and queued edits** — registration installs state before publishing its connected event and transfers old in-flight desired updates atomically. Stale cleanup/acknowledgements cannot overwrite or consume a newer queued edit; replay keeps desired pins until the matching acknowledgement. Rejected replay drops only its own queued state.
+- **Hub stalls and cancellation** — Agent bcrypt verification runs off the async executor with four bounded jobs and no registry lock. Final HTTP replies cannot block Agent ingress or teardown. Shared cancellation has a 5s queue deadline and aborts only the captured transport on failure; upload chunks remain bound to their Begin generation with a 10s send deadline. Office tombstone checks avoid recursive registry reads when a writer is waiting. Missing or malformed Register no longer creates phantom Agents.
+
 ## v2.0.1
 
 ### Changed

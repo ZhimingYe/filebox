@@ -1,3 +1,4 @@
+use crate::agent_requests::{cleanup_pending, PendingResponseCleanup};
 use std::time::Duration;
 
 use axum::extract::{Extension, Path, State};
@@ -6,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use filebox_protocol::message::HubMessage;
 use serde::Deserialize;
+#[cfg(test)]
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -28,44 +30,6 @@ pub struct OfficeConvertBody {
     pub client_nonce: Option<String>,
 }
 
-struct CancelOnDrop {
-    state: AppState,
-    agent_id: String,
-    req_id: String,
-    armed: bool,
-}
-
-impl CancelOnDrop {
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let state = self.state.clone();
-        let agent_id = self.agent_id.clone();
-        let req_id = self.req_id.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let inner = state.inner.read().await;
-                let _ = inner.agents.send_to_agent(
-                    &agent_id,
-                    HubMessage::Cancel {
-                        req_id: req_id.clone(),
-                    },
-                );
-                drop(inner);
-                let pending = state.inner.read().await.pending_responses.clone();
-                let mut map = pending.write().await;
-                map.remove(&req_id);
-            });
-        }
-    }
-}
 
 pub async fn office_convert_handler(
     State(state): State<AppState>,
@@ -213,7 +177,7 @@ pub async fn office_convert_handler(
         .req_id
         .clone()
         .unwrap_or_else(|| format!("office_convert_{}", Uuid::new_v4()));
-    if state.was_request_recently_cancelled(&req_id).await {
+    if AppState::was_request_recently_cancelled_locked(&inner, &req_id) {
         return error_response(
             StatusCode::CONFLICT,
             "invalid_request",
@@ -228,14 +192,13 @@ pub async fn office_convert_handler(
         force: body.force,
     };
 
-    let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
     let mut duplicate_req_id = false;
     let send_ok = {
         let mut pending = inner.pending_responses.write().await;
-        if pending.contains_key(&req_id) {
-            duplicate_req_id = true;
-            false
-        } else if pending.len() >= MAX_PENDING_RESPONSES {
+        if pending.contains_key(&req_id)
+            || AppState::was_request_recently_cancelled_locked(&inner, &req_id)
+            || pending.len() >= MAX_PENDING_RESPONSES {
             duplicate_req_id = true;
             false
         } else {
@@ -265,16 +228,11 @@ pub async fn office_convert_handler(
             false,
         );
     }
-    let mut guard = CancelOnDrop {
-        state: state.clone(),
-        agent_id: agent_id.clone(),
-        req_id: req_id.clone(),
-        armed: true,
-    };
+    let guard = PendingResponseCleanup::new(state.clone(), req_id.clone(), Some(agent_id.clone()), response_owner);
 
     if !send_ok {
         cleanup_pending(&state, &req_id).await;
-        guard.disarm();
+        guard.finish(false).await;
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "backend_offline",
@@ -302,11 +260,10 @@ pub async fn office_convert_handler(
         .await;
 
     let resp = tokio::time::timeout(hub_wait, resp_rx.recv()).await;
-    cleanup_pending(&state, &req_id).await;
+    guard.finish(!matches!(resp, Ok(Some(_)))).await;
 
     match resp {
         Ok(Some(value)) => {
-            guard.disarm();
             let cache_key = value.get("cache_key").cloned().unwrap_or(serde_json::Value::Null);
             let size = value.get("size").cloned().unwrap_or(serde_json::Value::Null);
             let outputs = value
@@ -430,11 +387,7 @@ fn normalize_office_path(path: &str) -> String {
     }
 }
 
-async fn cleanup_pending(state: &AppState, req_id: &str) {
-    let pending = state.inner.read().await.pending_responses.clone();
-    let mut map = pending.write().await;
-    map.remove(req_id);
-}
+
 
 fn path_has_dotdot(path: &str) -> bool {
     path.split(['/', '\\']).any(|part| part == "..")

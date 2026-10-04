@@ -21,6 +21,17 @@ pub struct PendingResponse {
     pub desired_collections: Option<Vec<CollectionConfig>>,
 }
 
+impl PendingResponse {
+    /// Each request produces one final reply. Never wait for its consumer in
+    /// the shared Agent read loop or disconnect cleanup; a full queue already
+    /// contains a terminal result (for example a racing browser Cancel).
+    pub(crate) fn deliver(self, value: serde_json::Value) {
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(value) {
+            tracing::debug!(agent_id = %self.agent_id, "Pending reply already queued");
+        }
+    }
+}
+
 /// Upper bound for requests waiting on an Agent response. The outbound Agent
 /// queue is bounded too, but HTTP requests can outlive a queued message while
 /// a filesystem or Office operation is blocked.
@@ -147,6 +158,8 @@ pub struct AppState {
     /// as JSONL next to the hub config. Write failures degrade to in-memory
     /// only — auditing never fails a login.
     pub audit: Arc<crate::audit::LoginAuditLog>,
+    /// Terminal acknowledgements enqueue audit work without waiting on disk.
+    pub terminal_audit: Arc<crate::audit::QueuedAuditLog>,
     /// Login proof-of-work challenges (self-hosted effort check).
     pub pow: Arc<crate::pow::PowStore>,
     /// Per-IP bound on how often a client may fetch fresh challenges.
@@ -180,6 +193,10 @@ pub struct AppState {
             std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>,
         >,
     >,
+    /// Bounds native bcrypt jobs during fleet reconnects and invalid-token floods.
+    pub agent_auth_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Bounds detached Cancel deliveries while outbound Agent queues are full.
+    pub cancel_delivery_semaphore: Arc<tokio::sync::Semaphore>,
     pub secure_cookies: bool,
 }
 
@@ -254,6 +271,7 @@ impl AppState {
 
     pub fn new(config: &HubConfig, secure_cookies: bool) -> Self {
         let (sse_tx, _) = broadcast::channel(256);
+        let audit = Arc::new(crate::audit::LoginAuditLog::load(crate::audit::default_path(secure_cookies)));
         Self {
             inner: Arc::new(RwLock::new(AppStateInner {
                 sessions: SessionStore::from_config(config),
@@ -272,9 +290,8 @@ impl AppState {
             // or network partition. Keep this high enough for same-IP NATed
             // agents while still bounding unauthenticated WS auth attempts.
             ws_rate_limiter: Arc::new(LoginRateLimiter::new(300, std::time::Duration::from_secs(30))),
-            audit: Arc::new(crate::audit::LoginAuditLog::load(crate::audit::default_path(
-                secure_cookies,
-            ))),
+            terminal_audit: Arc::new(crate::audit::QueuedAuditLog::new(audit.clone())),
+            audit,
             pow: Arc::new(crate::pow::PowStore::new(
                 crate::pow::difficulty_from_env(),
             )),
@@ -294,6 +311,8 @@ impl AppState {
             resource_update_locks: Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            agent_auth_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            cancel_delivery_semaphore: Arc::new(tokio::sync::Semaphore::new(crate::agent_requests::CANCEL_DELIVERY_LIMIT)),
             secure_cookies,
         }
     }
@@ -306,64 +325,50 @@ impl AppState {
         agent_id: &str,
         connection_id: u64,
     ) -> usize {
-        let pending_arc = {
-            let inner = self.inner.read().await;
-            inner.pending_responses.clone()
-        };
-        let error = agent_disconnect_pending_error();
+        let mut inner = self.inner.write().await;
+        let pending_arc = inner.pending_responses.clone();
         let mut pending = pending_arc.write().await;
-        let keys: Vec<String> = pending
-            .iter()
-            .filter(|(_, resp)| {
-                resp.agent_id == agent_id && resp.connection_id == connection_id
-            })
-            .map(|(key, _)| key.clone())
-            .collect();
-        let mut victims = Vec::with_capacity(keys.len());
-        for key in keys {
-            if let Some(resp) = pending.remove(&key) {
-                victims.push((key, resp));
-            }
-        }
-        let count = victims.len();
+        let keys: Vec<String> = pending.iter()
+            .filter(|(_, resp)| resp.agent_id == agent_id && resp.connection_id == connection_id)
+            .map(|(key, _)| key.clone()).collect();
+        let victims: Vec<_> = keys.into_iter().filter_map(|key| pending.remove(&key).map(|response| (key, response))).collect();
         drop(pending);
-        for (_, resp) in &victims {
-            self.requeue_pending_response(resp).await;
+        let count = victims.len();
+        for (req_id, resp) in &victims {
+            Self::requeue_pending_response_locked(&mut inner, req_id, resp);
         }
-        for (req_id, resp) in victims {
-            tracing::debug!(
-                "Failing pending request {} because agent {} connection {} disconnected",
-                req_id,
-                agent_id,
-                connection_id
-            );
-            let _ = resp.tx.send(error.clone()).await;
+        drop(inner);
+        for (_, resp) in victims {
+            resp.deliver(agent_disconnect_pending_error());
         }
         count
     }
 
-    pub async fn requeue_pending_response(&self, resp: &PendingResponse) {
-        let mut inner = self.inner.write().await;
-        if let Some(desired) = &resp.desired_roots {
-            inner.agents.set_pending_update(
-                &resp.agent_id,
-                DesiredResources {
-                    roots: desired.clone(),
-                },
-            );
+    pub(crate) fn requeue_pending_response_locked(inner: &mut AppStateInner, req_id: &str, resp: &PendingResponse) {
+        let Some(agent) = inner.agents.get_mut(&resp.agent_id) else { return; };
+        // Registration drains the old generation under this same lock before
+        // installing its replacement. Later old cleanup must never overwrite
+        // the replacement's desired state. Existing coalesced edits win.
+        if agent.connection_id != resp.connection_id {
+            return;
         }
-        if let Some(desired) = &resp.desired_collections {
-            inner.agents.set_pending_collections_update(
-                &resp.agent_id,
-                filebox_protocol::resources::DesiredCollections {
-                    collections: desired.clone(),
-                },
-            );
+        if agent.pending_update.is_none() {
+            if let Some(roots) = &resp.desired_roots {
+                agent.pending_update = Some(DesiredResources { roots: roots.clone() });
+                agent.pending_resource_request = Some(req_id.to_string());
+            }
+        }
+        if agent.pending_collections_update.is_none() {
+            if let Some(collections) = &resp.desired_collections {
+                agent.pending_collections_update = Some(filebox_protocol::resources::DesiredCollections {
+                    collections: collections.clone(),
+                });
+                agent.pending_collection_request = Some(req_id.to_string());
+            }
         }
     }
 
-    pub async fn mark_request_cancelled(&self, req_id: &str) {
-        let inner = self.inner.read().await;
+    pub(crate) fn mark_request_cancelled_locked(inner: &AppStateInner, req_id: &str) {
         let result = inner.cancelled_request_ids.lock();
         if let Ok(mut ids) = result {
             let now = Instant::now();
@@ -372,8 +377,7 @@ impl AppState {
         };
     }
 
-    pub async fn was_request_recently_cancelled(&self, req_id: &str) -> bool {
-        let inner = self.inner.read().await;
+    pub(crate) fn was_request_recently_cancelled_locked(inner: &AppStateInner, req_id: &str) -> bool {
         let result = inner.cancelled_request_ids.lock();
         match result {
             Ok(mut ids) => {
