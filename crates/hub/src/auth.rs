@@ -85,6 +85,11 @@ impl SessionStore {
         bcrypt::verify(password, hash).unwrap_or(false) && real_user
     }
 
+    pub(crate) fn agent_token_hash(&self) -> &str {
+        &self.agent_token_hash
+    }
+
+    #[cfg(test)]
     pub fn validate_agent_token(&self, token: &str) -> bool {
         if token.is_empty() {
             return false;

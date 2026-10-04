@@ -33,6 +33,7 @@ form_urlencoded = "1.2"
 filebox-updater = { path = "../updater" }
 
 [dev-dependencies]
+tokio-tungstenite = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

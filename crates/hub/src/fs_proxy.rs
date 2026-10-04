@@ -1,3 +1,4 @@
+use crate::agent_requests::{cleanup_pending, PendingResponseCleanup};
 use std::time::Duration;
 
 use axum::extract::{Extension, Path, Query, State};
@@ -144,7 +145,7 @@ pub async fn fs_list_handler(
         dirs_only: params.dirs_only,
     };
 
-    let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
     let send_ok = {
         let mut pending = inner.pending_responses.write().await;
         if pending.len() >= MAX_PENDING_RESPONSES {
@@ -173,12 +174,7 @@ pub async fn fs_list_handler(
         );
     }
 
-    let cleanup = PendingResponseCleanup {
-        state: state.clone(),
-        req_id: req_id.clone(),
-        cancel_agent_id: Some(params.agent_id.clone()),
-        active: true,
-    };
+    let cleanup = PendingResponseCleanup::new(state.clone(), req_id.clone(), Some(params.agent_id.clone()), response_owner);
     let resp = tokio::time::timeout(Duration::from_secs(30), resp_rx.recv()).await;
     let cancelled = !matches!(resp, Ok(Some(_)));
     cleanup.finish(cancelled).await;
@@ -229,7 +225,7 @@ pub async fn fs_stat_handler(
         path: params.path,
     };
 
-    let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
     let send_ok = {
         let mut pending = inner.pending_responses.write().await;
         if pending.len() >= MAX_PENDING_RESPONSES {
@@ -258,12 +254,7 @@ pub async fn fs_stat_handler(
         );
     }
 
-    let cleanup = PendingResponseCleanup {
-        state: state.clone(),
-        req_id: req_id.clone(),
-        cancel_agent_id: Some(params.agent_id.clone()),
-        active: true,
-    };
+    let cleanup = PendingResponseCleanup::new(state.clone(), req_id.clone(), Some(params.agent_id.clone()), response_owner);
     let resp = tokio::time::timeout(Duration::from_secs(30), resp_rx.recv()).await;
     let cancelled = !matches!(resp, Ok(Some(_)));
     cleanup.finish(cancelled).await;
@@ -1404,7 +1395,7 @@ async fn request_raw_agent(
     message: HubMessage,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
     let send_ok = {
         let inner = state.inner.read().await;
         let Some(agent) = inner.agents.get(&target.agent_id) else {
@@ -1436,68 +1427,13 @@ async fn request_raw_agent(
         cleanup_pending(state, &req_id).await;
         return Err("Failed to send request to agent".to_string());
     }
-    let cleanup = PendingResponseCleanup {
-        state: state.clone(),
-        req_id: req_id.clone(),
-        cancel_agent_id: Some(target.agent_id.clone()),
-        active: true,
-    };
+    let cleanup = PendingResponseCleanup::new(state.clone(), req_id.clone(), Some(target.agent_id.clone()), response_owner);
     let response = tokio::time::timeout(timeout, resp_rx.recv()).await;
     let cancelled = !matches!(response, Ok(Some(_)));
     cleanup.finish(cancelled).await;
     match response {
         Ok(Some(value)) => Ok(value),
         _ => Err("Agent did not respond in time".to_string()),
-    }
-}
-
-/// Frees a `pending_responses` slot even when the handler is dropped mid-wait
-/// (client disconnect / timeout); without it a dropped request keeps its slot
-/// until the agent replies. Also used by `terminal_proxy`.
-pub(crate) struct PendingResponseCleanup {
-    state: AppState,
-    req_id: String,
-    cancel_agent_id: Option<String>,
-    active: bool,
-}
-
-impl PendingResponseCleanup {
-    pub(crate) fn new(state: AppState, req_id: String, cancel_agent_id: Option<String>) -> Self {
-        Self {
-            state,
-            req_id,
-            cancel_agent_id,
-            active: true,
-        }
-    }
-
-    pub(crate) async fn finish(mut self, cancel: bool) {
-        if cancel {
-            if let Some(agent_id) = self.cancel_agent_id.as_deref() {
-                send_cancel(&self.state, agent_id, &self.req_id).await;
-            }
-        }
-        cleanup_pending(&self.state, &self.req_id).await;
-        self.active = false;
-    }
-}
-
-impl Drop for PendingResponseCleanup {
-    fn drop(&mut self) {
-        if !self.active {
-            return;
-        }
-        let state = self.state.clone();
-        let req_id = self.req_id.clone();
-        let cancel_agent_id = self.cancel_agent_id.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                if let Some(agent_id) = cancel_agent_id {
-                    send_cancel(&state, &agent_id, &req_id).await;
-                }
-                cleanup_pending(&state, &req_id).await;
-            });
-        }
     }
 }
 
@@ -1734,7 +1670,7 @@ pub async fn sys_stats_handler(
         req_id: req_id.clone(),
     };
 
-    let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
     let send_ok = {
         let mut pending = inner.pending_responses.write().await;
         if pending.len() >= MAX_PENDING_RESPONSES {
@@ -1763,12 +1699,7 @@ pub async fn sys_stats_handler(
         );
     }
 
-    let cleanup = PendingResponseCleanup {
-        state: state.clone(),
-        req_id: req_id.clone(),
-        cancel_agent_id: None,
-        active: true,
-    };
+    let cleanup = PendingResponseCleanup::new(state.clone(), req_id.clone(), None, response_owner);
     let resp = tokio::time::timeout(Duration::from_secs(10), resp_rx.recv()).await;
     cleanup.finish(false).await;
 
@@ -1815,22 +1746,6 @@ fn decode_file_chunk_data(value: &serde_json::Value) -> Result<Vec<u8>, String> 
     }
 
     Ok(Vec::new())
-}
-
-async fn cleanup_pending(state: &AppState, req_id: &str) {
-    let pending = state.inner.read().await.pending_responses.clone();
-    let mut map = pending.write().await;
-    map.remove(req_id);
-}
-
-async fn send_cancel(state: &AppState, agent_id: &str, req_id: &str) {
-    let inner = state.inner.read().await;
-    let _ = inner.agents.send_to_agent(
-        agent_id,
-        HubMessage::Cancel {
-            req_id: req_id.to_string(),
-        },
-    );
 }
 
 #[cfg(test)]
@@ -2128,7 +2043,7 @@ mod tests {
     async fn pending_response_cleanup_removes_abandoned_request() {
         let state = AppState::new(&test_config(), true);
         let req_id = "abandoned-request".to_string();
-        let (tx, _rx) = mpsc::channel(1);
+        let (tx, _rx, response_owner) = crate::agent_requests::response_channel();
         let pending = state.inner.read().await.pending_responses.clone();
         pending.write().await.insert(
             req_id.clone(),
@@ -2142,12 +2057,7 @@ mod tests {
             },
         );
 
-        drop(PendingResponseCleanup {
-            state: state.clone(),
-            req_id: req_id.clone(),
-            cancel_agent_id: None,
-            active: true,
-        });
+        drop(PendingResponseCleanup::new(state.clone(), req_id.clone(), None, response_owner));
 
         tokio::time::timeout(Duration::from_secs(1), async {
             while pending.read().await.contains_key(&req_id) {
@@ -2164,26 +2074,21 @@ mod tests {
         let (agent_tx, mut agent_rx) = mpsc::channel(256);
         register_mock_agent(&state, "a1", agent_tx).await;
         let req_id = "abandoned-fs-request".to_string();
-        let (tx, _rx) = mpsc::channel(1);
+        let (tx, _rx, response_owner) = crate::agent_requests::response_channel();
         let pending = state.inner.read().await.pending_responses.clone();
         pending.write().await.insert(
             req_id.clone(),
             PendingResponse {
                 tx,
                 agent_id: "a1".to_string(),
-                connection_id: 1,
+                connection_id: state.inner.read().await.agents.get("a1").unwrap().connection_id,
                 session_id: None,
                 desired_roots: None,
                 desired_collections: None,
             },
         );
 
-        drop(PendingResponseCleanup {
-            state: state.clone(),
-            req_id: req_id.clone(),
-            cancel_agent_id: Some("a1".to_string()),
-            active: true,
-        });
+        drop(PendingResponseCleanup::new(state.clone(), req_id.clone(), Some("a1".to_string()), response_owner));
 
         let message = tokio::time::timeout(Duration::from_secs(1), agent_rx.recv())
             .await

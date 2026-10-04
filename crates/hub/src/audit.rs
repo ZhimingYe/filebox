@@ -18,6 +18,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+mod queued;
+pub(crate) use queued::QueuedAuditLog;
+
 pub const AUDIT_FILE_NAME: &str = "audit-log.jsonl";
 /// Maximum entries kept in memory (and kept after file compaction).
 pub const AUDIT_MAX_ENTRIES: usize = 2000;
@@ -163,6 +166,10 @@ impl LoginAuditLog {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
+        self.record_at(at_ms, event, username, ip, user_agent);
+    }
+
+    fn record_at(&self, at_ms: u64, event: &str, username: &str, ip: &str, user_agent: &str) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let entry = LoginAuditEntry {
             id: inner.next_id,

@@ -8,6 +8,7 @@
 //! client goes away. The agent remains the authority on what gets written
 //! where — the hub never touches a filesystem.
 
+use crate::agent_requests::{cleanup_pending, PendingResponseCleanup};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -45,47 +46,6 @@ const TEMP_PERMIT_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Deserialize)]
 pub struct TempUploadParams {
     pub name: String,
-}
-
-/// Sends Cancel to the agent and clears pending when the HTTP waiter goes
-/// away (client abort / timeout) so the agent does not keep a staging file.
-struct CancelOnDrop {
-    state: AppState,
-    agent_id: String,
-    req_id: String,
-    armed: bool,
-}
-
-impl CancelOnDrop {
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let state = self.state.clone();
-        let agent_id = self.agent_id.clone();
-        let req_id = self.req_id.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let inner = state.inner.read().await;
-                let _ = inner.agents.send_to_agent(
-                    &agent_id,
-                    HubMessage::Cancel {
-                        req_id: req_id.clone(),
-                    },
-                );
-                drop(inner);
-                let pending = state.inner.read().await.pending_responses.clone();
-                let mut map = pending.write().await;
-                map.remove(&req_id);
-            });
-        }
-    }
 }
 
 /// Look up a live, temp-capable agent. Returns `(connection_id,
@@ -222,11 +182,12 @@ pub async fn temp_upload_handler(
     };
 
     let req_id = format!("temp_up_{}", Uuid::new_v4());
-    let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
     let send_ok = {
         let inner = state.inner.read().await;
         let mut pending = inner.pending_responses.write().await;
-        if pending.len() >= MAX_PENDING_RESPONSES {
+        if pending.len() >= MAX_PENDING_RESPONSES
+            || !inner.agents.is_current_connection(&agent_id, connection_id) {
             false
         } else {
             pending.insert(
@@ -260,12 +221,7 @@ pub async fn temp_upload_handler(
         );
     }
 
-    let mut guard = CancelOnDrop {
-        state: state.clone(),
-        agent_id: agent_id.clone(),
-        req_id: req_id.clone(),
-        armed: true,
-    };
+    let guard = PendingResponseCleanup::new(state.clone(), req_id.clone(), Some(agent_id.clone()), response_owner);
 
     // Stream the body to the agent in bounded chunks. Any failure cancels the
     // agent-side session (the guard stays armed through the failure return).
@@ -276,6 +232,7 @@ pub async fn temp_upload_handler(
         stream_upload_body(
             &state,
             &agent_id,
+            connection_id,
             &req_id,
             body,
             max_file_bytes,
@@ -287,12 +244,12 @@ pub async fn temp_upload_handler(
     let (received, buffer) = match stream_result {
         Ok(Ok(ok)) => ok,
         Ok(Err(response)) => {
-            cleanup_pending(&state, &req_id).await;
+            guard.finish(true).await;
             return response;
         }
         Err(_) => {
             // Body stalled past the budget: cancel the agent session.
-            cleanup_pending(&state, &req_id).await;
+            guard.finish(true).await;
             return error_response(
                 StatusCode::REQUEST_TIMEOUT,
                 "request_timeout",
@@ -304,7 +261,7 @@ pub async fn temp_upload_handler(
 
     if received != total_size {
         // Client aborted early or lied about Content-Length.
-        cleanup_pending(&state, &req_id).await;
+        guard.finish(true).await;
         return error_response(
             StatusCode::BAD_REQUEST,
             "temp_upload_incomplete",
@@ -318,6 +275,7 @@ pub async fn temp_upload_handler(
     let ok = send_to_agent_await(
         &state,
         &agent_id,
+        connection_id,
         HubMessage::TempUploadChunk {
             req_id: req_id.clone(),
             offset: final_offset,
@@ -327,7 +285,7 @@ pub async fn temp_upload_handler(
     )
     .await;
     if !ok {
-        cleanup_pending(&state, &req_id).await;
+        guard.finish(true).await;
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "backend_offline",
@@ -337,11 +295,10 @@ pub async fn temp_upload_handler(
     }
 
     let resp = tokio::time::timeout(TEMP_UPLOAD_TIMEOUT, resp_rx.recv()).await;
-    cleanup_pending(&state, &req_id).await;
+    guard.finish(!matches!(resp, Ok(Some(_)))).await;
 
     match resp {
         Ok(Some(value)) => {
-            guard.disarm();
             let raw_error = value.get("error").and_then(|v| v.as_str());
             if raw_error == Some("cancelled") {
                 return error_response(
@@ -368,7 +325,7 @@ pub async fn temp_upload_handler(
             .into_response()
         }
         _ => {
-            // Guard stays armed: Drop sends Cancel to abort the staging file.
+            // The request guard has cancelled the staging session.
             error_response(
                 StatusCode::GATEWAY_TIMEOUT,
                 "request_timeout",
@@ -391,11 +348,12 @@ pub async fn temp_cleanup_handler(
         };
 
     let req_id = format!("temp_clean_{}", Uuid::new_v4());
-    let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
     let send_ok = {
         let inner = state.inner.read().await;
         let mut pending = inner.pending_responses.write().await;
-        if pending.len() >= MAX_PENDING_RESPONSES {
+        if pending.len() >= MAX_PENDING_RESPONSES
+            || !inner.agents.is_current_connection(&agent_id, connection_id) {
             false
         } else {
             pending.insert(
@@ -427,19 +385,13 @@ pub async fn temp_cleanup_handler(
         );
     }
 
-    let mut guard = CancelOnDrop {
-        state: state.clone(),
-        agent_id: agent_id.clone(),
-        req_id: req_id.clone(),
-        armed: true,
-    };
+    let guard = PendingResponseCleanup::new(state.clone(), req_id.clone(), Some(agent_id.clone()), response_owner);
 
     let resp = tokio::time::timeout(TEMP_CLEANUP_TIMEOUT, resp_rx.recv()).await;
-    cleanup_pending(&state, &req_id).await;
+    guard.finish(!matches!(resp, Ok(Some(_)))).await;
 
     match resp {
         Ok(Some(value)) => {
-            guard.disarm();
             let raw_error = value.get("error").and_then(|v| v.as_str());
             if raw_error == Some("cancelled") || raw_error == Some("request_cancelled") {
                 return error_response(
@@ -484,13 +436,17 @@ fn content_length(headers: &HeaderMap) -> Option<u64> {
 /// Send a hub→agent message with backpressure instead of `try_send`: a full
 /// outbound queue must backpressure the upload relay, not abort it with a
 /// spurious "agent went away" while the agent is healthy.
-async fn send_to_agent_await(state: &AppState, agent_id: &str, msg: HubMessage) -> bool {
+async fn send_to_agent_await(state: &AppState, agent_id: &str, connection_id: u64, msg: HubMessage) -> bool {
     let sender = {
         let inner = state.inner.read().await;
-        inner.agents.get(agent_id).map(|a| a.sender.clone())
+        inner.agents.get(agent_id)
+            .filter(|a| a.connection_id == connection_id && a.status != crate::agent_registry::AgentStatus::Offline)
+            .map(|a| a.sender.clone())
     };
     match sender {
-        Some(sender) => sender.send(msg).await.is_ok(),
+        Some(sender) => matches!(tokio::time::timeout(
+            Duration::from_secs(10), sender.send(msg),
+        ).await, Ok(Ok(()))),
         None => false,
     }
 }
@@ -505,6 +461,7 @@ async fn send_to_agent_await(state: &AppState, agent_id: &str, msg: HubMessage) 
 async fn stream_upload_body(
     state: &AppState,
     agent_id: &str,
+    connection_id: u64,
     req_id: &str,
     body: Body,
     max_file_bytes: u64,
@@ -556,7 +513,7 @@ async fn stream_upload_body(
                 let ok = tokio::select! {
                     resp = resp_rx.recv() => return Err(upload_stream_response_error(resp)),
                     ok = send_to_agent_await(
-                        state, agent_id,
+                        state, agent_id, connection_id,
                         HubMessage::TempUploadChunk { req_id: req_id.to_string(), offset, data, done: false },
                     ) => ok,
                 };
@@ -621,11 +578,7 @@ fn temp_error_response(error: &str) -> Response {
     error_response(status, code, error, code == "agent_internal_error")
 }
 
-async fn cleanup_pending(state: &AppState, req_id: &str) {
-    let pending = state.inner.read().await.pending_responses.clone();
-    let mut map = pending.write().await;
-    map.remove(req_id);
-}
+
 
 fn error_response(status: StatusCode, error: &str, message: &str, retryable: bool) -> Response {
     (
@@ -658,6 +611,7 @@ mod tests {
         let cap = FILE_CHUNK_MAX_BYTES as usize;
         for sizes in [vec![0], vec![1], vec![cap], vec![2 * cap], vec![cap - 3, 10, 2 * cap + 7]] {
             let (state, mut agent) = registered_agent(16).await;
+            let connection_id = state.inner.read().await.agents.get("agent").unwrap().connection_id;
             let (_reply_tx, mut replies) = mpsc::channel(8);
             let total: usize = sizes.iter().sum();
             let expected: Vec<_> = (0..total).map(|offset| (offset % 251) as u8).collect();
@@ -668,7 +622,7 @@ mod tests {
                 Ok(frame)
             }).collect();
             let body = Body::from_stream(futures_util::stream::iter(frames));
-            let (received, tail) = stream_upload_body(&state, "agent", "upload", body,
+            let (received, tail) = stream_upload_body(&state, "agent", connection_id, "upload", body,
                 8 * FILE_CHUNK_MAX_BYTES, &mut replies).await.unwrap();
             assert_eq!(received, total as u64);
             assert!(tail.len() < cap);
@@ -696,9 +650,10 @@ mod tests {
     #[tokio::test]
     async fn agent_rejection_interrupts_a_large_frame_waiting_for_send_capacity() {
         let (state, mut agent) = registered_agent(1).await;
-        assert!(send_to_agent_await(&state, "agent", HubMessage::Ping).await);
+        let connection_id = state.inner.read().await.agents.get("agent").unwrap().connection_id;
+        assert!(send_to_agent_await(&state, "agent", connection_id, HubMessage::Ping).await);
         let (reply_tx, mut replies) = mpsc::channel(8);
-        let relay = stream_upload_body(&state, "agent", "upload",
+        let relay = stream_upload_body(&state, "agent", connection_id, "upload",
             Body::from(vec![1u8; 3 * FILE_CHUNK_MAX_BYTES as usize]),
             4 * FILE_CHUNK_MAX_BYTES, &mut replies);
         tokio::pin!(relay);
@@ -722,5 +677,30 @@ mod tests {
             assert!(value["message"].as_str().unwrap().contains("Retry"));
         }
         assert_eq!(temp_error_response("temp_name_invalid").status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn upload_chunk_cannot_cross_to_a_replacement_connection() {
+        let state = AppState::new(&crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(), agent_token_hash: "fake".into(), users: vec![],
+        }, false);
+        let (old_tx, _old_rx) = mpsc::channel(8);
+        let (new_tx, mut new_rx) = mpsc::channel(8);
+        let mut inner = state.inner.write().await;
+        inner.agents.register("agent".into(), "old".into(), old_tx, std::sync::Arc::new(tokio::sync::Notify::new()),
+            0, vec![], 0, vec![], filebox_protocol::resources::Capabilities::default(), None);
+        let old_id = inner.agents.get("agent").unwrap().connection_id;
+        inner.agents.register("agent".into(), "new".into(), new_tx, std::sync::Arc::new(tokio::sync::Notify::new()),
+            0, vec![], 0, vec![], filebox_protocol::resources::Capabilities::default(), None);
+        drop(inner);
+        assert!(!send_to_agent_await(&state, "agent", old_id, HubMessage::TempUploadChunk {
+            req_id: "upload".into(), offset: 0, data: vec![1], done: true,
+        }).await);
+        assert!(new_rx.try_recv().is_err());
     }
 }

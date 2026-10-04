@@ -52,7 +52,10 @@ pub struct AgentConnection {
     pub collections: Vec<CollectionConfig>,
     pub capabilities: Capabilities,
     pub pending_update: Option<DesiredResources>,
+    /// Request which is currently applying this coalesced state, if any.
+    pub(crate) pending_resource_request: Option<String>,
     pub pending_collections_update: Option<DesiredCollections>,
+    pub(crate) pending_collection_request: Option<String>,
     pub inflight_requests: u32,
     pub connected_at: u64,
     pub last_config_error: Option<String>,
@@ -262,7 +265,9 @@ impl AgentRegistry {
             collections,
             capabilities,
             pending_update: None,
+            pending_resource_request: None,
             pending_collections_update: None,
+            pending_collection_request: None,
             inflight_requests: 0,
             connected_at: epoch,
             last_config_error: None,
@@ -388,6 +393,7 @@ impl AgentRegistry {
             agent.resource_revision = revision;
             agent.roots = roots;
             agent.pending_update = None;
+            agent.pending_resource_request = None;
             agent.last_config_error = None;
         }
     }
@@ -410,6 +416,7 @@ impl AgentRegistry {
         if let Some(agent) = self.agents.get_mut(agent_id) {
             // Coalesce: replace with latest desired state
             agent.pending_update = Some(desired);
+            agent.pending_resource_request = None;
         }
     }
 
@@ -426,6 +433,7 @@ impl AgentRegistry {
             agent.collections_revision = revision;
             agent.collections = collections;
             agent.pending_collections_update = None;
+            agent.pending_collection_request = None;
             agent.last_config_error = None;
         }
     }
@@ -451,6 +459,7 @@ impl AgentRegistry {
     ) {
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.pending_collections_update = Some(desired);
+            agent.pending_collection_request = None;
         }
     }
 
@@ -465,6 +474,7 @@ impl AgentRegistry {
     pub fn reject_pending_collections_update(&mut self, agent_id: &str, error: String) {
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.pending_collections_update = None;
+            agent.pending_collection_request = None;
             agent.last_config_error = Some(error);
         }
     }

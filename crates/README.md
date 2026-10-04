@@ -90,17 +90,18 @@ agent WebSocket.
 
 | Module | Responsibility |
 |---|---|
-| `routes.rs` | HTTP route table |
+| `routes.rs` / `routes/` | HTTP route assembly; separate middleware, session, access-token, preview, cancel, root and collection handlers |
 | `auth.rs` | bcrypt users, session cookies, per-IP login rate limit |
 | `pow.rs` | Self-hosted login proof-of-work challenges |
 | `net.rs` | Client IP / `FILEBOX_TRUST_XFF` |
-| `ws.rs` | Agent WSS handler; abort-on-reregister |
+| `ws.rs` / `ws/` | Agent WSS upgrade, bounded authentication, generation-owned session, registration, dispatch and state acknowledgements |
+| `agent_requests.rs` | Shared response-channel identity, client-disconnect cleanup and generation-bound cancellation |
 | `agent_registry.rs` | Online/offline lifecycle; coalesced pending root/collection updates; `config_error` |
 | `fs_proxy.rs` | List / stat / raw file proxy to agent WS |
 | `search_proxy.rs` | Workspace Search proxy (long timeout, cancel binding) |
 | `temp_proxy.rs` | Temp-folder upload relay (streams body → WS chunks) + one-click cleanup |
 | `terminal_proxy.rs` | Terminal WS relay, single-use transport tickets, session list/end |
-| `audit.rs` | Login/terminal audit trail (`audit-log.jsonl`, bounded, never blocks auth) |
+| `audit.rs` / `audit/queued.rs` | Login/terminal audit trail; bounded background persistence for terminal acknowledgements |
 | `events.rs` | SSE fanout to browsers |
 | `health.rs` | Liveness + version |
 | `config.rs` / `state.rs` | Config load + shared `AppState` |
@@ -112,6 +113,21 @@ Notable invariants (see also root [`CLAUDE.md`](../CLAUDE.md)):
   fresh one.
 - Offline root/collection edits coalesce into a single pending update
   (last write wins). Rejection never destroys last known-good state.
+- Authentication runs in at most four native bcrypt jobs, without holding the
+  registry lock. Registration and its connected event are published atomically.
+- Replacement registration transfers old in-flight desired updates before
+  announcing the new generation. Delayed acknowledgements cannot consume a newer
+  coalesced edit; request cleanup checks channel identity as well as generation.
+- Agent ingress never waits on HTTP response queues. Cancel waits at most 5s for
+  the captured sender, then aborts only that transport so workers are released.
+  Congested deliveries survive caller cancellation, with at most 256 background
+  waits. Office cancellation reserves caller-chosen IDs before releasing locks.
+  Upload chunks remain on their Begin generation and wait at most 10s for space.
+- Terminal acknowledgements queue audit records without waiting on storage or
+  retaining the registry lock during disk I/O. One worker drains at most 256
+  queued records; overflow warns and omits excess records from persistent history.
+- FileChunk JSON is parsed once and bytes are decoded only by the HTTP consumer;
+  base64 and legacy byte arrays remain supported, with unchanged wire framing.
 - Body limit is 1MB; resource/collection payloads stay tiny by design.
 
 ## `agent` — data plane on the machine

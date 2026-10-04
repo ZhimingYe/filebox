@@ -21,7 +21,7 @@ use uuid::Uuid;
 use filebox_protocol::message::{HubMessage, TERMINAL_CHUNK_MAX_BYTES};
 
 use crate::agent_registry::AgentStatus;
-use crate::fs_proxy::PendingResponseCleanup;
+use crate::agent_requests::PendingResponseCleanup;
 use crate::net::client_ip;
 use crate::state::{AppState, AuthenticatedSession, PendingResponse, MAX_PENDING_RESPONSES};
 
@@ -426,7 +426,7 @@ pub async fn terminals_list_handler(
     }
 
     let req_id = format!("term_list_{}", Uuid::new_v4());
-    let (resp_tx, mut resp_rx) = mpsc::channel(1);
+    let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
     let send_ok = {
         let mut pending = inner.pending_responses.write().await;
         if pending.len() >= MAX_PENDING_RESPONSES {
@@ -464,7 +464,7 @@ pub async fn terminals_list_handler(
     }
 
     // Frees the pending slot even if this handler is dropped mid-wait.
-    let cleanup = PendingResponseCleanup::new(state.clone(), req_id.clone(), Some(agent_id.clone()));
+    let cleanup = PendingResponseCleanup::new(state.clone(), req_id.clone(), Some(agent_id.clone()), response_owner);
     let resp = tokio::time::timeout(Duration::from_secs(30), resp_rx.recv()).await;
     let cancelled = !matches!(resp, Ok(Some(_)));
     cleanup.finish(cancelled).await;
