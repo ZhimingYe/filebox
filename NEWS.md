@@ -4,6 +4,8 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+## v2.1.0
+
 ### Changed
 - **Hub lifecycle and API boundaries** — WebSocket handshake, registration, session ownership, dispatch and state acknowledgements are separate modules; HTTP routing is split into middleware, session, access-token, preview, cancel, root and collection modules. File, preview, search, Office, upload and terminal-list requests share one cleanup guard, bound to their response channel and Agent generation.
 - **File relay overhead** — incoming JSON is parsed once and file chunks avoid a redundant Hub-side base64 decode. Wire format and legacy byte-array compatibility are preserved.

@@ -416,7 +416,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "filebox-agent"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "filebox-hub"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "async-stream",
  "axum",
@@ -476,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "filebox-protocol"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "base32",
  "base64",
@@ -490,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "filebox-updater"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "flate2",
  "hex",
