@@ -2,11 +2,13 @@
 
 Word / PowerPoint → PDF 查看器；表格（`xls` / `xlsx` / `xlsm` / `ods`）→ 每 sheet 一份 CSV。转换在 **Agent** 上跑，Hub 不装 LibreOffice，Agent 也不捆绑它。
 
+![PowerPoint 预览示例](/screenshots/08f-preview-office.png)
+
 ## 特点
 
 - **仅无头**：始终 `soffice --headless`，不需要 GUI / 显示器。
 - **Rootless**：解压到家目录即可，无需 sudo 或系统包。
-- **可选**：没有可用的 `soffice` 时，Office 文件仍可下载，预览入口不可用；浏览器设置里也可关闭转换。
+- **可选**：没有可用的 `soffice` 时，Office 文件仍可下载，预览入口不可用；Settings 里也可关闭转换。
 
 ## 1. 安装 LibreOffice（rootless）
 
@@ -36,7 +38,7 @@ cd LibreOffice_*_Linux_x86-64_rpm/RPMS
 for rpm in *.rpm; do rpm2cpio "$rpm" | (cd "$PREFIX" && cpio -idm); done
 ```
 
-将 `VERSION` 换成 [Document Foundation](https://www.libreoffice.org/download/download-libreoffice/) 上的当前稳定版。
+将 `VERSION` 换成 [Document Foundation](https://www.libreoffice.org/download/download-libreoffice/) 上的当前稳定版。若系统已有 `soffice`（如 `/usr/bin/soffice`），可直接指向它。
 
 ## 2. 指向 soffice
 
@@ -65,4 +67,4 @@ export FILEBOX_AGENT_SOFFICE="$HOME/opt/libreoffice/opt/libreoffice26.2/program/
 "$FILEBOX_AGENT_SOFFICE" --headless --version
 ```
 
-UI Settings 中可关闭 Office 转换。若之后卸掉 LibreOffice，预览失败但文件浏览不受影响。
+在 UI 打开 `.docx` / `.pptx` / `.xlsx`，应进入 PDF 或 CSV 预览。Settings 中可关闭 Office 转换。若之后卸掉 LibreOffice，预览失败但文件浏览不受影响。

@@ -1,4 +1,6 @@
-/**
+/** OBSOLETE — do not use for docs. Use capture-real-screenshots.mjs (local Hub+Agent).
+ *
+ *
  * Capture polished UI screenshots from the public Pages demo mock:
  *   https://zhimingye.github.io/filebox/
  *

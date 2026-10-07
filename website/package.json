@@ -7,7 +7,7 @@
     "dev": "vitepress dev docs",
     "build": "vitepress build docs",
     "preview": "vitepress preview docs",
-    "screenshots": "node scripts/capture-demo-screenshots.mjs"
+    "screenshots": "node scripts/capture-real-screenshots.mjs"
   },
   "devDependencies": {
     "vitepress": "1.6.4"

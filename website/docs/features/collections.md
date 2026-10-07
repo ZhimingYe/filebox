@@ -1,18 +1,21 @@
 # 合集 Collections
 
-合集是 **Agent 上的命名文件引用列表**，不复制、不移动文件。适合把「论文图」「周五汇报材料」从不同目录收拢到一处预览。
+合集是**虚拟引用列表**：把分散在不同目录（甚至不同 root）里的文件收进一个命名列表，不复制、不移动。列表存在 Agent 上。
 
-![Collections](/screenshots/03-collections.png)
+![Collections：watchlist](/screenshots/03-collections.png)
 
-## 用法
+![从合集打开预览](/screenshots/03b-collections-watchlist.png)
 
-1. 打开 **Collections** 新建命名合集，或从文件列表用选择器把文件加入已有合集。
-2. 打开合集：并排预览、移除项、或跳回 Files 中的原始路径。
-3. 数据存在 Agent 状态目录里，随 Agent 身份持久化；换浏览器登录同一 Hub 仍可见。
+## 怎么用
+
+1. 侧栏打开 **Collections**。
+2. 用下拉选择已有合集，或 **+ New** 创建。
+3. 在 **Files** / 预览里把文件加入合集（合集选择器）。
+4. 在合集视图中：并排查看、移除项、或跳回原始路径。
+5. **Delete** 只删除合集本身，不动真实文件。
 
 ## 注意
 
-- 合集存的是路径引用。若原文件被删或移出 root，合集项会失效，需要手动清理。
-- 演示页为静态示意；真实 UI 与 Files 共享预览标签与分栏。
-
-相关：[浏览文件](./browse) · [预览](./preview)
+- 合集项指向 `(root, path)`；若源文件被移走，项会失效但不会改磁盘。
+- Agent 离线时 Hub 会把变更标为 pending，重连后再应用。
+- 需要 Agent 具备 `collections` 能力（当前发布版默认具备）。

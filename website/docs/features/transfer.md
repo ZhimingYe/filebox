@@ -1,17 +1,26 @@
 # 临时传输 Transfer
 
-**Transfer** 是 Agent **唯一允许写入**的路径：把小文件拖到页面（或进入 Transfer 视图），写入专用 scratch 目录。不要把它当成网盘同步盘。
+**Transfer** 是 Agent 上唯一允许写入的路径：专用 scratch 目录。浏览协议仍然只读；这里只用于临时上传小文件（草稿、截图、给同事丢个配置等）。
 
-![Temp Transfer](/screenshots/04-transfer.png)
+![Transfer 空状态 / 拖放区](/screenshots/04-transfer.png)
 
-## 规则（摘要）
+![已上传 plain.txt](/screenshots/04b-transfer-uploaded.png)
 
-- 单组件文件名校验；默认单文件约 **20 MiB**、目录合计约 **1 GiB** 配额。
-- **禁止覆盖**：冲突时自动加后缀。
-- 一键清空；该目录**不会**作为普通 root 出现在 Files 里。
-- 支持粘贴图片上传（剪贴板）。
-- 由能力位 `temp_upload` 控制是否在 UI 显示。
+## 怎么用
 
-## 和只读模型的关系
+1. 侧栏打开 **Transfer**（需 Agent `temp_upload` 能力）。
+2. 拖文件到虚线框，或点击选择；也可粘贴图片。
+3. 上传进度显示在列表上方；成功后出现在下方表格。
+4. 可 **Copy path**、下载；**Clean** 清空临时目录。
+5. 页面顶部会显示 Agent 上的真实文件夹路径。
 
-Files 浏览协议仍然只读。写文件只发生在 Transfer；任意 shell 只发生在 [Terminal](./terminal)。详见 [安全与敏感文件](./security)。
+## 规则
+
+| 规则 | 说明 |
+|------|------|
+| 单文件上限 | 默认约 20 MiB（以 Agent 能力 / 配置为准） |
+| 总配额 | 默认约 1 GiB |
+| 覆盖 | 禁止同名覆盖 |
+| 可见性 | 该目录**不会**作为普通 root 出现在 Files 里 |
+
+相关：[安全与敏感文件](./security)

@@ -6,7 +6,7 @@ filebox 是面向实验室 / HPC / 自建服务器的**只读远程文件浏览�
 浏览器 ──HTTPS──▶ Hub ◀──WSS（出站）── Agent ──▶ 本地文件
 ```
 
-![filebox 界面总览](/screenshots/00-sidebar-overview.png)
+![filebox 界面总览（真实 Hub + Agent）](/screenshots/00-sidebar-overview.png)
 
 - **浏览器**：只访问 Hub，不直连 Agent。
 - **Hub**：认证用户、托管前端、把请求路由到对应机器。
@@ -20,16 +20,17 @@ filebox 不是网盘同步工具，也不是完整的远程桌面——它是「
 
 ## 能做什么（v2.1.0）
 
-| 能力 | 说明 |
-|------|------|
-| **Files** | 大目录流畅列表、面包屑、过滤、钉选、多标签预览 |
-| **Explorer** | 树形展开式浏览，与 Files 共享当前位置 |
-| **Search** | 文件名或内容正则；可限范围、扩展名、忽略目录 |
-| **Collections** | 跨目录的虚拟文件合集，不复制、不移动 |
-| **Transfer** | 唯一可写的临时上传目录（配额、禁覆盖） |
-| **Terminal** | 可选；Agent 本地 TOTP 守护的交互式 shell（**非沙箱**） |
-| **Stats** | CPU / 内存 / 负载 / 按用户占用 / 进程表 |
-| **Audit / Health** | 登录审计与 Hub / Agent 健康 |
+| 能力 | 说明 | 文档 |
+|------|------|------|
+| **Files** | 大目录流畅列表、面包屑、过滤、钉选、多标签预览 | [浏览文件](/features/browse) |
+| **Explorer** | 树形展开式浏览，与 Files 共享当前位置 | [Explorer](/features/explorer) |
+| **Search** | 文件名或内容正则；浮窗 / 底部 sheet | [搜索](/features/search) |
+| **Collections** | 跨目录的虚拟文件合集，不复制、不移动 | [合集](/features/collections) |
+| **Transfer** | 唯一可写的临时上传目录（配额、禁覆盖） | [Transfer](/features/transfer) |
+| **Terminal** | 可选；Agent 本地 TOTP 守护的交互式 shell（**非沙箱**） | [Terminal](/features/terminal) |
+| **Settings** | 管理根目录、Office 预览开关 | [首次登录](/guide/first-login) |
+| **System** | CPU / 内存 / 负载 / 按用户占用 / 进程表 | [系统监控](/features/stats) |
+| **Audit** | 登录审计（Hub 级，不依赖选中 Agent） | [Hub 运维](/ops/hub) |
 
 ## 默认安全边界
 
@@ -42,8 +43,6 @@ filebox 不是网盘同步工具，也不是完整的远程桌面——它是「
 
 详见 [安全与敏感文件](/features/security)。
 
-## 和在线演示的关系
+## 从哪里开始
 
-[在线演示](https://zhimingye.github.io/filebox/) 是静态 mock UI，交互布局与真实 Hub 前端一致，适合先熟悉侧栏与视图。本文档截图主要来自该演示，并标注与真实应用的差异（例如 Search 在真实应用中是浮窗，而不是替换主视图；Explorer / Settings / Login / Audit 以真实前端为准）。
-
-下一篇：[快速开始](./quick-start)
+陌生人也能按文档端到端装好并用起来：先读 [快速开始](./quick-start)，再按 [部署 Hub](./install-hub) → [部署 Agent](./install-agent) → [首次登录与添加目录](./first-login) 走完。

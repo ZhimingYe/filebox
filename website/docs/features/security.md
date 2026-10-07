@@ -2,7 +2,7 @@
 
 filebox 的默认姿态是：**浏览只读、路径牢笼、敏感文件拒绝**。两个写能力（Transfer、Terminal）是显式例外，且默认需要能力开启 / 本地配置。
 
-![侧栏总览 — 能力入口一目了然](/screenshots/00-sidebar-overview.png)
+![侧栏能力入口](/screenshots/00-sidebar-overview.png)
 
 ## 只读协议
 
@@ -30,9 +30,13 @@ filebox 的默认姿态是：**浏览只读、路径牢笼、敏感文件拒绝*
 
 ## 认证与信任
 
-- 用户登录在 Hub；每台机器用独立 Agent token（Hub 只存 hash）。
+- 用户登录在 Hub（PoW + 会话 cookie + CSRF）。
+- 每台机器用独立 Agent token（Hub 只存 hash）。
 - Agent 出站连 Hub；目标机无需入站。
 - 生产环境务必 HTTPS，保护 token 与会话。
+- 登录事件见侧栏 **Audit**。
+
+![登录审计](/screenshots/12-audit.png)
 
 ## 架构向说明
 

@@ -2,18 +2,29 @@
 
 ## 侧栏没有 Agent？
 
-- Agent 进程是否在跑、能否解析 Hub 主机名。
-- Hub URL 是否为 `https://`（或开发时显式 `FILEBOX_ALLOW_INSECURE_HUB=1`）。
-- token 是否与 Hub `--init-config` 打印的一致（Hub 只存 hash，对不上只能重新发 / 重新配）。
-- 反代是否正确升级 WebSocket（`Upgrade` / `Connection`，见 [Hub 运维](./hub)）。
+按顺序排查：
+
+1. Agent 进程是否在跑：`ps` / systemd status。
+2. 能否解析 Hub 主机名：在 Agent 机 `curl -v https://filebox.example.com/api/health`。
+3. Hub URL 是否为 `https://`（或开发时显式 `FILEBOX_ALLOW_INSECURE_HUB=1` + `ws://`）。
+4. token 是否与 Hub `--init-config` 打印的一致（Hub 只存 hash，对不上只能重新发 / 重新配）。
+5. 反代是否正确升级 WebSocket（`Upgrade` / `Connection`），见 [Hub 运维](./hub)。
 
 ## 有 Agent 但文件列表空？
 
 需要在 **Settings → Add Root** 添加可读目录。无效路径会被拒绝且不破坏已有配置。见 [首次登录](/guide/first-login)。
 
+![Add Root](/screenshots/11b-settings-add-root.png)
+
+## 登录一直 Solving / Continue 灰掉？
+
+登录前必须完成 PoW（Verification → Ready）。若卡住：刷新 challenge、检查 `/api/pow/challenge` 是否可达、是否触发 IP 限流。见 [首次登录](/guide/first-login)。
+
+![登录 PoW](/screenshots/09-login.png)
+
 ## 搜索很慢 / 被取消？
 
-大树请收窄 root、加深忽略目录（如 `node_modules` / `venv`）、降低深度；可随时 Cancel。单 Agent 同时只跑一个搜索。
+大树请收窄 root、加深忽略目录（如 `node_modules` / `venv`）、降低深度；可随时 Cancel。单 Agent 同时只跑一个搜索。见 [搜索](/features/search)。
 
 ## 打不开某些文件？
 
@@ -25,20 +36,15 @@ Agent 上是否配置了可用的 `soffice`？见 [Office 预览](./office)。�
 
 ## Terminal 要验证码？
 
-必须在 Agent 本机完成 `./agent --setup-terminal-2fa`（或设置 `FILEBOX_AGENT_TERMINAL_TOTP_SECRET`）并重启。Hub 不保存密钥。见 [远程终端](/features/terminal)。
+必须在 Agent 本机完成 `./agent --setup-terminal-2fa`（或设置 `FILEBOX_AGENT_TERMINAL_TOTP_SECRET`）并重启。Hub 不保存密钥。每次 Open / Resume 都要新码。见 [远程终端](/features/terminal)。
 
-## 演示页和真实 UI 不一样？
+## Transfer 找不到入口？
 
-演示是单页 mock，用于营销与布局预览：
+侧栏仅在 Agent 声明 `temp_upload` 能力时显示 Transfer。当前发布版默认具备；若自定义构建关闭了该能力则不会出现。
 
-| 演示 | 真实应用 |
-|------|----------|
-| 无登录页 | PoW + CSRF 登录 |
-| Search 替换主视图 | Search 浮窗 / 底部 sheet |
-| 无独立 Explorer 页 | 有 Explorer 树视图 |
-| 无 Settings / Audit | 有 Add Root、登录审计等 |
+## 演示页和文档截图什么关系？
 
-文档截图优先演示可复现视图，并逐步补真实机截图。
+[在线演示](https://zhimingye.github.io/filebox/) 是静态营销页，方便快速点点看布局。**本用户文档站的截图全部来自真实运行的 Hub + Agent**，与你部署后看到的界面一致（含登录 PoW、Search 浮窗、Settings、Audit、Terminal TOTP 等）。
 
 ## 开发联调？
 

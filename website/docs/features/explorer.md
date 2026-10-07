@@ -1,18 +1,24 @@
 # Explorer 树形视图
 
-**Explorer** 是与 Files 并列的可选工作区：以树展开目录，复用同一套预览、合集与路径复制。适合需要同时看见多层目录结构的场景。
+**Explorer** 以目录树为主：左侧展开文件夹，右侧预览。与 **Files** 共享当前 Agent、root 与预览标签，适合在深层树里快速跳转。
 
-![Files 布局参考（Explorer 与之共享预览与路径）](/screenshots/01-files-browse.png)
+![Explorer](/screenshots/10-explorer.png)
 
-## 特点
+![Explorer 展开子目录](/screenshots/10b-explorer-expanded.png)
 
-- 虚拟滚动、并发目录加载上限、展开节点与 LRU 缓存有界。
-- 离开视图会取消未完成加载，避免后台空转。
-- 与 Files 共享「当前目录」位置：在一边导航，另一边会对齐。
-- 搜索命中可 locate 到树节点（见 [工作区搜索](./search)）。
+## 怎么用
 
-## 截图说明
+1. 侧栏点 **Explorer**。
+2. 展开 root 节点（如 `demo`），继续展开子目录。
+3. 点文件：右侧打开预览（与 Files 同一套标签）。
+4. 需要列表视图时切回 **Files**；当前位置会保持。
 
-当前 [在线演示](https://zhimingye.github.io/filebox/) 的 mock 侧栏未单独做 Explorer 页；上图为 Files 三栏布局，真实 Hub 前端的 Explorer 以树展开为主。后续可补真实机截图。
+## 与 Files 的差异
 
-相关：[浏览文件](./browse) · [预览](./preview)
+| | Files | Explorer |
+|--|-------|----------|
+| 主交互 | 表格列表 + 面包屑 | 树展开 |
+| 预览 | 有 | 有（共享标签） |
+| 适合 | 扫一大层目录、排序过滤 | 在深层结构里定位 |
+
+下一步：[预览](./preview) · [搜索](./search)

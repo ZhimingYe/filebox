@@ -19,6 +19,8 @@ Hub 是唯一需要被浏览器与 Agent 都可达的中心服务。生产环境
 | `agent_token_hash` | Agent token 的 bcrypt hash | 初始化时写入 |
 | `users` | 登录账号 | 初始化时写入 |
 
+环境变量：`FILEBOX_DEV_MODE`、`FILEBOX_LISTEN_ADDR`、`FILEBOX_FRONTEND_DIR`、`FILEBOX_CONFIG_PATH`、`FILEBOX_TRUST_XFF`。
+
 ## HTTPS 与 WebSocket
 
 Hub 进程本身是 HTTP。nginx 最小示例：
@@ -41,12 +43,24 @@ location / {
 
 开发本机可用 `FILEBOX_ALLOW_INSECURE_HUB=1` 让 Agent 连 `http://`；**不要**用于生产。
 
+## 健康检查
+
+```bash
+curl -s https://filebox.example.com/api/health
+```
+
+UI：点击侧栏底部 **v2.x.x** 打开 About / Diagnostics（Hub status、uptime、Agents）。
+
+![About / Diagnostics](/screenshots/07-health.png)
+
 ## 登录审计
 
 侧栏 **Audit**：成功 / 失败 / 限流与登出记录在 Hub 旁 JSONL，约 2000 条滚动。不依赖当前选中的 Agent。
 
-## 健康
+![Audit](/screenshots/12-audit.png)
 
-演示页有独立 **Health** 视图；真实部署也可通过侧栏状态与 Agent 延迟判断连通性。
+## 更新
 
-![Health（演示）](/screenshots/07-health.png)
+```bash
+./bin/hub --update
+```

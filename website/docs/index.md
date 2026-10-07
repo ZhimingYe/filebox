@@ -7,7 +7,7 @@ hero:
   tagline: 只读远程文件浏览器 · Hub + Agent · 无需公网 IP / 入站端口 / VPN
   image:
     src: /screenshots/00-sidebar-overview.png
-    alt: filebox 界面总览（演示）
+    alt: filebox 真实界面总览（Hub + Agent）
   actions:
     - theme: brand
       text: 快速开始
@@ -16,8 +16,8 @@ hero:
       text: 功能导览
       link: /features/browse
     - theme: alt
-      text: 在线演示
-      link: https://zhimingye.github.io/filebox/
+      text: GitHub
+      link: https://github.com/ZhimingYe/filebox
 features:
   - title: 浏览与预览
     details: 大目录流畅列表、面包屑、钉选；图 / PDF / 代码 / Markdown / CSV / Office 就地预览，不必先 scp 一整份。
@@ -43,7 +43,8 @@ features:
 
 1. [什么是 filebox](/guide/introduction) — 定位与安全边界  
 2. [快速开始](/guide/quick-start) — 四步跑通  
-3. [怎么用](/features/browse) — 带截图的功能说明  
-4. [运维](/ops/hub) — HTTPS、更新、Office、FAQ  
+3. [首次登录](/guide/first-login) — PoW 登录、选 Agent、Add Root  
+4. [怎么用](/features/browse) — 带真实界面截图的功能说明  
+5. [运维](/ops/hub) — HTTPS、更新、Office、FAQ  
 
-当前版本对齐 **v2.1.0**（Hub + Agent）。截图主要来自[在线演示](https://zhimingye.github.io/filebox/)的 mock UI；与真实前端的差异会在各页注明。
+当前版本对齐 **v2.1.0**（Hub + Agent）。本站截图全部来自本地真实运行的 Hub + Agent 界面，与你部署后看到的产品一致。
