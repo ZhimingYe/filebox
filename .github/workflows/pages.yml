@@ -1,14 +1,23 @@
 name: pages
 
-# Deploys the static landing site from the gh-pages branch root when a release
-# version tag is pushed by scripts/release.sh.
+# Deploys the static landing site from the gh-pages branch root. Pushing to
+# gh-pages (e.g. landing-page edits) triggers a deployment; a manual dispatch
+# is also available for forced redeploys.
+#
+# Triggering off the gh-pages branch (NOT version tags) is deliberate: the
+# `environment: github-pages` job below is gated by the Pages deployment
+# branch rule, which only permits the gh-pages branch. A v* tag is not on
+# that allowlist, so a tag-triggered run is rejected before any step runs
+# (instant failure, zero steps) — observed on v0.4.0-pages.1 and v0.4.5.
+# Keep this on branch push unless you also relax the environment's
+# deployment-branch rule to allow tags.
 #
 # To enable: repo Settings → Pages → Source = "GitHub Actions".
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [gh-pages]
+  workflow_dispatch:
 
 permissions:
   contents: read
