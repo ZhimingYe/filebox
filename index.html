@@ -237,12 +237,13 @@
   }
 
   /* This IS the hub UI, reconstructed. Sidebar + main split. */
-  .app-mock { display: grid; grid-template-columns: 204px 1fr; height: 460px; min-height: 56vh; }
-  @media (max-width: 980px) { .app-mock { height: 500px; } }
+  .app-mock { display: grid; grid-template-columns: 204px 1fr; height: 520px; min-height: 58vh; }
+  @media (max-width: 980px) { .app-mock { height: 560px; } }
   .sb {
     background: linear-gradient(180deg, #f7f8fc 0%, #f1f4f9 100%);
     border-right: 1px solid var(--border);
     display: flex; flex-direction: column; font-size: 13px;
+    overflow-y: auto;
   }
   .sb-logo {
     padding: 15px 16px; border-bottom: 1px solid var(--border);
@@ -332,6 +333,45 @@
   .health-card .k { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; }
   .health-card .v { font-size: 19px; font-weight: 700; margin-top: 4px; font-family: var(--font-mono); }
   .health-card.ok .v { color: var(--success); }
+
+  /* mock panel views: Search / Collections / Transfer / Terminal */
+  .panel-wrap { padding: 16px 18px; overflow-y: auto; flex: 1; }
+  .panel-title { font-size: 15px; font-weight: 700; margin-bottom: 12px; letter-spacing: -.02em; }
+  .mock-note {
+    font-size: 12px; color: var(--text-secondary); line-height: 1.55;
+    background: linear-gradient(180deg, #fafbfe, #f4f6fb);
+    border: 1px dashed rgba(148,163,184,.55); border-radius: var(--r-md);
+    padding: 11px 13px; margin-bottom: 14px;
+  }
+  .search-row, .coll-row, .xfer-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md);
+    margin-bottom: 7px; font-size: 13px; background: #fff;
+    box-shadow: var(--shadow-xs); transition: border-color .15s, box-shadow .15s, transform .15s;
+  }
+  .search-row:hover, .coll-row:hover, .xfer-row:hover {
+    border-color: rgba(99,102,241,.28); box-shadow: var(--shadow-sm); transform: translateY(-1px);
+  }
+  .search-row .path, .coll-row .path, .xfer-row .path {
+    font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .coll-row strong { font-size: 13px; font-weight: 600; color: var(--text); min-width: 118px; }
+  .chip {
+    display: inline-block; font-size: 10.5px; padding: 2px 8px; border-radius: var(--r-pill);
+    background: var(--accent-bg); color: var(--accent); font-weight: 600; letter-spacing: .02em;
+    border: 1px solid rgba(99,102,241,.14); flex-shrink: 0;
+  }
+  .term-mock {
+    background: linear-gradient(180deg, #111827, #0f172a); color: #e2e8f0;
+    border-radius: var(--r-lg); padding: 14px 16px; font-family: var(--font-mono);
+    font-size: 12px; line-height: 1.7; min-height: 200px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 8px 24px rgba(15,23,42,.18);
+    border: 1px solid #1e293b;
+  }
+  .term-mock .ok { color: #34d399; }
+  .term-mock .dim { color: #64748b; }
+  .term-mock .cmd { color: #93c5fd; }
 
   /* live banner under the window — shows a streaming file read */
   .stream-strip {
@@ -702,15 +742,31 @@
           </div>
           <div class="sb-sec">
             <div class="sb-h">Navigation</div>
-            <button class="nav-item active" data-view="files">
+            <button type="button" class="nav-item active" data-view="files">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.5C2 4.7 2.7 4 3.5 4h2.5c.4 0 .78.16 1.06.44L8 5.5h4.5c.8 0 1.5.7 1.5 1.5v5c0 .8-.7 1.5-1.5 1.5h-9C2.7 13.5 2 12.8 2 12V5.5z"/></svg>
               <span>Files</span>
             </button>
-            <button class="nav-item" data-view="stats">
+            <button type="button" class="nav-item" data-view="search">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+              <span>Search</span>
+            </button>
+            <button type="button" class="nav-item" data-view="collections">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 4.5h10M3 8h10M3 11.5h7"/></svg>
+              <span>Collections</span>
+            </button>
+            <button type="button" class="nav-item" data-view="transfer">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v7M5 7l3 3 3-3"/><path d="M3 12.5h10"/></svg>
+              <span>Transfer</span>
+            </button>
+            <button type="button" class="nav-item" data-view="terminal">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 7l2 1.5L5 10M9 10h2"/></svg>
+              <span>Terminal</span>
+            </button>
+            <button type="button" class="nav-item" data-view="stats">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="9" x2="4" y2="12"/><line x1="8" y1="5" x2="8" y2="12"/><line x1="12" y1="7" x2="12" y2="12"/><line x1="2.5" y1="13.5" x2="13.5" y2="13.5"/></svg>
               <span>Stats</span>
             </button>
-            <button class="nav-item" data-view="health">
+            <button type="button" class="nav-item" data-view="health">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M8 13.5s-5-3.1-5-6.9A2.8 2.8 0 0 1 8 4.86 2.8 2.8 0 0 1 13 6.6c0 3.8-5 6.9-5 6.9z"/></svg>
               <span>Health</span>
             </button>
@@ -745,6 +801,56 @@
                   <span class="prev-dl">Download</span>
                 </div>
                 <div class="prev-body" id="prevBody"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SEARCH view -->
+          <div class="view" data-view="search">
+            <div class="panel-wrap">
+              <div class="panel-title">Workspace Search</div>
+              <div class="mock-note">Mock results — name match or content regex, scoped to a folder, with live progress and cancel in the real app.</div>
+              <div class="search-row"><span class="chip">name</span><span class="path">cohort-2024/trend.png</span><span class="mono" style="color:var(--text-muted);font-size:11px;">184 KB</span></div>
+              <div class="search-row"><span class="chip">content</span><span class="path">pipeline.log · "epoch 42"</span><span class="mono" style="color:var(--text-muted);font-size:11px;">2 hits</span></div>
+              <div class="search-row"><span class="chip">name</span><span class="path">sensitivity/results.csv</span><span class="mono" style="color:var(--text-muted);font-size:11px;">26 KB</span></div>
+            </div>
+          </div>
+
+          <!-- COLLECTIONS view -->
+          <div class="view" data-view="collections">
+            <div class="panel-wrap">
+              <div class="panel-title">Collections</div>
+              <div class="mock-note">Named lists of file references on the agent — nothing is copied. Open items side by side or jump to the original path.</div>
+              <div class="coll-row"><strong>Paper figures</strong><span class="path">4 files · /data/analysis</span></div>
+              <div class="coll-row"><strong>Nightly logs</strong><span class="path">12 files · /var/log</span></div>
+              <div class="coll-row"><strong>Deck for Friday</strong><span class="path">results.pptx · notes.md</span></div>
+            </div>
+          </div>
+
+          <!-- TRANSFER view -->
+          <div class="view" data-view="transfer">
+            <div class="panel-wrap">
+              <div class="panel-title">Temp Transfer</div>
+              <div class="mock-note">The only place an agent writes files. Drag small uploads into a dedicated scratch folder — quotas, no overwrites, one-click cleanup. Not a normal browsable root.</div>
+              <div class="xfer-row"><span class="chip">up</span><span class="path">notes-from-laptop.md</span><span class="mono" style="font-size:11px;color:var(--text-muted);">12 KB</span></div>
+              <div class="xfer-row"><span class="chip">up</span><span class="path">tiny-fixture.csv</span><span class="mono" style="font-size:11px;color:var(--text-muted);">4 KB</span></div>
+            </div>
+          </div>
+
+          <!-- TERMINAL view -->
+          <div class="view" data-view="terminal">
+            <div class="panel-wrap">
+              <div class="panel-title">Remote Terminal</div>
+              <div class="mock-note">Optional. Agent-local TOTP on every open/resume. Hub only relays the code — the secret never leaves the agent. Shell is <strong>not</strong> sandboxed.</div>
+              <div class="term-mock">
+                <div><span class="dim">filebox terminal · hpc-node-01</span></div>
+                <div><span class="ok">✓</span> TOTP verified · session resumed</div>
+                <div><span class="dim">$</span> <span class="cmd">nvidia-smi -L</span></div>
+                <div>GPU 0: NVIDIA A100-SXM4-80GB (UUID: GPU-…)</div>
+                <div><span class="dim">$</span> <span class="cmd">tail -n 3 /data/analysis/pipeline.log</span></div>
+                <div class="dim">[06:12:03] epoch 42 · loss 0.132</div>
+                <div class="dim">[06:18:11] checkpoint written</div>
+                <div><span class="dim">$</span> <span class="cmd">▌</span></div>
               </div>
             </div>
           </div>
