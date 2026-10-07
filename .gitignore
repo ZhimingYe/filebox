@@ -41,3 +41,8 @@ error_case/
 # Security review notes (local audit, not for commit)
 SECURITY_REVIEW.md
 SECURITY_REVIEW_ADDITIONAL_LOCAL.md
+
+# VitePress user docs (website/)
+website/node_modules/
+website/docs/.vitepress/dist/
+website/docs/.vitepress/cache/

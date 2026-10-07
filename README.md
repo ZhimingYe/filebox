@@ -14,6 +14,8 @@ to "read-only" is a TOTP-guarded **remote terminal** (see Features).
 
 > **[See it in action →](https://zhimingye.github.io/filebox/)** — an
 > interactive look at the interface and how deployment works.
+>
+> **[中文文档 →](https://zhimingye.github.io/filebox/docs/)** — 安装、连接、浏览、搜索、合集、传输与终端。
 
 ## Why filebox
 

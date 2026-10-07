@@ -1,0 +1,15 @@
+{
+  "name": "filebox-docs",
+  "private": true,
+  "version": "2.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev docs",
+    "build": "vitepress build docs",
+    "preview": "vitepress preview docs",
+    "screenshots": "node scripts/capture-demo-screenshots.mjs"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}

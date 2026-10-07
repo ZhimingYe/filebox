@@ -1,0 +1,74 @@
+# DRAFT — merge into .github/workflows/pages.yml after review.
+# Builds VitePress from main/website and overlays onto gh-pages demo.
+name: pages
+
+on:
+  push:
+    branches: [gh-pages]
+  workflow_dispatch:
+  # Uncomment after Pages environment allows main (or use manual overlay commit):
+  # push:
+  #   branches: [main]
+  #   paths: ['website/**', '.github/workflows/pages.yml']
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout homepage branch
+        uses: actions/checkout@v5
+        with:
+          ref: gh-pages
+          path: site
+
+      - name: Checkout docs source
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          path: src
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: src/website/package-lock.json
+
+      - name: Build VitePress
+        working-directory: src/website
+        run: |
+          npm ci
+          npm run build
+
+      - name: Overlay docs onto site
+        run: |
+          rm -rf site/docs
+          mkdir -p site/docs
+          cp -a src/website/docs/.vitepress/dist/. site/docs/
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Remove workflow metadata from artifact
+        run: rm -rf site/.git site/.github
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
