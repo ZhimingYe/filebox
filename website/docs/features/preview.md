@@ -18,7 +18,7 @@ Markdown 渲染；纯文本与代码走语法高亮编辑器（只读：查找�
 
 ## PDF
 
-内置 PDF 查看器，支持 Adaptive / 百分比缩放。
+内置 PDF 查看器，支持 Adaptive / 百分比缩放。演示数据里的 `demo-report.pdf` 为多页合成实验报告（表格、多图、公式），便于看出预览效果。
 
 ![PDF 预览](/screenshots/08d-preview-pdf.png)
 

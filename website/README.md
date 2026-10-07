@@ -1,11 +1,12 @@
-# filebox 用户文档站（VitePress）
+# filebox user docs (VitePress)
 
-中文 how-to 文档，构建后部署到 GitHub Pages 的 `/filebox/docs/`，与 gh-pages 根目录的交互演示并存。
+Bilingual how-to docs (中文 default + English `/en/`), built and published to GitHub Pages at `/filebox/docs/`, alongside the interactive demo at `/filebox/`.
 
-- 文档：https://zhimingye.github.io/filebox/docs/
-- 演示：https://zhimingye.github.io/filebox/
+- Docs (zh): https://zhimingye.github.io/filebox/docs/
+- Docs (en): https://zhimingye.github.io/filebox/docs/en/
+- Demo: https://zhimingye.github.io/filebox/
 
-## 开发
+## Develop
 
 ```bash
 cd website
@@ -13,30 +14,37 @@ npm install
 npm run dev
 ```
 
-## 构建
+## Build
 
 ```bash
-npm run build   # 输出 docs/.vitepress/dist
+npm run build   # output: docs/.vitepress/dist
 ```
 
-## 发布（短期方案）
+## Publish (short-term)
 
-不改 Pages 分支规则时：
+Without changing Pages branch rules:
 
 1. `npm run build`
-2. 将 `docs/.vitepress/dist/*` 复制到 **gh-pages** 分支的 `docs/`
-3. 推送 `gh-pages`；现有 `pages.yml` 自动部署
+2. Copy `docs/.vitepress/dist/*` into the **gh-pages** branch `docs/`
+3. Push `gh-pages`; existing `pages.yml` deploys
 
-详见 [GH_PAGES_INTEGRATION.md](./GH_PAGES_INTEGRATION.md)。
+See [GH_PAGES_INTEGRATION.md](./GH_PAGES_INTEGRATION.md).
 
-## 截图
+## Screenshots
 
 ```bash
-# 依赖本机 Chrome + 临时 puppeteer-core（见 scripts 注释）
+# Needs local Chrome + puppeteer-core (see scripts)
 npm run screenshots
 ```
 
-截图写入 `docs/public/screenshots/`，主要来自
-https://zhimingye.github.io/filebox/ 的 mock UI。清单见 [SHOT_LIST.md](./SHOT_LIST.md)。
+Screenshots land in `docs/public/screenshots/` from a **live** Hub+Agent (`FILEBOX_DEV_MODE`), not the Pages mock. List: [SHOT_LIST.md](./SHOT_LIST.md).
 
-仓库根目录 `docs/` 仍保留给开发者 runbook（local-debugging、安全模型），不经过本站点。
+Generate the rich demo PDF used in preview shots:
+
+```bash
+# needs reportlab + matplotlib (venv ok)
+python scripts/gen-demo-report-pdf.py
+# writes /tmp/fbx_demo/reports/demo-report.pdf
+```
+
+Repo-root `docs/` remains developer runbooks (local-debugging, security model) and is not part of this site.

@@ -7,7 +7,7 @@ Source: local FILEBOX_DEV_MODE Hub+Agent (not Pages demo mock)
 | 00-sidebar-overview.png | 247188 |
 | 01-files-browse.png | 247188 |
 | 01b-files-figures.png | 97798 |
-| 01c-files-reports.png | 231004 |
+| 01c-files-reports.png | 216051 |
 | 02-search.png | 206390 |
 | 02b-search-results.png | 206390 |
 | 02c-search-content.png | 238042 |
@@ -25,7 +25,7 @@ Source: local FILEBOX_DEV_MODE Hub+Agent (not Pages demo mock)
 | 08-preview-stream.png | 116393 |
 | 08b-preview-markdown.png | 133559 |
 | 08c-preview-code.png | 163678 |
-| 08d-preview-pdf.png | 234814 |
+| 08d-preview-pdf.png | 483614 |
 | 08e-preview-csv.png | 130274 |
 | 08f-preview-office.png | 271058 |
 | 09-login.png | 91167 |
