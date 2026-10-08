@@ -256,6 +256,9 @@ export const extToLang: Record<string, string> = {
   sql: 'sql', rb: 'ruby', php: 'php',
   swift: 'swift', kt: 'kotlin', kts: 'kotlin', scala: 'scala',
   r: 'r', R: 'r',
+  // Quarto / R Markdown — Monaco Monarch language `quarto` (see monaco/quartoLanguage.ts).
+  // PreviewPane routes these through TextPreview (source view), not RichMarkdown.
+  rmd: 'quarto', qmd: 'quarto', rmarkdown: 'quarto',
   // R dotfiles: ".Rprofile" and ".Renviron" are R source/config files with no
   // real extension — `path.split('.').pop()` yields the lowercased basename
   // ("rprofile"/"renviron"), so they're keyed here the same way Dockerfile/

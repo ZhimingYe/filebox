@@ -59,7 +59,7 @@ add('image', ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tif', '
 add('video', ['mp4', 'mov', 'mkv', 'avi', 'webm', 'flv', 'wmv', 'm4v', 'mpg', 'mpeg']);
 add('audio', ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'wma', 'opus', 'aiff']);
 add('archive', ['zip', 'tar', 'gz', 'tgz', 'rar', '7z', 'bz2', 'xz', 'zst', 'lz', 'lzma']);
-add('r', ['r', 'rmd', 'rds', 'rdata']);
+add('r', ['r', 'rmd', 'qmd', 'rmarkdown', 'rds', 'rdata']);
 add('python', ['py', 'pyw', 'pyi', 'ipynb']);
 add('js', ['js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx']);
 add('data', ['json', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'xml', 'parquet', 'arrow', 'feather']);
@@ -73,12 +73,19 @@ const EXT_LABEL: Record<string, string> = {
   jpeg: 'JPG', tiff: 'TIF', markdown: 'MD', text: 'TXT', tgz: 'GZ', lzma: 'LZ',
   ipynb: 'NB', pyw: 'PY', pyi: 'PY', cpp: 'C++', cc: 'C++', cxx: 'C++', hpp: 'H',
   htm: 'HTML', yaml: 'YML', yml: 'YML', mjs: 'JS', cjs: 'JS', rdata: 'RDA', rds: 'RDS',
+  rmd: 'RMD', qmd: 'QMD', rmarkdown: 'RMD',
 };
 
 export function fileExt(name: string): string {
   const dot = name.lastIndexOf('.');
   if (dot <= 0) return '';
   return name.slice(dot + 1).toLowerCase();
+}
+
+/** Category used by FileTypeIcon colour / label (tests + callers). */
+export function fileCategoryForName(name: string): FileCat | null {
+  const ext = fileExt(name);
+  return EXT_CAT[ext] ?? null;
 }
 
 export function FileTypeIcon({ name }: { name: string }) {

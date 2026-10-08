@@ -4,6 +4,9 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+### Added
+- **Monaco preview for Quarto / R Markdown** — `.qmd`, `.rmd`, and `.rmarkdown` open in the read-only code viewer with a custom Monarch `quarto` language (YAML front matter, `{r}` / `{python}` / … fenced chunks embedding built-in highlighters, `:::` divs, inline `` `r` ``). Rich rendered Rmd and Jupyter `.ipynb` remain follow-ups.
+
 ## v2.1.0
 
 ### Changed
