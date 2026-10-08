@@ -37,10 +37,6 @@ Each tab has a **pin** button next to its name:
 - Pinning is per tab; every pinned tab keeps using memory (HTML previews especially), so pin only what you compare repeatedly.
 - Pinned tabs show a small pin in the Open previews list.
 
-::: warning Known issue in v2.1.0
-A pinned **PDF** tab can show through the active preview after you switch to another tab. If that happens, unpin the PDF (or close and reopen it); pinned tabs of other types are not affected.
-:::
-
 ## Closing tabs
 
 ![Right-click tab menu](/screenshots/14d-tabs-context-menu.png)
@@ -69,14 +65,14 @@ Active in Files / Explorer / Collections when focus is not in a text field:
 
 Drag the divider between the file list and the preview pane (list 20 %–80 %); the ratio is stored in your browser. Widen the preview when you keep many tabs so more of the strip is visible.
 
-## Behaviour and limits
+## How tabs behave
 
-- **Desktop only** (window ≥ 768 px wide). Phones / narrow windows keep the single-file "list ↔ full-screen preview" model without a tab bar.
-- Tabs live in the current page only: **a reload or closing the page does not restore them**.
+- The multi-tab workspace is the desktop layout (window ≥ 768 px wide); phones / narrow windows use the single-file "list ↔ full-screen preview" layout.
+- Tabs belong to the current page session; reloading or reopening the page starts with a clean workspace.
 - **Switching Agent** closes all tabs (previews never outlive their machine); disabling / removing a root in Settings closes that root's tabs.
-- No hard tab limit — unpinned background tabs hold no viewer resources; only pinned ones stay resident.
+- There is no tab cap; unpinned background tabs hold no viewer resources, pinned ones stay resident.
 - The header's *Refresh preview* button re-reads the active tab's file; **Download** and copy-full-server-address act on the active tab.
-- Tabs cannot be reordered by dragging; order is opening order.
+- Tabs are ordered by when you opened them.
 
 ## Related
 

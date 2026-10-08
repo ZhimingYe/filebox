@@ -27,11 +27,11 @@ Expand Options to set:
 - Max depth
 - Ignored directory names (e.g. `node_modules`, `venv`, `renv`)
 
-## Behavior and limits
+## How search behaves
 
 - One search at a time per Agent; you can **Cancel** anytime.
 - For large trees, narrow the path, add ignores, and limit depth.
 - Progress streams over SSE; closing the panel does not force-kill a running request (use Cancel).
-- Older Agents without `workspace_search` capability report unsupported.
+- Search uses the Agent's `workspace_search` capability (on by default in current releases).
 
 Related: [Browse files](./browse) · [Collections](./collections)

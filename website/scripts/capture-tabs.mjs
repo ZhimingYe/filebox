@@ -178,9 +178,7 @@ async function main() {
   })
   console.log('tab strip', strip, strip.scrollWidth > strip.clientWidth ? '(overflows)' : '(fits)')
 
-  // Pin the figure tab (pin icon turns accent-filled). The PDF stays unpinned:
-  // in v2.1.0 a pinned *PDF* pane bleeds through other tabs (PdfPreview sets
-  // visibility:visible on its page column, overriding the hidden pane).
+  // Pin the figure tab (pin icon turns accent-filled); the PDF stays unpinned.
   await page.evaluate(() => document.querySelector('button[aria-label="Pin growth-kinetics.png"]')?.click())
   await sleep(600)
   // Activate the PDF tab, then frame the heatmap + QC table page.

@@ -27,11 +27,11 @@
 - 最大深度
 - 忽略的目录名（如 `node_modules`、`venv`、`renv`）
 
-## 行为与限制
+## 行为说明
 
 - 单 Agent 同时只跑一个搜索；可随时 **Cancel**。
 - 大树请收窄路径、加忽略、限深度。
 - 进度经 SSE 推送；关闭浮窗不会强制杀掉已在跑的请求（可用 Cancel）。
-- 旧版 Agent 若不支持 `workspace_search` 能力，会提示 unsupported。
+- 搜索使用 Agent 的 `workspace_search` 能力（当前发布版默认具备）。
 
 相关：[浏览文件](./browse) · [合集](./collections)

@@ -16,6 +16,6 @@ A collection is a **virtual reference list**: group files from different directo
 
 ## Notes
 
-- Items point at `(root, path)`; if the source moves, the item goes stale without touching disk.
+- Items reference files by `(root, path)`; if a source file moves, its item no longer points at it and disk contents stay unchanged.
 - While the Agent is offline, Hub marks changes pending and applies them on reconnect.
 - Requires Agent `collections` capability (on by default in current releases).
