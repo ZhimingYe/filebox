@@ -44,6 +44,7 @@ Settings has an **Office preview** toggle (browser-local preference, on by defau
 | PDF | Built-in viewer |
 | Markdown | Rendered |
 | Code / text / logs | Monaco read-only |
+| Quarto / R Markdown (`.qmd` / `.rmd`) | Monaco source view |
 | HTML | Sandboxed session |
 | CSV / TSV | Table |
 | Word / PPT | Optional: Agent-side → PDF |

@@ -13,6 +13,7 @@ import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
 import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
 
 import { c, font } from './theme';
+import { registerQuartoLanguage } from './monaco/quartoLanguage';
 
 let configured = false;
 
@@ -45,6 +46,8 @@ export function ensureMonacoConfigured() {
   };
 
   loader.config({ monaco });
+
+  registerQuartoLanguage(monaco);
 
   monaco.editor.defineTheme(MONACO_THEME, {
     base: 'vs',

@@ -44,6 +44,7 @@ Settings 里有 **Office preview** 开关（浏览器本地偏好，默认开）
 | PDF | 内置查看器 |
 | Markdown | 渲染 |
 | 代码 / 文本 / 日志 | Monaco 只读 |
+| Quarto / R Markdown（`.qmd` / `.rmd`） | Monaco 源码视图 |
 | HTML | 沙箱会话 |
 | CSV / TSV | 表格 |
 | Word / PPT | 可选：Agent 侧 → PDF |

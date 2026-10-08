@@ -36,3 +36,17 @@ The project itself (filebox, Apache-2.0) is excluded.
 ├─ MIT OR Zlib OR Apache-2.0: 1
 ├─ MPL-2.0: 1
 ├─ Zlib: 1
+
+------------------------------------------------------------------------
+
+Adapted third-party source (not a Cargo dependency):
+
+Monaco Editor markdown Monarch tokenizer
+Copyright (c) Microsoft Corporation
+License: MIT
+Source: https://github.com/microsoft/monaco-editor
+  (esm/vs/basic-languages/markdown/markdown.js)
+
+Adapted in frontend/src/monaco/quartoLanguage.ts for Quarto / R Markdown
+preview highlighting (YAML front matter, fenced chunks, ::: divs, inline
+`r` / `python`). No Quarto project grammar text was copied.
