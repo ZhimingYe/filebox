@@ -1,0 +1,1 @@
+const s="/filebox/screenshots/14-tabs-pdf.png",o="/filebox/screenshots/14b-tabs-code.png",t="/filebox/screenshots/14e-tabs-picker.png",e="/filebox/screenshots/14c-tabs-image.png",n="/filebox/screenshots/14d-tabs-context-menu.png";export{s as _,o as a,t as b,e as c,n as d};
