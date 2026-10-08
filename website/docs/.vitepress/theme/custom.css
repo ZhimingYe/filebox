@@ -1,0 +1,34 @@
+/* filebox docs theme tweaks */
+
+:root {
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #4f46e5 20%, #a855f7 80%);
+}
+.dark {
+  --vp-home-hero-name-background: linear-gradient(120deg, #818cf8 20%, #c084fc 80%);
+}
+
+/* Home hero without side image (HeroShot renders the screenshot below):
+   center the copy so text + full-width screenshot read as one block. */
+.VPHome .VPHero:not(.has-image) .container { text-align: center; }
+.VPHome .VPHero:not(.has-image) .main { margin: 0 auto; max-width: 960px; }
+.VPHome .VPHero:not(.has-image) .name,
+.VPHome .VPHero:not(.has-image) .text,
+.VPHome .VPHero:not(.has-image) .tagline { margin-left: auto; margin-right: auto; }
+.VPHome .VPHero:not(.has-image) .text { max-width: 920px; text-wrap: balance; }
+.VPHome .VPHero:not(.has-image) .tagline { max-width: 760px; text-wrap: balance; }
+.VPHome .VPHero:not(.has-image) .actions { justify-content: center; }
+/* Tighter gap between hero copy and the screenshot. */
+.VPHome .VPHero:not(.has-image) { padding-bottom: 32px !important; }
+@media (min-width: 640px) {
+  .VPHome .VPHero:not(.has-image) { padding-bottom: 40px !important; }
+}
+/* Breathing room between screenshot and feature cards. */
+.VPHome .VPFeatures { padding-top: 40px; }
+
+/* Screenshots inside docs pages: subtle frame so white UI doesn't bleed into the page. */
+.vp-doc img[src*='/screenshots/'] {
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px -6px rgba(15, 23, 42, 0.14);
+}

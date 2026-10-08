@@ -85,6 +85,16 @@ fig3_path = "/tmp/fbx_fig3.png"
 fig.savefig(fig3_path, bbox_inches="tight", facecolor="white")
 plt.close()
 
+# Also publish the figures as standalone PNGs in the demo root so the docs can
+# show them in their own preview tabs next to the PDF (multi-tab screenshots).
+import shutil
+for src, name in [
+    (fig1_path, "growth-kinetics.png"),
+    (fig2_path, "correlation-matrix.png"),
+    (fig3_path, "recovery-by-run.png"),
+]:
+    shutil.copyfile(src, os.path.join(FIGDIR, name))
+
 # --- PDF document ---
 PAGE_W, PAGE_H = letter
 MARGIN = 0.75 * inch
@@ -160,7 +170,7 @@ story.append(Spacer(1, 1.1 * inch))
 story.append(Paragraph("Adaptive Recovery Assay for Multiplex Process Monitoring", styles["CoverTitle"]))
 story.append(Spacer(1, 0.15 * inch))
 story.append(HRFlowable(width="80%", thickness=1.5, color=HexColor("#6366f1"), spaceBefore=4, spaceAfter=10, hAlign="CENTER"))
-story.append(Paragraph("Synthetic Laboratory Methods Report  ·  Version 1.4", styles["CoverSub"]))
+story.append(Paragraph("Synthetic Laboratory Methods Report  ·  Version 1.5", styles["CoverSub"]))
 story.append(Paragraph("Document ID: FBX-DEMO-LAB-2026-10  ·  Classification: Demo / Non-confidential", styles["CoverSub"]))
 story.append(Spacer(1, 0.35 * inch))
 
@@ -223,7 +233,7 @@ story.append(Paragraph("2. Materials and Methods", styles["Section"]))
 story.append(Paragraph("2.1 Sample matrix", styles["SubSec"]))
 story.append(Paragraph(
     "Synthetic broth aliquots (12 mL) were prepared in six process runs. Each run carried three "
-    "technical replicates. Optical density at 600 nm (OD₆₀₀) was recorded every 30 minutes for "
+    "technical replicates. Optical density at 600 nm (OD<sub>600</sub>) was recorded every 30 minutes for "
     "48 hours. Temperature setpoints alternated between 28 °C and 32 °C; agitation targeted "
     "180–220 RPM. pH was buffered near 6.8 ± 0.2.",
     styles["BodyJust"],
@@ -235,7 +245,7 @@ story.append(Paragraph(
 ))
 story.append(Paragraph("y(t) = 1 − exp(−k · t) + ε,     σ ≈ 0.02", styles["Eq"]))
 story.append(Paragraph(
-    "Batch-specific rate constants k ∈ {0.08, 0.11, 0.06, 0.02} h⁻¹ were used for Batches A–C "
+    "Batch-specific rate constants k ∈ {0.08, 0.11, 0.06, 0.02} h<super>−1</super> were used for Batches A–C "
     "and the Control series shown in Figure 1. Recovery percentage R is defined as measured "
     "analyte mass divided by spiked mass × 100.",
     styles["BodyJust"],
@@ -282,7 +292,7 @@ story.append(PageBreak())
 story.append(Paragraph("3. Results", styles["Section"]))
 story.append(Paragraph("3.1 Growth kinetics", styles["SubSec"]))
 story.append(Paragraph(
-    "Figure 1 shows relative OD₆₀₀ trajectories for four synthetic batches. Batches A and B "
+    "Figure 1 shows relative OD<sub>600</sub> trajectories for four synthetic batches. Batches A and B "
     "approach saturation within 36 h; Batch C is slower; Control remains near baseline. Shaded "
     "bands indicate ±0.04 relative OD for visual emphasis (not formal CI).",
     styles["BodyJust"],
@@ -295,7 +305,7 @@ story.append(Paragraph(
 
 story.append(Paragraph("3.2 Process variable correlations", styles["SubSec"]))
 story.append(Paragraph(
-    " pairwise Pearson-like correlations among OD, pH, temperature, RPM, yield, and purity "
+    "Pairwise Pearson-like correlations among OD, pH, temperature, RPM, yield, and purity "
     "are shown in Figure 2. Off-diagonal magnitudes are drawn from a synthetic symmetric matrix; "
     "diagonal entries are fixed at 1.0 for readability.",
     styles["BodyJust"],
@@ -306,8 +316,6 @@ story.append(Paragraph(
     styles["Caption"],
 ))
 
-story.append(PageBreak())
-
 story.append(Paragraph("3.3 Recovery by run", styles["SubSec"]))
 story.append(Paragraph(
     "Figure 3 and Table 2 summarize mean recovery with error bars (n=3). Runs 02, 04, and 06 "
@@ -315,12 +323,6 @@ story.append(Paragraph(
     "the acceptance threshold used in the demo QC dashboard.",
     styles["BodyJust"],
 ))
-story.append(Image(fig3_path, width=5.8*inch, height=3.35*inch))
-story.append(Paragraph(
-    "Figure 3. Recovery by process run with technical-replicate error bars.",
-    styles["Caption"],
-))
-
 # QC table
 story.append(Paragraph("Table 2. QC recovery summary", styles["SubSec"]))
 hdr2 = [Paragraph(x, styles["CellBold"]) for x in
@@ -334,8 +336,12 @@ qc = [
     ["Run-05", "79.5", "4.4", "30", "200", "BORDERLINE"],
     ["Run-06", "84.0", "3.1", "32", "210", "PASS"],
 ]
+GATE_COLORS = {"PASS": "#15803d", "FAIL": "#b91c1c", "BORDERLINE": "#b45309"}
 for r in qc:
-    cells = [Paragraph(c, styles["Cell"]) for c in r]
+    cells = [Paragraph(c, styles["Cell"]) for c in r[:-1]]
+    gate = r[-1]
+    color = next((v for k, v in GATE_COLORS.items() if gate.startswith(k)), "#0f172a")
+    cells.append(Paragraph(f"<font color='{color}'><b>{gate}</b></font>", styles["Cell"]))
     rows2.append(cells)
 t2 = Table(rows2, colWidths=[0.9*inch, 1.0*inch, 0.9*inch, 0.9*inch, 0.7*inch, 1.6*inch])
 t2.setStyle(TableStyle([
@@ -351,7 +357,13 @@ t2.setStyle(TableStyle([
 story.append(t2)
 story.append(Paragraph("Table 2. Mean recovery, RSD, and gate decision per run.", styles["Caption"]))
 
-story.append(PageBreak())
+
+story.append(Image(fig3_path, width=5.8*inch, height=3.35*inch))
+story.append(Paragraph(
+    "Figure 3. Recovery by process run with technical-replicate error bars.",
+    styles["Caption"],
+))
+
 
 # ===== Two-column style summary + discussion =====
 story.append(Paragraph("4. Discussion", styles["Section"]))
@@ -412,8 +424,8 @@ story.append(Paragraph(
     styles["BodyJust"],
 ))
 
-story.append(Paragraph("Appendix A. Tabulated kinetic constants", styles["Section"]))
-hdr3 = [Paragraph(x, styles["CellBold"]) for x in ["Series", "k (h⁻¹)", "σ", "t½ (h)", "Notes"]]
+appendix = [Paragraph("Appendix A. Tabulated kinetic constants", styles["Section"])]
+hdr3 = [Paragraph(x, styles["CellBold"]) for x in ["Series", "k (h<super>−1</super>)", "σ", "t<sub>1/2</sub> (h)", "Notes"]]
 rows3 = [hdr3]
 for r in [
     ["Batch A", "0.08", "0.02", "8.7", "Primary path"],
@@ -433,14 +445,17 @@ t3.setStyle(TableStyle([
     ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ("ALIGN", (1, 1), (3, -1), "CENTER"),
 ]))
-story.append(t3)
-story.append(Paragraph("Appendix Table A1. Fitted kinetic constants for Figure 1 series.", styles["Caption"]))
+appendix.append(t3)
+appendix.append(Paragraph("Appendix Table A1. Fitted kinetic constants for Figure 1 series.", styles["Caption"]))
 
-story.append(Paragraph(
-    "Appendix B. Changelog — v1.0 sparse stub → v1.4 rich multi-page demo for docs screenshots "
-    "(2026-10-08).",
+appendix.append(Spacer(1, 0.1 * inch))
+appendix.append(Paragraph(
+    "Appendix B. Changelog — v1.0 sparse stub → v1.4 rich multi-page demo for docs screenshots → "
+    "v1.5 correlation matrix + QC table on one page for the docs homepage hero (2026-10-08).",
     styles["Tiny"],
 ))
+# Keep the appendix block intact so it never splits into an orphaned caption page.
+story.append(KeepTogether(appendix))
 
 doc = SimpleDocTemplate(
     OUT, pagesize=letter,

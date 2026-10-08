@@ -1,6 +1,6 @@
 # Preview
 
-Click a file to preview it in the workspace without downloading to your laptop first. Desktop uses a multi-tab workspace; on phones preview swaps full-screen.
+Click a file to preview it in the workspace without downloading to your laptop first. Desktop uses a [multi-tab workspace](/en/features/tabs); on phones preview swaps full-screen.
 
 ## Images
 
@@ -18,7 +18,7 @@ Markdown is rendered; plain text and code use a syntax-highlighted editor (read-
 
 ## PDF
 
-Built-in PDF viewer with Adaptive / percentage zoom. The demo dataset’s `demo-report.pdf` is a multi-page synthetic lab report (tables, multi-panel figures, equations) so the preview looks realistically dense.
+Built-in PDF viewer with Adaptive / percentage zoom (50 %–200 %) and continuous multi-page scrolling. The demo dataset’s `demo-report.pdf` is a 6-page synthetic lab report (tables, multi-panel figures, a correlation heatmap, equations) so the preview looks realistically dense.
 
 ![PDF preview](/screenshots/08d-preview-pdf.png)
 
@@ -51,7 +51,7 @@ Settings has an **Office preview** toggle (browser-local preference, on by defau
 
 ## Tips
 
-- Desktop multi-tab; close/switch; keyboard shortcuts supported.
+- Desktop multi-tab: keep several files open, switch, pin, close in bulk; `Esc` closes the active tab, `←` / `→` step through the folder. See [Multi-tab preview](/en/features/tabs).
 - Very large files ask before loading so the browser stays responsive.
 - Use **Download** from the preview bar.
 - Without `soffice`, Office files remain downloadable but preview is unavailable.

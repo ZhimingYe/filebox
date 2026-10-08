@@ -1,6 +1,6 @@
 # Real Hub+Agent screenshots
 
-Source: local FILEBOX_DEV_MODE Hub+Agent (not Pages demo mock)
+Files live in docs/public/screenshots/. Source: local FILEBOX_DEV_MODE Hub+Agent (v2.1.0). Multi-tab + hero shots: scripts/capture-tabs.mjs
 
 | File | Bytes |
 |------|------|
@@ -25,7 +25,7 @@ Source: local FILEBOX_DEV_MODE Hub+Agent (not Pages demo mock)
 | 08-preview-stream.png | 116393 |
 | 08b-preview-markdown.png | 133559 |
 | 08c-preview-code.png | 163678 |
-| 08d-preview-pdf.png | 483614 |
+| 08d-preview-pdf.png | 467597 |
 | 08e-preview-csv.png | 130274 |
 | 08f-preview-office.png | 271058 |
 | 09-login.png | 91167 |
@@ -38,3 +38,12 @@ Source: local FILEBOX_DEV_MODE Hub+Agent (not Pages demo mock)
 | 12-audit.png | 356674 |
 | 13-mobile-files.png | 48054 |
 | 13b-mobile-drawer.png | 62642 |
+| 14-tabs-pdf.png | 488554 |
+| 14b-tabs-code.png | 461354 |
+| 14c-tabs-image.png | 640110 |
+| 14d-tabs-context-menu.png | 383872 |
+| 14e-tabs-picker.png | 524809 |
+| hero-tabs-pdf-1600.webp | 82114 |
+| hero-tabs-pdf-2400.webp | 137768 |
+| hero-tabs-pdf-mobile-1200.webp | 71168 |
+| hero-tabs-pdf-mobile-800.webp | 42546 |

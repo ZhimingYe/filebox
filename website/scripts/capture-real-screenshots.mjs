@@ -2,6 +2,8 @@
  * Capture screenshots from a locally hosted real Hub+Agent (not the Pages demo mock).
  * Prerequisites: Hub on http://localhost:3000, agent online, roots seeded.
  * Usage: node scripts/capture-real-screenshots.mjs
+ * Then run scripts/capture-tabs.mjs: it re-captures 08d-preview-pdf.png cleanly and adds the
+ * multi-tab shots + homepage hero.
  */
 import { createRequire } from 'node:module'
 import { mkdir, writeFile, unlink } from 'node:fs/promises'
@@ -458,13 +460,14 @@ async function main() {
 
   // Manifest
   const { readdir, stat } = await import('node:fs/promises')
-  const files = (await readdir(outDir)).filter((f) => f.endsWith('.png')).sort()
+  const files = (await readdir(outDir)).filter((f) => f.endsWith('.png') || f.endsWith('.webp')).sort()
   const lines = ['# Real Hub+Agent screenshots', '', `Source: ${baseUrl} (FILEBOX_DEV_MODE local)`, '', '| File | Bytes |', '|------|------|']
   for (const f of files) {
     const st = await stat(path.join(outDir, f))
     lines.push(`| ${f} | ${st.size} |`)
   }
-  await writeFile(path.join(outDir, 'MANIFEST.md'), lines.join('\n') + '\n')
+  // Outside docs/public so VitePress doesn't publish/search-index it as a page.
+  await writeFile(path.resolve(__dirname, '../SCREENSHOT_MANIFEST.md'), lines.join('\n') + '\n')
   console.log('done', files.length, 'pngs')
   await browser.close()
 }

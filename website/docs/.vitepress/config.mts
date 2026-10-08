@@ -1,12 +1,12 @@
 import { defineConfig } from 'vitepress'
 
 // Bilingual docs: Chinese (default `/`) + English (`/en/`).
-// Published to GitHub Pages at /filebox/docs/ alongside the interactive demo.
+// Published to GitHub Pages at the site root: https://zhimingye.github.io/filebox/
+// (old /filebox/docs/... URLs redirect here via stubs on the gh-pages branch).
 const zhNav = [
   { text: '指南', link: '/guide/introduction' },
   { text: '功能', link: '/features/browse' },
   { text: '运维', link: '/ops/hub' },
-  { text: '在线演示', link: 'https://zhimingye.github.io/filebox/' },
   { text: 'GitHub', link: 'https://github.com/ZhimingYe/filebox' },
 ]
 
@@ -14,7 +14,6 @@ const enNav = [
   { text: 'Guide', link: '/en/guide/introduction' },
   { text: 'Features', link: '/en/features/browse' },
   { text: 'Ops', link: '/en/ops/hub' },
-  { text: 'Live demo', link: 'https://zhimingye.github.io/filebox/' },
   { text: 'GitHub', link: 'https://github.com/ZhimingYe/filebox' },
 ]
 
@@ -38,6 +37,7 @@ const zhSidebar = {
         { text: '浏览文件', link: '/features/browse' },
         { text: 'Explorer 树形视图', link: '/features/explorer' },
         { text: '预览（图 / PDF / 代码 / 表格）', link: '/features/preview' },
+        { text: '多标签预览', link: '/features/tabs' },
         { text: '工作区搜索', link: '/features/search' },
         { text: '合集 Collections', link: '/features/collections' },
         { text: '临时传输 Transfer', link: '/features/transfer' },
@@ -80,6 +80,7 @@ const enSidebar = {
         { text: 'Browse files', link: '/en/features/browse' },
         { text: 'Explorer tree', link: '/en/features/explorer' },
         { text: 'Preview (image / PDF / code / tables)', link: '/en/features/preview' },
+        { text: 'Multi-tab preview', link: '/en/features/tabs' },
         { text: 'Workspace search', link: '/en/features/search' },
         { text: 'Collections', link: '/en/features/collections' },
         { text: 'Transfer', link: '/en/features/transfer' },
@@ -106,13 +107,24 @@ export default defineConfig({
   title: 'filebox',
   description:
     'Lab / HPC read-only remote file browser — Hub + Agent, no public IP / inbound ports / VPN',
-  base: '/filebox/docs/',
+  base: '/filebox/',
   cleanUrls: true,
   lastUpdated: true,
   ignoreDeadLinks: false,
   head: [
-    ['link', { rel: 'icon', href: '/filebox/docs/favicon.svg', type: 'image/svg+xml' }],
+    ['link', { rel: 'icon', href: '/filebox/favicon.svg', type: 'image/svg+xml' }],
     ['meta', { name: 'theme-color', content: '#6366f1' }],
+    ['meta', { property: 'og:type', content: 'website' }],
+    ['meta', { property: 'og:image', content: 'https://zhimingye.github.io/filebox/screenshots/14-tabs-pdf.png' }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    // Legacy URLs: the docs used to live under /filebox/docs/. Per-page stubs on
+    // gh-pages redirect known pages; this catches anything else that lands on
+    // the site-wide 404 page (GitHub Pages serves /404.html for unknown paths).
+    [
+      'script',
+      {},
+      "(function(){var m=location.pathname.match(/^\\/filebox\\/docs(\\/.*)?$/);if(m){var r=(m[1]||'/').replace(/\\.html$/,'').replace(/\\/index$/,'/');location.replace('/filebox'+r+location.search+location.hash)}})()",
+    ],
   ],
   locales: {
     root: {
@@ -143,7 +155,7 @@ export default defineConfig({
         },
         footer: {
           message:
-            'MIT Licensed · <a href="https://zhimingye.github.io/filebox/">在线演示</a> · <a href="https://github.com/ZhimingYe/filebox/releases/latest">下载 Release</a>',
+            'MIT Licensed · <a href="https://github.com/ZhimingYe/filebox">GitHub</a> · <a href="https://github.com/ZhimingYe/filebox/releases/latest">下载 Release</a>',
           copyright: 'Copyright © filebox contributors',
         },
         search: {
@@ -210,7 +222,7 @@ export default defineConfig({
         },
         footer: {
           message:
-            'MIT Licensed · <a href="https://zhimingye.github.io/filebox/">Live demo</a> · <a href="https://github.com/ZhimingYe/filebox/releases/latest">Download release</a>',
+            'MIT Licensed · <a href="https://github.com/ZhimingYe/filebox">GitHub</a> · <a href="https://github.com/ZhimingYe/filebox/releases/latest">Download release</a>',
           copyright: 'Copyright © filebox contributors',
         },
         search: { provider: 'local' },

@@ -1,5 +1,6 @@
 # DRAFT — merge into .github/workflows/pages.yml after review.
-# Builds VitePress from main/website and overlays onto gh-pages demo.
+# Builds VitePress from main/website and publishes it as the Pages site root
+# (keeping the docs/ redirect stubs for old /filebox/docs/... URLs).
 name: pages
 
 on:
@@ -52,11 +53,11 @@ jobs:
           npm ci
           npm run build
 
-      - name: Overlay docs onto site
+      - name: Publish docs at site root (keep redirect stubs)
         run: |
-          rm -rf site/docs
-          mkdir -p site/docs
-          cp -a src/website/docs/.vitepress/dist/. site/docs/
+          find site -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name docs ! -name .nojekyll -exec rm -rf {} +
+          cp -a src/website/docs/.vitepress/dist/. site/
+          touch site/.nojekyll
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

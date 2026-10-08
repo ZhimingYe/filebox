@@ -22,7 +22,7 @@ filebox is not a sync/drive product and not a full remote desktop — it is the 
 
 | Capability | Notes | Docs |
 |------------|-------|------|
-| **Files** | Smooth large listings, breadcrumbs, filters, pins, multi-tab preview | [Browse files](/en/features/browse) |
+| **Files** | Smooth large listings, breadcrumbs, filters, pins, [multi-tab preview](/en/features/tabs) | [Browse files](/en/features/browse) |
 | **Explorer** | Tree-style browsing; shares current location with Files | [Explorer](/en/features/explorer) |
 | **Search** | Filename or content regex; floating panel / bottom sheet | [Search](/en/features/search) |
 | **Collections** | Virtual file groups across directories — no copy, no move | [Collections](/en/features/collections) |

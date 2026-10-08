@@ -5,9 +5,6 @@ hero:
   name: filebox
   text: See server results from any browser
   tagline: Read-only remote file browser · Hub + Agent · No public IP / inbound ports / VPN
-  image:
-    src: /screenshots/00-sidebar-overview.png
-    alt: filebox real UI overview (Hub + Agent)
   actions:
     - theme: brand
       text: Quick start
@@ -18,13 +15,28 @@ hero:
     - theme: alt
       text: GitHub
       link: https://github.com/ZhimingYe/filebox
+heroShot:
+  alt: Real filebox UI with six preview tabs open; the active tab is a multi-page PDF lab report with a correlation heatmap and QC table
+  caption: Real Hub + Agent UI · PDF, figure, code, CSV, Markdown and PPT open side by side in tabs
+  link: /en/features/tabs
+  linkText: See multi-tab preview
 features:
   - title: Browse & preview
     details: Smooth large-directory listing, breadcrumbs, pins; preview images / PDF / code / Markdown / CSV / Office in place — no need to scp an entire tree first.
+    link: /en/features/preview
+    linkText: Preview types
+  - title: Multi-tab workspace
+    details: Keep reports, figures, code and tables open together; switch, pin and bulk-close them like browser tabs. Esc closes, ← / → steps through the folder.
+    link: /en/features/tabs
+    linkText: Using tabs
   - title: Search & collections
     details: Search by filename or content regex; group files across scattered paths into virtual collections without copying or moving them.
+    link: /en/features/search
+    linkText: Search & collections
   - title: Secure by default
     details: Read-only protocol; sensitive paths denied by default; optional Transfer and TOTP-gated Terminal keep secrets on the Agent.
+    link: /en/features/security
+    linkText: Security model
 ---
 
 ## Architecture at a glance

@@ -22,7 +22,7 @@ filebox 不是网盘同步工具，也不是完整的远程桌面——它是「
 
 | 能力 | 说明 | 文档 |
 |------|------|------|
-| **Files** | 大目录流畅列表、面包屑、过滤、钉选、多标签预览 | [浏览文件](/features/browse) |
+| **Files** | 大目录流畅列表、面包屑、过滤、钉选、[多标签预览](/features/tabs) | [浏览文件](/features/browse) |
 | **Explorer** | 树形展开式浏览，与 Files 共享当前位置 | [Explorer](/features/explorer) |
 | **Search** | 文件名或内容正则；浮窗 / 底部 sheet | [搜索](/features/search) |
 | **Collections** | 跨目录的虚拟文件合集，不复制、不移动 | [合集](/features/collections) |

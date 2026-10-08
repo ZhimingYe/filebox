@@ -12,10 +12,10 @@ to "read-only" is a TOTP-guarded **remote terminal** (see Features).
 [![Release](https://img.shields.io/github/v/release/ZhimingYe/filebox?sort=semver)](https://github.com/ZhimingYe/filebox/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **[See it in action →](https://zhimingye.github.io/filebox/)** — an
-> interactive look at the interface and how deployment works.
+> **[Documentation →](https://zhimingye.github.io/filebox/en/)** — install,
+> connect, and use every feature, with screenshots of the real UI.
 >
-> **[中文文档 →](https://zhimingye.github.io/filebox/docs/)** — 安装、连接、浏览、搜索、合集、传输与终端。
+> **[中文文档 →](https://zhimingye.github.io/filebox/)** — 安装、连接、浏览、多标签预览、搜索、合集、传输与终端。
 
 ## Why filebox
 

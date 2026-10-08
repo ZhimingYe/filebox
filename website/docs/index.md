@@ -5,9 +5,6 @@ hero:
   name: filebox
   text: 从任意浏览器，看服务器上的结果
   tagline: 只读远程文件浏览器 · Hub + Agent · 无需公网 IP / 入站端口 / VPN
-  image:
-    src: /screenshots/00-sidebar-overview.png
-    alt: filebox 真实界面总览（Hub + Agent）
   actions:
     - theme: brand
       text: 快速开始
@@ -18,13 +15,28 @@ hero:
     - theme: alt
       text: GitHub
       link: https://github.com/ZhimingYe/filebox
+heroShot:
+  alt: filebox 真实界面：6 个预览标签同时打开，当前为多页 PDF 实验报告（相关性热图与 QC 表格）
+  caption: 真实 Hub + Agent 界面 · 多标签同时打开 PDF、图、代码、CSV、Markdown 与 PPT
+  link: /features/tabs
+  linkText: 了解多标签预览
 features:
   - title: 浏览与预览
     details: 大目录流畅列表、面包屑、钉选；图 / PDF / 代码 / Markdown / CSV / Office 就地预览，不必先 scp 一整份。
+    link: /features/preview
+    linkText: 预览类型
+  - title: 多标签工作区
+    details: 报告、图、代码、表格同时打开，像浏览器标签一样切换、固定、批量关闭；Esc 关闭、← / → 切同目录文件。
+    link: /features/tabs
+    linkText: 多标签用法
   - title: 搜索与合集
     details: 按文件名或内容正则搜索；用合集把分散路径里的文件虚拟编组，无需复制或移动。
+    link: /features/search
+    linkText: 搜索与合集
   - title: 安全默认
     details: 协议只读；敏感文件默认拒绝；可选 Transfer 与 TOTP 终端，密钥只留在 Agent。
+    link: /features/security
+    linkText: 安全模型
 ---
 
 ## 一眼看懂架构

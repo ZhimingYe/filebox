@@ -42,9 +42,9 @@ Agent 上是否配置了可用的 `soffice`？见 [Office 预览](./office)。�
 
 侧栏仅在 Agent 声明 `temp_upload` 能力时显示 Transfer。当前发布版默认具备；若自定义构建关闭了该能力则不会出现。
 
-## 演示页和文档截图什么关系？
+## 有没有在线演示？文档截图是真实界面吗？
 
-[在线演示](https://zhimingye.github.io/filebox/) 是静态营销页，方便快速点点看布局。**本用户文档站的截图全部来自真实运行的 Hub + Agent**，与你部署后看到的界面一致（含登录 PoW、Search 浮窗、Settings、Audit、Terminal TOTP 等）。
+没有托管的在线演示——filebox 需要你自己的 Hub 和 Agent 才能浏览真实文件，按 [快速开始](/guide/quick-start) 几分钟即可在本机跑通。**本文档站的截图全部来自真实运行的 Hub + Agent**，与你部署后看到的界面一致（含登录 PoW、多标签预览、Search 浮窗、Settings、Audit、Terminal TOTP 等）。
 
 ## 开发联调？
 

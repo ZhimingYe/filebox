@@ -42,9 +42,9 @@ Complete `./agent --setup-terminal-2fa` on the Agent host (or set `FILEBOX_AGENT
 
 Transfer appears only when the Agent advertises `temp_upload`. Current releases have it by default; custom builds that disable the capability will hide it.
 
-## How does the live demo relate to these screenshots?
+## Is there a live demo? Are the screenshots real?
 
-The [live demo](https://zhimingye.github.io/filebox/) is a static marketing page for layout exploration. **Screenshots on this user docs site come from a live Hub + Agent** — the same UI you get after deploying (login PoW, Search float, Settings, Audit, Terminal TOTP, …).
+There is no hosted live demo — filebox needs your own Hub and Agent to browse real files; the [Quick start](/en/guide/quick-start) gets one running locally in minutes. **Every screenshot on this site comes from a live Hub + Agent** — the same UI you get after deploying (login PoW, multi-tab preview, Search float, Settings, Audit, Terminal TOTP, …).
 
 ## Local debugging?
 

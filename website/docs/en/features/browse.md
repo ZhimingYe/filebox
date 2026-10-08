@@ -14,7 +14,7 @@ After selecting an Agent, open **Files**: Agents and nav on the left, a virtuali
 | Toolbar | Refresh, filter, sort, tree panel, pin, copy path, … |
 | Address / breadcrumbs | Current path; paste paths and completion supported |
 | File list | Name, modified time, size; type badges; recent-change highlight |
-| Preview pane | Click a file to preview; multi-tab on desktop |
+| Preview pane | Click a file to preview; [multi-tab](/en/features/tabs) on desktop |
 
 ![Sidebar overview](/screenshots/00-sidebar-overview.png)
 
