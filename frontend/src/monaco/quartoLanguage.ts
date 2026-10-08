@@ -3,12 +3,16 @@
  *
  * Adapted from Monaco Editor's built-in markdown Monarch tokenizer
  * (https://github.com/microsoft/monaco-editor, MIT License).
- * Extensions for YAML front matter, knitr/Quarto fenced chunks
- * (```{r} / ```{.python} / …), #| chunk options (highlighted via the
- * embedded language's comment rules), ::: fenced divs, and inline `r …`.
+ * Behaviour aligned with Posit/Quarto VS Code TextMate grammar
+ * (quarto-dev/quarto apps/vscode/syntaxes/quarto.tmLanguage, MIT)
+ * for viewing: YAML front matter at document start, knitr/Quarto fenced
+ * chunks (```{r} / ```{.python} / ```{=html} / bare ```r), #| options via
+ * embedded-language comments, ::: divs, shortcodes, math delimiters, and
+ * inline `r` / `python` / `julia`.
  *
  * Zero new dependencies — embeds Monaco's built-in languages (r, python,
- * yaml, julia, sql, shell, markdown, …).
+ * yaml, julia, sql, shell, markdown, …). Engines without a Monaco built-in
+ * (mermaid, stan, …) map to plaintext.
  */
 
 /* eslint-disable no-useless-escape -- Monarch regexes mirror monaco-editor markdown.js */
@@ -37,16 +41,39 @@ export const QUARTO_LANGUAGE_ID = 'quarto';
 export const QUARTO_EXTENSIONS = ['rmd', 'qmd', 'rmarkdown'] as const;
 
 /**
+ * Engines Quarto/VS Code highlight but Monaco has no built-in grammar for.
+ * Fence bodies stay readable as plaintext rather than an unknown language id.
+ */
+export const QUARTO_PLAINTEXT_ENGINES = [
+  'mermaid',
+  'mmd',
+  'stan',
+  'plantuml',
+  'dot',
+  'typst',
+  'typ',
+  'matlab',
+  'stata',
+  'prql',
+  'sas',
+] as const;
+
+/**
  * Map a fence / chunk engine name to a Monaco language id.
  * Used by the tokenizer (via Monarch cases) and unit tests.
  */
 export function resolveQuartoFenceLang(raw: string): string {
   const key = raw.trim().toLowerCase();
+  if ((QUARTO_PLAINTEXT_ENGINES as readonly string[]).includes(key)) {
+    return 'plaintext';
+  }
   switch (key) {
     case 'r':
+    case 'rscript':
       return 'r';
     case 'python':
     case 'py':
+    case 'py3':
       return 'python';
     case 'julia':
     case 'jl':
@@ -66,6 +93,7 @@ export function resolveQuartoFenceLang(raw: string): string {
       return 'markdown';
     case 'javascript':
     case 'js':
+    case 'ojs':
       return 'javascript';
     case 'typescript':
     case 'ts':
@@ -80,6 +108,7 @@ export function resolveQuartoFenceLang(raw: string): string {
       return 'xml';
     case 'cpp':
     case 'c++':
+    case 'cxx':
       return 'cpp';
     case 'c':
       return 'c';
@@ -87,12 +116,16 @@ export function resolveQuartoFenceLang(raw: string): string {
     case 'rs':
       return 'rust';
     case 'go':
+    case 'golang':
       return 'go';
     case 'java':
       return 'java';
     case 'ruby':
     case 'rb':
       return 'ruby';
+    case 'powershell':
+    case 'ps1':
+      return 'powershell';
     case 'plaintext':
     case 'text':
     case 'txt':
@@ -100,6 +133,65 @@ export function resolveQuartoFenceLang(raw: string): string {
     default:
       return key || 'plaintext';
   }
+}
+
+/** Shared Monarch cases: curly/dot/bare fence engine → nextEmbedded language. */
+function fenceEmbedCases(embeddedFromGroup = true): Record<string, object> {
+  const emb = (lang: string) => ({
+    token: 'string',
+    next: '@codeblockgh',
+    nextEmbedded: lang,
+  });
+  return {
+    '$1==r': emb('r'),
+    '$1==R': emb('r'),
+    '$1==python': emb('python'),
+    '$1==Python': emb('python'),
+    '$1==py': emb('python'),
+    '$1==julia': emb('julia'),
+    '$1==Julia': emb('julia'),
+    '$1==jl': emb('julia'),
+    '$1==sql': emb('sql'),
+    '$1==SQL': emb('sql'),
+    '$1==bash': emb('shell'),
+    '$1==sh': emb('shell'),
+    '$1==zsh': emb('shell'),
+    '$1==shell': emb('shell'),
+    '$1==yaml': emb('yaml'),
+    '$1==yml': emb('yaml'),
+    '$1==markdown': emb('markdown'),
+    '$1==md': emb('markdown'),
+    '$1==javascript': emb('javascript'),
+    '$1==js': emb('javascript'),
+    '$1==ojs': emb('javascript'),
+    '$1==typescript': emb('typescript'),
+    '$1==ts': emb('typescript'),
+    '$1==html': emb('html'),
+    '$1==css': emb('css'),
+    '$1==json': emb('json'),
+    '$1==xml': emb('xml'),
+    '$1==cpp': emb('cpp'),
+    '$1==c++': emb('cpp'),
+    '$1==c': emb('c'),
+    '$1==rust': emb('rust'),
+    '$1==go': emb('go'),
+    '$1==java': emb('java'),
+    '$1==ruby': emb('ruby'),
+    '$1==powershell': emb('powershell'),
+    // No Monaco grammar — stay out of unknown embedded ids
+    '$1==mermaid': emb('plaintext'),
+    '$1==stan': emb('plaintext'),
+    '$1==plantuml': emb('plaintext'),
+    '$1==dot': emb('plaintext'),
+    '$1==typst': emb('plaintext'),
+    '$1==matlab': emb('plaintext'),
+    '$1==stata': emb('plaintext'),
+    '@default': {
+      token: 'string',
+      next: '@codeblockgh',
+      nextEmbedded: embeddedFromGroup ? '$1' : 'plaintext',
+    },
+  };
 }
 
 // Language configuration mirrors Monaco markdown (brackets / comments).
@@ -133,12 +225,14 @@ export const quartoLanguageConfiguration: MonacoLanguages.LanguageConfiguration 
 
 /**
  * Monarch tokenizer. Structure follows Monaco's markdown.js (MIT);
- * Quarto-specific states: frontmatter, curly/dot fence openers, ::: divs,
- * inline `r …`.
+ * Quarto-specific: document-start front matter (official \A), curly/dot/=
+ * fence openers, ::: divs, shortcodes, math, inline `r` / `python` / `julia`.
  */
 export const quartoMonarchLanguage: MonacoLanguages.IMonarchLanguage = {
   defaultToken: '',
   tokenPostfix: '.quarto',
+  // Official quarto.tmLanguage frontMatter uses \A — only at document start.
+  start: 'document',
   control: /[\\`*_\[\]{}()#+\-\.!]/,
   noncontrol: /[^\\`*_\[\]{}()#+\-\.!]/,
   escapes: /\\(?:@control)/,
@@ -149,22 +243,28 @@ export const quartoMonarchLanguage: MonacoLanguages.IMonarchLanguage = {
   ],
 
   tokenizer: {
-    root: [
-      // YAML / Quarto front matter (document must start with ---)
-      [/^---\s*$/, { token: 'meta.frontmatter', next: '@frontmatter', nextEmbedded: 'yaml' }],
+    // Start-only gate so mid-document --- stays a thematic break (not YAML).
+    document: [
+      [/^(-{3,})\s*$/, { token: 'meta.frontmatter', next: '@frontmatter', nextEmbedded: 'yaml' }],
+      [/^/, { token: '@rematch', switchTo: '@body' }],
+    ],
 
+    body: [
       // Quarto / Pandoc fenced divs: ::: {.callout-note} … :::
-      [/^\s*:::{1,}.*$/, 'keyword'],
+      [/^\s*:{3,}.*$/, 'keyword'],
+
+      // Display math $$ … $$ (official math_block)
+      [/^\s*\$\$/, { token: 'keyword', next: '@mathblock' }],
 
       // markdown tables
       [/^\s*\|/, '@rematch', '@table_header'],
 
       // headers (with #)
       [/^(\s{0,3})(#+)((?:[^\\#]|@escapes)+)((?:#+)?)/, ['white', 'keyword', 'keyword', 'keyword']],
-      // headers (with = / -)
-      [/^\s*(=+|\-+)\s*$/, 'keyword'],
-      // thematic break
-      [/^\s*((\*[ ]?)+)\s*$/, 'meta.separator'],
+      // headers (with = / -) — require 3+ to avoid eating YAML-like lines
+      [/^\s*(={3,}|-{3,})\s*$/, 'keyword'],
+      // thematic break (*, _, or --- already covered above as keyword when 3+)
+      [/^\s*((\*[ ]?){3,}|(_[ ]?){3,})\s*$/, 'meta.separator'],
       // quote
       [/^\s*>+/, 'comment'],
       // list
@@ -172,89 +272,43 @@ export const quartoMonarchLanguage: MonacoLanguages.IMonarchLanguage = {
       // indented code block
       [/^(\t|[ ]{4})[^ ].*$/, 'string'],
 
-      // ~~~ fences (plain / with lang)
-      [/^\s*~~~\s*((?:\w|[\/\-#])+)?\s*$/, { token: 'string', next: '@codeblock' }],
+      // ~~~ fences (plain / with lang) — allow 3+ tildes like official `{3,}`
+      [/^\s*~{3,}\s*((?:\w|[\/\-#])+)?\s*$/, { token: 'string', next: '@codeblock' }],
 
-      // ```{r} / ```{python} / ```{r chunk, echo=TRUE}  → embed engine
+      // ```{engine='python'} / engine="r" (knitr-style engine option in braces)
       [
-        /^\s*```\s*\{\s*([A-Za-z_][\w.]*)\b.*$/,
-        {
-          cases: {
-            '$1==r': { token: 'string', next: '@codeblockgh', nextEmbedded: 'r' },
-            '$1==R': { token: 'string', next: '@codeblockgh', nextEmbedded: 'r' },
-            '$1==python': { token: 'string', next: '@codeblockgh', nextEmbedded: 'python' },
-            '$1==Python': { token: 'string', next: '@codeblockgh', nextEmbedded: 'python' },
-            '$1==py': { token: 'string', next: '@codeblockgh', nextEmbedded: 'python' },
-            '$1==julia': { token: 'string', next: '@codeblockgh', nextEmbedded: 'julia' },
-            '$1==Julia': { token: 'string', next: '@codeblockgh', nextEmbedded: 'julia' },
-            '$1==sql': { token: 'string', next: '@codeblockgh', nextEmbedded: 'sql' },
-            '$1==SQL': { token: 'string', next: '@codeblockgh', nextEmbedded: 'sql' },
-            '$1==bash': { token: 'string', next: '@codeblockgh', nextEmbedded: 'shell' },
-            '$1==sh': { token: 'string', next: '@codeblockgh', nextEmbedded: 'shell' },
-            '$1==zsh': { token: 'string', next: '@codeblockgh', nextEmbedded: 'shell' },
-            '$1==shell': { token: 'string', next: '@codeblockgh', nextEmbedded: 'shell' },
-            '$1==yaml': { token: 'string', next: '@codeblockgh', nextEmbedded: 'yaml' },
-            '$1==yml': { token: 'string', next: '@codeblockgh', nextEmbedded: 'yaml' },
-            '$1==markdown': { token: 'string', next: '@codeblockgh', nextEmbedded: 'markdown' },
-            '$1==md': { token: 'string', next: '@codeblockgh', nextEmbedded: 'markdown' },
-            '$1==javascript': { token: 'string', next: '@codeblockgh', nextEmbedded: 'javascript' },
-            '$1==js': { token: 'string', next: '@codeblockgh', nextEmbedded: 'javascript' },
-            '$1==typescript': { token: 'string', next: '@codeblockgh', nextEmbedded: 'typescript' },
-            '$1==ts': { token: 'string', next: '@codeblockgh', nextEmbedded: 'typescript' },
-            '$1==html': { token: 'string', next: '@codeblockgh', nextEmbedded: 'html' },
-            '$1==css': { token: 'string', next: '@codeblockgh', nextEmbedded: 'css' },
-            '$1==json': { token: 'string', next: '@codeblockgh', nextEmbedded: 'json' },
-            '@default': { token: 'string', next: '@codeblockgh', nextEmbedded: '$1' },
-          },
-        },
+        /^\s*`{3,}\s*\{\s*engine\s*=\s*['"]([A-Za-z_][\w.]*)['"].*$/,
+        { cases: fenceEmbedCases() },
       ],
 
-      // ```{.r} / ```{.python} (Pandoc / Quarto attribute syntax)
+      // ```{r} / ```{python} / ```{r chunk, echo=TRUE} / ```{=html} / ```{.r}
+      // Optional = or . before engine (official [\{\.=]?).
       [
-        /^\s*```\s*\{\.([A-Za-z_][\w.]*)\b.*$/,
-        {
-          cases: {
-            '$1==r': { token: 'string', next: '@codeblockgh', nextEmbedded: 'r' },
-            '$1==python': { token: 'string', next: '@codeblockgh', nextEmbedded: 'python' },
-            '$1==py': { token: 'string', next: '@codeblockgh', nextEmbedded: 'python' },
-            '$1==julia': { token: 'string', next: '@codeblockgh', nextEmbedded: 'julia' },
-            '$1==sql': { token: 'string', next: '@codeblockgh', nextEmbedded: 'sql' },
-            '$1==bash': { token: 'string', next: '@codeblockgh', nextEmbedded: 'shell' },
-            '$1==sh': { token: 'string', next: '@codeblockgh', nextEmbedded: 'shell' },
-            '$1==shell': { token: 'string', next: '@codeblockgh', nextEmbedded: 'shell' },
-            '$1==yaml': { token: 'string', next: '@codeblockgh', nextEmbedded: 'yaml' },
-            '$1==yml': { token: 'string', next: '@codeblockgh', nextEmbedded: 'yaml' },
-            '@default': { token: 'string', next: '@codeblockgh', nextEmbedded: '$1' },
-          },
-        },
+        /^\s*`{3,}\s*\{\s*(?:=|\.)?\s*([A-Za-z_][\w.]*)\b.*$/,
+        { cases: fenceEmbedCases() },
       ],
 
-      // github-style ```lang (no braces)
+      // github-style ```lang (no braces) — bare ```r still embeds R
       [
-        /^\s*```\s*((?:\w|[\/\-#])+).*$/,
-        {
-          cases: {
-            '$1==r': { token: 'string', next: '@codeblockgh', nextEmbedded: 'r' },
-            '$1==R': { token: 'string', next: '@codeblockgh', nextEmbedded: 'r' },
-            '$1==python': { token: 'string', next: '@codeblockgh', nextEmbedded: 'python' },
-            '$1==bash': { token: 'string', next: '@codeblockgh', nextEmbedded: 'shell' },
-            '$1==sh': { token: 'string', next: '@codeblockgh', nextEmbedded: 'shell' },
-            '$1==yaml': { token: 'string', next: '@codeblockgh', nextEmbedded: 'yaml' },
-            '$1==yml': { token: 'string', next: '@codeblockgh', nextEmbedded: 'yaml' },
-            '@default': { token: 'string', next: '@codeblockgh', nextEmbedded: '$1' },
-          },
-        },
+        /^\s*`{3,}\s*((?:\w|[\/\-#])+).*$/,
+        { cases: fenceEmbedCases() },
       ],
-      // bare ```
-      [/^\s*```\s*$/, { token: 'string', next: '@codeblock' }],
+      // bare ``` / ```` (no lang)
+      [/^\s*`{3,}\s*$/, { token: 'string', next: '@codeblock' }],
 
       { include: '@linecontent' },
     ],
 
     frontmatter: [
-      [/^\s*---\s*$/, { token: 'meta.frontmatter', next: '@pop', nextEmbedded: '@pop' }],
-      [/^\s*\.\.\.\s*$/, { token: 'meta.frontmatter', next: '@pop', nextEmbedded: '@pop' }],
+      // Official end: matching dashes or ...
+      [/^\s*-{3,}\s*$/, { token: 'meta.frontmatter', next: '@body', nextEmbedded: '@pop' }],
+      [/^\s*\.\.\.\s*$/, { token: 'meta.frontmatter', next: '@body', nextEmbedded: '@pop' }],
       [/.*$/, ''],
+    ],
+
+    mathblock: [
+      [/\$\$/, { token: 'keyword', next: '@pop' }],
+      [/.*$/, 'variable.math'],
     ],
 
     table_header: [
@@ -279,28 +333,35 @@ export const quartoMonarchLanguage: MonacoLanguages.IMonarchLanguage = {
     ],
 
     codeblock: [
-      [/^\s*~~~\s*$/, { token: 'string', next: '@pop' }],
-      [/^\s*```\s*$/, { token: 'string', next: '@pop' }],
+      [/^\s*~{3,}\s*$/, { token: 'string', next: '@pop' }],
+      [/^\s*`{3,}\s*$/, { token: 'string', next: '@pop' }],
       [/.*$/, 'variable.source'],
     ],
 
     // Embedded fence body (engine language via nextEmbedded).
     // #| chunk-option lines are comments in R/Python/Julia so they stay readable.
+    // Closing: any run of 3+ backticks (Monaco markdown parity; exact-count match
+    // like TextMate `{3,}` capture is not feasible without Monarch state args).
     codeblockgh: [
-      [/```\s*$/, { token: 'string', next: '@pop', nextEmbedded: '@pop' }],
+      [/^\s*`{3,}\s*$/, { token: 'string', next: '@pop', nextEmbedded: '@pop' }],
       [/[^`]+/, 'variable.source'],
     ],
 
     linecontent: [
       [/&\w+;/, 'string.escape'],
       [/@escapes/, 'escape'],
+      // Quarto shortcodes {{< ... >}} (official shortcode match)
+      [/\{\{<[\s\S]*?>\}\}/, 'keyword'],
+      // Inline math $...$ (official math_inline; avoid $$)
+      [/\$[^$\s][^$]*\$/, 'variable.math'],
       [/\b__([^\\_]|@escapes|_(?!_))+__\b/, 'strong'],
       [/\*\*([^\\*]|@escapes|\*(?!\*))+\*\*/, 'strong'],
       [/\b_[^_]+_\b/, 'emphasis'],
       [/\*([^\\*]|@escapes)+\*/, 'emphasis'],
-      // knitr / Quarto inline code: `r …` / `python …` (before generic backticks)
+      // knitr / Quarto inline code: `r …` / `python …` / `julia …`
       [/`r\s+([^`]+)`/, 'variable.inline'],
       [/`python\s+([^`]+)`/, 'variable.inline'],
+      [/`julia\s+([^`]+)`/, 'variable.inline'],
       [/`([^\\`]|@escapes)+`/, 'variable'],
       [/\{+[^}]+\}+/, 'string.target'],
       [/(!?\[)((?:[^\]\\]|@escapes)*)(\]\([^\)]+\))/, ['string.link', '', 'string.link']],
