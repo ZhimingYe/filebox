@@ -54,7 +54,7 @@ Requirements:
 - network access to `crates.io` for Rust license metadata
 
 The project's own packages (`filebox-*`, `frontend`) are excluded from
-the counts since they are MIT-licensed by the repo `LICENSE`.
+the counts since they are covered by the repo `LICENSE` (Apache-2.0).
 `license-checker` misreports the `private: true` root package as
 `UNLICENSED`; the script strips that row so the manifest reflects only
 real third-party packages.
