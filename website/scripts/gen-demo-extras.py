@@ -112,7 +112,7 @@ EXPERIMENT_LOG = """# Experiment log — adaptive recovery assay
 - [ ] Re-prep Run-03 (low mean **and** high RSD)
 - [ ] FIXME: rerun Run-05 with seed=7 before sign-off
 
-> Reviewed on the train home from a phone — no VPN, no scp.
+> Reviewed on the train home from a phone — no laptop, no scp.
 """
 
 

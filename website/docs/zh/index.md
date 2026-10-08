@@ -4,7 +4,7 @@ title: filebox 文档
 hero:
   name: filebox
   text: 从任意浏览器，看服务器上的结果
-  tagline: 只读远程文件浏览器 · Hub + Agent · 无需公网 IP / 入站端口 / VPN
+  tagline: 只读远程文件浏览器 · Hub + Agent · 无需公网 IP 或入站端口
   actions:
     - theme: brand
       text: 快速开始
@@ -49,7 +49,7 @@ features:
 |------|------|
 | **浏览器** | 只访问 Hub，不直连 Agent。桌面 / 手机 / 平板均可。 |
 | **Hub** | 认证用户、托管前端、把请求路由到对应机器。 |
-| **Agent** | 装在目标机上，**主动出站**连 Hub。目标机无需公网 IP、入站端口或 VPN。 |
+| **Agent** | 装在目标机上，**主动出站**连 Hub。目标机无需公网 IP 或入站端口。 |
 
 ## 文档怎么读
 

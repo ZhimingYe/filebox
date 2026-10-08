@@ -4,7 +4,7 @@ title: filebox Docs
 hero:
   name: filebox
   text: See server results from any browser
-  tagline: Read-only remote file browser · Hub + Agent · No public IP / inbound ports / VPN
+  tagline: Read-only remote file browser · Hub + Agent · No public IP or inbound ports
   actions:
     - theme: brand
       text: Quick start
@@ -49,7 +49,7 @@ Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ l
 |-----------|------|
 | **Browser** | Talks only to the Hub, never directly to Agents. Desktop / phone / tablet all work. |
 | **Hub** | Authenticates users, serves the frontend, routes requests to the right machine. |
-| **Agent** | Runs on each target host and **dials out** to the Hub. Targets need no public IP, inbound ports, or VPN. |
+| **Agent** | Runs on each target host and **dials out** to the Hub. Targets need no public IP or inbound ports. |
 
 ## How to read these docs
 

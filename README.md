@@ -11,8 +11,8 @@
 filebox is a read-only remote file browser with system monitoring. Install a
 small agent on each machine you want to reach, host the hub on a server you
 control, and open a single URL — from your desktop or your phone, wherever
-you are. Every machine is one click away, with no VPN, no public IP on the
-target, no port forwarding, and no SSH gymnastics. The one optional exception
+you are. Every machine is one click away, with no public IP on the target,
+no port forwarding, and no SSH gymnastics. The one optional exception
 to "read-only" is a TOTP-guarded **remote terminal** (see Features).
 
 [![Release](https://img.shields.io/github/v/release/ZhimingYe/filebox?sort=semver)](https://github.com/ZhimingYe/filebox/releases/latest)

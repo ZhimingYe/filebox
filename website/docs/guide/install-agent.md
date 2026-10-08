@@ -1,6 +1,6 @@
 # Install Agent
 
-Install an Agent on every machine you want to browse. It dials out to the Hub — no public IP, inbound ports, or VPN required.
+Install an Agent on every machine you want to browse. It dials out to the Hub — no public IP or inbound ports required.
 
 ## Install
 

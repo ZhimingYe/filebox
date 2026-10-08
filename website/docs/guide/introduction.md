@@ -10,7 +10,7 @@ Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ l
 
 - **Browser**: talks only to the Hub, never directly to Agents.
 - **Hub**: authenticates users, serves the frontend, routes requests to the right machine.
-- **Agent**: runs on the target host and **dials out** to the Hub. The target needs no public IP, inbound ports, VPN, or port forwarding. After disconnects it reconnects automatically with a stable identity — no duplicate sidebar entries.
+- **Agent**: runs on the target host and **dials out** to the Hub. The target needs no public IP, inbound ports, or port forwarding. After disconnects it reconnects automatically with a stable identity — no duplicate sidebar entries.
 
 ## Who it is for
 

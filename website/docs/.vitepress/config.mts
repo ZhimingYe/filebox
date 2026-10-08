@@ -110,7 +110,7 @@ const zhSidebar = {
 export default defineConfig({
   title: 'filebox',
   description:
-    'Lab / HPC read-only remote file browser — Hub + Agent, no public IP / inbound ports / VPN',
+    'Lab / HPC read-only remote file browser — Hub + Agent, no public IP or inbound ports',
   base: '/filebox/',
   cleanUrls: true,
   lastUpdated: true,
@@ -143,7 +143,7 @@ export default defineConfig({
           {
             property: 'og:description',
             content:
-              'See server results from any browser — Hub + Agent, no public IP / inbound ports / VPN',
+              'See server results from any browser — Hub + Agent, no public IP or inbound ports',
           },
         ],
       ],
@@ -186,7 +186,7 @@ export default defineConfig({
           'meta',
           {
             property: 'og:description',
-            content: '从任意浏览器看服务器上的结果 — Hub + Agent，无需公网 IP / 入站端口 / VPN',
+            content: '从任意浏览器看服务器上的结果 — Hub + Agent，无需公网 IP 或入站端口',
           },
         ],
       ],
