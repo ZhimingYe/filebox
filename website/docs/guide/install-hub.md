@@ -1,61 +1,61 @@
-# 部署 Hub
+# Install Hub
 
-Hub 跑在你控制的中心机上（小 VPS、内网机或容器）。浏览器与 Agent 都只连它；Hub 自带前端静态资源，用户只需记一个 URL。
+The Hub runs on a central host you control (small VPS, LAN box, or container). Browsers and Agents connect only to it; the Hub ships frontend static assets, so users remember one URL.
 
-## 前置条件
+## Prerequisites
 
-- Linux x86_64（发布包为 musl 静态链接，多数发行版可直接跑）
-- 能被浏览器访问的地址（生产请准备 TLS 证书）
-- 出站能力：Agent 要能连到 Hub 的 443（或你反代的端口）
+- Linux x86_64 (release builds are musl-static and run on most distros)
+- An address browsers can reach (prepare TLS certificates for production)
+- Outbound path for Agents to reach Hub on 443 (or your reverse-proxy port)
 
-## 安装
+## Install
 
 ```bash
-# 从 https://github.com/ZhimingYe/filebox/releases/latest 下载
+# Download from https://github.com/ZhimingYe/filebox/releases/latest
 tar xzf filebox-hub-*-x86_64-musl.tar.gz
 cd filebox-hub-*
 ./bin/hub --init-config
 ./bin/hub
 ```
 
-`--init-config` 会引导你设置：
+`--init-config` walks you through:
 
-1. **监听地址**（默认 `0.0.0.0:3000`）
-2. **管理员用户名 / 密码**
-3. **Agent token**（明文只打印一次；配置里只存 bcrypt hash）
+1. **Listen address** (default `0.0.0.0:3000`)
+2. **Admin username / password**
+3. **Agent token** (plaintext printed once; config stores only a bcrypt hash)
 
-写入：
+It writes:
 
-- `config/hub.json` — 运行时配置
-- 前端静态资源已在包内 `frontend/dist/`，Hub 启动时直接托管
+- `config/hub.json` — runtime config
+- Frontend assets already live in the package `frontend/dist/`; Hub serves them on start
 
-请立刻把 Agent token 存到密码管理器或 Agent 配置里；之后无法从 Hub 再读出明文。
+Save the Agent token to a password manager or Agent config immediately; plaintext cannot be recovered from the Hub later.
 
-## 关键配置字段
+## Key config fields
 
-| 字段 | 含义 | 默认 |
-|------|------|------|
-| `listen_addr` | 监听地址 | `0.0.0.0:3000` |
-| `agent_token_hash` | Agent token 的 hash | 初始化时写入 |
-| `users` | 登录账号 | 初始化时写入 |
+| Field | Meaning | Default |
+|-------|---------|---------|
+| `listen_addr` | Listen address | `0.0.0.0:3000` |
+| `agent_token_hash` | Hash of the Agent token | set at init |
+| `users` | Login accounts | set at init |
 
-也可用环境变量覆盖部分行为（开发常用）：
+Environment variables can override some behavior (common in development):
 
-| 变量 | 作用 |
-|------|------|
-| `FILEBOX_DEV_MODE=1` | 本机不安全默认：`admin` / `dev-password`，token `dev-token`，绑定 `127.0.0.1` |
-| `FILEBOX_LISTEN_ADDR` | 覆盖监听地址 |
-| `FILEBOX_FRONTEND_DIR` | 绝对路径指向 `frontend/dist` |
-| `FILEBOX_CONFIG_PATH` | `hub.json` 路径 |
-| `FILEBOX_TRUST_XFF` | 信任 `X-Forwarded-For`（登录限流 IP） |
+| Variable | Effect |
+|----------|--------|
+| `FILEBOX_DEV_MODE=1` | Insecure local defaults: `admin` / `dev-password`, token `dev-token`, bind `127.0.0.1` |
+| `FILEBOX_LISTEN_ADDR` | Override listen address |
+| `FILEBOX_FRONTEND_DIR` | Absolute path to `frontend/dist` |
+| `FILEBOX_CONFIG_PATH` | Path to `hub.json` |
+| `FILEBOX_TRUST_XFF` | Trust `X-Forwarded-For` (login rate-limit IP) |
 
-## HTTPS（生产必做）
+## HTTPS (required in production)
 
-Hub 本身是明文 HTTP；生产用反代终止 TLS。Agent 配置的 Hub URL 必须是 `https://` / `wss://`（除非显式 `FILEBOX_ALLOW_INSECURE_HUB=1`，仅限本机开发）。
+Hub itself speaks plain HTTP; terminate TLS with a reverse proxy. The Agent’s Hub URL must be `https://` / `wss://` (unless you explicitly set `FILEBOX_ALLOW_INSECURE_HUB=1`, local development only).
 
-HTTPS 才能在传输中保护 Agent token，生产环境务必终止 TLS。
+HTTPS protects the Agent token in transit — always terminate TLS in production.
 
-### nginx 示例
+### nginx example
 
 ```nginx
 server {
@@ -71,7 +71,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # WebSocket（Agent 连接）与实时状态
+        # WebSocket (Agent connections) and live status
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -81,15 +81,15 @@ server {
 }
 ```
 
-要点：
+Checklist:
 
-- `proxy_http_version 1.1` + `Upgrade` / `Connection`（Agent WebSocket）
-- `proxy_buffering off`（实时状态）
-- Caddy / Traefik 亦可，只要同样支持 WebSocket 升级
+- `proxy_http_version 1.1` + `Upgrade` / `Connection` (Agent WebSocket)
+- `proxy_buffering off` (live status)
+- Caddy / Traefik also work if they upgrade WebSockets the same way
 
-缺了 WebSocket 升级时，侧栏会看不到 Agent 或频繁断线。
+Without WebSocket upgrade, Agents vanish from the sidebar or flap constantly.
 
-## systemd 示例（可选）
+## systemd example (optional)
 
 ```ini
 [Unit]
@@ -107,33 +107,33 @@ RestartSec=3
 WantedBy=multi-user.target
 ```
 
-## 验证 Hub 已起来
+## Verify the Hub is up
 
 ```bash
 curl -s http://127.0.0.1:3000/api/health
 # {"hub":{"status":"ok","uptime_sec":…,"version":"2.1.0"}}
 ```
 
-浏览器打开 Hub URL，应看到登录页：
+Open the Hub URL in a browser — you should see the login page:
 
-![登录页](/screenshots/09-login.png)
+![Login page](/screenshots/09-login.png)
 
-点击侧栏底部版本号可打开 About / Diagnostics（Hub 状态、Agent 列表）：
+Click the version number at the bottom of the sidebar for About / Diagnostics (Hub status, Agent list):
 
 ![About / Health](/screenshots/07-health.png)
 
-## 登录审计
+## Login audit
 
-侧栏 **Audit** 记录成功 / 失败 / 限流与登出；日志在 Hub 旁 JSONL，约 2000 条滚动。
+Sidebar **Audit** records success / failure / rate-limit and logout events; logs are a rolling JSONL next to the Hub (~2000 entries).
 
 ![Audit](/screenshots/12-audit.png)
 
-## 更新
+## Updates
 
 ```bash
 ./bin/hub --update
 ```
 
-会下载最新 release、校验校验和并原地替换。Hub / Agent / 前端大版本建议一起升。
+Downloads the latest release, verifies checksums, and replaces in place. Prefer upgrading Hub / Agent / frontend major versions together.
 
-下一篇：[部署 Agent](./install-agent)
+Next: [Install Agent](./install-agent)

@@ -1,62 +1,62 @@
 ---
 layout: home
-title: filebox 文档
+title: filebox Docs
 hero:
   name: filebox
-  text: 从任意浏览器，看服务器上的结果
-  tagline: 只读远程文件浏览器 · Hub + Agent · 无需公网 IP / 入站端口 / VPN
+  text: See server results from any browser
+  tagline: Read-only remote file browser · Hub + Agent · No public IP / inbound ports / VPN
   actions:
     - theme: brand
-      text: 快速开始
+      text: Quick start
       link: /guide/quick-start
     - theme: alt
-      text: 功能导览
+      text: Feature tour
       link: /features/browse
     - theme: alt
       text: GitHub
       link: https://github.com/ZhimingYe/filebox
 heroShot:
-  alt: filebox 真实界面：6 个预览标签同时打开，当前为多页 PDF 实验报告（相关性热图与 QC 表格）
-  caption: 真实 Hub + Agent 界面 · 多标签同时打开 PDF、图、代码、CSV、Markdown 与 PPT
+  alt: Real filebox UI with six preview tabs open; the active tab is a multi-page PDF lab report with a correlation heatmap and QC table
+  caption: Real Hub + Agent UI · PDF, figure, code, CSV, Markdown and PPT open side by side in tabs
   link: /features/tabs
-  linkText: 了解多标签预览
+  linkText: See multi-tab preview
 features:
-  - title: 浏览与预览
-    details: 大目录流畅列表、面包屑、钉选；图 / PDF / 代码 / Markdown / CSV / Office 就地预览，不必先 scp 一整份。
+  - title: Browse & preview
+    details: Smooth large-directory listing, breadcrumbs, pins; preview images / PDF / code / Markdown / CSV / Office in place — no need to scp an entire tree first.
     link: /features/preview
-    linkText: 预览类型
-  - title: 多标签工作区
-    details: 报告、图、代码、表格同时打开，像浏览器标签一样切换、固定、批量关闭；Esc 关闭、← / → 切同目录文件。
+    linkText: Preview types
+  - title: Multi-tab workspace
+    details: Keep reports, figures, code and tables open together; switch, pin and bulk-close them like browser tabs. Esc closes, ← / → steps through the folder.
     link: /features/tabs
-    linkText: 多标签用法
-  - title: 搜索与合集
-    details: 按文件名或内容正则搜索；用合集把分散路径里的文件虚拟编组，无需复制或移动。
+    linkText: Using tabs
+  - title: Search & collections
+    details: Search by filename or content regex; group files across scattered paths into virtual collections without copying or moving them.
     link: /features/search
-    linkText: 搜索与合集
-  - title: 安全默认
-    details: 协议只读；敏感文件默认拒绝；可选 Transfer 与 TOTP 终端，密钥只留在 Agent。
+    linkText: Search & collections
+  - title: Secure by default
+    details: Read-only protocol; sensitive paths denied by default; optional Transfer and TOTP-gated Terminal keep secrets on the Agent.
     link: /features/security
-    linkText: 安全模型
+    linkText: Security model
 ---
 
-## 一眼看懂架构
+## Architecture at a glance
 
 ```text
-浏览器 ──HTTPS──▶ Hub ◀──WSS（出站）── Agent ──▶ 本地文件
+Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ local files
 ```
 
-| 组件 | 作用 |
-|------|------|
-| **浏览器** | 只访问 Hub，不直连 Agent。桌面 / 手机 / 平板均可。 |
-| **Hub** | 认证用户、托管前端、把请求路由到对应机器。 |
-| **Agent** | 装在目标机上，**主动出站**连 Hub。目标机无需公网 IP、入站端口或 VPN。 |
+| Component | Role |
+|-----------|------|
+| **Browser** | Talks only to the Hub, never directly to Agents. Desktop / phone / tablet all work. |
+| **Hub** | Authenticates users, serves the frontend, routes requests to the right machine. |
+| **Agent** | Runs on each target host and **dials out** to the Hub. Targets need no public IP, inbound ports, or VPN. |
 
-## 文档怎么读
+## How to read these docs
 
-1. [什么是 filebox](/guide/introduction) — 定位与安全边界  
-2. [快速开始](/guide/quick-start) — 四步跑通  
-3. [首次登录](/guide/first-login) — PoW 登录、选 Agent、Add Root  
-4. [怎么用](/features/browse) — 带真实界面截图的功能说明  
-5. [运维](/ops/hub) — HTTPS、更新、Office、FAQ  
+1. [What is filebox](/guide/introduction) — positioning and security boundaries  
+2. [Quick start](/guide/quick-start) — four steps to a working setup  
+3. [First login](/guide/first-login) — PoW login, pick an Agent, Add Root  
+4. [How to use](/features/browse) — feature guides with real UI screenshots  
+5. [Ops](/ops/hub) — HTTPS, updates, Office, FAQ  
 
-当前版本对齐 **v2.1.0**（Hub + Agent）。本站截图全部来自本地真实运行的 Hub + Agent 界面，与你部署后看到的产品一致。
+Docs align with **v2.1.0** (Hub + Agent). Screenshots on this site were captured from a live Hub + Agent session — the same product you get after deploying.

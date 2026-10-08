@@ -1,45 +1,45 @@
-# 浏览文件
+# Browse files
 
-侧栏选中 Agent 后进入 **Files**：左侧 Agent 与导航，中间虚拟滚动文件列表，右侧（桌面）多标签预览。
+After selecting an Agent, open **Files**: Agents and nav on the left, a virtualized file list in the middle, and (on desktop) multi-tab preview on the right.
 
-![Files 根目录](/screenshots/01-files-browse.png)
+![Files root](/screenshots/01-files-browse.png)
 
-## 界面结构
+## Layout
 
-| 区域 | 内容 |
-|------|------|
-| 侧栏 Agents | 已连接机器、在线状态、延迟；点选切换当前 Agent |
-| 侧栏 Workspace | Files / Explorer / Collections / Transfer / Terminal / Search / Settings / System |
-| 根下拉 | 切换已启用的 root（如 `demo`） |
-| 工具栏 | 刷新、过滤、排序、树面板、钉选、复制路径等 |
-| 地址栏 / 面包屑 | 当前路径；支持粘贴路径与补全 |
-| 文件列表 | 名称、修改时间、大小；类型徽章；最近修改高亮 |
-| 预览栏 | 点击文件即预览；桌面[多标签](/features/tabs) |
+| Area | Contents |
+|------|----------|
+| Sidebar Agents | Connected machines, online status, latency; click to switch Agent |
+| Sidebar Workspace | Files / Explorer / Collections / Transfer / Terminal / Search / Settings / System |
+| Root dropdown | Switch enabled roots (e.g. `demo`) |
+| Toolbar | Refresh, filter, sort, tree panel, pin, copy path, … |
+| Address / breadcrumbs | Current path; paste paths and completion supported |
+| File list | Name, modified time, size; type badges; recent-change highlight |
+| Preview pane | Click a file to preview; [multi-tab](/features/tabs) on desktop |
 
-![侧栏总览](/screenshots/00-sidebar-overview.png)
+![Sidebar overview](/screenshots/00-sidebar-overview.png)
 
-![figures 目录](/screenshots/01b-files-figures.png)
+![figures directory](/screenshots/01b-files-figures.png)
 
-![reports 长文件名列表](/screenshots/01c-files-reports.png)
+![reports long filenames](/screenshots/01c-files-reports.png)
 
-## 逐步操作
+## Step by step
 
-1. 选中 Agent → 点 **Files**。
-2. 用根下拉选择已 Add 的 root。
-3. 单击目录进入；点 `..` 或面包屑返回。
-4. 单击文件：右侧打开预览标签（图片、PDF、代码、Markdown、CSV 等）。
-5. 需要时可在工具栏打开目录树面板，或 **Pin** 当前文件夹到侧栏 Pinned。
+1. Select an Agent → click **Files**.
+2. Pick an added root from the dropdown.
+3. Click a folder to enter; use `..` or breadcrumbs to go up.
+4. Click a file: a preview tab opens on the right (image, PDF, code, Markdown, CSV, …).
+5. Optionally open the tree panel from the toolbar, or **Pin** the current folder to the sidebar.
 
-## 常用技巧
+## Tips
 
-- **过滤**：按文件名模式、修改时间过滤大目录。
-- **排序**：点表头按名称 / 修改时间 / 大小排序。
-- **位置记忆**：刷新后回到上次目录；Pin 可一键跳转。
-- **下载**：预览栏 **Download**；浏览本身不改远端文件。
-- **手机**：抽屉侧栏；列表与预览全屏切换。见 [首次登录 · 手机](/guide/first-login)。
+- **Filter**: narrow large directories by name pattern or modified time.
+- **Sort**: click column headers for name / modified / size.
+- **Remember location**: refresh returns to the last directory; Pins jump in one click.
+- **Download**: use **Download** in the preview pane; browsing never modifies remote files.
+- **Mobile**: drawer sidebar; list and preview swap full-screen. See [First login · Mobile](/guide/first-login).
 
-## 与预览、Explorer 的关系
+## Related
 
-- 预览类型细节：[预览](./preview)
-- 树形为主的浏览：[Explorer](./explorer)
-- 还没根目录？先 [Add Root](/guide/first-login)
+- Preview types: [Preview](./preview)
+- Tree-first browsing: [Explorer](./explorer)
+- No roots yet? [Add Root](/guide/first-login)

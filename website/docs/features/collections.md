@@ -1,21 +1,21 @@
-# 合集 Collections
+# Collections
 
-合集是**虚拟引用列表**：把分散在不同目录（甚至不同 root）里的文件收进一个命名列表，不复制、不移动。列表存在 Agent 上。
+A collection is a **virtual reference list**: group files from different directories (even different roots) under one name without copying or moving. Lists live on the Agent.
 
-![Collections：watchlist](/screenshots/03-collections.png)
+![Collections: watchlist](/screenshots/03-collections.png)
 
-![从合集打开预览](/screenshots/03b-collections-watchlist.png)
+![Open preview from a collection](/screenshots/03b-collections-watchlist.png)
 
-## 怎么用
+## How to use
 
-1. 侧栏打开 **Collections**。
-2. 用下拉选择已有合集，或 **+ New** 创建。
-3. 在 **Files** / 预览里把文件加入合集（合集选择器）。
-4. 在合集视图中：并排查看、移除项、或跳回原始路径。
-5. **Delete** 只删除合集本身，不动真实文件。
+1. Open **Collections** in the sidebar.
+2. Pick an existing collection from the dropdown, or **+ New**.
+3. From **Files** / preview, add files via the collection picker.
+4. In the collection view: browse side by side, remove items, or jump to the original path.
+5. **Delete** removes only the collection, not real files.
 
-## 说明
+## Notes
 
-- 合集项按 `(root, path)` 引用文件；源文件移动后该项不再指向它，磁盘内容保持不变。
-- Agent 离线时 Hub 会把变更标为 pending，重连后再应用。
-- 需要 Agent 具备 `collections` 能力（当前发布版默认具备）。
+- Items reference files by `(root, path)`; if a source file moves, its item no longer points at it and disk contents stay unchanged.
+- While the Agent is offline, Hub marks changes pending and applies them on reconnect.
+- Requires Agent `collections` capability (on by default in current releases).

@@ -1,47 +1,47 @@
-# Agent 配置与更新
+# Agent config & updates
 
-Agent 装在每台要浏览的机器上，主动出站连 Hub。安装步骤见 [部署 Agent](/guide/install-agent)。
+Install an Agent on every host you want to browse; it dials out to the Hub. Install steps: [Install Agent](/guide/install-agent).
 
-## 状态与配置
+## State and config
 
-- 配置文件：`agent.toml`（`--init-config` 创建，权限 0600）。
-- 状态目录默认在系统 data dir 下的 `filebox`（可用 `FILEBOX_AGENT_DATA_DIR`）。
-- 根目录、钉选、合集经 UI 下发并持久化；坏的更新不会毁掉上一份好配置。
-- 断线后永久重连，身份不变、不产生重复侧栏条目。
-- 多实例必须使用不同的 `FILEBOX_AGENT_DATA_DIR`。
+- Config file: `agent.toml` (created by `--init-config`, mode 0600).
+- State directory defaults under the system data dir as `filebox` (override with `FILEBOX_AGENT_DATA_DIR`).
+- Roots, pins, and collections are pushed from the UI and persisted; bad updates do not wipe the last good config.
+- After disconnects it reconnects indefinitely with a stable identity — no duplicate sidebar entries.
+- Multiple instances must use different `FILEBOX_AGENT_DATA_DIR` values.
 
-## 环境变量摘要
+## Environment variables
 
-| 变量 | 含义 |
-|------|------|
-| `FILEBOX_AGENT_HUB` | Hub URL（`https://` / `wss://`） |
+| Variable | Meaning |
+|----------|---------|
+| `FILEBOX_AGENT_HUB` | Hub URL (`https://` / `wss://`) |
 | `FILEBOX_AGENT_TOKEN` | Agent token |
-| `FILEBOX_AGENT_NAME` | 侧栏显示名 |
-| `FILEBOX_AGENT_DATA_DIR` | 状态目录 |
-| `FILEBOX_ALLOW_INSECURE_HUB` | 允许明文 Hub（仅开发） |
-| `FILEBOX_AGENT_SOFFICE` / `_DIR` | LibreOffice（可选） |
-| `FILEBOX_AGENT_TERMINAL_TOTP_SECRET` | Terminal 2FA（可选） |
-| `FILEBOX_AGENT_STATS_TTL_SECS` | sysinfo 缓存 TTL（默认 60） |
-| `FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS` | 目录缓存 re-stat 冷却 |
+| `FILEBOX_AGENT_NAME` | Sidebar display name |
+| `FILEBOX_AGENT_DATA_DIR` | State directory |
+| `FILEBOX_ALLOW_INSECURE_HUB` | Allow plaintext Hub (dev only) |
+| `FILEBOX_AGENT_SOFFICE` / `_DIR` | LibreOffice (optional) |
+| `FILEBOX_AGENT_TERMINAL_TOTP_SECRET` | Terminal 2FA (optional) |
+| `FILEBOX_AGENT_STATS_TTL_SECS` | sysinfo cache TTL (default 60) |
+| `FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS` | Directory cache re-stat cooldown |
 
-Office 相关上限见 [Office 预览](./office)。
+Office-related limits: [Office preview](./office).
 
-## 更新
+## Updates
 
 ```bash
 ./agent --update
 ```
 
-校验校验和后原地替换。建议与 Hub、前端大版本一起升。
+Verifies checksums and replaces in place. Prefer upgrading with Hub and frontend major versions together.
 
-## 可选能力开关
+## Optional capability switches
 
-| 能力 | 配置入口 |
-|------|----------|
-| Office 预览 | [Office 预览](./office) |
-| Terminal 2FA | `./agent --setup-terminal-2fa` 或环境变量，见 [Terminal](/features/terminal) |
-| Transfer | 能力位 `temp_upload`；规则见 [Transfer](/features/transfer) |
+| Capability | Where to configure |
+|------------|--------------------|
+| Office preview | [Office preview](./office) |
+| Terminal 2FA | `./agent --setup-terminal-2fa` or env — see [Terminal](/features/terminal) |
+| Transfer | Capability `temp_upload`; rules in [Transfer](/features/transfer) |
 
-在 UI **Settings** 可确认连接状态与已启用 roots：
+Confirm connection status and enabled roots in UI **Settings**:
 
 ![Settings](/screenshots/11-settings.png)

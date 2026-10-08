@@ -1,20 +1,24 @@
 # 发布到 GitHub Pages（站点根目录 `/filebox/`）
 
-文档站即首页：`https://zhimingye.github.io/filebox/`（中文）与 `https://zhimingye.github.io/filebox/en/`（English）。
-旧的静态演示页已移除；旧链接 `https://zhimingye.github.io/filebox/docs/...` 由 gh-pages 上的跳转页重定向到新地址（保留子路径、查询串与锚点）。
+文档站即首页：`https://zhimingye.github.io/filebox/`（English，默认）与 `https://zhimingye.github.io/filebox/zh/`（中文）。
+旧地址由 gh-pages 上的跳转页重定向（保留子路径、查询串与锚点）：
+
+| 旧地址 | 新地址 |
+|--------|--------|
+| `/filebox/en/<p>` | `/filebox/<p>` |
+| `/filebox/docs/en/<p>` | `/filebox/<p>` |
+| `/filebox/docs/<p>` | `/filebox/zh/<p>` |
 
 ## 当前采用的方案（不改 Pages 分支规则）
 
-1. 在 `main` 维护 `website/` 源码（VitePress `base: '/filebox/'`）。
+1. 在 `main` 维护 `website/` 源码（VitePress `base: '/filebox/'`；英文在 `docs/`，中文在 `docs/zh/`）。
 2. `cd website && npm ci && npm run build`
-3. 在 **gh-pages** 分支：根目录内容替换为 `docs/.vitepress/dist/*`，保留：
-   - `.github/workflows/pages.yml`（push gh-pages 自动部署）
-   - `.nojekyll`
-   - `docs/`：旧地址跳转页（每个页面一个 `docs/<path>.html` + `docs/<path>/index.html`，以及 `docs/404.html` 兜底）
-4. 推送 `gh-pages`。
+3. 在 **gh-pages** 分支：根目录内容替换为 `docs/.vitepress/dist/*`，保留 `.github/workflows/pages.yml` 与 `.nojekyll`。
+4. 生成旧地址跳转页：`node scripts/gen-legacy-redirects.mjs docs/.vitepress/dist <gh-pages 目录>`（写入 `docs/**` 与 `en/**`）。
+5. 推送 `gh-pages`。
 
-跳转页内容：`<link rel="canonical">` + `<meta http-equiv="refresh">` + 一段 JS，把 `/filebox/docs/<rest>` 改写为 `/filebox/<rest>`（含 `/docs/en/...`）。
-未列出的旧路径落到根 `404.html`，其内联脚本同样会把 `/filebox/docs/...` 转到新地址。
+跳转页内容：`<link rel="canonical">` + `<meta http-equiv="refresh">` + 一段 JS（保留 `?query` 与 `#hash`）。
+未列出的旧路径落到根 `404.html`，其内联脚本（`.vitepress/config.mts` 的 `LEGACY_REDIRECT`）按上表转发。
 
 本地预览：
 

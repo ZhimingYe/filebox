@@ -1,26 +1,26 @@
-# 临时传输 Transfer
+# Transfer
 
-**Transfer** 是 Agent 上唯一允许写入的路径：专用 scratch 目录。浏览协议仍然只读；这里只用于临时上传小文件（草稿、截图、给同事丢个配置等）。
+**Transfer** is the only path the Agent allows writes to: a dedicated scratch directory. The browse protocol stays read-only; use this for temporary small uploads (drafts, screenshots, dropping a config for a colleague).
 
-![Transfer 空状态 / 拖放区](/screenshots/04-transfer.png)
+![Transfer empty / drop zone](/screenshots/04-transfer.png)
 
-![已上传 plain.txt](/screenshots/04b-transfer-uploaded.png)
+![Uploaded plain.txt](/screenshots/04b-transfer-uploaded.png)
 
-## 怎么用
+## How to use
 
-1. 侧栏打开 **Transfer**（需 Agent `temp_upload` 能力）。
-2. 拖文件到虚线框，或点击选择；也可粘贴图片。
-3. 上传进度显示在列表上方；成功后出现在下方表格。
-4. 可 **Copy path**、下载；**Clean** 清空临时目录。
-5. 页面顶部会显示 Agent 上的真实文件夹路径。
+1. Open **Transfer** (requires Agent `temp_upload` capability).
+2. Drop files on the dashed box, click to choose, or paste images.
+3. Upload progress shows above the list; successes appear in the table below.
+4. **Copy path**, download, or **Clean** the scratch folder.
+5. The page header shows the real folder path on the Agent.
 
-## 规则
+## Rules
 
-| 规则 | 说明 |
-|------|------|
-| 单文件上限 | 默认约 20 MiB（以 Agent 能力 / 配置为准） |
-| 总配额 | 默认约 1 GiB |
-| 覆盖 | 禁止同名覆盖 |
-| 可见性 | 该目录**不会**作为普通 root 出现在 Files 里 |
+| Rule | Detail |
+|------|--------|
+| Per-file limit | ~20 MiB by default (Agent capability / config) |
+| Total quota | ~1 GiB by default |
+| Overwrite | Same-name overwrite forbidden |
+| Visibility | This directory **does not** appear as a normal root in Files |
 
-相关：[安全与敏感文件](./security)
+Related: [Security & sensitive files](./security)

@@ -1,15 +1,23 @@
 /**
- * Generate redirect stubs for the old docs location (/filebox/docs/...).
+ * Generate redirect stubs for legacy docs URLs.
  *
- * The docs used to be published under https://zhimingye.github.io/filebox/docs/
- * and are now the site root. For every page in the built site this writes
- * <outDir>/<same relative path>.html, a tiny page that forwards to the new URL
- * (JS keeps ?query and #hash; meta refresh is the no-JS fallback).
+ * Layout history of https://zhimingye.github.io/filebox/ :
+ *   1. /filebox/docs/<p>     Chinese (default)   /filebox/docs/en/<p>  English
+ *   2. /filebox/<p>          Chinese (default)   /filebox/en/<p>       English
+ *   3. /filebox/<p>          English (default)   /filebox/zh/<p>       Chinese   ← current
+ *
+ * For every page in the built site this writes tiny forwarding pages into the
+ * gh-pages checkout (JS keeps ?query and #hash; meta refresh is the no-JS fallback):
+ *   Chinese page zh/<p>  →  docs/<p>.html                    (layout 1 zh)
+ *   English page <p>     →  docs/en/<p>.html and en/<p>.html  (layout 1 en, layout 2 en)
+ * Layout-2 Chinese URLs (/filebox/<p>) now serve the English page directly.
  * GitHub Pages serves /docs/features/preview from docs/features/preview.html,
- * so cleanUrls-style legacy links keep working.
+ * so cleanUrls-style legacy links keep working. Unknown legacy paths are
+ * handled by the 404 fallback script in .vitepress/config.mts.
  *
  * Usage (from website/, after `npm run build`):
- *   node scripts/gen-legacy-redirects.mjs docs/.vitepress/dist ../path/to/gh-pages/docs
+ *   node scripts/gen-legacy-redirects.mjs docs/.vitepress/dist ../path/to/gh-pages
+ *   (writes <gh-pages>/docs/** and <gh-pages>/en/**)
  */
 import { readdir, mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -53,19 +61,28 @@ function stub(target, lang) {
 <style>body{font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;color:#334155;display:grid;place-items:center;min-height:100vh;margin:0}a{color:#4f46e5}</style>
 </head>
 <body>
-<p>${lang.startsWith('zh') ? '文档已迁移到' : 'The docs moved to'} <a href="${esc(target)}">${esc(abs)}</a></p>
+<p>${lang.startsWith('zh') ? '页面已迁移到' : 'This page moved to'} <a href="${esc(target)}">${esc(abs)}</a></p>
 </body>
 </html>
 `
 }
 
 const pages = await walk(distDir)
-for (const rel of pages) {
-  let target = BASE + rel.replace(/\.html$/, '')
+let count = 0
+async function emit(stubRel, pageRel, lang) {
+  let target = BASE + pageRel.replace(/\.html$/, '')
   if (target.endsWith('/index')) target = target.slice(0, -'index'.length)
-  const lang = rel.startsWith('en/') ? 'en' : 'zh-CN'
-  const dest = path.join(outDir, rel)
+  const dest = path.join(outDir, stubRel)
   await mkdir(path.dirname(dest), { recursive: true })
   await writeFile(dest, stub(target, lang))
+  count++
 }
-console.log(`wrote ${pages.length} redirect stubs to ${outDir}`)
+for (const rel of pages) {
+  if (rel.startsWith('zh/')) {
+    await emit(path.posix.join('docs', rel.slice(3)), rel, 'zh-CN')
+  } else {
+    await emit(path.posix.join('docs', 'en', rel), rel, 'en')
+    await emit(path.posix.join('en', rel), rel, 'en')
+  }
+}
+console.log(`wrote ${count} redirect stubs under ${outDir}/{docs,en}`)

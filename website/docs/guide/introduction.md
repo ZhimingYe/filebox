@@ -1,48 +1,48 @@
-# 什么是 filebox
+# What is filebox
 
-filebox 是面向实验室 / HPC / 自建服务器的**只读远程文件浏览器**：在每台机器上装一个小 Agent，在你控制的机器上跑一个 Hub，用浏览器打开一个 HTTPS 页面，就能浏览文件、预览图表与数据集、搜索工作区、查看系统负载。
+filebox is a **read-only remote file browser** for labs / HPC / self-hosted servers: install a small Agent on each machine, run a Hub on a host you control, open one HTTPS page in a browser, and you can browse files, preview plots and datasets, search workspaces, and check system load.
 
 ```text
-浏览器 ──HTTPS──▶ Hub ◀──WSS（出站）── Agent ──▶ 本地文件
+Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ local files
 ```
 
-![filebox 界面总览（真实 Hub + Agent）](/screenshots/00-sidebar-overview.png)
+![filebox UI overview (live Hub + Agent)](/screenshots/00-sidebar-overview.png)
 
-- **浏览器**：只访问 Hub，不直连 Agent。
-- **Hub**：认证用户、托管前端、把请求路由到对应机器。
-- **Agent**：装在目标机上，**主动出站**连到 Hub。目标机不需要公网 IP、入站端口、VPN 或端口映射。断线后会自动重连，身份不变、侧栏不产生重复条目。
+- **Browser**: talks only to the Hub, never directly to Agents.
+- **Hub**: authenticates users, serves the frontend, routes requests to the right machine.
+- **Agent**: runs on the target host and **dials out** to the Hub. The target needs no public IP, inbound ports, VPN, or port forwarding. After disconnects it reconnects automatically with a stable identity — no duplicate sidebar entries.
 
-## 适合谁
+## Who it is for
 
-研究者、分析师、数据科学家：结果以文件形式散落在共享服务器上，需要随时用手机或笔记本**看一眼图、表、日志**，而不想为了瞄一眼就 `scp` 一整份大文件。
+Researchers, analysts, and data scientists whose results live as files on shared servers and who need to **glance at figures, tables, and logs** from a phone or laptop without `scp`-ing an entire archive for a quick look.
 
-filebox 不是网盘同步工具，也不是完整的远程桌面——它是「结果文件的前门」：打开、预览、搜索、偶尔传一个小临时文件或开一扇受 TOTP 保护的终端。
+filebox is not a sync/drive product and not a full remote desktop — it is the “front door” to result files: open, preview, search, occasionally upload a small scratch file, or open a TOTP-protected terminal.
 
-## 能做什么（v2.1.0）
+## What you can do (v2.1.0)
 
-| 能力 | 说明 | 文档 |
-|------|------|------|
-| **Files** | 大目录流畅列表、面包屑、过滤、钉选、[多标签预览](/features/tabs) | [浏览文件](/features/browse) |
-| **Explorer** | 树形展开式浏览，与 Files 共享当前位置 | [Explorer](/features/explorer) |
-| **Search** | 文件名或内容正则；浮窗 / 底部 sheet | [搜索](/features/search) |
-| **Collections** | 跨目录的虚拟文件合集，不复制、不移动 | [合集](/features/collections) |
-| **Transfer** | 唯一可写的临时上传目录（配额、禁覆盖） | [Transfer](/features/transfer) |
-| **Terminal** | 可选；Agent 本地 TOTP 守护的交互式 shell（**非沙箱**） | [Terminal](/features/terminal) |
-| **Settings** | 管理根目录、Office 预览开关 | [首次登录](/guide/first-login) |
-| **System** | CPU / 内存 / 负载 / 按用户占用 / 进程表 | [系统监控](/features/stats) |
-| **Audit** | 登录审计（Hub 级，不依赖选中 Agent） | [Hub 运维](/ops/hub) |
+| Capability | Notes | Docs |
+|------------|-------|------|
+| **Files** | Smooth large listings, breadcrumbs, filters, pins, [multi-tab preview](/features/tabs) | [Browse files](/features/browse) |
+| **Explorer** | Tree-style browsing; shares current location with Files | [Explorer](/features/explorer) |
+| **Search** | Filename or content regex; floating panel / bottom sheet | [Search](/features/search) |
+| **Collections** | Virtual file groups across directories — no copy, no move | [Collections](/features/collections) |
+| **Transfer** | The only writable scratch upload folder (quota, no overwrite) | [Transfer](/features/transfer) |
+| **Terminal** | Optional; Agent-local TOTP-gated interactive shell (**not sandboxed**) | [Terminal](/features/terminal) |
+| **Settings** | Manage roots, Office preview toggle | [First login](/guide/first-login) |
+| **System** | CPU / memory / load / per-user usage / process table | [System monitor](/features/stats) |
+| **Audit** | Login audit (Hub-level; does not require a selected Agent) | [Hub ops](/ops/hub) |
 
-## 默认安全边界
+## Default security boundaries
 
-- 浏览协议**只读**：不能改、删、重命名远端文件。
-- 敏感路径（`.ssh/`、`.env*`、`*.pem` 等）默认拒绝，即使在允许的根目录内。
-- 浏览严格限制在已添加的 root 内；`..`、符号链接逃逸等会被挡住。
-- 两个显式例外（需能力开启 / 本地配置）：
-  - **Transfer**：仅写入 Agent 专用临时目录。
-  - **Terminal**：Agent 本地 TOTP 守护的交互式 shell（**非沙箱**，能做 OS 用户能做的一切）。
+- Browse protocol is **read-only**: no remote edit, delete, or rename.
+- Sensitive paths (`.ssh/`, `.env*`, `*.pem`, …) are denied by default even inside allowed roots.
+- Browse is strictly confined to added roots; `..` and symlink escapes are blocked.
+- Two explicit exceptions (capability / local config required):
+  - **Transfer**: writes only into the Agent’s dedicated scratch directory.
+  - **Terminal**: Agent-local TOTP-gated interactive shell (**not sandboxed** — anything the OS user can do).
 
-详见 [安全与敏感文件](/features/security)。
+See [Security & sensitive files](/features/security).
 
-## 从哪里开始
+## Where to start
 
-陌生人也能按文档端到端装好并用起来：先读 [快速开始](./quick-start)，再按 [部署 Hub](./install-hub) → [部署 Agent](./install-agent) → [首次登录与添加目录](./first-login) 走完。
+A newcomer can install and use end-to-end from these docs: start with [Quick start](./quick-start), then [Install Hub](./install-hub) → [Install Agent](./install-agent) → [First login & add roots](./first-login).

@@ -1,29 +1,29 @@
-# Hub 配置与 HTTPS
+# Hub config & HTTPS
 
-Hub 是唯一需要被浏览器与 Agent 都可达的中心服务。生产环境务必在前面加 TLS 反代。
+The Hub is the only central service both browsers and Agents must reach. Always put TLS termination in front in production.
 
-## 快速回顾
+## Quick recap
 
-1. `./bin/hub --init-config` → 生成 `config/hub.json`，**打印一次** Agent token  
-2. 反代终止 TLS，转发 WebSocket（见下方）  
-3. Agent 的 Hub URL 使用 `https://filebox.example.com`  
-4. `./bin/hub --update` 原地升级  
+1. `./bin/hub --init-config` → writes `config/hub.json`, **prints the Agent token once**  
+2. Reverse-proxy terminates TLS and forwards WebSockets (below)  
+3. Agent Hub URL uses `https://filebox.example.com`  
+4. `./bin/hub --update` upgrades in place  
 
-更完整的安装步骤见 [部署 Hub](/guide/install-hub)。
+Full install steps: [Install Hub](/guide/install-hub).
 
-## 配置字段
+## Config fields
 
-| 字段 | 含义 | 默认 |
-|------|------|------|
-| `listen_addr` | 监听地址 | `0.0.0.0:3000` |
-| `agent_token_hash` | Agent token 的 bcrypt hash | 初始化时写入 |
-| `users` | 登录账号 | 初始化时写入 |
+| Field | Meaning | Default |
+|-------|---------|---------|
+| `listen_addr` | Listen address | `0.0.0.0:3000` |
+| `agent_token_hash` | bcrypt hash of the Agent token | set at init |
+| `users` | Login accounts | set at init |
 
-环境变量：`FILEBOX_DEV_MODE`、`FILEBOX_LISTEN_ADDR`、`FILEBOX_FRONTEND_DIR`、`FILEBOX_CONFIG_PATH`、`FILEBOX_TRUST_XFF`。
+Env vars: `FILEBOX_DEV_MODE`, `FILEBOX_LISTEN_ADDR`, `FILEBOX_FRONTEND_DIR`, `FILEBOX_CONFIG_PATH`, `FILEBOX_TRUST_XFF`.
 
-## HTTPS 与 WebSocket
+## HTTPS and WebSocket
 
-Hub 进程本身是 HTTP。nginx 最小示例：
+The Hub process itself is HTTP. Minimal nginx:
 
 ```nginx
 location / {
@@ -39,27 +39,27 @@ location / {
 }
 ```
 
-缺了 WebSocket 升级时，侧栏会看不到 Agent 或频繁断线。
+Without WebSocket upgrade, Agents vanish from the sidebar or flap constantly.
 
-开发本机可用 `FILEBOX_ALLOW_INSECURE_HUB=1` 让 Agent 连 `http://`；**不要**用于生产。
+For local development, `FILEBOX_ALLOW_INSECURE_HUB=1` lets Agents use `http://` — **never** in production.
 
-## 健康检查
+## Health check
 
 ```bash
 curl -s https://filebox.example.com/api/health
 ```
 
-UI：点击侧栏底部 **v2.x.x** 打开 About / Diagnostics（Hub status、uptime、Agents）。
+UI: click sidebar **v2.x.x** for About / Diagnostics (Hub status, uptime, Agents).
 
 ![About / Diagnostics](/screenshots/07-health.png)
 
-## 登录审计
+## Login audit
 
-侧栏 **Audit**：成功 / 失败 / 限流与登出记录在 Hub 旁 JSONL，约 2000 条滚动。不依赖当前选中的 Agent。
+Sidebar **Audit**: success / failure / rate-limit and logout events in a rolling JSONL next to the Hub (~2000 entries). Does not depend on the selected Agent.
 
 ![Audit](/screenshots/12-audit.png)
 
-## 更新
+## Updates
 
 ```bash
 ./bin/hub --update

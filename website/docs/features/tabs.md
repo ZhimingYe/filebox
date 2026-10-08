@@ -1,80 +1,80 @@
-# 多标签预览
+# Multi-tab preview
 
-桌面端的预览区是一个**多标签工作区**：PDF 报告、图、代码、表格、Markdown、Office 文档可以同时打开，像浏览器标签一样切换、固定和批量关闭，不用来回点文件列表。
+On desktop the preview area is a **multi-tab workspace**: keep a PDF report, figures, code, tables, Markdown, and Office documents open side by side, then switch, pin, and close them like browser tabs — no more bouncing back to the file list.
 
-![多标签预览：6 个标签，当前为 PDF 报告（相关性热图 + QC 表）](/screenshots/14-tabs-pdf.png)
+![Multi-tab preview: six tabs, active PDF report (correlation heatmap + QC table)](/screenshots/14-tabs-pdf.png)
 
-## 打开标签
+## Opening tabs
 
-- 在 **Files**、**Explorer**、**Collections** 里点一个文件，就在右侧预览区为它打开一个标签；再点另一个文件会**追加**一个新标签，并切换过去。
-- 同一个文件（同一 Agent + root + 路径）**只会有一个标签**：再次点击只是切回已有标签，不会重复打开，也**不会重置**它的阅读位置。
-- 从 [工作区搜索](/features/search) 结果点 **Open in preview pane**，同样以标签打开；若该文件已有标签，会强制重新读取一次，避免看到旧内容。
-- 只有 **1 个**标签时不显示标签栏，界面与单文件预览一致；打开第 2 个起出现标签栏。
-- 三个视图共用同一组标签：在 Files 打开的标签，切到 Explorer / Collections 仍然在。
+- Click a file in **Files**, **Explorer**, or **Collections** to open it as a tab in the preview pane. Clicking another file **appends** a new tab and switches to it.
+- A file (same Agent + root + path) **never gets two tabs**: clicking it again just re-activates its tab and does **not** reset where you were reading.
+- **Open in preview pane** on a [workspace search](/features/search) hit also opens a tab; if the file already has one, it is re-fetched so you never look at stale content.
+- With **one** tab there is no tab bar (it looks exactly like a single preview); the bar appears from the second tab on.
+- All three views share the same tabs: tabs opened in Files are still there in Explorer / Collections.
 
-## 切换标签
+## Switching tabs
 
-![切换到代码标签 qc_pipeline.py（Monaco 只读高亮）](/screenshots/14b-tabs-code.png)
+![Switched to the code tab qc_pipeline.py (Monaco, read-only)](/screenshots/14b-tabs-code.png)
 
-- **点击标签**即可切换；当前标签有顶部强调色细线。标签上显示文件名，鼠标悬停显示完整的 `root/路径`。
-- 标签较多、标签栏放不下时可横向滚动，当前标签会自动滚入视野。
-- 标签栏最右侧的 **数字 + ⌄** 按钮（如 `6 ⌄`）打开 **Open previews** 列表：列出所有已打开的文件名和完整路径，点击即跳转。列表支持键盘：`↑` / `↓` 移动、`Home` / `End` 跳到首尾、`Enter` 打开、`Esc` 关闭。
+- **Click a tab** to switch; the active tab has a thin accent line on top. Tabs show the file name; hover for the full `root/path`.
+- When tabs overflow, the strip scrolls horizontally and the active tab is always scrolled into view.
+- The **count + ⌄** button at the right end of the strip (e.g. `6 ⌄`) opens the **Open previews** list with every open file name and full path — click to jump. Keyboard: `↑` / `↓` to move, `Home` / `End` for first / last, `Enter` to open, `Esc` to close.
 
-![Open previews 跳转列表](/screenshots/14e-tabs-picker.png)
+![Open previews jump list](/screenshots/14e-tabs-picker.png)
 
-![切换到图片标签 growth-kinetics.png（已固定）](/screenshots/14c-tabs-image.png)
+![Switched to the image tab growth-kinetics.png (pinned)](/screenshots/14c-tabs-image.png)
 
-## 固定（Pin）标签
+## Pinning tabs
 
-每个标签的文件名右侧有一个 **图钉** 按钮：
+Each tab has a **pin** button next to its name:
 
-| 状态 | 切走再切回来时 |
-|------|----------------|
-| 未固定（默认） | 预览会重新加载：PDF 回到第 1 页、缩放与滚动位置重置。后台不占用浏览器资源。 |
-| 已固定（图钉变为实心强调色） | 预览在后台**保持挂载**，切回来是瞬时的，并保留 PDF 页码 / 缩放、图片缩放、代码滚动位置等状态。 |
+| State | When you switch away and back |
+|-------|-------------------------------|
+| Unpinned (default) | The preview reloads: PDFs return to page 1, zoom and scroll reset. Background tabs cost nothing. |
+| Pinned (pin turns solid accent) | The preview stays **mounted in the background** — switching back is instant and keeps PDF page / zoom, image zoom, code scroll position, etc. |
 
-- 也可以右键标签 → **Pin tab / Unpin tab**。
-- 固定是按标签单独选择的；每个固定的标签都会一直占用内存（尤其是 HTML 预览），只固定你需要反复对照的文件。
-- 在 Open previews 列表里，已固定的标签名前有一个小图钉。
+- Or right-click a tab → **Pin tab / Unpin tab**.
+- Pinning is per tab; every pinned tab keeps using memory (HTML previews especially), so pin only what you compare repeatedly.
+- Pinned tabs show a small pin in the Open previews list.
 
-## 关闭标签
+## Closing tabs
 
-![右键标签菜单](/screenshots/14d-tabs-context-menu.png)
+![Right-click tab menu](/screenshots/14d-tabs-context-menu.png)
 
-- 标签上的 **×**：关闭这个标签。
-- 预览头部右侧的 **×**（提示 *Close (Esc)*）：关闭当前标签。
-- **右键标签**弹出菜单：
+- **×** on a tab closes that tab.
+- **×** at the right of the preview header (tooltip *Close (Esc)*) closes the active tab.
+- **Right-click a tab** for:
   - **Pin tab / Unpin tab**
-  - **Close tab** — 关闭此标签
-  - **Close tabs to the left** — 关闭左侧所有标签（最左一个时不可用）
-  - **Close tabs to the right** — 关闭右侧所有标签（最右一个时不可用）
-  - **Close all tabs** — 全部关闭
-- 关闭当前标签后，自动切到**相邻**标签（优先右边，与浏览器一致）。
+  - **Close tab**
+  - **Close tabs to the left** (disabled on the first tab)
+  - **Close tabs to the right** (disabled on the last tab)
+  - **Close all tabs**
+- Closing the active tab activates its **neighbour** (the right one first, like browsers).
 
-## 键盘快捷键
+## Keyboard shortcuts
 
-在 Files / Explorer / Collections 视图、焦点不在输入框里时生效：
+Active in Files / Explorer / Collections when focus is not in a text field:
 
-| 按键 | 作用 |
-|------|------|
-| `Esc` | 关闭当前标签（若 Search 浮窗开着，先关浮窗；右键菜单 / 跳转列表开着时只关菜单） |
-| `←` / `→` | **仅 Files 视图**：在当前标签里切到同一目录的上一个 / 下一个文件（要求文件列表正停在该文件所在目录）。目标文件已有标签时直接切过去，不会删掉你打开的其他标签 |
-| `↑` `↓` `Home` `End` `Enter` `Esc` | 在 Open previews 跳转列表中导航 |
+| Key | Action |
+|-----|--------|
+| `Esc` | Close the active tab (closes the Search window first if open; with the tab menu / jump list open it only closes that) |
+| `←` / `→` | **Files view only**: show the previous / next file of the same folder in the current tab (the list must be showing that folder). If the target already has a tab it is activated — your other tabs are never removed |
+| `↑` `↓` `Home` `End` `Enter` `Esc` | Navigate the Open previews jump list |
 
-## 预览区宽度
+## Preview width
 
-文件列表与预览区之间的分隔条可以左右拖动（列表占 20%–80%），比例保存在浏览器本地，下次打开沿用。标签多时把预览区拖宽一些，标签栏能完整显示更多标签。
+Drag the divider between the file list and the preview pane (list 20 %–80 %); the ratio is stored in your browser. Widen the preview when you keep many tabs so more of the strip is visible.
 
-## 行为说明
+## How tabs behave
 
-- 多标签工作区用于桌面端（窗口宽度 ≥ 768 px）；手机 / 窄窗口使用「列表 ↔ 全屏预览」单文件模式。
-- 标签属于当前页面会话：刷新或重新打开页面后，从一个干净的工作区开始。
-- **切换 Agent** 会关闭全部标签（预览不会跨机器保留）；在 Settings 里停用 / 删除某个 root 时，该 root 下的标签会被自动关闭。
-- 标签数量不设上限；未固定的后台标签不占预览资源，固定的标签常驻后台。
-- 预览头部的刷新按钮（*Refresh preview*）会重新读取当前标签的文件；**Download** 与复制完整服务器地址按钮针对当前标签。
-- 标签按打开顺序排列。
+- The multi-tab workspace is the desktop layout (window ≥ 768 px wide); phones / narrow windows use the single-file "list ↔ full-screen preview" layout.
+- Tabs belong to the current page session; reloading or reopening the page starts with a clean workspace.
+- **Switching Agent** closes all tabs (previews never outlive their machine); disabling / removing a root in Settings closes that root's tabs.
+- There is no tab cap; unpinned background tabs hold no viewer resources, pinned ones stay resident.
+- The header's *Refresh preview* button re-reads the active tab's file; **Download** and copy-full-server-address act on the active tab.
+- Tabs are ordered by when you opened them.
 
-## 相关
+## Related
 
-- [预览（图 / PDF / 代码 / 表格）](/features/preview)
-- [浏览文件](/features/browse) · [Explorer](/features/explorer) · [合集](/features/collections)
+- [Preview (image / PDF / code / tables)](/features/preview)
+- [Browse files](/features/browse) · [Explorer](/features/explorer) · [Collections](/features/collections)

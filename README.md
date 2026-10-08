@@ -2,6 +2,12 @@
 
 **Browse the files on any server from one secure web page.**
 
+<p align="center">
+  <a href="https://zhimingye.github.io/filebox/">
+    <img src=".github/assets/filebox-multitab-pdf.png" alt="filebox web UI: six preview tabs open (PDF report, figure, Python script, CSV, Markdown, PowerPoint); the active tab shows a multi-page PDF lab report with a correlation heatmap and a QC table" width="100%">
+  </a>
+</p>
+
 filebox is a read-only remote file browser with system monitoring. Install a
 small agent on each machine you want to reach, host the hub on a server you
 control, and open a single URL — from your desktop or your phone, wherever
@@ -10,12 +16,12 @@ target, no port forwarding, and no SSH gymnastics. The one optional exception
 to "read-only" is a TOTP-guarded **remote terminal** (see Features).
 
 [![Release](https://img.shields.io/github/v/release/ZhimingYe/filebox?sort=semver)](https://github.com/ZhimingYe/filebox/releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-> **[Documentation →](https://zhimingye.github.io/filebox/en/)** — install,
+> **[Documentation →](https://zhimingye.github.io/filebox/)** — install,
 > connect, and use every feature, with screenshots of the real UI.
 >
-> **[中文文档 →](https://zhimingye.github.io/filebox/)** — 安装、连接、浏览、多标签预览、搜索、合集、传输与终端。
+> **[中文文档 →](https://zhimingye.github.io/filebox/zh/)** — 安装、连接、浏览、多标签预览、搜索、合集、传输与终端。
 
 ## Why filebox
 
@@ -371,4 +377,4 @@ The following kinds of files are denied by default (abbreviated):
 
 ## License
 
-[MIT](LICENSE)
+Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.

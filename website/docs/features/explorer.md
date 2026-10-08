@@ -1,24 +1,24 @@
-# Explorer 树形视图
+# Explorer tree
 
-**Explorer** 以目录树为主：左侧展开文件夹，右侧预览。与 **Files** 共享当前 Agent、root 与预览标签，适合在深层树里快速跳转。
+**Explorer** is tree-first: expand folders on the left, preview on the right. It shares the current Agent, root, and preview tabs with **Files** — handy for jumping around deep trees.
 
 ![Explorer](/screenshots/10-explorer.png)
 
-![Explorer 展开子目录](/screenshots/10b-explorer-expanded.png)
+![Explorer with expanded children](/screenshots/10b-explorer-expanded.png)
 
-## 怎么用
+## How to use
 
-1. 侧栏点 **Explorer**。
-2. 展开 root 节点（如 `demo`），继续展开子目录。
-3. 点文件：右侧打开预览（与 Files 同一套标签）。
-4. 需要列表视图时切回 **Files**；当前位置会保持。
+1. Click **Explorer** in the sidebar.
+2. Expand a root node (e.g. `demo`), then child folders.
+3. Click a file: preview opens on the right (same tabs as Files).
+4. Switch back to **Files** for list view; current location is preserved.
 
-## 与 Files 的差异
+## vs Files
 
 | | Files | Explorer |
 |--|-------|----------|
-| 主交互 | 表格列表 + 面包屑 | 树展开 |
-| 预览 | 有 | 有（共享标签） |
-| 适合 | 扫一大层目录、排序过滤 | 在深层结构里定位 |
+| Primary interaction | Table list + breadcrumbs | Tree expand |
+| Preview | Yes | Yes (shared tabs) |
+| Best for | Scanning one wide level, sort/filter | Locating deep structure |
 
-下一步：[预览](./preview) · [搜索](./search)
+Next: [Preview](./preview) · [Search](./search)

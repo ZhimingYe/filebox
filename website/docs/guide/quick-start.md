@@ -1,17 +1,17 @@
-# 快速开始
+# Quick start
 
-大约四步：下载 → 初始化 Hub → 启动 Hub → 初始化并连接 Agent。完成后在浏览器里登录、Add Root，即可浏览。下面命令与 [README](https://github.com/ZhimingYe/filebox/blob/main/README.md) 一致。
+About four steps: download → init Hub → start Hub → init and connect Agent. Then log in in the browser, Add Root, and browse. Commands match the [README](https://github.com/ZhimingYe/filebox/blob/main/README.md).
 
-![侧栏与 Files 总览](/screenshots/00-sidebar-overview.png)
+![Sidebar and Files overview](/screenshots/00-sidebar-overview.png)
 
-## 1. 下载
+## 1. Download
 
-从 [Releases](https://github.com/ZhimingYe/filebox/releases/latest) 取最新 musl 静态包（当前文档对齐 **v2.1.0**）：
+Grab the latest musl static packages from [Releases](https://github.com/ZhimingYe/filebox/releases/latest) (docs align with **v2.1.0**):
 
-- `filebox-hub-<ver>-x86_64-musl.tar.gz` — 放在你能暴露 HTTPS 的机器上
-- `filebox-agent-<ver>-x86_64-musl.tar.gz` — 放在每台要浏览的后端机上
+- `filebox-hub-<ver>-x86_64-musl.tar.gz` — on a host you can expose over HTTPS
+- `filebox-agent-<ver>-x86_64-musl.tar.gz` — on each backend host you want to browse
 
-多数用户不需要从源码编译。若要从源码构建：
+Most users do not need to build from source. To build from source:
 
 ```bash
 git clone https://github.com/ZhimingYe/filebox.git
@@ -19,42 +19,42 @@ cd filebox && cd frontend && npm install && npm run build && cd ..
 cargo build --release
 ```
 
-## 2. 初始化并启动 Hub
+## 2. Initialize and start Hub
 
 ```bash
 tar xzf filebox-hub-*-x86_64-musl.tar.gz
 cd filebox-hub-*
-./bin/hub --init-config   # 监听地址、管理员账号、Agent token（只打印一次）
-./bin/hub                 # 默认 :3000，自带前端静态资源
+./bin/hub --init-config   # listen address, admin account, Agent token (printed once)
+./bin/hub                 # default :3000, ships with frontend static assets
 ```
 
-`--init-config` 会生成 `config/hub.json`，并**只打印一次** Agent token（Hub 只存 bcrypt hash）。请立刻保存 token，之后无法从 Hub 再读出明文。
+`--init-config` writes `config/hub.json` and **prints the Agent token once** (Hub stores only a bcrypt hash). Save the token immediately — you cannot recover plaintext from the Hub later.
 
-生产环境请在前面加 nginx / Caddy / Traefik 终止 TLS。详见 [部署 Hub](./install-hub) 与 [Hub 配置与 HTTPS](/ops/hub)。
+In production put nginx / Caddy / Traefik in front to terminate TLS. See [Install Hub](./install-hub) and [Hub config & HTTPS](/ops/hub).
 
-### 本机开发捷径（可选）
+### Local dev shortcut (optional)
 
-不需要 `hub.json` 时可用开发模式（仅本机）：
+When you do not need `hub.json`, use development mode (local only):
 
 ```bash
 FILEBOX_DEV_MODE=1 \
 FILEBOX_FRONTEND_DIR="$(pwd)/frontend/dist" \
 RUST_LOG=info ./bin/hub
-# 登录：admin / dev-password ；Agent token：dev-token
+# Login: admin / dev-password ; Agent token: dev-token
 ```
 
-## 3. 初始化并启动 Agent
+## 3. Initialize and start Agent
 
-在后端机上：
+On each backend host:
 
 ```bash
 tar xzf filebox-agent-*-x86_64-musl.tar.gz
 cd filebox-agent-*
-./agent --init-config     # 粘贴 Hub 打印的 token，填写 Hub URL（https://…）
+./agent --init-config     # paste Hub token, fill Hub URL (https://…)
 ./agent
 ```
 
-也可用环境变量（适合 systemd / 容器）：
+Or use environment variables (systemd / containers):
 
 ```bash
 export FILEBOX_AGENT_HUB="https://filebox.example.com"
@@ -64,30 +64,30 @@ export FILEBOX_AGENT_DATA_DIR="/var/lib/filebox"
 ./agent
 ```
 
-明文 `ws://` / `http://` Hub 必须额外设置 `FILEBOX_ALLOW_INSECURE_HUB=1`（仅开发）。
+Plaintext `ws://` / `http://` Hub URLs also require `FILEBOX_ALLOW_INSECURE_HUB=1` (dev only).
 
-Agent **只出站**；防火墙无需为它开入站。连上后侧栏会出现该机器。
+The Agent is **outbound only**; open no inbound firewall holes for it. Once connected it appears in the sidebar.
 
-## 4. 登录并添加根目录
+## 4. Log in and add a root
 
-1. 浏览器打开 Hub URL（生产为 `https://…`；开发可用 `http://localhost:3000`）。
-2. 登录页会先做 **PoW 校验**（Verification 显示 Ready 后再 Continue）。
-3. 侧栏 **Agents** 点选已连接的机器。
-4. **Settings → Add Root**，填绝对路径或 `~/…`。
-5. 进入 **Files** 开始浏览。
+1. Open the Hub URL in a browser (production `https://…`; dev `http://localhost:3000`).
+2. The login page runs **PoW verification** first (wait until Verification shows Ready, then Continue).
+3. Under sidebar **Agents**, select the connected machine.
+4. **Settings → Add Root** with an absolute path or `~/…`.
+5. Open **Files** and start browsing.
 
-![登录页（含 PoW Verification）](/screenshots/09-login.png)
+![Login page (with PoW Verification)](/screenshots/09-login.png)
 
-![文件浏览](/screenshots/01-files-browse.png)
+![File browse](/screenshots/01-files-browse.png)
 
-![Settings：连接信息与 Workspace roots](/screenshots/11-settings.png)
+![Settings: connection and Workspace roots](/screenshots/11-settings.png)
 
-## 接下来
+## Next steps
 
-| 想做… | 去看 |
+| Goal | Read |
 |------|------|
-| 更细的 Hub / HTTPS | [部署 Hub](./install-hub) · [Hub 运维](/ops/hub) |
-| 多机 Agent、环境变量 | [部署 Agent](./install-agent) · [Agent 运维](/ops/agent) |
-| 首次登录与各视图 | [首次登录与添加目录](./first-login) |
-| 搜索 / 合集 / 传输 / 终端 | [功能导览](/features/browse) |
-| Word / PPT / Excel 预览 | [Office 预览](/ops/office) |
+| Deeper Hub / HTTPS | [Install Hub](./install-hub) · [Hub ops](/ops/hub) |
+| Multi-host Agents, env vars | [Install Agent](./install-agent) · [Agent ops](/ops/agent) |
+| First login and views | [First login & add roots](./first-login) |
+| Search / collections / transfer / terminal | [Feature tour](/features/browse) |
+| Word / PPT / Excel preview | [Office preview](/ops/office) |

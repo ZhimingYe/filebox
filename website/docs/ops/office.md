@@ -1,18 +1,18 @@
-# Office 预览（LibreOffice）
+# Office preview (LibreOffice)
 
-Word / PowerPoint → PDF 查看器；表格（`xls` / `xlsx` / `xlsm` / `ods`）→ 每 sheet 一份 CSV。转换在 **Agent** 上跑，Hub 不装 LibreOffice，Agent 也不捆绑它。
+Word / PowerPoint → PDF viewer; spreadsheets (`xls` / `xlsx` / `xlsm` / `ods`) → one CSV per sheet. Conversion runs on the **Agent**; the Hub does not install LibreOffice, and the Agent does not bundle it.
 
-![PowerPoint 预览示例](/screenshots/08f-preview-office.png)
+![PowerPoint preview example](/screenshots/08f-preview-office.png)
 
-## 特点
+## Highlights
 
-- **仅无头**：始终 `soffice --headless`，不需要 GUI / 显示器。
-- **Rootless**：解压到家目录即可，无需 sudo 或系统包。
-- **可选**：没有可用的 `soffice` 时，Office 文件仍可下载，预览入口不可用；Settings 里也可关闭转换。
+- **Headless only**: always `soffice --headless` — no GUI / display required.
+- **Rootless**: unpack under your home directory; no sudo or system package required.
+- **Optional**: without a usable `soffice`, Office files remain downloadable but preview is unavailable; Settings can also disable conversion.
 
-## 1. 安装 LibreOffice（rootless）
+## 1. Install LibreOffice (rootless)
 
-**Debian / Ubuntu 风格**（deb）：
+**Debian / Ubuntu style** (deb):
 
 ```bash
 VERSION=26.2.5
@@ -25,7 +25,7 @@ cd LibreOffice_*_Linux_x86-64_deb/DEBS
 for deb in *.deb; do dpkg-deb -x "$deb" "$PREFIX"; done
 ```
 
-**Rocky / RHEL 风格**（rpm）：
+**Rocky / RHEL style** (rpm):
 
 ```bash
 VERSION=26.2.5
@@ -38,33 +38,33 @@ cd LibreOffice_*_Linux_x86-64_rpm/RPMS
 for rpm in *.rpm; do rpm2cpio "$rpm" | (cd "$PREFIX" && cpio -idm); done
 ```
 
-将 `VERSION` 换成 [Document Foundation](https://www.libreoffice.org/download/download-libreoffice/) 上的当前稳定版。若系统已有 `soffice`（如 `/usr/bin/soffice`），可直接指向它。
+Replace `VERSION` with the current stable from [Document Foundation](https://www.libreoffice.org/download/download-libreoffice/). If the system already has `soffice` (e.g. `/usr/bin/soffice`), point at that instead.
 
-## 2. 指向 soffice
+## 2. Point at soffice
 
 ```bash
 export FILEBOX_AGENT_SOFFICE="$HOME/opt/libreoffice/opt/libreoffice26.2/program/soffice"
-# 或：
+# or:
 # export FILEBOX_AGENT_SOFFICE_DIR="$HOME/opt/libreoffice/opt/libreoffice26.2/program"
 ```
 
-可选上限（默认示意；缓存至少要能放下一个完整转换结果）：
+Optional limits (defaults shown; cache must fit at least one full conversion result):
 
 ```bash
 # FILEBOX_AGENT_OFFICE_TIMEOUT_SECS=120
 # FILEBOX_AGENT_OFFICE_MAX_SRC_BYTES=536870912     # 512 MiB
-# FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES=1073741824    # 1 GiB 派生输出合计
+# FILEBOX_AGENT_OFFICE_MAX_PDF_BYTES=1073741824    # 1 GiB derived output total
 # FILEBOX_AGENT_OFFICE_MAX_LOG_BYTES=8388608       # 8 MiB
-# FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES=2147483648 # 2 GiB RSS（Linux）
-# FILEBOX_AGENT_OFFICE_CACHE_BYTES=1073741824      # 1 GiB 磁盘缓存
+# FILEBOX_AGENT_OFFICE_MAX_MEMORY_BYTES=2147483648 # 2 GiB RSS (Linux)
+# FILEBOX_AGENT_OFFICE_CACHE_BYTES=1073741824      # 1 GiB disk cache
 ```
 
-重启 Agent。转换按请求执行，带进度与取消；损坏或截断结果会丢弃并重转，不会从坏缓存提供。
+Restart the Agent. Conversions run on demand with progress and cancel; corrupted or truncated results are discarded and re-converted — never served from a bad cache.
 
-## 3. 验证
+## 3. Verify
 
 ```bash
 "$FILEBOX_AGENT_SOFFICE" --headless --version
 ```
 
-在 UI 打开 `.docx` / `.pptx` / `.xlsx`，应进入 PDF 或 CSV 预览。Settings 中可关闭 Office 转换。若之后卸掉 LibreOffice，预览失败但文件浏览不受影响。
+Open a `.docx` / `.pptx` / `.xlsx` in the UI — you should land in PDF or CSV preview. Settings can disable Office conversion. If LibreOffice is later removed, preview fails but browsing is unaffected.
