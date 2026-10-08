@@ -19,7 +19,7 @@ Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ l
 ```
 
 Agents connect outward; browsers never touch agents directly. Backend
-machines need no public IP, inbound port, VPN, or port mapping.
+machines need no public IP, inbound port, or port mapping.
 
 ## Out of Scope (do not resurrect without explicit sign-off)
 
