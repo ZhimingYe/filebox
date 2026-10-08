@@ -15,7 +15,8 @@
 2. `cd website && npm ci && npm run build`
 3. 在 **gh-pages** 分支：根目录内容替换为 `docs/.vitepress/dist/*`，保留 `.github/workflows/pages.yml` 与 `.nojekyll`。
 4. 生成旧地址跳转页：`node scripts/gen-legacy-redirects.mjs docs/.vitepress/dist <gh-pages 目录>`（写入 `docs/**` 与 `en/**`）。
-5. 推送 `gh-pages`。
+5. 修复 GitHub Pages 对 cleanUrls 尾斜杠的 404：`node scripts/fix-clean-url-slashes.mjs <gh-pages 目录>`（为每个页面写入 `page/index.html` 跳转到无尾斜杠 URL，并为 `guide/` / `features/` / `ops/` 写入栏目首页跳转）。
+6. 推送 `gh-pages`。
 
 跳转页内容：`<link rel="canonical">` + `<meta http-equiv="refresh">` + 一段 JS（保留 `?query` 与 `#hash`）。
 未列出的旧路径落到根 `404.html`，其内联脚本（`.vitepress/config.mts` 的 `LEGACY_REDIRECT`）按上表转发。

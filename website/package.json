@@ -8,7 +8,8 @@
     "dev": "vitepress dev docs",
     "build": "vitepress build docs",
     "preview": "vitepress preview docs",
-    "screenshots": "node scripts/capture-real-screenshots.mjs"
+    "screenshots": "node scripts/capture-real-screenshots.mjs",
+    "fix-slashes": "node scripts/fix-clean-url-slashes.mjs"
   },
   "devDependencies": {
     "vitepress": "1.6.4"

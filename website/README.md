@@ -30,7 +30,9 @@ Without changing Pages branch rules:
    — but keep `.github/` and `.nojekyll`
 3. Regenerate the legacy redirect stubs: `node scripts/gen-legacy-redirects.mjs docs/.vitepress/dist <gh-pages checkout>`
    (writes `docs/**` and `en/**` there)
-4. Push `gh-pages`; existing `pages.yml` deploys
+4. Fix trailing-slash 404s on GitHub Pages: `node scripts/fix-clean-url-slashes.mjs <gh-pages checkout>`
+   (writes `page/index.html` stubs + section index redirects for `guide/` / `features/` / `ops/`)
+5. Push `gh-pages`; existing `pages.yml` deploys
 
 See [GH_PAGES_INTEGRATION.md](./GH_PAGES_INTEGRATION.md).
 

@@ -3,9 +3,10 @@ import { defineConfig } from 'vitepress'
 // Bilingual docs: English (default, `/`) + Chinese (`/zh/`).
 // Published to GitHub Pages at the site root: https://zhimingye.github.io/filebox/
 // Legacy URLs (/filebox/en/..., /filebox/docs/..., /filebox/docs/en/...) redirect
-// via stubs on the gh-pages branch (scripts/gen-legacy-redirects.mjs) plus the
-// 404 fallback script below.
-const LEGACY_REDIRECT = String.raw`(function(){var p=location.pathname,r=null,m;if((m=p.match(/^\/filebox\/docs\/en(\/.*)?$/)))r=m[1]||'/';else if((m=p.match(/^\/filebox\/docs(\/.*)?$/)))r='/zh'+(m[1]||'/');else if((m=p.match(/^\/filebox\/en(\/.*)?$/)))r=m[1]||'/';if(r!==null){r=r.replace(/\.html$/,'').replace(/\/index$/,'/');location.replace('/filebox'+r+location.search+location.hash)}})()`
+// via stubs on the gh-pages branch (scripts/gen-legacy-redirects.mjs). Trailing
+// slash URLs (/features/terminal/) are covered by fix-clean-url-slashes.mjs
+// stubs plus the 404 fallback script below.
+const LEGACY_REDIRECT = String.raw`(function(){var p=location.pathname,r=null,m;if((m=p.match(/^\/filebox\/docs\/en(\/.*)?$/)))r=m[1]||'/';else if((m=p.match(/^\/filebox\/docs(\/.*)?$/)))r='/zh'+(m[1]||'/');else if((m=p.match(/^\/filebox\/en(\/.*)?$/)))r=m[1]||'/';if(r!==null){r=r.replace(/\.html$/,'').replace(/\/index$/,'/');if(r.length>1&&r.endsWith('/'))r=r.slice(0,-1);location.replace('/filebox'+r+location.search+location.hash);return}if(p.length>9&&p.indexOf('/filebox/')===0&&p.endsWith('/')&&p!=='/filebox/'&&p!=='/filebox/zh/'){location.replace(p.slice(0,-1)+location.search+location.hash)}})()`
 
 const enNav = [
   { text: 'Guide', link: '/guide/introduction' },
@@ -121,12 +122,13 @@ export default defineConfig({
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:image', content: 'https://zhimingye.github.io/filebox/screenshots/14-tabs-pdf.png' }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
-    // Legacy URLs → current locations. Per-page stubs on gh-pages cover known
-    // pages; this catches anything else that lands on the site-wide 404 page
-    // (GitHub Pages serves /404.html for unknown paths):
+    // Legacy + trailing-slash recovery on the site-wide 404 page (GitHub Pages
+    // serves /404.html for unknown paths). Per-page stubs on gh-pages cover the
+    // known pages; this catches anything else:
     //   /filebox/docs/en/<p> → /filebox/<p>     (old English under /docs/en/)
     //   /filebox/docs/<p>    → /filebox/zh/<p>  (old Chinese default under /docs/)
     //   /filebox/en/<p>      → /filebox/<p>     (English used to live at /en/)
+    //   /filebox/<p>/        → /filebox/<p>     (cleanUrls trailing slash)
     ['script', {}, LEGACY_REDIRECT],
   ],
   locales: {
