@@ -4,6 +4,9 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+### Fixed
+- **HTML preview self-contained Quarto/Pandoc CSS and module scripts** — document-mode CSP now allows `data:` on `script-src` and `style-src`, so embedded `data:text/css` stylesheets and `data:application/javascript` module scripts load inside the sandboxed preview (previously blocked, leaving unstyled default fonts). Network egress remains limited to the tokenized preview origin; `'unsafe-inline'` was already permitted.
+
 ### Added
 - **Monaco preview for Quarto / R Markdown** — `.qmd`, `.rmd`, and `.rmarkdown` open in the read-only code viewer with a custom Monarch `quarto` language (YAML front matter, `{r}` / `{python}` / … fenced chunks embedding built-in highlighters, `:::` divs, inline `` `r` ``). Rich rendered Rmd and Jupyter `.ipynb` remain follow-ups.
 

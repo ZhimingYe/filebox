@@ -59,6 +59,12 @@ pub fn absolute_origin_from_request(headers: &HeaderMap) -> String {
 /// but deliberately omits `frame-ancestors` so the document can be embedded
 /// in the preview iframe and in the blob new-window wrapper, both of which
 /// have opaque origins.
+///
+/// `data:` is allowed on `script-src` and `style-src` so self-contained
+/// documents (Quarto/Pandoc `embed-resources`, etc.) can load their
+/// `data:application/javascript` module scripts and `data:text/css`
+/// stylesheets. Inline scripts/styles were already permitted via
+/// `'unsafe-inline'`; `data:` does not widen network egress.
 pub fn preview_document_csp(base_url: &str) -> String {
     let source = if base_url.ends_with('/') {
         base_url.to_string()
@@ -66,8 +72,8 @@ pub fn preview_document_csp(base_url: &str) -> String {
         format!("{}/", base_url)
     };
     format!(
-        "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: {}; \
-         style-src 'unsafe-inline' {}; img-src data: blob: {}; font-src data: {}; \
+        "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: data: {}; \
+         style-src 'unsafe-inline' data: {}; img-src data: blob: {}; font-src data: {}; \
          connect-src {}; media-src blob: {}; worker-src blob: {}; frame-src blob: {}; \
          navigate-to blob: {}; base-uri {}; form-action 'none'; object-src 'none'",
         source, source, source, source, source, source, source, source, source, source
@@ -321,7 +327,8 @@ mod tests {
     fn document_csp_allows_token_origin_and_omits_frame_ancestors() {
         let csp = preview_document_csp("http://h:3000/api/preview/tok/");
         assert!(csp.contains("default-src 'none'"));
-        assert!(csp.contains("script-src 'unsafe-inline' 'unsafe-eval' blob: http://h:3000/api/preview/tok/"));
+        assert!(csp.contains("script-src 'unsafe-inline' 'unsafe-eval' blob: data: http://h:3000/api/preview/tok/"));
+        assert!(csp.contains("style-src 'unsafe-inline' data: http://h:3000/api/preview/tok/"));
         assert!(csp.contains("base-uri http://h:3000/api/preview/tok/"));
         assert!(!csp.contains("frame-ancestors"));
         assert!(csp.contains("form-action 'none'"));
