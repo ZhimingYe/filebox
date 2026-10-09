@@ -2,20 +2,37 @@
 //! for the existing sandboxed HTML preview pipeline.
 //!
 //! Goals for v1:
-//! - Prefer text + small images; skip oversized image outputs.
+//! - Prefer text + small images; mildly recompress mid-size png/jpeg;
+//!   skip payloads that stay oversized after compression.
 //! - Never pass through raw notebook HTML / widget / JS outputs.
 //! - Escape all cell sources; sanitize markdown via ammonia.
 //! - Truncate very large stream/error text with an explicit note.
 //! - Keep memory bounded: callers already cap the source notebook size
 //!   ([`crate::preview_doc::PREVIEW_DOCUMENT_MAX_BYTES`]).
 
+use base64::Engine;
+use image::codecs::jpeg::JpegEncoder;
+use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
+use image::{ExtendedColorType, GenericImageView, ImageEncoder};
 use pulldown_cmark::{html, Options, Parser};
 use serde::Deserialize;
 use serde_json::Value;
 
-/// Decoded image payload above this size is omitted from the preview.
+/// Decoded image payload above this size is omitted from the preview
+/// (after a soft-threshold compression attempt when applicable).
 /// Matches the product decision to skip large embedded figures (≈1.5 MiB).
 pub const MAX_IMAGE_OUTPUT_BYTES: usize = 1_500_000;
+
+/// Above this decoded size (but ≤ [`MAX_IMAGE_OUTPUT_BYTES`]), try mild
+/// server-side recompression / downscale before embedding as a data URL.
+/// Tiny fixtures stay under this and are embedded unchanged.
+pub const SOFT_IMAGE_COMPRESS_BYTES: usize = 350_000;
+
+/// Longer edge above this triggers a downscale during soft compression.
+const MAX_COMPRESS_IMAGE_EDGE: u32 = 2048;
+
+/// JPEG quality for mild re-encode (1–100).
+const JPEG_RECOMPRESS_QUALITY: u8 = 80;
 
 /// Per stream / error / text output: longer text is truncated in the HTML.
 pub const MAX_TEXT_OUTPUT_CHARS: usize = 200_000;
@@ -281,25 +298,28 @@ fn render_mime_bundle(out: &mut String, data: &Value) {
         match *mime {
             "image/png" | "image/jpeg" => {
                 let cleaned = value.split_whitespace().collect::<String>();
-                match decoded_base64_len(&cleaned) {
-                    Some(len) if len > MAX_IMAGE_OUTPUT_BYTES => {
-                        deferred_notes.push(format!(
-                            "<div class=\"nb-note\">Image omitted ({mime}, ~{} bytes; limit {} bytes)</div>",
-                            len, MAX_IMAGE_OUTPUT_BYTES
-                        ));
-                        continue;
-                    }
-                    Some(_) => {
+                match prepare_raster_image(mime, &cleaned) {
+                    RasterEmbed::DataUrl {
+                        mime: out_mime,
+                        b64,
+                    } => {
                         for note in &deferred_notes {
                             out.push_str(note);
                         }
                         out.push_str(&format!(
-                            "<img class=\"nb-image\" alt=\"\" src=\"data:{mime};base64,{}\">",
-                            escape_attr(&cleaned)
+                            "<img class=\"nb-image\" alt=\"\" src=\"data:{out_mime};base64,{}\">",
+                            escape_attr(&b64)
                         ));
                         return;
                     }
-                    None => {
+                    RasterEmbed::Omit { mime: omit_mime, approx_len } => {
+                        deferred_notes.push(format!(
+                            "<div class=\"nb-note\">Image omitted ({omit_mime}, ~{} bytes; limit {} bytes)</div>",
+                            approx_len, MAX_IMAGE_OUTPUT_BYTES
+                        ));
+                        continue;
+                    }
+                    RasterEmbed::Invalid => {
                         deferred_notes.push(
                             "<div class=\"nb-note\">Invalid image payload omitted</div>"
                                 .to_string(),
@@ -424,6 +444,120 @@ fn strip_ansi(s: &str) -> String {
         out.push(c);
     }
     out
+}
+
+
+enum RasterEmbed {
+    DataUrl {
+        mime: &'static str,
+        b64: String,
+    },
+    Omit {
+        mime: &'static str,
+        approx_len: usize,
+    },
+    Invalid,
+}
+
+fn raster_mime_label(mime: &str) -> &'static str {
+    match mime {
+        "image/jpeg" => "image/jpeg",
+        _ => "image/png",
+    }
+}
+
+/// Decide whether to embed a raster payload as-is, after mild compression,
+/// or omit it when it remains over the hard limit.
+fn prepare_raster_image(mime: &str, cleaned_b64: &str) -> RasterEmbed {
+    let mime = raster_mime_label(mime);
+    let Some(est) = decoded_base64_len(cleaned_b64) else {
+        return RasterEmbed::Invalid;
+    };
+    // Never decode payloads already over the hard skip limit.
+    if est > MAX_IMAGE_OUTPUT_BYTES {
+        return RasterEmbed::Omit {
+            mime,
+            approx_len: est,
+        };
+    }
+    // Tiny / modest images: keep original bytes so fixtures stay bit-stable.
+    if est <= SOFT_IMAGE_COMPRESS_BYTES {
+        return RasterEmbed::DataUrl {
+            mime,
+            b64: cleaned_b64.to_string(),
+        };
+    }
+
+    match try_compress_raster(mime, cleaned_b64) {
+        Some((out_mime, out_bytes)) if out_bytes.len() <= MAX_IMAGE_OUTPUT_BYTES => {
+            RasterEmbed::DataUrl {
+                mime: out_mime,
+                b64: base64::engine::general_purpose::STANDARD.encode(out_bytes),
+            }
+        }
+        Some((_, out_bytes)) => RasterEmbed::Omit {
+            mime,
+            approx_len: out_bytes.len(),
+        },
+        None => {
+            // Decode/re-encode failed or did not shrink — original still under hard limit.
+            RasterEmbed::DataUrl {
+                mime,
+                b64: cleaned_b64.to_string(),
+            }
+        }
+    }
+}
+
+/// Mild recompress / downscale for mid-size png or jpeg. Returns `None` when
+/// decoding fails or the result is not smaller than the input.
+fn try_compress_raster(mime: &'static str, cleaned_b64: &str) -> Option<(&'static str, Vec<u8>)> {
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(cleaned_b64)
+        .ok()?;
+    let mut img = image::load_from_memory(&raw).ok()?;
+    let (w, h) = img.dimensions();
+    let long = w.max(h);
+    if long > MAX_COMPRESS_IMAGE_EDGE {
+        let scale = MAX_COMPRESS_IMAGE_EDGE as f64 / long as f64;
+        let nw = ((w as f64) * scale).round().max(1.0) as u32;
+        let nh = ((h as f64) * scale).round().max(1.0) as u32;
+        img = img.resize(nw, nh, image::imageops::FilterType::Triangle);
+    }
+
+    let mut out = Vec::with_capacity(raw.len() / 2);
+    let out_mime = if mime == "image/jpeg" {
+        let rgb = img.to_rgb8();
+        let mut enc = JpegEncoder::new_with_quality(&mut out, JPEG_RECOMPRESS_QUALITY);
+        enc.encode(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            ExtendedColorType::Rgb8,
+        )
+        .ok()?;
+        "image/jpeg"
+    } else {
+        let rgba = img.to_rgba8();
+        let enc = PngEncoder::new_with_quality(
+            &mut out,
+            CompressionType::Default,
+            PngFilterType::Adaptive,
+        );
+        enc.write_image(
+            rgba.as_raw(),
+            rgba.width(),
+            rgba.height(),
+            ExtendedColorType::Rgba8,
+        )
+        .ok()?;
+        "image/png"
+    };
+
+    if out.len() >= raw.len() {
+        return None;
+    }
+    Some((out_mime, out))
 }
 
 fn decoded_base64_len(b64: &str) -> Option<usize> {
@@ -686,7 +820,9 @@ mod tests {
         assert!(html.contains("nb-error"));
         assert!(html.contains("ValueError"));
         assert!(!html.contains("\u{1b}"));
-        assert!(html.contains("data:image/png;base64,"));
+        assert!(html.contains(
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        ));
         // text/plain is used because text/html is intentionally not rendered
         assert!(html.contains("IPython.core.display.HTML object"));
         assert!(!html.contains("onerror=alert"));
@@ -865,7 +1001,89 @@ mod tests {
     }
 
     #[test]
-    fn encodes_svg_as_img_data_url() {
+    fn soft_compress_midsize_png_still_embeds() {
+        // Uncompressed mid-size PNG sits above the soft threshold but under the hard skip.
+        let (b64, raw_len) = make_png_b64(640, 480, CompressionType::Uncompressed);
+        assert!(
+            raw_len > SOFT_IMAGE_COMPRESS_BYTES && raw_len <= MAX_IMAGE_OUTPUT_BYTES,
+            "fixture size {raw_len} not in soft..hard band"
+        );
+        let nb = serde_json::json!({
+            "nbformat": 4,
+            "metadata": {},
+            "cells": [{
+                "cell_type": "code",
+                "source": "",
+                "outputs": [{
+                    "output_type": "display_data",
+                    "data": { "image/png": b64 },
+                    "metadata": {}
+                }]
+            }]
+        });
+        let html = notebook_to_preview_html(nb.to_string().as_bytes()).unwrap();
+        assert!(html.contains("data:image/png;base64,"));
+        assert!(!html.contains("Image omitted"));
+        // Extract embedded payload and confirm it shrank vs the uncompressed input.
+        let marker = "data:image/png;base64,";
+        let start = html.find(marker).unwrap() + marker.len();
+        let end = html[start..].find('"').unwrap() + start;
+        let embedded = &html[start..end];
+        let embedded_len = decoded_base64_len(embedded).unwrap();
+        assert!(
+            embedded_len < raw_len,
+            "expected recompress {embedded_len} < original {raw_len}"
+        );
+        assert!(embedded_len <= MAX_IMAGE_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn tiny_png_embeds_unchanged() {
+        let tiny = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let nb = serde_json::json!({
+            "nbformat": 4,
+            "metadata": {},
+            "cells": [{
+                "cell_type": "code",
+                "source": "",
+                "outputs": [{
+                    "output_type": "display_data",
+                    "data": { "image/png": tiny },
+                    "metadata": {}
+                }]
+            }]
+        });
+        let html = notebook_to_preview_html(nb.to_string().as_bytes()).unwrap();
+        assert!(html.contains(&format!("data:image/png;base64,{tiny}")));
+    }
+
+    fn make_png_b64(width: u32, height: u32, compression: CompressionType) -> (String, usize) {
+        use image::{ExtendedColorType, ImageEncoder, RgbaImage};
+        let mut img = RgbaImage::new(width, height);
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
+            // Smooth gradient compresses well after Default; uncompressed IDAT stays large.
+            *pixel = image::Rgba([
+                (x % 256) as u8,
+                (y % 256) as u8,
+                ((x + y) % 256) as u8,
+                255,
+            ]);
+        }
+        let mut out = Vec::new();
+        let enc = PngEncoder::new_with_quality(&mut out, compression, PngFilterType::NoFilter);
+        enc.write_image(
+            img.as_raw(),
+            width,
+            height,
+            ExtendedColorType::Rgba8,
+        )
+        .unwrap();
+        let len = out.len();
+        (base64::engine::general_purpose::STANDARD.encode(out), len)
+    }
+
+    #[test]
+        fn encodes_svg_as_img_data_url() {
         let nb = serde_json::json!({
             "nbformat": 4,
             "metadata": {},

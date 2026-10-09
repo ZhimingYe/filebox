@@ -5,7 +5,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 ## Unreleased
 
 ### Added
-- **Jupyter notebook (`.ipynb`) preview** — Hub washes nbformat JSON into a self-contained HTML document and serves it through the existing sandboxed HTML preview session (markdown + code cells, stream/error text, small png/jpeg/svg outputs). Oversized image outputs (decoded payload above ~1.5 MiB) are omitted with a note; raw HTML / widget / JS outputs are not rendered. Not an interactive Jupyter runtime.
+- **Jupyter notebook (`.ipynb`) preview** — Hub washes nbformat JSON into a self-contained HTML document and serves it through the existing sandboxed HTML preview session (markdown + code cells, stream/error text, png/jpeg/svg outputs). Mid-size png/jpeg outputs (decoded payload above ~350 KiB) get mild server-side recompression / downscale before embedding; payloads that remain above ~1.5 MiB are omitted with a note; raw HTML / widget / JS outputs are not rendered. Not an interactive Jupyter runtime.
 - **Monaco preview for Quarto / R Markdown** — `.qmd`, `.rmd`, and `.rmarkdown` open in the read-only code viewer with a custom Monarch `quarto` language (YAML front matter, `{r}` / `{python}` / … fenced chunks embedding built-in highlighters, `:::` divs, inline `` `r` ``). Rich rendered Rmd remains a follow-up.
 
 ## v2.1.0
