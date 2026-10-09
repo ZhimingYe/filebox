@@ -508,6 +508,7 @@ export function CollectionsView({
               onTogglePin={previewTabs.togglePin}
               roots={agent.roots}
               officeCapable={!!agent.capabilities?.office_pdf_preview}
+              onRevealInBrowser={onOpenInFiles}
             />
           )}
         />

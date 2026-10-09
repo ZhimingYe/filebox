@@ -20,6 +20,7 @@ import { PreviewPane } from './components/PreviewPane';
 import { PreviewErrorBoundary } from './components/PreviewErrorBoundary';
 import { PreviewWorkspace } from './components/PreviewWorkspace';
 import { PreviewHeaderActions } from './components/PreviewHeaderActions';
+import { parentDir } from './components/parentDir';
 import { usePreviewTabs } from './hooks/usePreviewTabs';
 import { AgentSettings } from './components/AgentSettings';
 import { AboutDialog } from './components/AboutDialog';
@@ -1233,6 +1234,7 @@ export default function App() {
                         onTogglePin={previewTabs.togglePin}
                         roots={selectedAgent.roots}
                         officeCapable={!!selectedAgent.capabilities?.office_pdf_preview}
+                        onRevealInBrowser={openInFiles}
                       />
                     ) : null}
                   />
@@ -1293,6 +1295,7 @@ export default function App() {
                         onTogglePin={previewTabs.togglePin}
                         roots={selectedAgent.roots}
                         officeCapable={!!selectedAgent.capabilities?.office_pdf_preview}
+                        onRevealInBrowser={openInFiles}
                       />
                     ) : null}
                   />
@@ -1302,7 +1305,15 @@ export default function App() {
                 && (view === 'files' || view === 'explorer' || view === 'collections') && (
                 <div style={styles.mobilePreviewWrap}>
                   <div style={styles.previewHeader}>
-                    <span style={styles.previewPath}>{activeTab.path}</span>
+                    <button
+                      type="button"
+                      style={styles.previewPathBtn}
+                      title="Show containing folder in file browser"
+                      aria-label={`Show containing folder for ${activeTab.path}`}
+                      onClick={() => openInFiles(activeTab.root, parentDir(activeTab.path))}
+                    >
+                      {activeTab.path}
+                    </button>
                     <div style={styles.previewActions}>
                       <PreviewHeaderActions
                         agentId={selectedAgent.id}
@@ -1898,6 +1909,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   previewActions: { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 },
   previewPath: { color: c.textMuted, fontSize: 12, fontFamily: font.mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 },
+  previewPathBtn: {
+    color: c.textMuted, fontSize: 12, fontFamily: font.mono,
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    flex: 1, minWidth: 0, textAlign: 'left' as const,
+    background: 'none', border: 'none', padding: 0, margin: 0,
+    cursor: 'pointer',
+  },
   // ── Mobile file/preview ──
   mobileFileWrap: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, minHeight: 0 },
   // Full-bleed sibling of the Files shell inside contentArea (row flex).

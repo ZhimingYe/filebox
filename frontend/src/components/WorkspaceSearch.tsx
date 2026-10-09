@@ -12,6 +12,7 @@ import type { AgentInfo, SearchHit, SearchMode, WorkspaceSearchResult, RootInfo 
 import { cancelRequest, friendlyMessage, workspaceSearch } from '../api/client';
 import { IconCheck, IconChevronRight, IconClipboard, IconPreview } from './icons';
 import { fullServerAddress } from './fullServerAddress';
+import { parentDir } from './parentDir';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { useSse } from '../state/events';
 import { c, radius, font } from '../theme';
@@ -937,13 +938,6 @@ function ModeButton({
       {label}
     </button>
   );
-}
-
-function parentDir(path: string): string {
-  const trimmed = path.endsWith('/') && path.length > 1 ? path.replace(/\/+$/, '') : path;
-  const idx = trimmed.lastIndexOf('/');
-  if (idx <= 0) return '/';
-  return trimmed.slice(0, idx) || '/';
 }
 
 function HitCardBody({
