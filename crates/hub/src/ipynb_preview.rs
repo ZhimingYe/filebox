@@ -89,8 +89,8 @@ impl NbString {
 
 /// Convert raw notebook bytes into a washed HTML document (UTF-8).
 pub fn notebook_to_preview_html(raw: &[u8]) -> Result<String, String> {
-    let nb: Notebook = serde_json::from_slice(raw)
-        .map_err(|e| format!("Invalid Jupyter notebook JSON: {e}"))?;
+    let nb: Notebook =
+        serde_json::from_slice(raw).map_err(|e| format!("Invalid Jupyter notebook JSON: {e}"))?;
     Ok(render_notebook(&nb))
 }
 
@@ -103,9 +103,7 @@ fn render_notebook(nb: &Notebook) -> String {
     body.push_str("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n");
     body.push_str("<title>");
     body.push_str(&escape_html(
-        display_name
-            .as_deref()
-            .unwrap_or("Jupyter notebook"),
+        display_name.as_deref().unwrap_or("Jupyter notebook"),
     ));
     body.push_str("</title>\n<style>\n");
     body.push_str(PREVIEW_CSS);
@@ -222,14 +220,18 @@ fn render_output(out: &mut String, output: &RawOutput) {
                 "nb-output nb-stream"
             };
             out.push_str(&format!("<pre class=\"{class}\">"));
-            out.push_str(&escape_html(&truncate_text(&output.text.join())));
+            // Streams (esp. stderr from rich tooling) often include ANSI codes.
+            out.push_str(&escape_html(&truncate_text(&strip_ansi(
+                &output.text.join(),
+            ))));
             out.push_str("</pre>");
         }
         "error" => {
             let mut text = String::new();
             if !output.traceback.is_empty() {
-                // Tracebacks often contain ANSI; strip common ESC sequences lightly.
-                text.push_str(&strip_ansi(&output.traceback.join("\n")));
+                // Traceback lines already include trailing newlines (nbformat/IPython);
+                // concatenate like the classic frontend, then strip ANSI.
+                text.push_str(&strip_ansi(&output.traceback.concat()));
             } else {
                 text.push_str(&format!(
                     "{}: {}",
@@ -257,14 +259,19 @@ fn render_mime_bundle(out: &mut String, data: &Value) {
         return;
     };
 
-    // Prefer safe, useful MIME types. Deliberately omit text/html, JS, and widgets.
+    // Safe MIME preference adapted from nbconvert HTMLExporter display_data_priority:
+    // skip widgets / JS / text/html (sandbox policy); among remaining types prefer
+    // raster/SVG images, then markdown, then plain. When an image is omitted
+    // (oversize / invalid), fall through to the next candidate instead of stopping.
     const ORDER: &[&str] = &[
         "image/png",
         "image/jpeg",
         "image/svg+xml",
-        "text/plain",
         "text/markdown",
+        "text/plain",
     ];
+
+    let mut deferred_notes: Vec<String> = Vec::new();
 
     for mime in ORDER {
         let Some(payload) = obj.get(*mime) else {
@@ -276,47 +283,64 @@ fn render_mime_bundle(out: &mut String, data: &Value) {
                 let cleaned = value.split_whitespace().collect::<String>();
                 match decoded_base64_len(&cleaned) {
                     Some(len) if len > MAX_IMAGE_OUTPUT_BYTES => {
-                        out.push_str(&format!(
+                        deferred_notes.push(format!(
                             "<div class=\"nb-note\">Image omitted ({mime}, ~{} bytes; limit {} bytes)</div>",
                             len, MAX_IMAGE_OUTPUT_BYTES
                         ));
+                        continue;
                     }
                     Some(_) => {
+                        for note in &deferred_notes {
+                            out.push_str(note);
+                        }
                         out.push_str(&format!(
                             "<img class=\"nb-image\" alt=\"\" src=\"data:{mime};base64,{}\">",
                             escape_attr(&cleaned)
                         ));
+                        return;
                     }
                     None => {
-                        out.push_str("<div class=\"nb-note\">Invalid image payload omitted</div>");
+                        deferred_notes.push(
+                            "<div class=\"nb-note\">Invalid image payload omitted</div>"
+                                .to_string(),
+                        );
+                        continue;
                     }
                 }
-                return;
             }
             "image/svg+xml" => {
                 // Encode as an <img data URL> so scripts inside SVG never execute.
                 let bytes = value.as_bytes();
                 if bytes.len() > MAX_IMAGE_OUTPUT_BYTES {
-                    out.push_str(&format!(
+                    deferred_notes.push(format!(
                         "<div class=\"nb-note\">SVG omitted (~{} bytes; limit {} bytes)</div>",
                         bytes.len(),
                         MAX_IMAGE_OUTPUT_BYTES
                     ));
-                } else {
-                    let encoded = urlencoding_encode(&value);
-                    out.push_str(&format!(
-                        "<img class=\"nb-image\" alt=\"\" src=\"data:image/svg+xml;charset=utf-8,{encoded}\">"
-                    ));
+                    continue;
                 }
+                for note in &deferred_notes {
+                    out.push_str(note);
+                }
+                let encoded = urlencoding_encode(&value);
+                out.push_str(&format!(
+                    "<img class=\"nb-image\" alt=\"\" src=\"data:image/svg+xml;charset=utf-8,{encoded}\">"
+                ));
                 return;
             }
             "text/markdown" => {
+                for note in &deferred_notes {
+                    out.push_str(note);
+                }
                 out.push_str("<div class=\"nb-output nb-md-output\">");
                 out.push_str(&sanitize_markdown(&value));
                 out.push_str("</div>");
                 return;
             }
             "text/plain" => {
+                for note in &deferred_notes {
+                    out.push_str(note);
+                }
                 out.push_str("<pre class=\"nb-output nb-text\">");
                 out.push_str(&escape_html(&truncate_text(&value)));
                 out.push_str("</pre>");
@@ -324,6 +348,14 @@ fn render_mime_bundle(out: &mut String, data: &Value) {
             }
             _ => {}
         }
+    }
+
+    // Omitted/invalid images with no remaining safe MIME still surface their notes.
+    if !deferred_notes.is_empty() {
+        for note in &deferred_notes {
+            out.push_str(note);
+        }
+        return;
     }
 
     let kinds: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
@@ -655,7 +687,7 @@ mod tests {
         assert!(html.contains("ValueError"));
         assert!(!html.contains("\u{1b}"));
         assert!(html.contains("data:image/png;base64,"));
-        // text/plain preferred over text/html for the HTML-display cell
+        // text/plain is used because text/html is intentionally not rendered
         assert!(html.contains("IPython.core.display.HTML object"));
         assert!(!html.contains("onerror=alert"));
     }
@@ -713,5 +745,147 @@ mod tests {
         assert!(html.contains("https://example.com"));
         // javascript: links should be stripped or neutralized by ammonia
         assert!(!html.contains("javascript:alert"));
+    }
+
+    #[test]
+    fn prefers_markdown_over_plain_in_mime_bundle() {
+        let nb = serde_json::json!({
+            "nbformat": 4,
+            "metadata": {},
+            "cells": [{
+                "cell_type": "code",
+                "source": "",
+                "outputs": [{
+                    "output_type": "display_data",
+                    "data": {
+                        "text/plain": "plain fallback",
+                        "text/markdown": "**bold md**"
+                    },
+                    "metadata": {}
+                }]
+            }]
+        });
+        let html = notebook_to_preview_html(nb.to_string().as_bytes()).unwrap();
+        assert!(html.contains("<strong>bold md</strong>"));
+        assert!(html.contains("nb-md-output"));
+        assert!(!html.contains("plain fallback"));
+    }
+
+    #[test]
+    fn oversized_image_falls_through_to_text_plain() {
+        let big = "A".repeat(2_800_000);
+        let nb = serde_json::json!({
+            "nbformat": 4,
+            "metadata": {},
+            "cells": [{
+                "cell_type": "code",
+                "source": "",
+                "outputs": [{
+                    "output_type": "display_data",
+                    "data": {
+                        "image/png": big,
+                        "text/plain": "figure-repr"
+                    },
+                    "metadata": {}
+                }]
+            }]
+        });
+        let html = notebook_to_preview_html(nb.to_string().as_bytes()).unwrap();
+        assert!(html.contains("Image omitted"));
+        assert!(html.contains("figure-repr"));
+        assert!(!html.contains("data:image/png;base64,AAA"));
+    }
+
+    #[test]
+    fn concatenates_traceback_lines_without_extra_blank_lines() {
+        let nb = serde_json::json!({
+            "nbformat": 4,
+            "metadata": {},
+            "cells": [{
+                "cell_type": "code",
+                "source": "raise ValueError('x')",
+                "outputs": [{
+                    "output_type": "error",
+                    "ename": "ValueError",
+                    "evalue": "x",
+                    "traceback": [
+                        "line1\n",
+                        "line2\n",
+                        "ValueError: x\n"
+                    ]
+                }]
+            }]
+        });
+        let html = notebook_to_preview_html(nb.to_string().as_bytes()).unwrap();
+        assert!(html.contains("line1\nline2\nValueError: x"));
+        assert!(!html.contains("line1\n\nline2"));
+    }
+
+    #[test]
+    fn strips_ansi_from_stream_output() {
+        let nb = serde_json::json!({
+            "nbformat": 4,
+            "metadata": {},
+            "cells": [{
+                "cell_type": "code",
+                "source": "",
+                "outputs": [{
+                    "output_type": "stream",
+                    "name": "stderr",
+                    "text": "\u{1b}[31mwarn\u{1b}[0m: hi\n"
+                }]
+            }]
+        });
+        let html = notebook_to_preview_html(nb.to_string().as_bytes()).unwrap();
+        assert!(html.contains("warn: hi"));
+        assert!(!html.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn handles_unicode_empty_cells_and_string_source() {
+        let nb = serde_json::json!({
+            "nbformat": 4,
+            "metadata": { "language_info": { "name": "python" } },
+            "cells": [
+                { "cell_type": "markdown", "source": "" },
+                {
+                    "cell_type": "code",
+                    "execution_count": null,
+                    "source": "print('你好')",
+                    "outputs": []
+                },
+                { "cell_type": "raw", "source": ["raw <tag>\n", "line2"] }
+            ]
+        });
+        let html = notebook_to_preview_html(nb.to_string().as_bytes()).unwrap();
+        assert!(html.contains("你好"));
+        assert!(html.contains("In&nbsp;[&nbsp;]:"));
+        assert!(html.contains("raw &lt;tag&gt;"));
+        assert!(html.contains("nb-raw"));
+    }
+
+    #[test]
+    fn encodes_svg_as_img_data_url() {
+        let nb = serde_json::json!({
+            "nbformat": 4,
+            "metadata": {},
+            "cells": [{
+                "cell_type": "code",
+                "source": "",
+                "outputs": [{
+                    "output_type": "display_data",
+                    "data": {
+                        "image/svg+xml": "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script><rect width='1' height='1'/></svg>",
+                        "text/plain": "<svg>"
+                    },
+                    "metadata": {}
+                }]
+            }]
+        });
+        let html = notebook_to_preview_html(nb.to_string().as_bytes()).unwrap();
+        assert!(html.contains("data:image/svg+xml;charset=utf-8,"));
+        // Script must be percent-encoded inside the data URL, not live markup.
+        assert!(!html.contains("<script>alert"));
+        assert!(html.contains("%3Cscript%3E"));
     }
 }
