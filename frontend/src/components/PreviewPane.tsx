@@ -156,8 +156,9 @@ export const PreviewPane = memo(function PreviewPane({
   }
 
   if (isHtmlPreviewExt(ext)) {
+    const label = ext === 'ipynb' ? 'Loading notebook preview...' : 'Loading HTML viewer...';
     return (
-      <Suspense fallback={<SuspenseFallback label="Loading HTML viewer..." />}>
+      <Suspense fallback={<SuspenseFallback label={label} />}>
         <HtmlPreview agentId={agentId} root={root} path={path} url={url} />
       </Suspense>
     );

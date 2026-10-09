@@ -528,7 +528,7 @@ pub async fn preview_resource_handler(
     resp
 }
 
-/// Document-mode decision: a GET navigation request for an HTML file.
+/// Document-mode decision: a GET navigation request for an HTML or `.ipynb` file.
 /// The `Sec-Fetch-Mode` header makes it opt-in — plain GETs (curl, scripts,
 /// link prefetches without the header) stay in raw resource mode.
 fn is_preview_document_request(
@@ -538,7 +538,7 @@ fn is_preview_document_request(
 ) -> bool {
     method == axum::http::Method::GET
         && sec_fetch_mode_is_document_navigation(headers)
-        && crate::preview_doc::is_html_path(path)
+        && crate::preview_doc::is_preview_document_path(path)
 }
 
 /// True when the request is a top-level or iframe navigation (browsers send
@@ -960,7 +960,7 @@ async fn serve_raw_file(
     resp.into_response()
 }
 
-/// Document-mode preview response: collects the HTML file (bounded by
+/// Document-mode preview response: collects the HTML / notebook file (bounded by
 /// [`crate::preview_doc::PREVIEW_DOCUMENT_MAX_BYTES`]), injects the sandbox
 /// guards at the byte level, and returns it with document-mode headers so
 /// the iframe can actually render it (no `frame-ancestors`, unlike raw
@@ -997,7 +997,7 @@ async fn serve_preview_document(
             StatusCode::PAYLOAD_TOO_LARGE,
             "preview_too_large",
             &format!(
-                "HTML preview documents are limited to {} bytes",
+                "HTML / notebook preview documents are limited to {} bytes",
                 crate::preview_doc::PREVIEW_DOCUMENT_MAX_BYTES
             ),
             false,
@@ -1011,7 +1011,22 @@ async fn serve_preview_document(
         Ok(raw) => raw,
         Err(resp) => return resp,
     };
-    let injected = crate::preview_doc::inject_preview_guards(&raw, &document_base_url);
+    let document_bytes = if crate::preview_doc::is_ipynb_path(&target.path) {
+        match crate::ipynb_preview::notebook_to_preview_html(&raw) {
+            Ok(html) => html.into_bytes(),
+            Err(message) => {
+                return error_response(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "invalid_notebook",
+                    &message,
+                    false,
+                );
+            }
+        }
+    } else {
+        raw
+    };
+    let injected = crate::preview_doc::inject_preview_guards(&document_bytes, &document_base_url);
     let mut resp = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")

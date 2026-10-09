@@ -25,6 +25,20 @@ pub fn is_html_path(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// True when `path` is a Jupyter notebook (`.ipynb`, case-insensitive).
+pub fn is_ipynb_path(path: &str) -> bool {
+    path.rsplit('.')
+        .next()
+        .map(|ext| ext.eq_ignore_ascii_case("ipynb"))
+        .unwrap_or(false)
+}
+
+/// Paths that use the sandboxed HTML document-mode preview pipeline:
+/// native HTML and washed Jupyter notebooks.
+pub fn is_preview_document_path(path: &str) -> bool {
+    is_html_path(path) || is_ipynb_path(path)
+}
+
 /// Absolute origin (`scheme://host`) for injected absolute URLs.
 ///
 /// Scheme comes from `X-Forwarded-Proto` (whitelisted to http/https) so the
@@ -284,6 +298,10 @@ mod tests {
         assert!(!is_html_path("report.md"));
         assert!(!is_html_path("report"));
         assert!(!is_html_path("report.html.bak"));
+        assert!(is_ipynb_path("analysis.IPYNB"));
+        assert!(is_preview_document_path("analysis.ipynb"));
+        assert!(is_preview_document_path("index.html"));
+        assert!(!is_preview_document_path("report.md"));
     }
 
     #[test]
