@@ -425,3 +425,18 @@ button {
   flex: 1 1 auto;
   min-height: 0;
 }
+
+.neo-header-btn {
+  border: 1px solid #3f4454;
+  background: #222633;
+  color: #e8e8ec;
+  border-radius: 4px;
+  padding: 1px 8px;
+  margin: 4px 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.neo-header-btn:hover {
+  background: #2a2f3d;
+}

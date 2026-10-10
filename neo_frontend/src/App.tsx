@@ -8,6 +8,7 @@ import {
 } from 'dockview-react'
 import { FileTreePanel } from './panels/FileTreePanel'
 import { PreviewPanel } from './panels/PreviewPanel'
+import { PopoutAction } from './panels/PopoutAction'
 import { fetchHubHealth, type HubHealth } from './hubStatus'
 import { WorkspaceProvider } from './state/workspace'
 
@@ -24,6 +25,8 @@ function NeoShell() {
   const abortRef = useRef<AbortController | null>(null)
   const apiRef = useRef<DockviewApi | null>(null)
   const previewSeq = useRef(1)
+  const [popouts, setPopouts] = useState(0)
+  const [popoutNote, setPopoutNote] = useState<string | null>(null)
 
   const refreshHealth = useCallback(async () => {
     abortRef.current?.abort()
@@ -45,6 +48,19 @@ function NeoShell() {
   const onReady = useCallback((event: DockviewReadyEvent) => {
     const { api } = event
     apiRef.current = api
+    const sync = () => setPopouts(api.getPopouts().length)
+    api.onDidAddPopoutGroup(() => {
+      setPopoutNote(null)
+      sync()
+    })
+    api.onDidRemovePopoutGroup(sync)
+    api.onDidOpenPopoutWindowFail((e) =>
+      setPopoutNote(
+        e.reason === 'blocked'
+          ? 'Popout blocked by the browser — allow pop-ups for this site.'
+          : `Popout failed (${e.reason}).`,
+      ),
+    )
     api.addPanel({
       id: 'file-tree',
       component: 'fileTree',
@@ -90,6 +106,12 @@ function NeoShell() {
           <button type="button" className="neo-topbar__btn" onClick={addPreviewPanel}>
             + Preview panel
           </button>
+          {popoutNote && <span className="neo-topbar__status bad">{popoutNote}</span>}
+          {popouts > 0 && (
+            <span className="neo-topbar__status ok">
+              {popouts} popout{popouts > 1 ? 's' : ''}
+            </span>
+          )}
           <span
             className={
               health.ok ? 'neo-topbar__status ok' : 'neo-topbar__status bad'
@@ -108,6 +130,7 @@ function NeoShell() {
           theme={themeDark}
           components={components}
           onReady={onReady}
+          rightHeaderActionsComponent={PopoutAction}
           className="neo-dockview"
         />
       </main>

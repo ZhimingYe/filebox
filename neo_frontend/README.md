@@ -43,3 +43,12 @@ npm install
 npm test
 npm run build
 ```
+
+## Popout (same origin)
+
+Group headers have **Pop out** / **Dock**. dockview moves the live DOM into a
+window opened from `/neo/popout.html` (served from `public/`). Because the
+React tree, the viewer registry and the dom-park mounts stay in one JS realm,
+popouts share one data source with no sync layer. Moving an `<iframe>`
+between documents reloads it, so PDF/HTML bodies re-fetch once on pop out /
+dock. Popups need a user gesture; a blocked popup shows a note in the top bar.
