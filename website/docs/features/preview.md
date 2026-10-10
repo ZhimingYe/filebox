@@ -42,6 +42,12 @@ Word / PowerPoint convert to PDF on the Agent via LibreOffice; spreadsheets expo
 
 Settings has an **Office preview** toggle (browser-local preference, on by default).
 
+## HTML
+
+`.html` / `.htm` open in a **sandboxed preview session** (directory-scoped bearer token, TTL, per-session request/byte limits) — not a raw same-origin iframe. In document mode the Hub injects a locked absolute `<base>`, CSP and charset meta, and fixes anchors on navigation so relative links between files and in-page `#fragment` links work inside the sandbox; `../` is a hard boundary. Subresource / HEAD / XHR stay in locked-down raw mode. Document-mode CSP allows `data:` on `script-src` and `style-src`, so self-contained Quarto / Pandoc `data:text/css` stylesheets and `data:application/javascript` module scripts render with their intended fonts and layout (network egress remains limited to the tokenized preview origin). Use **Source** for the HTML source; open-in-new-window uses the same sandboxed pattern. Documents over 64 MiB are refused; like other HTML-class previews, files at or above 2 MiB ask for confirmation before loading.
+
+![HTML preview quarto-user.html](/screenshots/08i-preview-html.png)
+
 ## Jupyter notebook (`.ipynb`)
 
 Notebooks open through Filebox’s sandboxed HTML preview: the Hub washes nbformat JSON into a self-contained HTML document (markdown cells, code cells with execution counts, stream / error text with ANSI stripped, and png / jpeg / svg outputs). Mid-size png/jpeg payloads (decoded above ~350 KiB) get mild server-side recompression / downscale before embedding; payloads that remain above ~1.5 MiB are omitted with a note. Raw HTML, widgets, and JavaScript outputs are not rendered. This is **not** an interactive Jupyter runtime — read-only preview only. Large notebooks may ask for confirmation before loading (same oversized-file gate as other HTML-class previews).
@@ -57,7 +63,7 @@ Notebooks open through Filebox’s sandboxed HTML preview: the Hub washes nbform
 | Markdown | Rendered |
 | Code / text / logs | Monaco read-only |
 | Quarto / R Markdown (`.qmd` / `.rmd` / `.rmarkdown`) | Monaco source view (`quarto` language; YAML + chunks; not rendered) |
-| HTML | Sandboxed session |
+| HTML (`.html` / `.htm`) | Sandboxed session (locked `<base>` + CSP; relative / `#fragment` links; `data:` CSS/JS for self-contained Quarto/Pandoc; 64 MiB hard cap; 2 MiB confirm) |
 | Jupyter notebook (`.ipynb`) | Hub-washed HTML in the same sandboxed session (read-only; mid-size png/jpeg mildly recompressed; oversized omitted; no widgets/JS) |
 | CSV / TSV | Table |
 | Word / PPT | Optional: Agent-side → PDF |

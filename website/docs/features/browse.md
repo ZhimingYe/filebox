@@ -27,7 +27,7 @@ After selecting an Agent, open **Files**: Agents and nav on the left, a virtuali
 1. Select an Agent → click **Files**.
 2. Pick an added root from the dropdown.
 3. Click a folder to enter; use `..` or breadcrumbs to go up.
-4. Click a file: a preview tab opens on the right (image, PDF, code, Markdown, Quarto/Rmd, Jupyter `.ipynb`, CSV, …).
+4. Click a file: a preview tab opens on the right (image, PDF, code, Markdown, Quarto/Rmd, HTML, Jupyter `.ipynb`, CSV, …).
 5. Optionally open the tree panel from the toolbar, or **Pin** the current folder to the sidebar.
 
 ## Tips

@@ -22,7 +22,7 @@ heroShot:
   linkText: See multi-tab preview
 features:
   - title: Browse & preview
-    details: Smooth large-directory listing, breadcrumbs, pins; preview images / PDF / code / Markdown / Quarto·Rmd / Jupyter notebooks / CSV / Office in place — no need to scp an entire tree first.
+    details: Smooth large-directory listing, breadcrumbs, pins; preview images / PDF / code / Markdown / Quarto·Rmd / HTML / Jupyter notebooks / CSV / Office in place — no need to scp an entire tree first.
     link: /features/preview
     linkText: Preview types
   - title: Multi-tab workspace
