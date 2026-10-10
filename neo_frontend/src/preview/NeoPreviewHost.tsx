@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   keepAliveParkStyle,
+  clearViewerState,
   keepAliveStrategyForPath,
   MAX_DOM_PARKED,
   selectDomParkTabIds,
+  viewerStateKey,
 } from './previewKeepAlive'
 import { PdfFrame } from './PdfFrame'
 import { HtmlFrame } from './HtmlFrame'
@@ -80,6 +82,30 @@ export function NeoPreviewHost({ panelId }: Props) {
       setActivationOrder((prev) => prev.filter((x) => x !== id))
     },
     [activeTabId],
+  )
+
+  // Pin-only registry: when a tab stops being pinned (unpin / close) drop its
+  // saved viewer state. Runs after child unmount cleanups in the same commit,
+  // so a pinned tab closed while active does not leave a stale snapshot that
+  // a re-opened (unpinned) tab would restore. Also clears on host unmount.
+  const pinnedIdsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const now = new Set(tabs.filter((t) => t.pinned).map((t) => t.id))
+    for (const id of pinnedIdsRef.current) {
+      if (!now.has(id)) clearViewerState(viewerStateKey(id, 0))
+    }
+    pinnedIdsRef.current = now
+  }, [tabs])
+  useEffect(
+    () => () => {
+      const ids = [...pinnedIdsRef.current]
+      // Parent passive cleanup runs before children's; defer so frames'
+      // own unmount saves land first, then wipe them.
+      setTimeout(() => {
+        for (const id of ids) clearViewerState(viewerStateKey(id, 0))
+      }, 0)
+    },
+    [],
   )
 
   const parkedIds = useMemo(

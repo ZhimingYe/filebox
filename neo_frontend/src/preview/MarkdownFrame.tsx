@@ -28,6 +28,11 @@ export function MarkdownFrame({ agentId, root, path, tabId, pinned }: Props) {
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const stateKey = viewerStateKey(tabId, 0)
+  // Passive-effect cleanup on unmount runs after the DOM node is detached
+  // (scrollTop reads 0), so track the live scroll position via onScroll.
+  const scrollPosRef = useRef({ top: 0, left: 0 })
+  const pinnedRef = useRef(pinned)
+  pinnedRef.current = pinned
 
   useEffect(() => {
     const ac = new AbortController()
@@ -58,24 +63,36 @@ export function MarkdownFrame({ agentId, root, path, tabId, pinned }: Props) {
       el.scrollTop = saved.scrollTop
       if (saved.scrollLeft != null) el.scrollLeft = saved.scrollLeft
     }
+    scrollPosRef.current = { top: el.scrollTop, left: el.scrollLeft }
     return () => {
-      if (pinned) {
+      // Read pinned at unmount time (not effect-creation time) so toggling
+      // pin on a mounted tab does not re-save/clear the registry.
+      if (pinnedRef.current) {
         setViewerState(stateKey, {
           kind: 'scroll',
-          scrollTop: el.scrollTop,
-          scrollLeft: el.scrollLeft,
+          scrollTop: scrollPosRef.current.top,
+          scrollLeft: scrollPosRef.current.left,
         })
       } else {
         clearViewerState(stateKey)
       }
     }
-  }, [stateKey, text, pinned])
+  }, [stateKey, text])
 
   if (error) return <p className="neo-panel__muted">Markdown failed: {error}</p>
   if (text == null) return <p className="neo-panel__muted">Loading markdown…</p>
 
   return (
-    <div className="neo-md-frame" ref={scrollRef}>
+    <div
+      className="neo-md-frame"
+      ref={scrollRef}
+      onScroll={(e) => {
+        scrollPosRef.current = {
+          top: e.currentTarget.scrollTop,
+          left: e.currentTarget.scrollLeft,
+        }
+      }}
+    >
       <article className="neo-md-body">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
       </article>

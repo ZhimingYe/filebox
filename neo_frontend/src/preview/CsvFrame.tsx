@@ -34,6 +34,11 @@ export function CsvFrame({ agentId, root, path, tabId, pinned, ext }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef(view)
   viewRef.current = view
+  // Passive-effect cleanup on unmount runs after the DOM node is detached
+  // (scrollTop reads 0), so track the live scroll position via onScroll.
+  const scrollTopRef = useRef(0)
+  const pinnedRef = useRef(pinned)
+  pinnedRef.current = pinned
 
   useEffect(() => {
     const ac = new AbortController()
@@ -61,18 +66,21 @@ export function CsvFrame({ agentId, root, path, tabId, pinned, ext }: Props) {
     if (!el) return
     const s = getViewerState(stateKey)
     if (s?.kind === 'csv') el.scrollTop = s.scrollTop
+    scrollTopRef.current = el.scrollTop
     return () => {
-      if (pinned) {
+      // Read pinned at unmount time (not effect-creation time) so toggling
+      // pin on a mounted tab does not re-save/clear the registry.
+      if (pinnedRef.current) {
         setViewerState(stateKey, {
           kind: 'csv',
-          scrollTop: el.scrollTop,
+          scrollTop: scrollTopRef.current,
           view: viewRef.current,
         })
       } else {
         clearViewerState(stateKey)
       }
     }
-  }, [stateKey, text, pinned])
+  }, [stateKey, text])
 
   const parsed = useMemo(() => {
     if (!text) return null
@@ -107,7 +115,13 @@ export function CsvFrame({ agentId, root, path, tabId, pinned, ext }: Props) {
           </span>
         )}
       </div>
-      <div className="neo-csv-stage" ref={scrollRef}>
+      <div
+        className="neo-csv-stage"
+        ref={scrollRef}
+        onScroll={(e) => {
+          scrollTopRef.current = e.currentTarget.scrollTop
+        }}
+      >
         {view === 'raw' ? (
           <pre className="neo-csv-raw">{text.slice(0, 200_000)}</pre>
         ) : (
