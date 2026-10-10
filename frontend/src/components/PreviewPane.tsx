@@ -44,6 +44,12 @@ interface Props {
    * same-second mtime, common on copied/restored HPC files).
    */
   rev?: number;
+  /**
+   * ViewerStateRegistry key (tabId@rev). Light pin strategy viewers
+   * (image / Monaco / markdown / CSV) save/restore under this key so
+   * pinning keeps state without a parked DOM mount.
+   */
+  stateKey?: string;
 }
 
 function SuspenseFallback({ label }: { label: string }) {
@@ -97,7 +103,7 @@ function DownloadFallback({
 // frame) does not re-render the preview subtree. Props are all primitives
 // that only change when the selected file changes.
 export const PreviewPane = memo(function PreviewPane({
-  agentId, root, path, entryType, denied, officeCapable = false, rev,
+  agentId, root, path, entryType, denied, officeCapable = false, rev, stateKey,
 }: Props) {
   if (denied) {
     return (
@@ -134,7 +140,7 @@ export const PreviewPane = memo(function PreviewPane({
     // and a clean AbortController/blob-URL lifecycle per file.
     return (
       <Suspense fallback={<SuspenseFallback label="Loading image viewer..." />}>
-        <ImagePreview key={`${root}:${path}`} agentId={agentId} root={root} path={path} url={url} ext={ext} />
+        <ImagePreview key={`${root}:${path}`} agentId={agentId} root={root} path={path} url={url} ext={ext} stateKey={stateKey} />
       </Suspense>
     );
   }
@@ -150,7 +156,7 @@ export const PreviewPane = memo(function PreviewPane({
   if (['md', 'markdown'].includes(ext)) {
     return (
       <Suspense fallback={<SuspenseFallback label="Loading markdown viewer..." />}>
-        <MarkdownPreview url={url} agentId={agentId} root={root} path={path} />
+        <MarkdownPreview url={url} agentId={agentId} root={root} path={path} stateKey={stateKey} />
       </Suspense>
     );
   }
@@ -167,7 +173,7 @@ export const PreviewPane = memo(function PreviewPane({
   if (['csv', 'tsv'].includes(ext)) {
     return (
       <Suspense fallback={<SuspenseFallback label="Loading CSV viewer..." />}>
-        <CsvPreview url={url} ext={ext} path={path} agentId={agentId} root={root} />
+        <CsvPreview url={url} ext={ext} path={path} agentId={agentId} root={root} stateKey={stateKey} />
       </Suspense>
     );
   }
@@ -213,7 +219,7 @@ export const PreviewPane = memo(function PreviewPane({
   if (isTextFile(ext)) {
     return (
       <Suspense fallback={<SuspenseFallback label="Loading code viewer..." />}>
-        <TextPreview url={url} ext={ext} agentId={agentId} root={root} path={path} />
+        <TextPreview url={url} ext={ext} agentId={agentId} root={root} path={path} stateKey={stateKey} />
       </Suspense>
     );
   }

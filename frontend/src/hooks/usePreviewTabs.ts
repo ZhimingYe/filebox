@@ -25,15 +25,16 @@ import type { FsEntry } from '../api/client';
 //    already-open viewer's state (PDF page, zoom, scroll) on a mere click
 //    would be a regression. `replaceActive` (arrow navigation) never bumps:
 //    re-activating an existing tab must not reset the viewer.
-//  - Tabs are metadata: a tab's body mounts only while it is the active
-//    tab — unless the user pinned it (`pinned`), in which case the body
-//    stays mounted hidden in the background so switching back is instant
-//    and viewer state (PDF page/zoom, image zoom, Monaco scroll) survives.
-//    Unpinned inactive tabs hold no viewer resources; pinned bodies are an
-//    explicit per-tab opt-in (each pinned HTML document stays fully
-//    rendered — the user's choice to pay that cost). Everything else
-//    resets on tab switch by design: keeping up to five hidden bodies
-//    mounted automatically roughly quintupled HTML preview load.
+//  - Tabs are metadata. Pin = keep *state*, not stack always-visible
+//    overlays (see previewKeepAlive):
+//      * Active tab → one interactive mount in the active slot.
+//      * Pinned inactive HTML/PDF/Office → optional DOM keep-alive park
+//        (offscreen, capped at MAX_DOM_PARKED).
+//      * Pinned inactive light viewers (image/Monaco/md/CSV) → unmounted;
+//        ViewerStateRegistry restores zoom/scroll/viewState on activate.
+//      * Unpinned inactive → no mount, no registry entry required.
+//    Auto-mounting every inactive tab used to roughly quintuple HTML load;
+//    pin remains an explicit per-tab opt-in.
 //  - All transitions are pure updater functions so they are safe under
 //    React StrictMode's double-invoke.
 
@@ -48,9 +49,10 @@ export interface PreviewTab {
   /** Refresh generation — bumped to force the preview body to remount. */
   rev: number;
   /**
-   * User opt-in: keep this tab's preview body mounted in the background
-   * when inactive (see PreviewWorkspace), so switching back is instant and
-   * viewer state survives. Unpinned tabs mount nothing while inactive.
+   * User opt-in: keep this tab's viewer state when inactive (DOM park for
+   * HTML/PDF/Office; registry restore for light types — see
+   * previewKeepAlive / PreviewWorkspace). Unpinned tabs mount nothing
+   * while inactive and do not retain viewer state.
    */
   pinned: boolean;
 }
@@ -148,7 +150,7 @@ export interface UsePreviewTabs {
   activate: (tabId: string) => void;
   /** Bump a tab's refresh generation so its preview body remounts. */
   refresh: (tabId: string) => void;
-  /** Pin/unpin a tab: pinned tabs keep their body mounted when inactive. */
+  /** Pin/unpin a tab: pinned tabs keep viewer state when inactive. */
   togglePin: (tabId: string) => void;
   /** Close a tab by id; if it was active, activate the nearest neighbor. */
   close: (tabId: string) => void;

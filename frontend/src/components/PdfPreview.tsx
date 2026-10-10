@@ -500,7 +500,12 @@ export function PdfPreview({
                 alignItems: wideOverflow ? 'flex-start' : 'center',
                 width: wideOverflow ? 'max-content' : '100%',
                 minWidth: '100%',
-                visibility: numPages > 0 ? 'visible' : 'hidden',
+                // Hide until the document reports page count. Use opacity,
+                // NEVER visibility:visible — a child with visibility:visible
+                // punches through an ancestor's visibility:hidden, which is
+                // how pinned inactive PDF panes used to paint over the
+                // active tab (see pinnedPaneHiddenStyle in previewShared).
+                opacity: numPages > 0 ? 1 : 0,
               }}
             >
               {numPages > 0 && layoutReady && Array.from({ length: numPages }, (_, i) => {

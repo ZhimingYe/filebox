@@ -5,6 +5,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 ## Unreleased
 
 ### Fixed
+- **Pinned PDF overlay / pin host model** — a pinned PDF (and Office→PDF) tab no longer paints over the active preview after you switch away. PdfPreview no longer forces `visibility: visible` on its pages column. Pin semantics move toward **keep state, one active mount**: heavy viewers (HTML/PDF/Office) park offscreen in a capped DOM keep-alive; light viewers (image/Monaco/Markdown/CSV) unmount and restore from a viewer-state registry. Park style is always offscreen + `opacity: 0` (no `visibility:hidden`), so descendants cannot punch through into the active slot.
 - **HTML preview self-contained Quarto/Pandoc CSS and module scripts** — document-mode CSP now allows `data:` on `script-src` and `style-src`, so embedded `data:text/css` stylesheets and `data:application/javascript` module scripts load inside the sandboxed preview (previously blocked, leaving unstyled default fonts). Network egress remains limited to the tokenized preview origin; `'unsafe-inline'` was already permitted.
 
 ### Added
