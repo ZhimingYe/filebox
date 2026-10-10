@@ -25,6 +25,20 @@ pub fn is_html_path(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// True when `path` is a Jupyter notebook (`.ipynb`, case-insensitive).
+pub fn is_ipynb_path(path: &str) -> bool {
+    path.rsplit('.')
+        .next()
+        .map(|ext| ext.eq_ignore_ascii_case("ipynb"))
+        .unwrap_or(false)
+}
+
+/// Paths that use the sandboxed HTML document-mode preview pipeline:
+/// native HTML and washed Jupyter notebooks.
+pub fn is_preview_document_path(path: &str) -> bool {
+    is_html_path(path) || is_ipynb_path(path)
+}
+
 /// Absolute origin (`scheme://host`) for injected absolute URLs.
 ///
 /// Scheme comes from `X-Forwarded-Proto` (whitelisted to http/https) so the
@@ -59,6 +73,12 @@ pub fn absolute_origin_from_request(headers: &HeaderMap) -> String {
 /// but deliberately omits `frame-ancestors` so the document can be embedded
 /// in the preview iframe and in the blob new-window wrapper, both of which
 /// have opaque origins.
+///
+/// `data:` is allowed on `script-src` and `style-src` so self-contained
+/// documents (Quarto/Pandoc `embed-resources`, etc.) can load their
+/// `data:application/javascript` module scripts and `data:text/css`
+/// stylesheets. Inline scripts/styles were already permitted via
+/// `'unsafe-inline'`; `data:` does not widen network egress.
 pub fn preview_document_csp(base_url: &str) -> String {
     let source = if base_url.ends_with('/') {
         base_url.to_string()
@@ -66,8 +86,8 @@ pub fn preview_document_csp(base_url: &str) -> String {
         format!("{}/", base_url)
     };
     format!(
-        "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: {}; \
-         style-src 'unsafe-inline' {}; img-src data: blob: {}; font-src data: {}; \
+        "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: data: {}; \
+         style-src 'unsafe-inline' data: {}; img-src data: blob: {}; font-src data: {}; \
          connect-src {}; media-src blob: {}; worker-src blob: {}; frame-src blob: {}; \
          navigate-to blob: {}; base-uri {}; form-action 'none'; object-src 'none'",
         source, source, source, source, source, source, source, source, source, source
@@ -284,6 +304,10 @@ mod tests {
         assert!(!is_html_path("report.md"));
         assert!(!is_html_path("report"));
         assert!(!is_html_path("report.html.bak"));
+        assert!(is_ipynb_path("analysis.IPYNB"));
+        assert!(is_preview_document_path("analysis.ipynb"));
+        assert!(is_preview_document_path("index.html"));
+        assert!(!is_preview_document_path("report.md"));
     }
 
     #[test]
@@ -321,7 +345,8 @@ mod tests {
     fn document_csp_allows_token_origin_and_omits_frame_ancestors() {
         let csp = preview_document_csp("http://h:3000/api/preview/tok/");
         assert!(csp.contains("default-src 'none'"));
-        assert!(csp.contains("script-src 'unsafe-inline' 'unsafe-eval' blob: http://h:3000/api/preview/tok/"));
+        assert!(csp.contains("script-src 'unsafe-inline' 'unsafe-eval' blob: data: http://h:3000/api/preview/tok/"));
+        assert!(csp.contains("style-src 'unsafe-inline' data: http://h:3000/api/preview/tok/"));
         assert!(csp.contains("base-uri http://h:3000/api/preview/tok/"));
         assert!(!csp.contains("frame-ancestors"));
         assert!(csp.contains("form-action 'none'"));
