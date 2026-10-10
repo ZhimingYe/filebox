@@ -16,6 +16,10 @@ Markdown is rendered; plain text and code use a syntax-highlighted editor (read-
 
 ![Code preview hello.py](/screenshots/08c-preview-code.png)
 
+## Quarto / R Markdown
+
+`.qmd`, `.rmd`, and `.rmarkdown` open in the same read-only Monaco viewer with a custom `quarto` language — not download-only. Highlighting covers YAML / Quarto front matter, fenced chunks such as `{r}` / `{python}` (and plain fence language tags), optional `:::` fenced divs, and inline `` `r …` `` / `` `python …` ``. Chunk bodies reuse Monaco’s built-in highlighters for R, Python, Julia, SQL, shell, YAML, and similar. Plain `.md` still uses the rendered Markdown preview. A rich knitr-aware rendered Rmd view is a follow-up — this release is source highlighting only. File-list badges use the R colour category (RMD / QMD).
+
 ## PDF
 
 Built-in PDF viewer with Adaptive / percentage zoom (50 %–200 %) and continuous multi-page scrolling. The demo dataset’s `demo-report.pdf` is a 6-page synthetic lab report (tables, multi-panel figures, a correlation heatmap, equations) so the preview looks realistically dense.
@@ -36,6 +40,10 @@ Word / PowerPoint convert to PDF on the Agent via LibreOffice; spreadsheets expo
 
 Settings has an **Office preview** toggle (browser-local preference, on by default).
 
+## Jupyter notebook (`.ipynb`)
+
+Notebooks open through Filebox’s sandboxed HTML preview: the Hub washes nbformat JSON into a self-contained HTML document (markdown cells, code cells with execution counts, stream / error text with ANSI stripped, and png / jpeg / svg outputs). Mid-size png/jpeg payloads (decoded above ~350 KiB) get mild server-side recompression / downscale before embedding; payloads that remain above ~1.5 MiB are omitted with a note. Raw HTML, widgets, and JavaScript outputs are not rendered. This is **not** an interactive Jupyter runtime — read-only preview only. Large notebooks may ask for confirmation before loading (same oversized-file gate as other HTML-class previews).
+
 ## Supported types
 
 | Type | Behavior |
@@ -44,9 +52,9 @@ Settings has an **Office preview** toggle (browser-local preference, on by defau
 | PDF | Built-in viewer |
 | Markdown | Rendered |
 | Code / text / logs | Monaco read-only |
-| Quarto / R Markdown (`.qmd` / `.rmd`) | Monaco source view |
+| Quarto / R Markdown (`.qmd` / `.rmd` / `.rmarkdown`) | Monaco source view (`quarto` language; YAML + chunks; not rendered) |
 | HTML | Sandboxed session |
-| Jupyter notebook (`.ipynb`) | Hub-washed HTML in the same sandboxed session (read-only; mid-size png/jpeg mildly recompressed; oversized omitted) |
+| Jupyter notebook (`.ipynb`) | Hub-washed HTML in the same sandboxed session (read-only; mid-size png/jpeg mildly recompressed; oversized omitted; no widgets/JS) |
 | CSV / TSV | Table |
 | Word / PPT | Optional: Agent-side → PDF |
 | Excel / ODS | Optional: each sheet → CSV |

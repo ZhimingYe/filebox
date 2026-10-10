@@ -16,6 +16,10 @@ Markdown 渲染；纯文本与代码走语法高亮编辑器（只读：查找�
 
 ![代码预览 hello.py](/screenshots/08c-preview-code.png)
 
+## Quarto / R Markdown
+
+`.qmd`、`.rmd`、`.rmarkdown` 走同一只读 Monaco 查看器，并使用自定义 `quarto` 语言高亮——不再只能下载。高亮覆盖 YAML / Quarto front matter、形如 `{r}` / `{python}` 的代码块（以及普通 fence 语言标签）、可选的 `:::` fenced div，以及行内 `` `r …` `` / `` `python …` ``。块内代码复用 Monaco 内置的 R、Python、Julia、SQL、shell、YAML 等语言。普通 `.md` 仍走渲染型 Markdown 预览。带 knitr 语义的富文本 Rmd 预览仍是后续项——本版仅源码高亮。文件列表徽章使用 R 色系（RMD / QMD）。
+
 ## PDF
 
 内置 PDF 查看器，支持 Adaptive / 百分比缩放（50%–200%），多页连续滚动。演示数据里的 `demo-report.pdf` 为 6 页合成实验报告（表格、多面板图、相关性热图、公式），便于看出预览效果。
@@ -36,6 +40,10 @@ Word / PowerPoint 经 Agent 上 LibreOffice 转为 PDF 后预览；表格导出�
 
 Settings 里有 **Office preview** 开关（浏览器本地偏好，默认开）。
 
+## Jupyter 笔记本（`.ipynb`）
+
+笔记本通过 Filebox 既有的沙箱 HTML 预览打开：Hub 把 nbformat JSON 清洗成自包含 HTML（markdown 单元格、带执行序号的代码单元格、去掉 ANSI 的 stream / error 文本，以及 png / jpeg / svg 输出）。中等体积的 png/jpeg（解码后约超过 ~350 KiB）会在嵌入前做轻度服务端重压缩 / 降采样；仍超过约 ~1.5 MiB 的载荷会省略并附说明。原始 HTML、widget、JavaScript 输出不渲染。这不是交互式 Jupyter 运行时——只读预览。较大笔记本可能先询问再加载（与其他 HTML 类预览的过大文件门槛相同）。
+
 ## 支持类型一览
 
 | 类型 | 行为 |
@@ -44,9 +52,9 @@ Settings 里有 **Office preview** 开关（浏览器本地偏好，默认开）
 | PDF | 内置查看器 |
 | Markdown | 渲染 |
 | 代码 / 文本 / 日志 | Monaco 只读 |
-| Quarto / R Markdown（`.qmd` / `.rmd`） | Monaco 源码视图 |
+| Quarto / R Markdown（`.qmd` / `.rmd` / `.rmarkdown`） | Monaco 源码视图（`quarto` 语言；YAML + 代码块；非渲染） |
 | HTML | 沙箱会话 |
-| Jupyter 笔记本（`.ipynb`） | Hub 清洗为 HTML，走同一沙箱会话（只读；中等 png/jpeg 轻度重压缩；过大省略） |
+| Jupyter 笔记本（`.ipynb`） | Hub 清洗为 HTML，走同一沙箱会话（只读；中等 png/jpeg 轻度重压缩；过大省略；无 widget/JS） |
 | CSV / TSV | 表格 |
 | Word / PPT | 可选：Agent 侧 → PDF |
 | Excel / ODS | 可选：每 sheet → CSV |
