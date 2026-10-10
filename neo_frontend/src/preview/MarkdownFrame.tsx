@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { fetchFileRawText } from '../api/hub'
+import { MD_PREVIEW_MAX_BYTES, formatBytes, trimToLastLine } from './textPreview'
 import {
   clearViewerState,
   getViewerState,
@@ -26,6 +27,7 @@ export function isMarkdownExt(ext: string): boolean {
 export function MarkdownFrame({ agentId, root, path, tabId, pinned }: Props) {
   const [text, setText] = useState<string | null>(null)
   const [truncated, setTruncated] = useState(false)
+  const [totalBytes, setTotalBytes] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const stateKey = viewerStateKey(tabId, 0)
@@ -41,10 +43,17 @@ export function MarkdownFrame({ agentId, root, path, tabId, pinned }: Props) {
     setError(null)
     void (async () => {
       try {
-        const body = await fetchFileRawText(agentId, root, path, ac.signal)
+        const body = await fetchFileRawText(
+          agentId,
+          root,
+          path,
+          ac.signal,
+          MD_PREVIEW_MAX_BYTES,
+        )
         if (!ac.signal.aborted) {
-          setText(body.text)
+          setText(body.truncated ? trimToLastLine(body.text) : body.text)
           setTruncated(body.truncated)
+          setTotalBytes(body.totalBytes)
         }
       } catch (e) {
         if (ac.signal.aborted) return
@@ -98,7 +107,11 @@ export function MarkdownFrame({ agentId, root, path, tabId, pinned }: Props) {
       }}
     >
       {truncated && (
-        <p className="neo-panel__muted">Large file: showing the first 5 MB only.</p>
+        <p className="neo-panel__muted">
+          Large file: showing only the first {formatBytes(MD_PREVIEW_MAX_BYTES)}
+          {totalBytes != null ? ` of ${formatBytes(totalBytes)}` : ''} (preview
+          is capped to keep the page responsive).
+        </p>
       )}
       <article className="neo-md-body">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
