@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchFileRawBlobUrl } from '../api/hub'
 import {
+  clearViewerState,
   getViewerState,
   setViewerState,
   viewerStateKey,
@@ -12,6 +13,7 @@ type Props = {
   path: string
   /** Tab id for registry restore (#86 state strategy). */
   tabId: string
+  pinned: boolean
   active: boolean
 }
 
@@ -29,7 +31,7 @@ export function isImageExt(ext: string): boolean {
  * Image preview with zoom/pan. Unmounts when inactive (#86 `state`);
  * restores from ViewerStateRegistry on remount.
  */
-export function ImageFrame({ agentId, root, path, tabId, active }: Props) {
+export function ImageFrame({ agentId, root, path, tabId, pinned, active }: Props) {
   const [url, setUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const stateKey = viewerStateKey(tabId, 0)
@@ -69,17 +71,21 @@ export function ImageFrame({ agentId, root, path, tabId, active }: Props) {
     }
   }, [agentId, root, path])
 
-  // Persist on unmount / before leave inactive.
+  // Pin = keep state: only persist when pinned; otherwise drop registry key.
   useEffect(() => {
     return () => {
-      setViewerState(stateKey, {
-        kind: 'image',
-        zoom,
-        rotation,
-        pos,
-      })
+      if (pinned) {
+        setViewerState(stateKey, {
+          kind: 'image',
+          zoom,
+          rotation,
+          pos,
+        })
+      } else {
+        clearViewerState(stateKey)
+      }
     }
-  }, [stateKey, zoom, rotation, pos])
+  }, [stateKey, zoom, rotation, pos, pinned])
 
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault()

@@ -199,6 +199,7 @@ function PreviewBody({ tab, active }: { tab: Tab; active: boolean }) {
         root={tab.root}
         path={tab.path}
         tabId={tab.id}
+        pinned={tab.pinned}
         active={active}
       />
     )

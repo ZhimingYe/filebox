@@ -10,15 +10,25 @@ type Props = {
 
 const HTML_SANDBOX = 'allow-scripts allow-downloads'
 
+function escapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
 /** Outer blob page + inner tokenized document URL (classic HtmlPreview shape). */
 function makeSandboxWrapper(documentUrl: string): string {
   const origin = new URL(documentUrl, window.location.origin).origin
+  const safeUrl = escapeHtmlAttr(documentUrl)
+  const safeOrigin = escapeHtmlAttr(origin)
   return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src ${origin};">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src ${safeOrigin};">
 <title>HTML Preview</title>
 <style>
 html,body{margin:0;width:100%;height:100%;background:#0b0c10;}
@@ -26,7 +36,7 @@ iframe{border:0;width:100%;height:100%;}
 </style>
 </head>
 <body>
-<iframe sandbox="${HTML_SANDBOX}" src="${documentUrl}" title="HTML Preview"></iframe>
+<iframe sandbox="${HTML_SANDBOX}" src="${safeUrl}" title="HTML Preview"></iframe>
 </body>
 </html>`
 }
