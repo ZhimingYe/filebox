@@ -90,7 +90,9 @@ export function NeoPreviewHost({ panelId }: Props) {
     [tabs, activeTabId, activationOrder],
   )
 
-  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
+  const mountedTabs = useMemo(() => {
+    return tabs.filter((t) => t.id === activeTabId || parkedIds.has(t.id))
+  }, [tabs, activeTabId, parkedIds])
 
   return (
     <div
@@ -114,7 +116,7 @@ export function NeoPreviewHost({ panelId }: Props) {
               onClick={() => activate(t.id)}
               title={t.path}
             >
-              {t.pinned ? '📌 ' : ''}
+              {t.pinned ? '[pin] ' : ''}
               {basename(t.path)}
             </button>
             <button
@@ -131,37 +133,38 @@ export function NeoPreviewHost({ panelId }: Props) {
               title="Close"
               onClick={() => closeTab(t.id)}
             >
-              ×
+              x
             </button>
           </div>
         ))}
       </div>
       <div className="neo-preview-stage">
-        {activeTab ? (
-          <div className="neo-preview-active">
-            <PreviewBody tab={activeTab} active />
-          </div>
-        ) : (
+        {mountedTabs.length === 0 && (
           <p className="neo-panel__muted">No active preview.</p>
         )}
-        {[...parkedIds].map((id) => {
-          const tab = tabs.find((t) => t.id === id)
-          if (!tab || tab.id === activeTabId) return null
+        {mountedTabs.map((tab) => {
+          const isActive = tab.id === activeTabId
           return (
             <div
-              key={`park-${id}`}
-              style={keepAliveParkStyle}
-              inert
-              aria-hidden
+              key={tab.id}
+              className={isActive ? 'neo-preview-active' : undefined}
+              style={isActive ? undefined : keepAliveParkStyle}
+              {...(isActive
+                ? {}
+                : ({ inert: true, 'aria-hidden': true } as Record<string, unknown>))}
             >
-              <PreviewBody tab={tab} active={false} />
+              <PreviewBody tab={tab} active={isActive} />
             </div>
           )
         })}
       </div>
       <footer className="neo-preview-meta">
         park ≤ {MAX_DOM_PARKED} · parked now {parkedIds.size}
-        {activeTab && needsDomPark(activeTab.path) ? ' · active=dom' : ''}
+        {activeTabId && tabs.find((t) => t.id === activeTabId) && needsDomPark(
+          tabs.find((t) => t.id === activeTabId)!.path,
+        )
+          ? ' · active=dom'
+          : ''}
       </footer>
     </div>
   )

@@ -65,11 +65,17 @@ function NeoShell() {
     previewSeq.current += 1
     const n = previewSeq.current
     const id = `preview-${n}`
+    // Prefer side-by-side so both Preview hosts stay mounted (dual-PDF gate).
+    // 'within' makes a dockview tab and typically unmounts the inactive panel.
+    const ref =
+      api.getPanel('preview-1') ? 'preview-1' : api.panels.find((x) => x.id.startsWith('preview-'))?.id
     api.addPanel({
       id,
       component: 'preview',
       title: `Preview ${n}`,
-      position: { referencePanel: 'preview-1', direction: 'within' },
+      position: ref
+        ? { referencePanel: ref, direction: 'right' }
+        : undefined,
     })
   }, [])
 

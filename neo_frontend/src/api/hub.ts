@@ -131,3 +131,37 @@ export async function createPreviewSession(
     signal,
   )
 }
+
+/** Same-origin raw file URL (needs CSRF header or access_token; not iframe-safe). */
+export function fileRawUrl(agentId: string, root: string, path: string, accessToken?: string) {
+  const params = new URLSearchParams({ agent_id: agentId, root, path })
+  if (accessToken) params.set('access_token', accessToken)
+  return `/api/file/raw?${params}`
+}
+
+/**
+ * Fetch PDF/bytes with session+CSRF into a blob: URL.
+ * Hub raw responses set X-Frame-Options: DENY, so iframe src must be blob:/object URL.
+ */
+export async function fetchFileRawBlobUrl(
+  agentId: string,
+  root: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  await ensureCookieSuffix(signal)
+  const headers = new Headers()
+  const csrf = getCsrfToken()
+  if (csrf) headers.set('X-CSRF-Token', csrf)
+  const res = await fetch(fileRawUrl(agentId, root, path), {
+    credentials: 'include',
+    headers,
+    signal,
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw { status: res.status, ...body }
+  }
+  const blob = await res.blob()
+  return URL.createObjectURL(blob)
+}

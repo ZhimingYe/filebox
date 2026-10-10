@@ -9,9 +9,9 @@ Independent Vite + React + TypeScript app. Does **not** replace `frontend/`
 
 - dockview layout: File tree + Preview (add more Preview panels from the top bar)
 - Hub listing via `/api/agents` + `/api/fs/list` (same-origin session)
-- Preview host eats **#86 pin contract**: active slot + `dom-park`
-  (`MAX_DOM_PARKED=3`, `keepAliveParkStyle`, no `visibility` hide)
-- PDF bodies use Hub preview sessions (iframe); other types are stubs
+- Preview host eats **#86 pin contract**: stable-keyed active/park mounts + `dom-park`
+  (`MAX_DOM_PARKED=3`, `keepAliveParkStyle`, no `visibility` hide; park must not remount)
+- PDF bodies: CSRF fetch → blob: URL iframe (Hub raw is X-Frame-Options: DENY; preview sessions are HTML/ipynb only); other types stubbed
 - Unit tests for `previewKeepAlive` park selection
 
 ## Gate criteria (dual PDF)

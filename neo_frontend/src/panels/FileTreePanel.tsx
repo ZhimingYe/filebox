@@ -125,7 +125,7 @@ export function FileTreePanel() {
               }}
             >
               <span className="neo-tree-row__kind">
-                {item.entry_type === 'directory' ? '📁' : '📄'}
+                {item.entry_type === 'directory' ? 'dir' : 'file'}
               </span>
               <span className="neo-tree-row__name">{item.name}</span>
             </button>
