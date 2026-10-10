@@ -1,4 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { parentDir } from './parentDir';
 import { PreviewPane } from './PreviewPane';
 import { PreviewErrorBoundary } from './PreviewErrorBoundary';
 import { PreviewHeaderActions } from './PreviewHeaderActions';
@@ -50,6 +51,11 @@ interface Props {
   roots: RootInfo[];
   /** Agent `capabilities.office_pdf_preview`. */
   officeCapable?: boolean;
+  /**
+   * Jump the left file browser (Files / Explorer) to the active file's
+   * containing directory. When omitted the path stays plain text.
+   */
+  onRevealInBrowser?: (root: string, dirPath: string) => void;
 }
 
 /** Scroll `el` into view inside a horizontal scroller without touching ancestors. */
@@ -91,13 +97,15 @@ function scrollChildIntoList(list: HTMLElement, el: HTMLElement) {
 export const PreviewWorkspace = memo(function PreviewWorkspace({
   agentId, tabs, activeTab, activeTabId,
   onActivate, onClose, onCloseAll, onCloseLeft, onCloseRight, onRefresh, onTogglePin,
-  roots, officeCapable = false,
+  roots, officeCapable = false, onRevealInBrowser,
 }: Props) {
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const [hoveredMenuItem, setHoveredMenuItem] = useState<string | null>(null);
   // Hovered pin button — inline styles can't express :hover, so the strip
   // tracks it per tab to give the pin affordance visible feedback.
   const [hoveredPinId, setHoveredPinId] = useState<string | null>(null);
+  // Path-in-header hover: inline styles have no :hover.
+  const [pathHovered, setPathHovered] = useState(false);
   // Jump-to-tab dropdown: shown when 2+ tabs are open so a long strip can be
   // navigated without horizontal scrolling. Closed by outside click / Esc /
   // selecting a tab (or when the multi-tab strip itself unmounts).
@@ -536,7 +544,24 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
       {activeTab && (
         <>
           <div style={styles.header}>
-            <span style={styles.path}>{activeTab.path}</span>
+            {onRevealInBrowser ? (
+              <button
+                type="button"
+                style={{
+                  ...styles.pathBtn,
+                  ...(pathHovered ? styles.pathBtnHover : {}),
+                }}
+                title="Show containing folder in file browser"
+                aria-label={`Show containing folder for ${activeTab.path}`}
+                onMouseEnter={() => setPathHovered(true)}
+                onMouseLeave={() => setPathHovered(false)}
+                onClick={() => onRevealInBrowser(activeTab.root, parentDir(activeTab.path))}
+              >
+                {activeTab.path}
+              </button>
+            ) : (
+              <span style={styles.path}>{activeTab.path}</span>
+            )}
             <div style={styles.actions}>
               <PreviewHeaderActions
                 agentId={agentId}
@@ -785,6 +810,18 @@ const styles: Record<string, React.CSSProperties> = {
     color: c.textMuted, fontSize: 12, fontFamily: font.mono,
     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
     flex: 1, minWidth: 0,
+  },
+  // Clickable path — same typography as `path`, plus button reset + pointer.
+  pathBtn: {
+    color: c.textMuted, fontSize: 12, fontFamily: font.mono,
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    flex: 1, minWidth: 0, textAlign: 'left' as const,
+    background: 'none', border: 'none', padding: 0, margin: 0,
+    cursor: 'pointer', borderRadius: radius.sm,
+    transition: 'color 0.12s',
+  },
+  pathBtnHover: {
+    color: c.accent,
   },
   actions: { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 },
   closeBtn: {

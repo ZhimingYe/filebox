@@ -327,12 +327,13 @@ export function isTextFile(ext: string): boolean {
   return ext in extToLang;
 }
 
-// HTML is the only viewer that renders an <iframe>. PreviewPane's dispatch
-// checks this so the sandboxed-session viewer is used instead of plain text
-// or a download fallback. Pin keep-alive classifies HTML as `dom-park`
-// (see previewKeepAlive) because the iframe session must stay mounted.
+// HTML (and Hub-washed Jupyter notebooks) use an <iframe>. PreviewPane's
+// dispatch checks this so the sandboxed-session viewer is used instead of
+// plain text or a download fallback. Pin keep-alive classifies HTML/ipynb as
+// `dom-park` (see previewKeepAlive) because the iframe session must stay
+// mounted.
 export function isHtmlPreviewExt(ext: string): boolean {
-  return ext === 'html' || ext === 'htm';
+  return ext === 'html' || ext === 'htm' || ext === 'ipynb';
 }
 
 // ── Pinned inactive pane hide (keep-alive park) ───────────────────────────
@@ -384,6 +385,8 @@ export const PREVIEW_SIZE_THRESHOLDS = {
   text: TEXT_PREVIEW_CONFIRM_BYTES,
   markdown: TEXT_PREVIEW_CONFIRM_BYTES,
   html: TEXT_PREVIEW_CONFIRM_BYTES,
+  // Notebooks often embed figures; confirm at the media threshold.
+  ipynb: MEDIA_PREVIEW_CONFIRM_BYTES,
   csv: TEXT_PREVIEW_CONFIRM_BYTES,
 } as const;
 

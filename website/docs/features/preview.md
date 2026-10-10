@@ -46,6 +46,7 @@ Settings has an **Office preview** toggle (browser-local preference, on by defau
 | Code / text / logs | Monaco read-only |
 | Quarto / R Markdown (`.qmd` / `.rmd`) | Monaco source view |
 | HTML | Sandboxed session |
+| Jupyter notebook (`.ipynb`) | Hub-washed HTML in the same sandboxed session (read-only; mid-size png/jpeg mildly recompressed; oversized omitted) |
 | CSV / TSV | Table |
 | Word / PPT | Optional: Agent-side → PDF |
 | Excel / ODS | Optional: each sheet → CSV |
@@ -54,5 +55,6 @@ Settings has an **Office preview** toggle (browser-local preference, on by defau
 
 - Desktop multi-tab: keep several files open, switch, pin, close in bulk; `Esc` closes the active tab, `←` / `→` step through the folder. See [Multi-tab preview](/features/tabs).
 - Very large files ask before loading so the browser stays responsive.
+- Click the path in the preview header to jump the file browser to that file's containing folder.
 - Use **Download** from the preview bar.
 - Without `soffice`, Office files remain downloadable but preview is unavailable.
