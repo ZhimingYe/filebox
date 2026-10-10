@@ -13,6 +13,8 @@ import { HtmlFrame } from './HtmlFrame'
 import { ImageFrame, isImageExt } from './ImageFrame'
 import { MarkdownFrame, isMarkdownExt } from './MarkdownFrame'
 import { CsvFrame, isCsvExt } from './CsvFrame'
+import { CodeFrame } from './CodeFrame'
+import { isCodeExt, previewExt } from './codeLang'
 import type { OpenTarget } from '../state/workspace'
 import { useWorkspace } from '../state/workspace'
 
@@ -256,10 +258,21 @@ function PreviewBody({ tab, active }: { tab: Tab; active: boolean }) {
       />
     )
   }
+  if (isCodeExt(previewExt(tab.path))) {
+    return (
+      <CodeFrame
+        agentId={tab.agentId}
+        root={tab.root}
+        path={tab.path}
+        tabId={tab.id}
+        pinned={tab.pinned}
+      />
+    )
+  }
   return (
     <div className="neo-panel__body">
       <p className="neo-panel__muted">
-        {basename(tab.path)} — PDF/HTML/ipynb/images/md/csv supported; Monaco later.
+        {basename(tab.path)} — type not previewable yet (PDF/HTML/images/md/csv/code supported).
       </p>
     </div>
   )
