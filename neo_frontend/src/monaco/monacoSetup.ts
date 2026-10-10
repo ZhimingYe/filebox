@@ -39,6 +39,14 @@ export function ensureMonacoConfigured() {
     },
   }
 
+  // Monaco rejects in-flight cancellable promises (link/word-highlight/semantic
+  // requests) when an editor is disposed on tab switch. They surface as
+  // `Uncaught (in promise) Canceled`; swallow only that exact benign case.
+  window.addEventListener('unhandledrejection', (ev) => {
+    const r = ev.reason as { name?: string; message?: string } | null
+    if (r && r.name === 'Canceled' && r.message === 'Canceled') ev.preventDefault()
+  })
+
   loader.config({ monaco })
   registerQuartoLanguage(monaco)
 
