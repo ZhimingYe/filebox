@@ -23,9 +23,64 @@ function readCookieValue(name: string): string | null {
   return null;
 }
 
+/**
+ * Opaque cookie-name suffix from the hub (`/api/health` → hub.cookie_suffix).
+ * Isolates same-host different-port instances without putting the listen port
+ * in cookie names.
+ */
+let cookieSuffix: string | null = null;
+let cookieSuffixPromise: Promise<string | null> | null = null;
+
+function listCookieNames(): string[] {
+  if (typeof document === 'undefined') return [];
+  const names: string[] = [];
+  for (const part of document.cookie.split(';')) {
+    const name = part.trim().split('=')[0];
+    if (name) names.push(name);
+  }
+  return names;
+}
+
+/** Fetch and cache the hub's opaque cookie suffix (public, no CSRF needed). */
+export async function ensureCookieSuffix(signal?: AbortSignal): Promise<string | null> {
+  if (cookieSuffix) return cookieSuffix;
+  if (!cookieSuffixPromise) {
+    cookieSuffixPromise = (async () => {
+      try {
+        const res = await fetch(`${BASE}/api/health`, {
+          signal,
+          credentials: 'same-origin',
+        });
+        if (!res.ok) return null;
+        const body = await res.json() as { hub?: { cookie_suffix?: unknown } };
+        const suffix = body?.hub?.cookie_suffix;
+        if (typeof suffix === 'string' && /^[0-9a-f]{8}$/i.test(suffix)) {
+          cookieSuffix = suffix.toLowerCase();
+          return cookieSuffix;
+        }
+        return null;
+      } catch {
+        return null;
+      } finally {
+        cookieSuffixPromise = null;
+      }
+    })();
+  }
+  return cookieSuffixPromise;
+}
+
 function readCsrfFromCookie(): string | null {
-  // Prefer the Secure/__Host- name when both somehow exist.
-  return readCookieValue('__Host-filebox_csrf') || readCookieValue('filebox_csrf');
+  if (cookieSuffix) {
+    return readCookieValue(`__Host-filebox_csrf_${cookieSuffix}`)
+      || readCookieValue(`filebox_csrf_${cookieSuffix}`);
+  }
+  // Before /api/health returns: if exactly one opaque-suffixed CSRF cookie
+  // exists, use it (typical single-hub page load).
+  const prefixed = listCookieNames().filter((n) => /^(?:__Host-)?filebox_csrf_[0-9a-f]{8}$/i.test(n));
+  if (prefixed.length === 1) {
+    return readCookieValue(prefixed[0]);
+  }
+  return null;
 }
 
 export function getCsrfToken(): string | null {
@@ -393,11 +448,16 @@ export interface RootInfo {
 }
 
 export interface HealthResponse {
-  hub: { status: string; version: string; uptime_sec: number };
+  hub: { status: string; version: string; uptime_sec: number; cookie_suffix?: string };
 }
 
 export async function getHealth(signal?: AbortSignal) {
-  return request<HealthResponse>('/api/health', { signal }, false, 10_000);
+  const health = await request<HealthResponse>('/api/health', { signal }, false, 10_000);
+  const suffix = health?.hub?.cookie_suffix;
+  if (typeof suffix === 'string' && /^[0-9a-f]{8}$/i.test(suffix)) {
+    cookieSuffix = suffix.toLowerCase();
+  }
+  return health;
 }
 
 // ── Agents ───────────────────────────────────────────────────────────────────

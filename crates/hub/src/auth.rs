@@ -16,7 +16,7 @@ const SESSION_ROTATION_GRACE_SECS: u64 = 120;
 
 #[derive(Debug, Clone)]
 pub struct Session {
-    /// Rotating cookie value (`filebox_session` / `__Host-filebox_session`).
+    /// Rotating cookie value (`filebox_session_<suffix>` / `__Host-filebox_session_<suffix>`).
     pub session_id: String,
     /// Stable for the life of the login. Used for cancel ownership, preview
     /// ownership, and SSE liveness so cookie-id rotation cannot orphan work.
