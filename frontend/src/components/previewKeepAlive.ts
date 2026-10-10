@@ -4,7 +4,8 @@ import { isOfficePreviewExt } from './officePreviewSupport';
 // Inline HTML check (same as isHtmlPreviewExt) to avoid a circular import
 // with previewShared, which re-exports park styles from this module.
 function isHtmlPreviewExt(ext: string): boolean {
-  return ext === 'html' || ext === 'htm';
+  // Keep in sync with previewShared.isHtmlPreviewExt (incl. Hub-washed .ipynb).
+  return ext === 'html' || ext === 'htm' || ext === 'ipynb';
 }
 
 // ── Pin = keep state (mid/long-term preview host model) ───────────────────

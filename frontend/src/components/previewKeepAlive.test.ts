@@ -18,18 +18,20 @@ import {
 } from './previewKeepAlive';
 
 describe('keepAliveStrategy', () => {
-  it('parks HTML / PDF / Office in the DOM (expensive or sessionful)', () => {
+  it('parks HTML / ipynb / PDF / Office in the DOM (expensive or sessionful)', () => {
     expect(keepAliveStrategyForExt('html')).toBe('dom-park');
     expect(keepAliveStrategyForExt('htm')).toBe('dom-park');
+    expect(keepAliveStrategyForExt('ipynb')).toBe('dom-park');
     expect(keepAliveStrategyForExt('pdf')).toBe('dom-park');
     expect(keepAliveStrategyForExt('docx')).toBe('dom-park');
     expect(keepAliveStrategyForExt('xlsx')).toBe('dom-park');
     expect(keepAliveStrategyForExt('pptx')).toBe('dom-park');
     expect(needsDomPark('/docs/report.pdf')).toBe(true);
     expect(needsDomPark('/site/index.html')).toBe(true);
+    expect(needsDomPark('/nb/analysis.ipynb')).toBe(true);
   });
 
-  it('uses state restore for light viewers (image / code / md / csv / ipynb-as-text)', () => {
+  it('uses state restore for light viewers (image / code / md / csv)', () => {
     expect(keepAliveStrategyForExt('png')).toBe('state');
     expect(keepAliveStrategyForExt('jpg')).toBe('state');
     expect(keepAliveStrategyForExt('ts')).toBe('state');
@@ -39,7 +41,6 @@ describe('keepAliveStrategy', () => {
     expect(keepAliveStrategyForExt('md')).toBe('state');
     expect(keepAliveStrategyForExt('csv')).toBe('state');
     expect(keepAliveStrategyForExt('tsv')).toBe('state');
-    expect(keepAliveStrategyForExt('ipynb')).toBe('state');
     expect(keepAliveStrategyForPath('/img/photo.png')).toBe('state');
     expect(needsDomPark('/notes/readme.md')).toBe(false);
   });
