@@ -475,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "filebox-agent"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "filebox-hub"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "ammonia",
  "async-stream",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "filebox-protocol"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "base32",
  "base64",
@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "filebox-updater"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "flate2",
  "hex",

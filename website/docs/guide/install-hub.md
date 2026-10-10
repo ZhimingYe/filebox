@@ -111,7 +111,7 @@ WantedBy=multi-user.target
 
 ```bash
 curl -s http://127.0.0.1:3000/api/health
-# {"hub":{"status":"ok","uptime_sec":…,"version":"2.1.0"}}
+# {"hub":{"status":"ok","uptime_sec":…,"version":"2.2.0"}}
 ```
 
 Open the Hub URL in a browser — you should see the login page:

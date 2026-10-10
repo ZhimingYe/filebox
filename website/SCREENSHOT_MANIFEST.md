@@ -1,6 +1,6 @@
 # Real Hub+Agent screenshots
 
-Files live in docs/public/screenshots/. Source: local FILEBOX_DEV_MODE Hub+Agent (v2.1.0). Multi-tab + hero shots: scripts/capture-tabs.mjs
+Files live in docs/public/screenshots/. Source: local FILEBOX_DEV_MODE Hub+Agent (v2.2.0). Multi-tab + hero shots: scripts/capture-tabs.mjs
 
 | File | Bytes |
 |------|------|

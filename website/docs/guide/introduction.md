@@ -18,7 +18,7 @@ Researchers, analysts, and data scientists whose results live as files on shared
 
 filebox is not a sync/drive product and not a full remote desktop — it is the “front door” to result files: open, preview, search, occasionally upload a small scratch file, or open a TOTP-protected terminal.
 
-## What you can do (v2.1.0)
+## What you can do (v2.2.0)
 
 | Capability | Notes | Docs |
 |------------|-------|------|

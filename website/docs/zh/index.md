@@ -59,4 +59,4 @@ features:
 4. [怎么用](/zh/features/browse) — 带真实界面截图的功能说明  
 5. [运维](/zh/ops/hub) — HTTPS、更新、Office、FAQ  
 
-当前版本对齐 **v2.1.0**（Hub + Agent）。本站截图全部来自本地真实运行的 Hub + Agent 界面，与你部署后看到的产品一致。
+当前版本对齐 **v2.2.0**（Hub + Agent）。本站截图全部来自本地真实运行的 Hub + Agent 界面，与你部署后看到的产品一致。
