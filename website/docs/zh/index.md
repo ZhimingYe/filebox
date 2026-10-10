@@ -22,7 +22,7 @@ heroShot:
   linkText: 了解多标签预览
 features:
   - title: 浏览与预览
-    details: 大目录流畅列表、面包屑、钉选；图 / PDF / 代码 / Markdown / CSV / Office 就地预览，不必先 scp 一整份。
+    details: 大目录流畅列表、面包屑、钉选；图 / PDF / 代码 / Markdown / Quarto·Rmd / Jupyter 笔记本 / CSV / Office 就地预览，不必先 scp 一整份。
     link: /zh/features/preview
     linkText: 预览类型
   - title: 多标签工作区

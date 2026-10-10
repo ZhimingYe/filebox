@@ -28,6 +28,8 @@ Files live in docs/public/screenshots/. Source: local FILEBOX_DEV_MODE Hub+Agent
 | 08d-preview-pdf.png | 467597 |
 | 08e-preview-csv.png | 130274 |
 | 08f-preview-office.png | 271058 |
+| 08g-preview-quarto.png | 261875 |
+| 08h-preview-ipynb.png | 219974 |
 | 09-login.png | 91167 |
 | 09b-login-pow-ready.png | 91178 |
 | 09c-login-filled.png | 93602 |

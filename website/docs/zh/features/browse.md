@@ -27,7 +27,7 @@
 1. 选中 Agent → 点 **Files**。
 2. 用根下拉选择已 Add 的 root。
 3. 单击目录进入；点 `..` 或面包屑返回。
-4. 单击文件：右侧打开预览标签（图片、PDF、代码、Markdown、CSV 等）。
+4. 单击文件：右侧打开预览标签（图片、PDF、代码、Markdown、Quarto/Rmd、Jupyter `.ipynb`、CSV 等）。
 5. 需要时可在工具栏打开目录树面板，或 **Pin** 当前文件夹到侧栏 Pinned。
 
 ## 常用技巧
