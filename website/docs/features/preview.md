@@ -55,5 +55,6 @@ Settings has an **Office preview** toggle (browser-local preference, on by defau
 
 - Desktop multi-tab: keep several files open, switch, pin, close in bulk; `Esc` closes the active tab, `←` / `→` step through the folder. See [Multi-tab preview](/features/tabs).
 - Very large files ask before loading so the browser stays responsive.
+- Click the path in the preview header to jump the file browser to that file's containing folder.
 - Use **Download** from the preview bar.
 - Without `soffice`, Office files remain downloadable but preview is unavailable.
