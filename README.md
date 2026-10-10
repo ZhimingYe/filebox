@@ -229,6 +229,12 @@ cargo build --release
 
 Most users never need this — see [`docs/`](docs/) for development details.
 
+### Experimental neo UI (`/neo`)
+
+An independent browser-only shell lives in `neo_frontend/` and is served at
+`/neo` (classic UI stays at `/`). Desktop browser only; not a product
+replacement yet. See [`neo_frontend/README.md`](neo_frontend/README.md).
+
 ## Configuration reference
 
 ### Hub (`config/hub.json`, created by `--init-config`)

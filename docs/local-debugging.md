@@ -106,6 +106,13 @@ Any frontend change requires this, or the Hub serves stale JS:
 cd frontend && npx vite build && cd ..
 ```
 
+Optional experimental neo shell (`/neo`):
+
+```bash
+cd neo_frontend && npm install && npm run build && cd ..
+# Hub auto-discovers neo_frontend/dist, or set FILEBOX_NEO_FRONTEND_DIR
+```
+
 Verify the build references match what the Hub will serve:
 
 ```bash
@@ -120,6 +127,7 @@ curl -s http://127.0.0.1:3000/ | grep -oE 'assets/index-[A-Za-z0-9_-]+\.js'
 ```bash
 FILEBOX_DEV_MODE=1 \
 FILEBOX_FRONTEND_DIR="$(pwd)/frontend/dist" \
+FILEBOX_NEO_FRONTEND_DIR="$(pwd)/neo_frontend/dist" \
 RUST_LOG=info \
 ./target/release/hub
 ```
