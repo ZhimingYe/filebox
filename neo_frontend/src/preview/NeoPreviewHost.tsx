@@ -8,6 +8,8 @@ import {
 import { PdfFrame } from './PdfFrame'
 import { HtmlFrame } from './HtmlFrame'
 import { ImageFrame, isImageExt } from './ImageFrame'
+import { MarkdownFrame, isMarkdownExt } from './MarkdownFrame'
+import { CsvFrame, isCsvExt } from './CsvFrame'
 import type { OpenTarget } from '../state/workspace'
 import { useWorkspace } from '../state/workspace'
 
@@ -204,10 +206,33 @@ function PreviewBody({ tab, active }: { tab: Tab; active: boolean }) {
       />
     )
   }
+  if (isMarkdownExt(ext)) {
+    return (
+      <MarkdownFrame
+        agentId={tab.agentId}
+        root={tab.root}
+        path={tab.path}
+        tabId={tab.id}
+        pinned={tab.pinned}
+      />
+    )
+  }
+  if (isCsvExt(ext)) {
+    return (
+      <CsvFrame
+        agentId={tab.agentId}
+        root={tab.root}
+        path={tab.path}
+        tabId={tab.id}
+        pinned={tab.pinned}
+        ext={ext}
+      />
+    )
+  }
   return (
     <div className="neo-panel__body">
       <p className="neo-panel__muted">
-        {basename(tab.path)} — PDF/HTML/ipynb/images supported; other types later.
+        {basename(tab.path)} — PDF/HTML/ipynb/images/md/csv supported; Monaco later.
       </p>
     </div>
   )

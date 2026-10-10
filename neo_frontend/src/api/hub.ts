@@ -165,3 +165,27 @@ export async function fetchFileRawBlobUrl(
   const blob = await res.blob()
   return URL.createObjectURL(blob)
 }
+
+/** Fetch file bytes as text (UTF-8) with session+CSRF. */
+export async function fetchFileRawText(
+  agentId: string,
+  root: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  await ensureCookieSuffix(signal)
+  const headers = new Headers()
+  const csrf = getCsrfToken()
+  if (csrf) headers.set('X-CSRF-Token', csrf)
+  const res = await fetch(fileRawUrl(agentId, root, path), {
+    credentials: 'include',
+    headers,
+    signal,
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw { status: res.status, ...body }
+  }
+  return await res.text()
+}
+

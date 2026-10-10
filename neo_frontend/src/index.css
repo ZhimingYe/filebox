@@ -336,3 +336,75 @@ button {
 .neo-image-stage:active {
   cursor: grabbing;
 }
+
+.neo-md-frame {
+  height: 100%;
+  overflow: auto;
+  padding: 12px 16px;
+}
+
+.neo-md-body {
+  max-width: 52rem;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #e8e8ec;
+}
+
+.neo-md-body pre {
+  overflow: auto;
+  padding: 10px;
+  background: #181b24;
+  border-radius: 6px;
+}
+
+.neo-md-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.neo-md-body table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.neo-md-body th,
+.neo-md-body td {
+  border: 1px solid #2a2d38;
+  padding: 4px 8px;
+}
+
+.neo-csv-host {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.neo-csv-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.neo-csv-raw {
+  margin: 0;
+  padding: 12px;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.neo-csv-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: max-content;
+  min-width: 100%;
+}
+
+.neo-csv-table td {
+  border: 1px solid #2a2d38;
+  padding: 3px 8px;
+  white-space: nowrap;
+  max-width: 28rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
