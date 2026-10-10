@@ -6,6 +6,8 @@
 node_modules/
 frontend/dist/
 frontend/.vite/
+neo_frontend/dist/
+neo_frontend/.vite/
 
 # IDE
 .idea/

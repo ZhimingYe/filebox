@@ -72,9 +72,13 @@ pub(super) async fn cache_headers(
     // index.html must always be revalidated so a stale cached copy can never
     // reference hashed JS that has been removed by a newer deployment.
     // /assets/* filenames are content-hashed by Vite, so immutable is safe.
-    let cc = if path == "/" || path.ends_with(".html") {
+    let cc = if path == "/"
+        || path == "/neo"
+        || path == "/neo/"
+        || path.ends_with(".html")
+    {
         "no-cache, must-revalidate"
-    } else if path.starts_with("/assets/") {
+    } else if path.starts_with("/assets/") || path.starts_with("/neo/assets/") {
         "public, max-age=31536000, immutable"
     } else {
         "no-cache"

@@ -3,7 +3,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use tower_http::cors::{AllowOrigin, CorsLayer};
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use crate::state::AppState;
 use crate::{events, fs_proxy, health, ws};
 
@@ -109,9 +109,14 @@ pub fn create_router(state: AppState) -> Router {
             require_session,
         ));
 
-    // Resolve frontend/dist.
+    // Resolve frontend/dist (classic SPA at /).
     // Order: FILEBOX_FRONTEND_DIR env → cwd → walk up from binary location.
-    let frontend_path = find_frontend_dist().unwrap_or_else(|| {
+    let frontend_path = find_static_dist(
+        "FILEBOX_FRONTEND_DIR",
+        "frontend/dist",
+        "frontend",
+    )
+    .unwrap_or_else(|| {
         eprintln!("[hub] WARNING: frontend/dist not found");
         eprintln!("[hub] Set FILEBOX_FRONTEND_DIR, run from a directory containing frontend/dist,");
         eprintln!("[hub] or place frontend/dist as a sibling of the binary's parent dir.");
@@ -119,21 +124,38 @@ pub fn create_router(state: AppState) -> Router {
     });
     eprintln!("[hub] frontend: {}", frontend_path.display());
 
-    fn find_frontend_dist() -> Option<std::path::PathBuf> {
+    // Optional experimental neo SPA at /neo (independent package: neo_frontend/).
+    // Missing dist is fine — /neo then 404s; classic / is unchanged.
+    let neo_path = find_static_dist(
+        "FILEBOX_NEO_FRONTEND_DIR",
+        "neo_frontend/dist",
+        "neo frontend",
+    );
+    match &neo_path {
+        Some(p) => eprintln!("[hub] neo frontend: {}", p.display()),
+        None => eprintln!(
+            "[hub] neo frontend: not found (optional; build neo_frontend/dist or set FILEBOX_NEO_FRONTEND_DIR)"
+        ),
+    }
+
+    fn find_static_dist(
+        env_key: &str,
+        relative: &str,
+        label: &str,
+    ) -> Option<std::path::PathBuf> {
         // 1. Explicit env override (highest priority)
-        if let Ok(p) = std::env::var("FILEBOX_FRONTEND_DIR") {
+        if let Ok(p) = std::env::var(env_key) {
             let path = std::path::PathBuf::from(&p);
             if path.exists() {
                 return Some(path);
             }
             eprintln!(
-                "[hub] WARNING: FILEBOX_FRONTEND_DIR={} does not exist, ignoring",
-                p
+                "[hub] WARNING: {env_key}={p} does not exist, ignoring ({label})"
             );
         }
 
         // 2. Check cwd first (common dev case: run from project root)
-        let cwd_candidate = std::path::PathBuf::from("frontend/dist");
+        let cwd_candidate = std::path::PathBuf::from(relative);
         if cwd_candidate.exists() {
             return Some(cwd_candidate);
         }
@@ -141,7 +163,7 @@ pub fn create_router(state: AppState) -> Router {
         // 3. Walk up from binary location, up to 5 levels
         let mut dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
         for _ in 0..5 {
-            let candidate = dir.join("frontend/dist");
+            let candidate = dir.join(relative);
             if candidate.exists() {
                 return Some(candidate);
             }
@@ -166,11 +188,17 @@ pub fn create_router(state: AppState) -> Router {
         ])
         .allow_credentials(true);
 
-    let cors_app = Router::new()
-        .merge(public)
-        .merge(protected)
-        .fallback_service(frontend)
-        .layer(cors);
+    // Classic SPA remains the catch-all fallback. Nest /neo first so it never
+    // falls through into frontend/dist (which has no neo assets).
+    let mut cors_app = Router::new().merge(public).merge(protected);
+    if let Some(neo_path) = neo_path {
+        let neo_index = neo_path.join("index.html");
+        let neo = ServeDir::new(neo_path)
+            .append_index_html_on_directories(true)
+            .fallback(ServeFile::new(neo_index));
+        cors_app = cors_app.nest_service("/neo", neo);
+    }
+    let cors_app = cors_app.fallback_service(frontend).layer(cors);
 
     Router::new()
         .merge(preview_resources)
