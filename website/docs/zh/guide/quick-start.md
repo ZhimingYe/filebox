@@ -6,7 +6,7 @@
 
 ## 1. 下载
 
-从 [Releases](https://github.com/ZhimingYe/filebox/releases/latest) 取最新 musl 静态包（当前文档对齐 **v2.1.0**）：
+从 [Releases](https://github.com/ZhimingYe/filebox/releases/latest) 取最新 musl 静态包（当前文档对齐 **v2.2.0**）：
 
 - `filebox-hub-<ver>-x86_64-musl.tar.gz` — 放在你能暴露 HTTPS 的机器上
 - `filebox-agent-<ver>-x86_64-musl.tar.gz` — 放在每台要浏览的后端机上

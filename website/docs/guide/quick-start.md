@@ -6,7 +6,7 @@ About four steps: download → init Hub → start Hub → init and connect Agent
 
 ## 1. Download
 
-Grab the latest musl static packages from [Releases](https://github.com/ZhimingYe/filebox/releases/latest) (docs align with **v2.1.0**):
+Grab the latest musl static packages from [Releases](https://github.com/ZhimingYe/filebox/releases/latest) (docs align with **v2.2.0**):
 
 - `filebox-hub-<ver>-x86_64-musl.tar.gz` — on a host you can expose over HTTPS
 - `filebox-agent-<ver>-x86_64-musl.tar.gz` — on each backend host you want to browse

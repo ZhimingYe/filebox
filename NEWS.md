@@ -4,6 +4,8 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+## v2.2.0
+
 ### Fixed
 - **Same-host different-port cookie collision** — session/CSRF cookie names carry an
   opaque 8-hex suffix (`filebox_session_<suffix>`, `filebox_csrf_<suffix>`, and
