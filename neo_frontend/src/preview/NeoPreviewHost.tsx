@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   keepAliveParkStyle,
+  clearViewerState,
   keepAliveStrategyForPath,
   MAX_DOM_PARKED,
   selectDomParkTabIds,
+  viewerStateKey,
 } from './previewKeepAlive'
+import { droppedPinnedIds, viewerKeysForTabs } from './pinRegistry'
 import { PdfFrame } from './PdfFrame'
 import { HtmlFrame } from './HtmlFrame'
 import { ImageFrame, isImageExt } from './ImageFrame'
+import { MarkdownFrame, isMarkdownExt } from './MarkdownFrame'
+import { CsvFrame, isCsvExt } from './CsvFrame'
 import type { OpenTarget } from '../state/workspace'
 import { useWorkspace } from '../state/workspace'
 
@@ -78,6 +83,30 @@ export function NeoPreviewHost({ panelId }: Props) {
       setActivationOrder((prev) => prev.filter((x) => x !== id))
     },
     [activeTabId],
+  )
+
+  // Pin-only registry: when a tab stops being pinned (unpin / close) drop its
+  // saved viewer state. Runs after child unmount cleanups in the same commit,
+  // so a pinned tab closed while active does not leave a stale snapshot that
+  // a re-opened (unpinned) tab would restore. Also clears on host unmount.
+  const pinnedIdsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const now = new Set(tabs.filter((t) => t.pinned).map((t) => t.id))
+    for (const key of viewerKeysForTabs(droppedPinnedIds(pinnedIdsRef.current, now))) {
+      clearViewerState(key)
+    }
+    pinnedIdsRef.current = now
+  }, [tabs])
+  useEffect(
+    () => () => {
+      const ids = [...pinnedIdsRef.current]
+      // Parent passive cleanup runs before children's; defer so frames'
+      // own unmount saves land first, then wipe them.
+      setTimeout(() => {
+        for (const id of ids) clearViewerState(viewerStateKey(id, 0))
+      }, 0)
+    },
+    [],
   )
 
   const parkedIds = useMemo(
@@ -204,10 +233,33 @@ function PreviewBody({ tab, active }: { tab: Tab; active: boolean }) {
       />
     )
   }
+  if (isMarkdownExt(ext)) {
+    return (
+      <MarkdownFrame
+        agentId={tab.agentId}
+        root={tab.root}
+        path={tab.path}
+        tabId={tab.id}
+        pinned={tab.pinned}
+      />
+    )
+  }
+  if (isCsvExt(ext)) {
+    return (
+      <CsvFrame
+        agentId={tab.agentId}
+        root={tab.root}
+        path={tab.path}
+        tabId={tab.id}
+        pinned={tab.pinned}
+        ext={ext}
+      />
+    )
+  }
   return (
     <div className="neo-panel__body">
       <p className="neo-panel__muted">
-        {basename(tab.path)} — PDF/HTML/ipynb/images supported; other types later.
+        {basename(tab.path)} — PDF/HTML/ipynb/images/md/csv supported; Monaco later.
       </p>
     </div>
   )

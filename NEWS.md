@@ -16,6 +16,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 - **HTML preview self-contained Quarto/Pandoc CSS and module scripts** — document-mode CSP now allows `data:` on `script-src` and `style-src`, so embedded `data:text/css` stylesheets and `data:application/javascript` module scripts load inside the sandboxed preview (previously blocked, leaving unstyled default fonts). Network egress remains limited to the tokenized preview origin; `'unsafe-inline'` was already permitted.
 
 ### Added
+- **neo Markdown/CSV preview** — `/neo` adds Markdown (`state` scroll) and CSV/TSV (`state` scroll + table/raw) with pin-only registry restore.
 - **Experimental neo frontend (`/neo`)** — independent `neo_frontend/` Vite+React+dockview app (browser only). Hub serves it at `/neo` without changing classic `/`. File tree lists via Hub APIs; Preview host eats #86 pin (`MAX_DOM_PARKED=3`, active + dom-park); PDF via CSRF fetch → blob: iframe (raw PDF; Hub X-Frame-Options: DENY; preview sessions are HTML/ipynb only); “+ Preview panel” for dual-PDF gate. Gates: dual PDF memory ≤1.3× baseline, tab visible ≤100ms, park restore ≤200ms.
 - **neo HTML/image preview** — HTML/ipynb use `dom-park` (preview-session sandbox iframe); images use `state` (unmount + zoom/pan registry restore).
 - **Preview path → folder** — clicking the file path in the preview header navigates the left file browser to that file's containing directory (same jump used by search / pinned folders).

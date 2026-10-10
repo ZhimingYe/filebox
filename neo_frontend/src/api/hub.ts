@@ -165,3 +165,78 @@ export async function fetchFileRawBlobUrl(
   const blob = await res.blob()
   return URL.createObjectURL(blob)
 }
+
+/** Default cap for text previews (CSV/MD): never pull whole HPC-sized files. */
+export const TEXT_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
+
+export type RawTextResult = {
+  text: string
+  /** True when the file was larger than maxBytes and only a prefix was read. */
+  truncated: boolean
+  /** Content-Length when the hub sent one. */
+  totalBytes: number | null
+}
+
+/**
+ * Fetch a UTF-8 text prefix with session+CSRF. Sends a Range hint but does not
+ * rely on it: the body is streamed and cancelled once maxBytes is reached, so
+ * memory stays bounded even if the hub ignores Range.
+ */
+export async function fetchFileRawText(
+  agentId: string,
+  root: string,
+  path: string,
+  signal?: AbortSignal,
+  maxBytes = TEXT_PREVIEW_MAX_BYTES,
+): Promise<RawTextResult> {
+  await ensureCookieSuffix(signal)
+  const headers = new Headers()
+  const csrf = getCsrfToken()
+  if (csrf) headers.set('X-CSRF-Token', csrf)
+  headers.set('Range', `bytes=0-${maxBytes - 1}`)
+  const res = await fetch(fileRawUrl(agentId, root, path), {
+    credentials: 'include',
+    headers,
+    signal,
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw { status: res.status, ...body }
+  }
+  const lenHeader = res.headers.get('Content-Range')?.split('/')[1]
+    ?? res.headers.get('Content-Length')
+  const parsedLen = lenHeader ? Number(lenHeader) : NaN
+  const totalBytes = Number.isFinite(parsedLen) ? parsedLen : null
+
+  if (!res.body) {
+    const text = await res.text()
+    return { text: text.slice(0, maxBytes), truncated: text.length > maxBytes, totalBytes }
+  }
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let received = 0
+  let truncated = false
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (!value) continue
+    if (received + value.byteLength > maxBytes) {
+      chunks.push(value.subarray(0, maxBytes - received))
+      received = maxBytes
+      truncated = true
+      void reader.cancel()
+      break
+    }
+    chunks.push(value)
+    received += value.byteLength
+  }
+  const merged = new Uint8Array(received)
+  let offset = 0
+  for (const c of chunks) {
+    merged.set(c, offset)
+    offset += c.byteLength
+  }
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(merged)
+  if (totalBytes != null && totalBytes > received) truncated = true
+  return { text, truncated, totalBytes }
+}
