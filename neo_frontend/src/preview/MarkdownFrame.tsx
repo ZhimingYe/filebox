@@ -25,6 +25,7 @@ export function isMarkdownExt(ext: string): boolean {
 
 export function MarkdownFrame({ agentId, root, path, tabId, pinned }: Props) {
   const [text, setText] = useState<string | null>(null)
+  const [truncated, setTruncated] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const stateKey = viewerStateKey(tabId, 0)
@@ -41,7 +42,10 @@ export function MarkdownFrame({ agentId, root, path, tabId, pinned }: Props) {
     void (async () => {
       try {
         const body = await fetchFileRawText(agentId, root, path, ac.signal)
-        if (!ac.signal.aborted) setText(body)
+        if (!ac.signal.aborted) {
+          setText(body.text)
+          setTruncated(body.truncated)
+        }
       } catch (e) {
         if (ac.signal.aborted) return
         const msg =
@@ -93,6 +97,9 @@ export function MarkdownFrame({ agentId, root, path, tabId, pinned }: Props) {
         }
       }}
     >
+      {truncated && (
+        <p className="neo-panel__muted">Large file: showing the first 5 MB only.</p>
+      )}
       <article className="neo-md-body">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
       </article>

@@ -25,6 +25,7 @@ export function isCsvExt(ext: string): boolean {
 
 export function CsvFrame({ agentId, root, path, tabId, pinned, ext }: Props) {
   const [text, setText] = useState<string | null>(null)
+  const [truncated, setTruncated] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const stateKey = viewerStateKey(tabId, 0)
   const saved = getViewerState(stateKey)
@@ -47,7 +48,10 @@ export function CsvFrame({ agentId, root, path, tabId, pinned, ext }: Props) {
     void (async () => {
       try {
         const body = await fetchFileRawText(agentId, root, path, ac.signal)
-        if (!ac.signal.aborted) setText(body)
+        if (!ac.signal.aborted) {
+          setText(body.text)
+          setTruncated(body.truncated)
+        }
       } catch (e) {
         if (ac.signal.aborted) return
         const msg =
@@ -112,6 +116,7 @@ export function CsvFrame({ agentId, root, path, tabId, pinned, ext }: Props) {
         {parsed && (
           <span className="neo-image-zoom">
             showing {parsed.rows.length}/{parsed.totalRecords} rows
+            {truncated ? ' (first 5 MB of file)' : ''}
           </span>
         )}
       </div>

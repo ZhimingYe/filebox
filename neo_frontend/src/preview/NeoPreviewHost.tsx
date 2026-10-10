@@ -7,6 +7,7 @@ import {
   selectDomParkTabIds,
   viewerStateKey,
 } from './previewKeepAlive'
+import { droppedPinnedIds, viewerKeysForTabs } from './pinRegistry'
 import { PdfFrame } from './PdfFrame'
 import { HtmlFrame } from './HtmlFrame'
 import { ImageFrame, isImageExt } from './ImageFrame'
@@ -91,8 +92,8 @@ export function NeoPreviewHost({ panelId }: Props) {
   const pinnedIdsRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     const now = new Set(tabs.filter((t) => t.pinned).map((t) => t.id))
-    for (const id of pinnedIdsRef.current) {
-      if (!now.has(id)) clearViewerState(viewerStateKey(id, 0))
+    for (const key of viewerKeysForTabs(droppedPinnedIds(pinnedIdsRef.current, now))) {
+      clearViewerState(key)
     }
     pinnedIdsRef.current = now
   }, [tabs])
