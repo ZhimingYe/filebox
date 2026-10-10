@@ -1,0 +1,100 @@
+---
+title: "Audit fixture"
+format: html
+author:
+  - name: Nested
+    affiliation: Lab
+---
+
+# Heading
+
+Mid-document thematic break follows (must NOT re-enter YAML front matter):
+
+---
+
+```{r}
+#| label: fig-one
+#| echo: false
+x <- 1 + 2
+```
+
+```{python}
+#| echo: false
+print("hi")
+```
+
+```{.r}
+y <- 3
+```
+
+```{r chunk-label, echo=FALSE, fig.width=5}
+plot(1:10)
+```
+
+```{engine='python'}
+print("engine equals")
+```
+
+```{=html}
+<div class="raw">raw html</div>
+```
+
+```r
+# bare fence without braces
+z <- 4
+```
+
+```{yaml}
+key: value
+```
+
+::: {.callout-note}
+## Note
+Callout body.
+:::
+
+:::: {#fig-panel}
+::: {.callout-warning}
+Nested-ish divs.
+:::
+::::
+
+Inline `r mean(x)` and `python len(y)` and `julia sum(z)`.
+
+Shortcode: {{< var foo >}} and {{< meta title >}}.
+
+Display math:
+
+$$
+E = mc^2
+$$
+
+Inline math $a < b$ in a sentence.
+
+```{mermaid}
+flowchart LR
+  A --> B
+```
+
+```{stan}
+parameters {
+  real mu;
+}
+```
+
+```{cpp}
+#include <vector>
+```
+
+Malformed opener should not hang the tokenizer:
+
+```{r
+still markdown after broken fence
+
+Nested backticks inside a longer fence:
+
+````markdown
+```{r}
+# this is inside a 4-backtick fence
+```
+````
