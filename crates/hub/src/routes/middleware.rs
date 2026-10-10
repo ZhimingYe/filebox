@@ -112,7 +112,7 @@ pub(super) async fn require_session(
             .into_response();
     }
 
-    let session_id = session_cookie(req.headers());
+    let session_id = session_cookie(req.headers(), state.cookie_port);
 
     let Some(sid) = session_id else {
         return (
@@ -229,24 +229,54 @@ pub(super) async fn require_session(
     if let Some(refresh) = cookie_refresh {
         resp.headers_mut().append(
             header::SET_COOKIE,
-            session_cookie_header(&refresh.session_id, refresh.max_age, state.secure_cookies),
+            session_cookie_header(
+                &refresh.session_id,
+                refresh.max_age,
+                state.secure_cookies,
+                state.cookie_port,
+            ),
         );
         resp.headers_mut().append(
             header::SET_COOKIE,
-            csrf_cookie_header(&refresh.csrf_token, refresh.max_age, state.secure_cookies),
+            csrf_cookie_header(
+                &refresh.csrf_token,
+                refresh.max_age,
+                state.secure_cookies,
+                state.cookie_port,
+            ),
         );
     }
     resp
 }
 
-pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<String> {
+/// Cookie base names are suffixed with `_<listen_port>` so two hubs on the
+/// same host IP but different ports do not overwrite each other's cookies
+/// (RFC 6265 cookie identity ignores port).
+pub(crate) fn session_cookie_name(secure: bool, port: u16) -> String {
+    if secure {
+        format!("__Host-filebox_session_{port}")
+    } else {
+        format!("filebox_session_{port}")
+    }
+}
+
+pub(crate) fn csrf_cookie_name(secure: bool, port: u16) -> String {
+    if secure {
+        format!("__Host-filebox_csrf_{port}")
+    } else {
+        format!("filebox_csrf_{port}")
+    }
+}
+
+pub(crate) fn session_cookie(headers: &HeaderMap, port: u16) -> Option<String> {
     let cookies = headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
         ?;
 
-    cookie_value(cookies, "__Host-filebox_session")
-        .or_else(|| cookie_value(cookies, "filebox_session"))
+    // Prefer Secure/__Host-; ignore legacy unsuffixed names (clean break).
+    cookie_value(cookies, &session_cookie_name(true, port))
+        .or_else(|| cookie_value(cookies, &session_cookie_name(false, port)))
 }
 
 pub(super) fn cookie_value(cookies: &str, name: &str) -> Option<String> {
@@ -382,8 +412,13 @@ pub(super) fn csrf_tokens_equal(provided: Option<&str>, expected: Option<&str>) 
     }
 }
 
-pub(super) fn session_cookie_header(session_id: &str, max_age: u64, secure: bool) -> HeaderValue {
-    let name = if secure { "__Host-filebox_session" } else { "filebox_session" };
+pub(super) fn session_cookie_header(
+    session_id: &str,
+    max_age: u64,
+    secure: bool,
+    port: u16,
+) -> HeaderValue {
+    let name = session_cookie_name(secure, port);
     let secure_flag = if secure { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
         "{}={}; HttpOnly{}; SameSite=Strict; Path=/; Max-Age={}",
@@ -394,8 +429,13 @@ pub(super) fn session_cookie_header(session_id: &str, max_age: u64, secure: bool
 
 /// Readable by same-origin JS so a refreshed tab can recover the synchronizer
 /// token without a round-trip. Sibling hosts cannot read this cookie.
-pub(super) fn csrf_cookie_header(csrf_token: &str, max_age: u64, secure: bool) -> HeaderValue {
-    let name = if secure { "__Host-filebox_csrf" } else { "filebox_csrf" };
+pub(super) fn csrf_cookie_header(
+    csrf_token: &str,
+    max_age: u64,
+    secure: bool,
+    port: u16,
+) -> HeaderValue {
+    let name = csrf_cookie_name(secure, port);
     let secure_flag = if secure { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
         "{}={}{}; SameSite=Strict; Path=/; Max-Age={}",
@@ -404,23 +444,29 @@ pub(super) fn csrf_cookie_header(csrf_token: &str, max_age: u64, secure: bool) -
     .unwrap()
 }
 
-pub(super) fn clear_session_cookie_headers(secure: bool) -> [HeaderValue; 4] {
-    let secure_flag = if secure { "; Secure" } else { "" };
-    let host_session = HeaderValue::from_str(&format!(
-        "__Host-filebox_session=; HttpOnly{}; SameSite=Strict; Path=/; Max-Age=0",
-        secure_flag
-    )).unwrap();
-    let plain_session = HeaderValue::from_str(&format!(
-        "filebox_session=; HttpOnly{}; SameSite=Strict; Path=/; Max-Age=0",
-        secure_flag
-    )).unwrap();
-    let host_csrf = HeaderValue::from_str(&format!(
-        "__Host-filebox_csrf=; SameSite=Strict; Path=/; Max-Age=0{}",
-        secure_flag
-    )).unwrap();
-    let plain_csrf = HeaderValue::from_str(&format!(
-        "filebox_csrf=; SameSite=Strict; Path=/; Max-Age=0{}",
-        secure_flag
-    )).unwrap();
-    [host_session, plain_session, host_csrf, plain_csrf]
+pub(super) fn clear_session_cookie_headers(secure: bool, port: u16) -> [HeaderValue; 8] {
+    let clear = |name: &str, http_only: bool| {
+        let mut parts = vec![format!("{name}=")];
+        if http_only {
+            parts.push("HttpOnly".into());
+        }
+        if secure {
+            parts.push("Secure".into());
+        }
+        parts.push("SameSite=Strict".into());
+        parts.push("Path=/".into());
+        parts.push("Max-Age=0".into());
+        HeaderValue::from_str(&parts.join("; ")).unwrap()
+    };
+    // Port-specific live names, then legacy unsuffixed names (scrub pre-fix cookies).
+    [
+        clear(&session_cookie_name(true, port), true),
+        clear(&session_cookie_name(false, port), true),
+        clear(&csrf_cookie_name(true, port), false),
+        clear(&csrf_cookie_name(false, port), false),
+        clear("__Host-filebox_session", true),
+        clear("filebox_session", true),
+        clear("__Host-filebox_csrf", false),
+        clear("filebox_csrf", false),
+    ]
 }

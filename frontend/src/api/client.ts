@@ -23,9 +23,39 @@ function readCookieValue(name: string): string | null {
   return null;
 }
 
+/** Browser-visible port; mirrors hub listen port for direct IP:port access. */
+function browserPort(): string {
+  if (typeof window === 'undefined') return '80';
+  if (window.location.port) return window.location.port;
+  return window.location.protocol === 'https:' ? '443' : '80';
+}
+
+function listCookieNames(): string[] {
+  if (typeof document === 'undefined') return [];
+  const names: string[] = [];
+  for (const part of document.cookie.split(';')) {
+    const name = part.trim().split('=')[0];
+    if (name) names.push(name);
+  }
+  return names;
+}
+
 function readCsrfFromCookie(): string | null {
-  // Prefer the Secure/__Host- name when both somehow exist.
-  return readCookieValue('__Host-filebox_csrf') || readCookieValue('filebox_csrf');
+  // Hub suffixes CSRF cookie names with _<listen_port> so same-host different-port
+  // instances do not collide (browsers ignore port in cookie identity).
+  const port = browserPort();
+  const exact =
+    readCookieValue(`__Host-filebox_csrf_${port}`)
+    || readCookieValue(`filebox_csrf_${port}`);
+  if (exact) return exact;
+
+  // Reverse-proxy: listen port may differ from the browser-visible port.
+  // If exactly one port-suffixed CSRF cookie exists, use it.
+  const prefixed = listCookieNames().filter((n) => /^(?:__Host-)?filebox_csrf_\d+$/.test(n));
+  if (prefixed.length === 1) {
+    return readCookieValue(prefixed[0]);
+  }
+  return null;
 }
 
 export function getCsrfToken(): string | null {

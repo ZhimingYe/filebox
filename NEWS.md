@@ -4,6 +4,16 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+### Fixed
+
+- **Same-host different-port cookie collision** — session/CSRF cookie names are now
+  suffixed with the hub listen port (`filebox_session_<port>`, `filebox_csrf_<port>`,
+  and their `__Host-` variants). Browsers ignore port in cookie identity, so two hubs
+  on one IP (e.g. `:3000` and `:3001`) previously overwrote each other's cookies.
+  Zero config; existing sessions need a fresh login after upgrade.
+
+## Unreleased
+
 ### Added
 - **Monaco preview for Quarto / R Markdown** — `.qmd`, `.rmd`, and `.rmarkdown` open in the read-only code viewer with a custom Monarch `quarto` language (YAML front matter, `{r}` / `{python}` / … fenced chunks embedding built-in highlighters, `:::` divs, inline `` `r` ``). Rich rendered Rmd and Jupyter `.ipynb` remain follow-ups.
 

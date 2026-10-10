@@ -95,8 +95,8 @@ exactly what local debugging wants.
 | Hub bind | `127.0.0.1:3000` (override via `FILEBOX_LISTEN_ADDR`) |
 | Login | `admin` / `dev-password` |
 | Agent token | `dev-token` |
-| Session cookie | `filebox_session`, **no `Secure` flag** (so HTTP works) |
-| CSRF cookie | `filebox_csrf` (readable by JS; send as `X-CSRF-Token` header only) |
+| Session cookie | `filebox_session_<port>` (e.g. `filebox_session_3000`), **no `Secure` flag** (so HTTP works) |
+| CSRF cookie | `filebox_csrf_<port>` (readable by JS; send as `X-CSRF-Token` header only) |
 
 ### Step 1 — Build the frontend
 
@@ -477,7 +477,7 @@ After a frontend change, the running Hub serves the new build, but the
 5. **DevTools → Network tab.** Look for: red/failed requests, `(blocked)`
    or `(failed) net::ERR_...`, requests that went to `https://` when you
    typed `http://` (HSTS upgrade), 401s on `/api/*` (cookie not stored).
-6. **DevTools → Application → Cookies.** After login, is `filebox_session`
+6. **DevTools → Application → Cookies.** After login, is `filebox_session_<port>`
    actually present with a non-empty value? If the login response set it
    but it is not here, a second Set-Cookie likely cleared it (this was a
    real bug — see §6).
@@ -533,8 +533,8 @@ The login handler once appended **two** `Set-Cookie` headers: the valid
 session, followed by `filebox_session=; Max-Age=0` which immediately
 erased it. Per RFC 6265 the second same-named cookie wins. This is fixed,
 but the diagnostic holds: **after login, inspect DevTools cookies.** A
-single login must set a surviving `filebox_session` (HttpOnly) and a
-`filebox_csrf` (readable; required as `X-CSRF-Token` on API calls).
+single login must set a surviving `filebox_session_<port>` (HttpOnly) and a
+`filebox_csrf_<port>` (readable; required as `X-CSRF-Token` on API calls).
 
 ### Proxy intercepting localhost
 

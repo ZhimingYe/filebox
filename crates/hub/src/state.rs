@@ -198,6 +198,10 @@ pub struct AppState {
     /// Bounds detached Cancel deliveries while outbound Agent queues are full.
     pub cancel_delivery_semaphore: Arc<tokio::sync::Semaphore>,
     pub secure_cookies: bool,
+    /// Listen port used to suffix session/CSRF cookie names so multiple
+    /// hubs on the same host IP but different ports do not clobber each
+    /// other (browsers ignore port in cookie identity).
+    pub cookie_port: u16,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -314,6 +318,7 @@ impl AppState {
             agent_auth_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
             cancel_delivery_semaphore: Arc::new(tokio::sync::Semaphore::new(crate::agent_requests::CANCEL_DELIVERY_LIMIT)),
             secure_cookies,
+            cookie_port: config.listen_addr.port(),
         }
     }
 
