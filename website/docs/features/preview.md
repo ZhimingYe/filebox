@@ -20,6 +20,8 @@ Markdown is rendered; plain text and code use a syntax-highlighted editor (read-
 
 `.qmd`, `.rmd`, and `.rmarkdown` open in the same read-only Monaco viewer with a custom `quarto` language — not download-only. Highlighting covers YAML / Quarto front matter, fenced chunks such as `{r}` / `{python}` (and plain fence language tags), optional `:::` fenced divs, and inline `` `r …` `` / `` `python …` ``. Chunk bodies reuse Monaco’s built-in highlighters for R, Python, Julia, SQL, shell, YAML, and similar. Plain `.md` still uses the rendered Markdown preview. A rich knitr-aware rendered Rmd view is a follow-up — this release is source highlighting only. File-list badges use the R colour category (RMD / QMD).
 
+![Quarto source preview qc-methods.qmd](/screenshots/08g-preview-quarto.png)
+
 ## PDF
 
 Built-in PDF viewer with Adaptive / percentage zoom (50 %–200 %) and continuous multi-page scrolling. The demo dataset’s `demo-report.pdf` is a 6-page synthetic lab report (tables, multi-panel figures, a correlation heatmap, equations) so the preview looks realistically dense.
@@ -43,6 +45,8 @@ Settings has an **Office preview** toggle (browser-local preference, on by defau
 ## Jupyter notebook (`.ipynb`)
 
 Notebooks open through Filebox’s sandboxed HTML preview: the Hub washes nbformat JSON into a self-contained HTML document (markdown cells, code cells with execution counts, stream / error text with ANSI stripped, and png / jpeg / svg outputs). Mid-size png/jpeg payloads (decoded above ~350 KiB) get mild server-side recompression / downscale before embedding; payloads that remain above ~1.5 MiB are omitted with a note. Raw HTML, widgets, and JavaScript outputs are not rendered. This is **not** an interactive Jupyter runtime — read-only preview only. Large notebooks may ask for confirmation before loading (same oversized-file gate as other HTML-class previews).
+
+![Jupyter notebook preview qc-recovery.ipynb](/screenshots/08h-preview-ipynb.png)
 
 ## Supported types
 

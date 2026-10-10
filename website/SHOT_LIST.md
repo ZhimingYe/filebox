@@ -18,7 +18,7 @@
 | 05-terminal.png … 05d-… | Terminal TOTP 与会话输出 |
 | 06-stats.png | System Monitor |
 | 07-health.png | About / Diagnostics |
-| 08-preview-*.png | 图 / MD / 代码 / PDF（多页合成报告） / CSV / Office |
+| 08-preview-*.png | 图 / MD / 代码 / PDF（多页合成报告） / CSV / Office / Quarto·Rmd（08g） / Jupyter ipynb（08h） |
 | 09-login*.png | 登录与 PoW |
 | 10-explorer*.png | Explorer 树 |
 | 11-settings*.png | Settings / Add Root |
