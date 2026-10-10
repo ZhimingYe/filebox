@@ -34,7 +34,7 @@ const enSidebar = {
       items: [
         { text: 'Browse files', link: '/features/browse' },
         { text: 'Explorer tree', link: '/features/explorer' },
-        { text: 'Preview (image / PDF / code / notebooks)', link: '/features/preview' },
+        { text: 'Preview (image / PDF / HTML / notebooks)', link: '/features/preview' },
         { text: 'Multi-tab preview', link: '/features/tabs' },
         { text: 'Workspace search', link: '/features/search' },
         { text: 'Collections', link: '/features/collections' },
@@ -84,7 +84,7 @@ const zhSidebar = {
       items: [
         { text: '浏览文件', link: '/zh/features/browse' },
         { text: 'Explorer 树形视图', link: '/zh/features/explorer' },
-        { text: '预览（图 / PDF / 代码 / 笔记本）', link: '/zh/features/preview' },
+        { text: '预览（图 / PDF / HTML / 笔记本）', link: '/zh/features/preview' },
         { text: '多标签预览', link: '/zh/features/tabs' },
         { text: '工作区搜索', link: '/zh/features/search' },
         { text: '合集 Collections', link: '/zh/features/collections' },

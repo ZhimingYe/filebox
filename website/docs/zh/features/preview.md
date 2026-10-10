@@ -42,6 +42,12 @@ Word / PowerPoint 经 Agent 上 LibreOffice 转为 PDF 后预览；表格导出�
 
 Settings 里有 **Office preview** 开关（浏览器本地偏好，默认开）。
 
+## HTML
+
+`.html` / `.htm` 在**沙箱预览会话**中打开（目录范围的 bearer token、TTL、按会话的请求/字节上限）——不是同源裸 iframe。文档模式下 Hub 注入锁定的绝对 `<base>`、CSP 与 charset meta，并在导航请求上修正锚点，使文件间相对链接与页内 `#fragment` 在沙箱内可用；`../` 为硬边界。子资源 / HEAD / XHR 仍走锁定的 raw 模式。文档模式 CSP 允许 `script-src` / `style-src` 的 `data:`，因此自包含 Quarto / Pandoc 的 `data:text/css` 样式表与 `data:application/javascript` 模块脚本能按预期字体与版式渲染（网络出口仍限于带 token 的预览源）。可用 **Source** 查看 HTML 源码；新窗口打开沿用同一沙箱模式。超过 64 MiB 的文档直接拒绝；与其他 HTML 类预览相同，达到或超过 2 MiB 会先询问再加载。
+
+![HTML 预览 quarto-user.html](/screenshots/08i-preview-html.png)
+
 ## Jupyter 笔记本（`.ipynb`）
 
 笔记本通过 Filebox 既有的沙箱 HTML 预览打开：Hub 把 nbformat JSON 清洗成自包含 HTML（markdown 单元格、带执行序号的代码单元格、去掉 ANSI 的 stream / error 文本，以及 png / jpeg / svg 输出）。中等体积的 png/jpeg（解码后约超过 ~350 KiB）会在嵌入前做轻度服务端重压缩 / 降采样；仍超过约 ~1.5 MiB 的载荷会省略并附说明。原始 HTML、widget、JavaScript 输出不渲染。这不是交互式 Jupyter 运行时——只读预览。较大笔记本可能先询问再加载（与其他 HTML 类预览的过大文件门槛相同）。
@@ -57,7 +63,7 @@ Settings 里有 **Office preview** 开关（浏览器本地偏好，默认开）
 | Markdown | 渲染 |
 | 代码 / 文本 / 日志 | Monaco 只读 |
 | Quarto / R Markdown（`.qmd` / `.rmd` / `.rmarkdown`） | Monaco 源码视图（`quarto` 语言；YAML + 代码块；非渲染） |
-| HTML | 沙箱会话 |
+| HTML（`.html` / `.htm`） | 沙箱会话（锁定 `<base>` + CSP；相对 / `#fragment` 链接；自包含 Quarto/Pandoc 的 `data:` CSS/JS；64 MiB 硬上限；2 MiB 确认） |
 | Jupyter 笔记本（`.ipynb`） | Hub 清洗为 HTML，走同一沙箱会话（只读；中等 png/jpeg 轻度重压缩；过大省略；无 widget/JS） |
 | CSV / TSV | 表格 |
 | Word / PPT | 可选：Agent 侧 → PDF |
