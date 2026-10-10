@@ -69,7 +69,13 @@ const docWarningClose: CSSProperties = {
 };
 
 export function HtmlPreview({ agentId, root, path, url }: Props) {
-  const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.html });
+  const isNotebook = path.toLowerCase().endsWith('.ipynb');
+  const gate = useFileGate({
+    agentId,
+    root,
+    path,
+    threshold: isNotebook ? PREVIEW_SIZE_THRESHOLDS.ipynb : PREVIEW_SIZE_THRESHOLDS.html,
+  });
   const shouldLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
   const [showSource, setShowSource] = useState(false);
   const [sourceWanted, setSourceWanted] = useState(false);
@@ -156,7 +162,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
         const err = e as { name?: string; message?: string; error?: string };
         if (err?.name === 'AbortError') return;
         if (cancelled || !mounted.current) return;
-        setPreviewError(err?.message || err?.error || 'Failed to prepare HTML preview');
+        setPreviewError(err?.message || err?.error || (isNotebook ? 'Failed to prepare notebook preview' : 'Failed to prepare HTML preview'));
         setPreviewLoading(false);
         setSlowPreviewSetup(false);
         if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
@@ -169,7 +175,7 @@ export function HtmlPreview({ agentId, root, path, url }: Props) {
       if (previewCancelRef.current === controller) previewCancelRef.current = null;
       if (previewSetupTimerRef.current) clearTimeout(previewSetupTimerRef.current);
     };
-  }, [agentId, root, path, previewShouldLoad, previewRetryToken, mounted]);
+  }, [agentId, root, path, isNotebook, previewShouldLoad, previewRetryToken, mounted]);
 
   useEffect(() => {
     if (!iframeLoading || showSource || !documentUrl) return;

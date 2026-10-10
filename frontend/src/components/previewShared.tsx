@@ -327,19 +327,26 @@ export function isTextFile(ext: string): boolean {
   return ext in extToLang;
 }
 
-// HTML is the only viewer that renders an <iframe>. PreviewPane's dispatch
-// checks this so the sandboxed-session viewer is used instead of plain text
-// or a download fallback. PreviewWorkspace mirrors the same check to decide
-// how hidden PINNED panes are parked: visibility:hidden for ordinary panes,
-// but iframes are the only content Safari breaks when hidden with
-// visibility:hidden (no repaint on re-show → white screen; wheel scrolling
-// stuck), so HTML panes hide offscreen instead. This single source of truth
-// keeps the dispatch in PreviewPane and the hiding scheme in
-// PreviewWorkspace from drifting apart — a mismatch would silently
-// re-trigger the Safari bug.
+// HTML (and Hub-washed Jupyter notebooks) use an <iframe>. PreviewPane's
+// dispatch checks this so the sandboxed-session viewer is used instead of
+// plain text or a download fallback. Pin keep-alive classifies HTML/ipynb as
+// `dom-park` (see previewKeepAlive) because the iframe session must stay
+// mounted.
 export function isHtmlPreviewExt(ext: string): boolean {
-  return ext === 'html' || ext === 'htm';
+  return ext === 'html' || ext === 'htm' || ext === 'ipynb';
 }
+
+// ── Pinned inactive pane hide (keep-alive park) ───────────────────────────
+// Pin host model lives in previewKeepAlive: only the active tab paints in
+// the normal slot; pinned heavy viewers (HTML/PDF/Office) park offscreen;
+// light viewers unmount and restore from ViewerStateRegistry. Both aliases
+// are the same offscreen park style — visibility:hidden was retired so a
+// descendant cannot punch through with visibility:visible.
+export {
+  keepAliveParkStyle,
+  pinnedPaneHiddenStyle,
+  pinnedPaneHiddenHtmlStyle,
+} from './previewKeepAlive';
 
 // ── LoadingOverlay ────────────────────────────────────────────────────────
 
@@ -378,6 +385,8 @@ export const PREVIEW_SIZE_THRESHOLDS = {
   text: TEXT_PREVIEW_CONFIRM_BYTES,
   markdown: TEXT_PREVIEW_CONFIRM_BYTES,
   html: TEXT_PREVIEW_CONFIRM_BYTES,
+  // Notebooks often embed figures; confirm at the media threshold.
+  ipynb: MEDIA_PREVIEW_CONFIRM_BYTES,
   csv: TEXT_PREVIEW_CONFIRM_BYTES,
 } as const;
 

@@ -71,6 +71,7 @@ Drag the divider between the file list and the preview pane (list 20 %–80 %); 
 - Tabs belong to the current page session; reloading or reopening the page starts with a clean workspace.
 - **Switching Agent** closes all tabs (previews never outlive their machine); disabling / removing a root in Settings closes that root's tabs.
 - There is no tab cap; unpinned background tabs hold no viewer resources, pinned ones stay resident.
+- Click the **path** under the tab strip to jump the file browser to that file's containing folder.
 - The header's *Refresh preview* button re-reads the active tab's file; **Download** and copy-full-server-address act on the active tab.
 - Tabs are ordered by when you opened them.
 

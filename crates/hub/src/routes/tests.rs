@@ -1106,6 +1106,8 @@ fn preview_session_only_accepts_html_extensions() {
     assert!(preview_doc::is_html_path("report.htm"));
     assert!(!preview_doc::is_html_path("report.md"));
     assert!(!preview_doc::is_html_path("report"));
+    assert!(preview_doc::is_preview_document_path("analysis.ipynb"));
+    assert!(!preview_doc::is_preview_document_path("report.md"));
 }
 
 #[test]

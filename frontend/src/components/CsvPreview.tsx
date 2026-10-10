@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
   useFetchText,
@@ -12,6 +12,7 @@ import {
   previewLoadingMessage,
   styles,
 } from './previewShared';
+import { getViewerState, setViewerState } from './previewKeepAlive';
 import { FileDownloadLink } from './FileDownloadLink';
 import {
   CSV_PREVIEW_ROWS,
@@ -28,9 +29,11 @@ interface Props {
   downloadPath?: string;
   agentId: string;
   root: string;
+  /** Pin state-restore key (see previewKeepAlive). */
+  stateKey?: string;
 }
 
-export function CsvPreview({ url, ext, agentId, root, path, downloadPath = path }: Props) {
+export function CsvPreview({ url, ext, agentId, root, path, downloadPath = path, stateKey }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.csv });
   const isTooLarge = gate.size !== null && gate.size > CSV_PREVIEW_MAX_BYTES;
   const canLoad = !gate.sizeUnknown
@@ -38,7 +41,31 @@ export function CsvPreview({ url, ext, agentId, root, path, downloadPath = path 
     && !isTooLarge
     && (!gate.isLarge || gate.bypassed);
   const { text, error, loading, retrying, cancel, retry, received, total, slow } = useFetchText(url, canLoad, agentId);
-  const [view, setView] = useState<'table' | 'raw'>('table');
+  const savedCsv = stateKey ? getViewerState(stateKey) : undefined;
+  const [view, setView] = useState<'table' | 'raw'>(
+    savedCsv?.kind === 'csv' ? savedCsv.view : 'table',
+  );
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
+  // Pin = keep state: restore scroll/view after content mounts; save on unmount.
+  useEffect(() => {
+    if (!stateKey || !text) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const saved = getViewerState(stateKey);
+    if (saved?.kind === 'csv') {
+      el.scrollTop = saved.scrollTop;
+    }
+    return () => {
+      setViewerState(stateKey, {
+        kind: 'csv',
+        scrollTop: el.scrollTop,
+        view: viewRef.current,
+      });
+    };
+  }, [stateKey, text]);
 
   if (gate.sizeUnknown) {
     return (
@@ -124,7 +151,7 @@ export function CsvPreview({ url, ext, agentId, root, path, downloadPath = path 
   const maxCols = rows.reduce((m, r) => Math.max(m, r.length), 0);
 
   return (
-    <div style={styles.codeContainer}>
+    <div ref={scrollRef} style={styles.codeContainer}>
       <div style={styles.codeToolbar}>
         <span style={styles.metaInfo}>
           {parsed.totalRecords.toLocaleString()} rows{isTruncated ? ` · showing first ${CSV_PREVIEW_ROWS}` : ''} · delim: {delimLabel}

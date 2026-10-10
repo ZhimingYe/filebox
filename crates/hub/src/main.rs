@@ -11,6 +11,7 @@ mod health;
 mod net;
 mod office_proxy;
 mod pow;
+mod ipynb_preview;
 mod preview_doc;
 mod routes;
 mod search_proxy;
