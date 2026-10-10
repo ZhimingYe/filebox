@@ -46,6 +46,7 @@ Settings has an **Office preview** toggle (browser-local preference, on by defau
 | Code / text / logs | Monaco read-only |
 | Quarto / R Markdown (`.qmd` / `.rmd`) | Monaco source view |
 | HTML | Sandboxed session |
+| Jupyter notebook (`.ipynb`) | Hub-washed HTML in the same sandboxed session (read-only; mid-size png/jpeg mildly recompressed; oversized omitted) |
 | CSV / TSV | Table |
 | Word / PPT | Optional: Agent-side → PDF |
 | Excel / ODS | Optional: each sheet → CSV |

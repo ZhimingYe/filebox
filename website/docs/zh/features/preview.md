@@ -46,6 +46,7 @@ Settings 里有 **Office preview** 开关（浏览器本地偏好，默认开）
 | 代码 / 文本 / 日志 | Monaco 只读 |
 | Quarto / R Markdown（`.qmd` / `.rmd`） | Monaco 源码视图 |
 | HTML | 沙箱会话 |
+| Jupyter 笔记本（`.ipynb`） | Hub 清洗为 HTML，走同一沙箱会话（只读；中等 png/jpeg 轻度重压缩；过大省略） |
 | CSV / TSV | 表格 |
 | Word / PPT | 可选：Agent 侧 → PDF |
 | Excel / ODS | 可选：每 sheet → CSV |

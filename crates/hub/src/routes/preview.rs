@@ -40,18 +40,18 @@ pub(super) async fn preview_session_create_handler(
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "invalid_preview_path",
-                "message": "Invalid HTML preview path",
+                "message": "Invalid preview path",
                 "retryable": false,
             })),
         )
             .into_response();
     };
-    if !preview_doc::is_html_path(&file_path) {
+    if !preview_doc::is_preview_document_path(&file_path) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "invalid_preview_path",
-                "message": "Preview sessions are only available for HTML files",
+                "message": "Preview sessions are only available for HTML and Jupyter notebook files",
                 "retryable": false,
             })),
         )
@@ -116,7 +116,7 @@ pub(super) async fn preview_session_create_handler(
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "invalid_preview_path",
-                "message": "Preview path must be a readable HTML file",
+                "message": "Preview path must be a readable HTML or Jupyter notebook file",
                 "retryable": false,
             })),
         )
