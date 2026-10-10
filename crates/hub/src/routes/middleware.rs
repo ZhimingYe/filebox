@@ -112,7 +112,7 @@ pub(super) async fn require_session(
             .into_response();
     }
 
-    let session_id = session_cookie(req.headers(), state.cookie_port);
+    let session_id = session_cookie(req.headers(), state.cookie_suffix.as_str());
 
     let Some(sid) = session_id else {
         return (
@@ -233,7 +233,7 @@ pub(super) async fn require_session(
                 &refresh.session_id,
                 refresh.max_age,
                 state.secure_cookies,
-                state.cookie_port,
+                state.cookie_suffix.as_str(),
             ),
         );
         resp.headers_mut().append(
@@ -242,41 +242,42 @@ pub(super) async fn require_session(
                 &refresh.csrf_token,
                 refresh.max_age,
                 state.secure_cookies,
-                state.cookie_port,
+                state.cookie_suffix.as_str(),
             ),
         );
     }
     resp
 }
 
-/// Cookie base names are suffixed with `_<listen_port>` so two hubs on the
-/// same host IP but different ports do not overwrite each other's cookies
-/// (RFC 6265 cookie identity ignores port).
-pub(crate) fn session_cookie_name(secure: bool, port: u16) -> String {
+/// Cookie base names carry an opaque `_<suffix>` so two hubs on the same
+/// host IP but different ports do not overwrite each other's cookies
+/// (RFC 6265 cookie identity ignores port). Suffix is derived at startup;
+/// it never embeds the listen port in cleartext.
+pub(crate) fn session_cookie_name(secure: bool, suffix: &str) -> String {
     if secure {
-        format!("__Host-filebox_session_{port}")
+        format!("__Host-filebox_session_{suffix}")
     } else {
-        format!("filebox_session_{port}")
+        format!("filebox_session_{suffix}")
     }
 }
 
-pub(crate) fn csrf_cookie_name(secure: bool, port: u16) -> String {
+pub(crate) fn csrf_cookie_name(secure: bool, suffix: &str) -> String {
     if secure {
-        format!("__Host-filebox_csrf_{port}")
+        format!("__Host-filebox_csrf_{suffix}")
     } else {
-        format!("filebox_csrf_{port}")
+        format!("filebox_csrf_{suffix}")
     }
 }
 
-pub(crate) fn session_cookie(headers: &HeaderMap, port: u16) -> Option<String> {
+pub(crate) fn session_cookie(headers: &HeaderMap, suffix: &str) -> Option<String> {
     let cookies = headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
         ?;
 
     // Prefer Secure/__Host-; ignore legacy unsuffixed names (clean break).
-    cookie_value(cookies, &session_cookie_name(true, port))
-        .or_else(|| cookie_value(cookies, &session_cookie_name(false, port)))
+    cookie_value(cookies, &session_cookie_name(true, suffix))
+        .or_else(|| cookie_value(cookies, &session_cookie_name(false, suffix)))
 }
 
 pub(super) fn cookie_value(cookies: &str, name: &str) -> Option<String> {
@@ -416,9 +417,9 @@ pub(super) fn session_cookie_header(
     session_id: &str,
     max_age: u64,
     secure: bool,
-    port: u16,
+    suffix: &str,
 ) -> HeaderValue {
-    let name = session_cookie_name(secure, port);
+    let name = session_cookie_name(secure, suffix);
     let secure_flag = if secure { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
         "{}={}; HttpOnly{}; SameSite=Strict; Path=/; Max-Age={}",
@@ -433,9 +434,9 @@ pub(super) fn csrf_cookie_header(
     csrf_token: &str,
     max_age: u64,
     secure: bool,
-    port: u16,
+    suffix: &str,
 ) -> HeaderValue {
-    let name = csrf_cookie_name(secure, port);
+    let name = csrf_cookie_name(secure, suffix);
     let secure_flag = if secure { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
         "{}={}{}; SameSite=Strict; Path=/; Max-Age={}",
@@ -444,7 +445,7 @@ pub(super) fn csrf_cookie_header(
     .unwrap()
 }
 
-pub(super) fn clear_session_cookie_headers(secure: bool, port: u16) -> [HeaderValue; 8] {
+pub(super) fn clear_session_cookie_headers(secure: bool, suffix: &str) -> [HeaderValue; 8] {
     let clear = |name: &str, http_only: bool| {
         let mut parts = vec![format!("{name}=")];
         if http_only {
@@ -458,12 +459,13 @@ pub(super) fn clear_session_cookie_headers(secure: bool, port: u16) -> [HeaderVa
         parts.push("Max-Age=0".into());
         HeaderValue::from_str(&parts.join("; ")).unwrap()
     };
-    // Port-specific live names, then legacy unsuffixed names (scrub pre-fix cookies).
+    // Instance-specific live names, then legacy unsuffixed / port-suffixed
+    // names from earlier builds (scrub so upgrades do not leave collisions).
     [
-        clear(&session_cookie_name(true, port), true),
-        clear(&session_cookie_name(false, port), true),
-        clear(&csrf_cookie_name(true, port), false),
-        clear(&csrf_cookie_name(false, port), false),
+        clear(&session_cookie_name(true, suffix), true),
+        clear(&session_cookie_name(false, suffix), true),
+        clear(&csrf_cookie_name(true, suffix), false),
+        clear(&csrf_cookie_name(false, suffix), false),
         clear("__Host-filebox_session", true),
         clear("filebox_session", true),
         clear("__Host-filebox_csrf", false),

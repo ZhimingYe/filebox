@@ -192,11 +192,11 @@ pub(super) async fn session_exchange_handler(
         .into_response();
     resp.headers_mut().append(
         header::SET_COOKIE,
-        session_cookie_header(&session_id, ttl, state.secure_cookies, state.cookie_port),
+        session_cookie_header(&session_id, ttl, state.secure_cookies, state.cookie_suffix.as_str()),
     );
     resp.headers_mut().append(
         header::SET_COOKIE,
-        csrf_cookie_header(&csrf_token, ttl, state.secure_cookies, state.cookie_port),
+        csrf_cookie_header(&csrf_token, ttl, state.secure_cookies, state.cookie_suffix.as_str()),
     );
     resp
 }
@@ -238,7 +238,7 @@ pub(super) async fn session_logout_handler(
         Json(serde_json::json!({ "ok": true })),
     )
         .into_response();
-    for cookie in clear_session_cookie_headers(state.secure_cookies, state.cookie_port) {
+    for cookie in clear_session_cookie_headers(state.secure_cookies, state.cookie_suffix.as_str()) {
         resp.headers_mut().append(header::SET_COOKIE, cookie);
     }
     resp

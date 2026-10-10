@@ -676,7 +676,7 @@ pub async fn terminal_ws_handler(
 
     // 2) Session cookie must be present, valid, and owned by the ticket's
     // principal — the ticket alone must not suffice from another browser.
-    let cookie_ok = match crate::routes::session_cookie(&headers, state.cookie_port) {
+    let cookie_ok = match crate::routes::session_cookie(&headers, state.cookie_suffix.as_str()) {
         Some(sid) => {
             let inner = state.inner.read().await;
             inner

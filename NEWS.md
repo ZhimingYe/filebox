@@ -6,11 +6,13 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ### Fixed
 
-- **Same-host different-port cookie collision** — session/CSRF cookie names are now
-  suffixed with the hub listen port (`filebox_session_<port>`, `filebox_csrf_<port>`,
-  and their `__Host-` variants). Browsers ignore port in cookie identity, so two hubs
-  on one IP (e.g. `:3000` and `:3001`) previously overwrote each other's cookies.
-  Zero config; existing sessions need a fresh login after upgrade.
+- **Same-host different-port cookie collision** — session/CSRF cookie names carry an
+  opaque 8-hex suffix (`filebox_session_<suffix>`, `filebox_csrf_<suffix>`, and
+  `__Host-` variants) derived as `SHA-256(agent_token_hash || "|" || listen_port)[:8]`.
+  The listen port is mixed into the hash so instances on different ports isolate
+  cookies, but **never appears in the cookie name**. Frontend reads the suffix from
+  `/api/health` (`hub.cookie_suffix`). Zero config; existing sessions need a fresh
+  login after upgrade.
 
 ## Unreleased
 

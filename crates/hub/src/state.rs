@@ -9,6 +9,7 @@ use filebox_protocol::resources::{CollectionConfig, DesiredResources, RootConfig
 use crate::agent_registry::AgentRegistry;
 use crate::auth::SessionStore;
 use crate::config::HubConfig;
+use sha2::{Digest, Sha256};
 
 pub struct PendingResponse {
     pub tx: mpsc::Sender<serde_json::Value>,
@@ -198,10 +199,12 @@ pub struct AppState {
     /// Bounds detached Cancel deliveries while outbound Agent queues are full.
     pub cancel_delivery_semaphore: Arc<tokio::sync::Semaphore>,
     pub secure_cookies: bool,
-    /// Listen port used to suffix session/CSRF cookie names so multiple
-    /// hubs on the same host IP but different ports do not clobber each
-    /// other (browsers ignore port in cookie identity).
-    pub cookie_port: u16,
+    /// Opaque suffix for session/CSRF cookie names so multiple hubs on the
+    /// same host IP but different ports do not clobber each other (browsers
+    /// ignore port in cookie identity). Derived as the first 8 hex chars of
+    /// SHA-256(agent_token_hash || "|" || listen_port); the port never appears
+    /// in the cookie name.
+    pub cookie_suffix: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -228,6 +231,19 @@ pub struct AppStateInner {
     pub sse_tx: broadcast::Sender<SseEvent>,
     pub sse_history: Arc<RwLock<VecDeque<SseEvent>>>,
     pub sse_next_id: Arc<AtomicU64>,
+}
+
+
+/// First 8 hex chars of SHA-256(agent_token_hash || "|" || listen_port).
+/// Mixes listen port so same-secret multi-port deployments isolate cookies,
+/// without putting the port (or any cleartext deployment detail) in the name.
+pub(crate) fn cookie_name_suffix(agent_token_hash: &str, listen_port: u16) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(agent_token_hash.as_bytes());
+    hasher.update(b"|");
+    hasher.update(listen_port.to_string().as_bytes());
+    let digest = hasher.finalize();
+    hex::encode(&digest[..4])
 }
 
 impl AppState {
@@ -318,7 +334,10 @@ impl AppState {
             agent_auth_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
             cancel_delivery_semaphore: Arc::new(tokio::sync::Semaphore::new(crate::agent_requests::CANCEL_DELIVERY_LIMIT)),
             secure_cookies,
-            cookie_port: config.listen_addr.port(),
+            cookie_suffix: cookie_name_suffix(
+                &config.agent_token_hash,
+                config.listen_addr.port(),
+            ),
         }
     }
 

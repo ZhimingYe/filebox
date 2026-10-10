@@ -180,7 +180,7 @@ async fn protected_route_rejects_session_without_csrf() {
                 .uri("/api/agents")
                 .header(
                     header::COOKIE,
-                    format!("filebox_session_0={}", session.session_id),
+                    format!("filebox_session_92701c7f={}", session.session_id),
                 )
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -209,7 +209,7 @@ async fn protected_route_accepts_csrf_header() {
                 .uri("/api/agents")
                 .header(
                     header::COOKIE,
-                    format!("filebox_session_0={}", session.session_id),
+                    format!("filebox_session_92701c7f={}", session.session_id),
                 )
                 .header("x-csrf-token", session.csrf_token.clone())
                 .body(axum::body::Body::empty())
@@ -234,7 +234,7 @@ async fn protected_route_rejects_csrf_in_query_without_header() {
                 .uri(format!("/api/agents?csrf={}", session.csrf_token))
                 .header(
                     header::COOKIE,
-                    format!("filebox_session_0={}", session.session_id),
+                    format!("filebox_session_92701c7f={}", session.session_id),
                 )
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -277,7 +277,7 @@ async fn events_accepts_scoped_access_token_without_csrf_header() {
                 .uri(format!("/api/events?access_token={token}"))
                 .header(
                     header::COOKIE,
-                    format!("filebox_session_0={}", session.session_id),
+                    format!("filebox_session_92701c7f={}", session.session_id),
                 )
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -301,7 +301,7 @@ async fn protected_route_rejects_wrong_csrf_even_with_valid_session() {
                 .uri("/api/agents")
                 .header(
                     header::COOKIE,
-                    format!("filebox_session_0={}", session.session_id),
+                    format!("filebox_session_92701c7f={}", session.session_id),
                 )
                 .header("x-csrf-token", "0".repeat(session.csrf_token.len()))
                 .body(axum::body::Body::empty())
@@ -343,7 +343,7 @@ async fn expired_access_token_does_not_rotate_past_half_life_session() {
         .oneshot(
             axum::http::Request::builder()
                 .uri("/api/events?access_token=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
-                .header(header::COOKIE, format!("filebox_session_0={session_id}"))
+                .header(header::COOKIE, format!("filebox_session_92701c7f={session_id}"))
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -355,7 +355,7 @@ async fn expired_access_token_does_not_rotate_past_half_life_session() {
         .get_all(header::SET_COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .any(|v| v.contains("filebox_session_0="));
+        .any(|v| v.contains("filebox_session_92701c7f="));
     assert!(
         !set_cookie,
         "failed access-token claim must not emit a rotated session cookie"
@@ -404,7 +404,7 @@ async fn file_raw_accepts_scoped_access_token_without_csrf_header() {
                 ))
                 .header(
                     header::COOKIE,
-                    format!("filebox_session_0={}", session.session_id),
+                    format!("filebox_session_92701c7f={}", session.session_id),
                 )
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -438,7 +438,7 @@ async fn access_token_mint_and_use_for_events() {
                 .uri("/api/access-tokens")
                 .header(
                     header::COOKIE,
-                    format!("filebox_session_0={}", session.session_id),
+                    format!("filebox_session_92701c7f={}", session.session_id),
                 )
                 .header("x-csrf-token", session.csrf_token.clone())
                 .header(header::CONTENT_TYPE, "application/json")
@@ -461,7 +461,7 @@ async fn access_token_mint_and_use_for_events() {
                 .uri(format!("/api/events?access_token={token}"))
                 .header(
                     header::COOKIE,
-                    format!("filebox_session_0={}", session.session_id),
+                    format!("filebox_session_92701c7f={}", session.session_id),
                 )
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -491,7 +491,7 @@ async fn file_access_tokens_allow_seventy_distinct_pdf_views() {
                     .uri("/api/access-tokens")
                     .header(
                         header::COOKIE,
-                        format!("filebox_session_0={}", session.session_id),
+                        format!("filebox_session_92701c7f={}", session.session_id),
                     )
                     .header("x-csrf-token", session.csrf_token.clone())
                     .header(header::CONTENT_TYPE, "application/json")
@@ -548,7 +548,7 @@ async fn file_raw_access_token_rejects_wrong_path_scope() {
                 ))
                 .header(
                     header::COOKIE,
-                    format!("filebox_session_0={}", session.session_id),
+                    format!("filebox_session_92701c7f={}", session.session_id),
                 )
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -598,7 +598,7 @@ async fn events_access_token_rejected_on_file_raw() {
                 ))
                 .header(
                     header::COOKIE,
-                    format!("filebox_session_0={}", session.session_id),
+                    format!("filebox_session_92701c7f={}", session.session_id),
                 )
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -648,7 +648,7 @@ async fn file_raw_access_token_does_not_exhaust_on_range_count() {
                 ))
                 .header(
                     header::COOKIE,
-                    format!("filebox_session_0={}", session.session_id),
+                    format!("filebox_session_92701c7f={}", session.session_id),
                 )
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -695,7 +695,7 @@ async fn logout_clears_get_access_tokens_for_session() {
         .uri("/api/session/logout")
         .header(
             header::COOKIE,
-            format!("filebox_session_0={}", session.session_id),
+            format!("filebox_session_92701c7f={}", session.session_id),
         )
         .header("x-csrf-token", session.csrf_token.clone())
         .body(axum::body::Body::empty())
@@ -732,7 +732,7 @@ async fn logout_revokes_only_its_principals_terminal_attachments() {
         }
     }
     let mut req = axum::http::Request::builder().method(Method::POST).uri("/api/session/logout")
-        .header(header::COOKIE, format!("filebox_session_0={}", session.session_id))
+        .header(header::COOKIE, format!("filebox_session_92701c7f={}", session.session_id))
         .header("x-csrf-token", &session.csrf_token).body(axum::body::Body::empty()).unwrap();
     req.extensions_mut().insert(axum::extract::ConnectInfo(
         std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
@@ -749,9 +749,9 @@ async fn logout_revokes_only_its_principals_terminal_attachments() {
 
 #[test]
 fn csrf_cookie_header_sets_secure_host_prefix_in_prod() {
-    let header = csrf_cookie_header("abc123", 60, true, 0);
+    let header = csrf_cookie_header("abc123", 60, true, "92701c7f");
     let value = header.to_str().unwrap();
-    assert!(value.starts_with("__Host-filebox_csrf_0=abc123"));
+    assert!(value.starts_with("__Host-filebox_csrf_92701c7f=abc123"));
     assert!(value.contains("Secure"));
     assert!(value.contains("SameSite=Strict"));
     assert!(value.contains("Path=/"));
@@ -760,39 +760,56 @@ fn csrf_cookie_header_sets_secure_host_prefix_in_prod() {
 
 #[test]
 fn csrf_cookie_header_omits_secure_in_dev() {
-    let header = csrf_cookie_header("abc123", 60, false, 0);
+    let header = csrf_cookie_header("abc123", 60, false, "92701c7f");
     let value = header.to_str().unwrap();
-    assert!(value.starts_with("filebox_csrf_0=abc123"));
+    assert!(value.starts_with("filebox_csrf_92701c7f=abc123"));
     assert!(!value.contains("Secure"));
     assert!(!value.contains("HttpOnly"));
 }
 
 #[test]
-fn cookie_names_are_suffixed_with_listen_port() {
-    assert_eq!(session_cookie_name(false, 3000), "filebox_session_3000");
-    assert_eq!(session_cookie_name(true, 3001), "__Host-filebox_session_3001");
-    assert_eq!(csrf_cookie_name(false, 8080), "filebox_csrf_8080");
-    assert_eq!(csrf_cookie_name(true, 8081), "__Host-filebox_csrf_8081");
+fn cookie_names_use_opaque_suffix_not_port() {
+    assert_eq!(session_cookie_name(false, "a1b2c3d4"), "filebox_session_a1b2c3d4");
+    assert_eq!(session_cookie_name(true, "a1b2c3d4"), "__Host-filebox_session_a1b2c3d4");
+    assert_eq!(csrf_cookie_name(false, "deadbeef"), "filebox_csrf_deadbeef");
+    assert_eq!(csrf_cookie_name(true, "deadbeef"), "__Host-filebox_csrf_deadbeef");
+    // Port digits must never appear as the suffix itself.
+    assert!(!session_cookie_name(false, "a1b2c3d4").contains("3000"));
 }
 
 #[test]
-fn session_cookie_header_keeps_security_attrs_with_port_suffix() {
-    let header = session_cookie_header("sid", 3600, true, 8443);
+fn session_cookie_header_keeps_security_attrs_with_opaque_suffix() {
+    let header = session_cookie_header("sid", 3600, true, "a1b2c3d4");
     let value = header.to_str().unwrap();
-    assert!(value.starts_with("__Host-filebox_session_8443=sid"));
+    assert!(value.starts_with("__Host-filebox_session_a1b2c3d4=sid"));
     assert!(value.contains("HttpOnly"));
     assert!(value.contains("Secure"));
     assert!(value.contains("SameSite=Strict"));
     assert!(value.contains("Path=/"));
     assert!(value.contains("Max-Age=3600"));
+    assert!(!value.contains("8443"));
 }
 
 #[test]
-fn different_ports_produce_distinct_cookie_names() {
-    assert_ne!(
-        session_cookie_name(false, 3000),
-        session_cookie_name(false, 3001)
+fn cookie_name_suffix_differs_across_ports_without_exposing_them() {
+    let a = crate::state::cookie_name_suffix("fake-hash", 3000);
+    let b = crate::state::cookie_name_suffix("fake-hash", 3001);
+    assert_ne!(a, b);
+    assert_eq!(a.len(), 8);
+    assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(!a.contains("3000"));
+    assert!(!b.contains("3001"));
+    assert_eq!(
+        crate::state::cookie_name_suffix("fake-hash", 0),
+        "92701c7f"
     );
+}
+
+#[test]
+fn cookie_name_suffix_differs_across_secrets() {
+    let a = crate::state::cookie_name_suffix("secret-a", 3000);
+    let b = crate::state::cookie_name_suffix("secret-b", 3000);
+    assert_ne!(a, b);
 }
 
 #[tokio::test]
@@ -829,7 +846,7 @@ async fn workspace_search_rejects_invalid_session_cookie() {
                 .method(Method::POST)
                 .uri("/api/agents/any-agent/workspace-search")
                 .header(header::CONTENT_TYPE, "application/json")
-                .header(header::COOKIE, "filebox_session_0=forged-session-id")
+                .header(header::COOKIE, "filebox_session_92701c7f=forged-session-id")
                 .body(axum::body::Body::from(
                     r#"{"mode":"find","root":"r","path":"/","query":""}"#,
                 ))

@@ -8,6 +8,8 @@ export function useSession() {
     let cancelled = false;
 
     const verify = async () => {
+      // Resolve opaque cookie suffix from the hub before CSRF cookie reads.
+      await api.ensureCookieSuffix();
       // A single blip (hub restarting, brief network loss) must not force the
       // login screen when a session cookie is still present.
       const maxAttempts = 3;
