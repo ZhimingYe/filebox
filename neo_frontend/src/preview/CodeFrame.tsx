@@ -35,7 +35,11 @@ export function CodeFrame({ agentId, root, path, tabId, pinned }: Props) {
           CODE_PREVIEW_MAX_BYTES,
         )
         if (!ac.signal.aborted) {
-          setText(body.truncated ? trimToLastLine(body.text) : body.text)
+          setText(
+            body.truncated
+              ? trimToLastLine(body.text).replace(/\r?\n$/, '')
+              : body.text,
+          )
           setTruncated(body.truncated)
           setTotalBytes(body.totalBytes)
         }
