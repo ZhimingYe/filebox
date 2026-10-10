@@ -2,53 +2,44 @@
 
 Browser-only multi-panel shell for filebox, served at **`/neo`**.
 
-This package is an **independent** Vite + React + TypeScript app. It does
-**not** replace `frontend/` (the classic SPA at `/`). Desktop browser only
-for now — no Electron / desktop shell.
+Independent Vite + React + TypeScript app. Does **not** replace `frontend/`
+(classic SPA at `/`). Browser only — no Electron / desktop shell.
 
-## Scope (first spike)
+## Current spike
 
-- dockview layout with **File tree** and **Preview** panel placeholders
-- Hub static routing under `/neo` and `/neo/`
-- Same-origin Hub probe via `/api/health` (works when Hub serves the build,
-  or when `npm run dev` proxies to a local Hub)
+- dockview layout: File tree + Preview (add more Preview panels from the top bar)
+- Hub listing via `/api/agents` + `/api/fs/list` (same-origin session)
+- Preview host eats **#86 pin contract**: stable-keyed active/park mounts + `dom-park`
+  (`MAX_DOM_PARKED=3`, `keepAliveParkStyle`, no `visibility` hide; park must not remount)
+- PDF bodies: CSRF fetch → blob: URL iframe (Hub raw is X-Frame-Options: DENY; preview sessions are HTML/ipynb only); other types stubbed
+- Unit tests for `previewKeepAlive` park selection
 
-Later spikes will mount real FileBrowser / PreviewWorkspace components,
-reuse existing stores/APIs, and honor the #86 pin contract
-(`MAX_DOM_PARKED=3`, active mount + park/registry). Same-origin popout via
-dockview is planned.
-
-## Gate criteria (when real preview lands)
+## Gate criteria (dual PDF)
 
 - Dual PDF memory ≤ 1.3× classic baseline
 - Tab visible ≤ 100ms
 - Park restore ≤ 200ms
+- Fail gate → do not expand Monaco / charts / CSV
 
 ## Develop
 
 ```bash
-# Terminal A — Hub (from repo root, classic dist still required for /)
+# Terminal A — Hub
 cd frontend && npm run build && cd ..
+cd neo_frontend && npm run build && cd ..
 FILEBOX_DEV_MODE=1 FILEBOX_FRONTEND_DIR="$(pwd)/frontend/dist" \
   FILEBOX_NEO_FRONTEND_DIR="$(pwd)/neo_frontend/dist" \
   cargo run -p filebox-hub
 
-# Terminal B — neo (Vite on :5174, proxies /api and /ws)
+# Terminal B — neo Vite (:5174 proxies /api)
 cd neo_frontend && npm install && npm run dev
-# open http://localhost:5174/neo/
+# open http://localhost:5174/neo/  (log in via Classic / first if needed)
 ```
 
-Or build neo and let Hub serve it:
-
-```bash
-cd neo_frontend && npm install && npm run build
-# Hub finds neo_frontend/dist next to frontend/dist, or set FILEBOX_NEO_FRONTEND_DIR
-# open http://127.0.0.1:3000/neo/
-```
-
-## Build
+## Test / build
 
 ```bash
 npm install
-npm run build   # writes dist/ with base /neo/
+npm test
+npm run build
 ```

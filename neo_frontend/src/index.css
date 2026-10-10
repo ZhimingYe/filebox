@@ -129,3 +129,163 @@ button {
   line-height: 1.5;
   max-width: 36em;
 }
+
+.neo-topbar__btn {
+  border: 1px solid #3f4454;
+  background: #222633;
+  color: #e8e8ec;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.neo-topbar__btn:hover {
+  background: #2a2f3d;
+}
+
+.neo-tree-toolbar,
+.neo-tree-path {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2a2d38;
+  font-size: 12px;
+}
+
+.neo-tree-toolbar select {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: #181b24;
+  color: #e8e8ec;
+  border: 1px solid #3f4454;
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+.neo-tree-path code {
+  font-size: 11px;
+  color: #9ca3af;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.neo-tree-list {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.neo-tree-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.neo-tree-row:hover {
+  background: #1c2030;
+}
+
+.neo-tree-row:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.neo-tree-row__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.neo-preview-host {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+.neo-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #2a2d38;
+  background: #151821;
+}
+
+.neo-tabs__empty {
+  font-size: 12px;
+  color: #9ca3af;
+  padding: 4px;
+}
+
+.neo-tab {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid #3f4454;
+  border-radius: 6px;
+  background: #1a1e2a;
+  overflow: hidden;
+}
+
+.neo-tab--active {
+  border-color: #6366f1;
+  background: #22264a;
+}
+
+.neo-tab__title,
+.neo-tab__pin,
+.neo-tab__close {
+  border: 0;
+  background: transparent;
+  color: #e8e8ec;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.neo-tab__pin,
+.neo-tab__close {
+  color: #9ca3af;
+}
+
+.neo-preview-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.neo-preview-active {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.neo-pdf-frame {
+  border: 0;
+  width: 100%;
+  height: 100%;
+  background: #0b0c10;
+}
+
+.neo-preview-meta {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #6b7280;
+  border-top: 1px solid #2a2d38;
+}
