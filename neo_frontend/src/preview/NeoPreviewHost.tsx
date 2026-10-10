@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   keepAliveParkStyle,
+  keepAliveStrategyForPath,
   MAX_DOM_PARKED,
-  needsDomPark,
   selectDomParkTabIds,
 } from './previewKeepAlive'
 import { PdfFrame } from './PdfFrame'
+import { HtmlFrame } from './HtmlFrame'
+import { ImageFrame, isImageExt } from './ImageFrame'
 import type { OpenTarget } from '../state/workspace'
 import { useWorkspace } from '../state/workspace'
 
@@ -160,10 +162,8 @@ export function NeoPreviewHost({ panelId }: Props) {
       </div>
       <footer className="neo-preview-meta">
         park ≤ {MAX_DOM_PARKED} · parked now {parkedIds.size}
-        {activeTabId && tabs.find((t) => t.id === activeTabId) && needsDomPark(
-          tabs.find((t) => t.id === activeTabId)!.path,
-        )
-          ? ' · active=dom'
+        {activeTabId && tabs.find((t) => t.id === activeTabId)
+          ? ` · active=${keepAliveStrategyForPath(tabs.find((t) => t.id === activeTabId)!.path)}`
           : ''}
       </footer>
     </div>
@@ -182,10 +182,32 @@ function PreviewBody({ tab, active }: { tab: Tab; active: boolean }) {
       />
     )
   }
+  if (ext === 'html' || ext === 'htm' || ext === 'ipynb') {
+    return (
+      <HtmlFrame
+        agentId={tab.agentId}
+        root={tab.root}
+        path={tab.path}
+        active={active}
+      />
+    )
+  }
+  if (isImageExt(ext)) {
+    return (
+      <ImageFrame
+        agentId={tab.agentId}
+        root={tab.root}
+        path={tab.path}
+        tabId={tab.id}
+        pinned={tab.pinned}
+        active={active}
+      />
+    )
+  }
   return (
     <div className="neo-panel__body">
       <p className="neo-panel__muted">
-        {basename(tab.path)} — spike hosts PDF via #86 park; other types next.
+        {basename(tab.path)} — PDF/HTML/ipynb/images supported; other types later.
       </p>
     </div>
   )
