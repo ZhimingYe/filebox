@@ -329,17 +329,57 @@ export function isTextFile(ext: string): boolean {
 
 // HTML is the only viewer that renders an <iframe>. PreviewPane's dispatch
 // checks this so the sandboxed-session viewer is used instead of plain text
-// or a download fallback. PreviewWorkspace mirrors the same check to decide
-// how hidden PINNED panes are parked: visibility:hidden for ordinary panes,
-// but iframes are the only content Safari breaks when hidden with
-// visibility:hidden (no repaint on re-show → white screen; wheel scrolling
-// stuck), so HTML panes hide offscreen instead. This single source of truth
-// keeps the dispatch in PreviewPane and the hiding scheme in
-// PreviewWorkspace from drifting apart — a mismatch would silently
-// re-trigger the Safari bug.
+// or a download fallback. PreviewWorkspace mirrors the same check to pick
+// pinnedPaneHiddenHtmlStyle (offscreen) vs pinnedPaneHiddenStyle (opacity +
+// visibility). Iframes are the only content Safari breaks under
+// visibility:hidden (no repaint on re-show → white screen; wheel scroll
+// stuck). Keep this as the single source of truth so dispatch and hide
+// scheme cannot drift apart.
 export function isHtmlPreviewExt(ext: string): boolean {
   return ext === 'html' || ext === 'htm';
 }
+
+// ── Pinned inactive pane hide ─────────────────────────────────────────────
+// PreviewWorkspace parks pinned-but-inactive preview bodies with these
+// styles (ordinary / non-iframe panes). Contract:
+//   * Never `display:none` — Chrome unloads display:none iframe documents,
+//     and RO/IO report zero size (virtualized PDF pages unmount).
+//   * Always include `opacity: 0`. CSS `visibility: hidden` alone is NOT
+//     enough: a descendant with `visibility: visible` paints through the
+//     ancestor (PdfPreview historically set that on its pages column once
+//     pages loaded, so a pinned PDF covered the active tab). Opacity is
+//     multiplied down the tree and cannot be overridden by children.
+//   * Keep `visibility: hidden` + `pointerEvents: none` for a11y / input.
+//   * Callers should also set `inert` + `aria-hidden` on the pane.
+// HTML panes use a separate offscreen scheme (Safari iframe repaint/scroll).
+export const pinnedPaneHiddenStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  visibility: 'hidden',
+  opacity: 0,
+  pointerEvents: 'none',
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+};
+
+// Offscreen keep-alive for iframe panes (HTML). Same size, parked far left,
+// clipped by the body's overflow:hidden. No visibility flip (WebKit).
+export const pinnedPaneHiddenHtmlStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  left: -10000,
+  width: '100%',
+  height: '100%',
+  opacity: 0,
+  pointerEvents: 'none',
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+};
 
 // ── LoadingOverlay ────────────────────────────────────────────────────────
 

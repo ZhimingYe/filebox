@@ -464,18 +464,16 @@ first with "Load older" paging.
   walk files in the current directory or collection; Esc closes the active
   tab; context menu supports bulk close and pin; tab-jump dropdown among
   open tabs. `PreviewErrorBoundary` isolates viewer crashes. Hidden pinned
-  panes are `visibility:hidden` + absolute off-flow positioning, never
-  `display:none` — Chrome unloads the document of a `display:none` iframe
-  (an HTML tab would reload white on switch-back), and `display:none`
-  zeroes the ResizeObserver/IntersectionObserver measurements that keep
-  virtualized PDF pages mounted (PDFs would unmount and re-render every
-  page on switch-back). **Safari exception: iframe-bearing panes (HTML
-  preview) must NOT use `visibility:hidden` either** — WebKit fails to
-  repaint a hidden-then-shown iframe (intermittent white screen) and its
-  wheel scrolling gets stuck. HTML panes hide OFFScreen instead (parked
-  10000px left, real size, fully rendered) + `inert`/`aria-hidden` while
-  hidden. The hidden Files/Explorer shells in `App.tsx` (`filesViewHidden`)
-  follow the same visibility rule.
+  panes use `pinnedPaneHiddenStyle` / `pinnedPaneHiddenHtmlStyle` in
+  `previewShared` — never `display:none` (Chrome iframe unload + zeroed
+  RO/IO for PDF). Ordinary panes: `visibility:hidden` **and** `opacity:0`
+  (opacity is mandatory: a descendant with `visibility:visible` paints
+  through `visibility:hidden` alone — that was the pinned-PDF bleed). HTML
+  panes park offscreen for Safari iframe repaint/scroll. Every inactive
+  pane gets `inert`/`aria-hidden`. Viewers must not set
+  `visibility:visible` to unhide internal chrome; use opacity instead.
+  The hidden Files/Explorer shells in `App.tsx` (`filesViewHidden`) still
+  use visibility-only hide (they never host preview iframes/PDF).
 - **Markdown**: fetch raw → render → sanitize HTML → safe mode for large.
 - **Code**: Monaco Editor (read-only), word-wrap toggle, Find (Ctrl/Cmd+F).
   Lazy-loaded via `TextPreview`; large files gated by size threshold

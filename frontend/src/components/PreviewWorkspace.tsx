@@ -2,7 +2,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { PreviewPane } from './PreviewPane';
 import { PreviewErrorBoundary } from './PreviewErrorBoundary';
 import { PreviewHeaderActions } from './PreviewHeaderActions';
-import { isHtmlPreviewExt } from './previewShared';
+import { isHtmlPreviewExt, pinnedPaneHiddenStyle, pinnedPaneHiddenHtmlStyle } from './previewShared';
 import PinIcon from './PinIcon';
 import { c, radius, font, shadow, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import type { PreviewTab } from '../hooks/usePreviewTabs';
@@ -24,17 +24,12 @@ import type { RootInfo } from '../api/client';
 // refresh bump does. PreviewPane stays memoized on primitive props, so
 // dragging the file/preview splitter (which re-renders App and this
 // component) does NOT re-render the preview subtree — only a real change
-// to a tab's primitives does. Hidden pinned panes are visibility:hidden +
-// absolute positioning — NOT display:none. Chrome unloads the document of
-// a display:none iframe (an HTML tab would reload white on switch-back),
-// and a display:none pane zeroes ResizeObserver/IntersectionObserver
-// measurements, which unmounts every virtualized PDF page. visibility
-// keeps the pane in the rendering tree: iframes stay alive and sizes stay
-// real, while paint/focus/a11y removal is identical to display:none.
-// Safari is the exception: it fails to repaint visibility-hidden-then-
-// shown iframes (white screen) and breaks their wheel scrolling, so HTML
-// panes hide OFFSCREEN instead (fully rendered, parked out of view — see
-// bodyPaneHiddenHtml).
+// to a tab's primitives does. Hidden pinned panes use the shared hide
+// styles in previewShared (pinnedPaneHiddenStyle / Html): never display:none
+// (Chrome iframe unload + zeroed RO/IO for PDF); ordinary panes hide with
+// visibility:hidden + opacity:0 (opacity blocks descendants that set
+// visibility:visible — the pin-PDF bleed bug); HTML panes park offscreen
+// for Safari iframe repaint/scroll. See previewShared for the contract.
 
 interface Props {
   agentId: string;
@@ -536,20 +531,11 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
             </div>
           </div>
           {/* Preview bodies: the active tab's pane (visible) plus one hidden
-              pane per PINNED tab (user opt-in, see usePreviewTabs). Hidden
-              panes are visibility:hidden + absolute positioning, NOT
-              display:none — Chrome unloads the document of a display:none
-              iframe (an HTML tab would reload white on switch-back), and a
-              display:none pane zeroes ResizeObserver/IntersectionObserver
-              measurements, unmounting every virtualized PDF page. Safari
-              caveat: iframe-bearing panes (HTML) must not be hidden with
-              visibility:hidden either — WebKit fails to repaint a
-              hidden-then-shown iframe (white screen) and breaks its wheel
-              scrolling; they hide OFFSCREEN instead (fully rendered, just
-              parked out of view; see bodyPaneHiddenHtml). Keyed on id +
-              rev: a refresh bump remounts that tab's viewers so they
-              re-fetch the file; switching tabs never remounts a mounted
-              body. */}
+              pane per PINNED tab (user opt-in, see usePreviewTabs). Hide
+              styles come from previewShared (opacity:0 required — see
+              pinnedPaneHiddenStyle). Keyed on id + rev: a refresh bump
+              remounts that tab's viewers; switching never remounts a
+              mounted body. */}
           <div style={styles.body}>
             {tabs.map((tab) => {
               const active = tab.id === activeTabId;
@@ -564,12 +550,13 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
                   key={`${tab.id}:${tab.rev}`}
                   style={active
                     ? styles.bodyPane
-                    : (htmlPane ? styles.bodyPaneHiddenHtml : styles.bodyPaneHidden)}
-                  // Offscreen panes stay in the tab order and a11y tree —
-                  // inert removes both while hidden (React 19 boolean prop,
-                  // Safari 15.5+).
-                  inert={!active && htmlPane ? true : undefined}
-                  aria-hidden={!active && htmlPane ? true : undefined}
+                    : (htmlPane ? pinnedPaneHiddenHtmlStyle : pinnedPaneHiddenStyle)}
+                  // Inactive panes stay in the tab order and a11y tree unless
+                  // inert removes both (React 19 boolean prop, Safari 15.5+).
+                  // Apply to every inactive pane — not only HTML: a child that
+                  // sets visibility:visible would otherwise re-enter a11y.
+                  inert={!active ? true : undefined}
+                  aria-hidden={!active ? true : undefined}
                 >
                   <PreviewErrorBoundary>
                     <PreviewPane
@@ -793,26 +780,10 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer', padding: '0 4px', borderRadius: radius.sm,
   },
   // ── Preview bodies ──
-  // Each pane is a flex column filling the body. Hidden pinned panes are
-  // visibility:hidden + absolute off-flow positioning — NOT display:none,
-  // which breaks two keep-alive consumers:
-  //  - Chrome unloads the document of a display:none iframe, so an HTML tab
-  //    would reload white (and lose its scroll position) on switch-back;
-  //  - a display:none pane reports zero size to ResizeObserver and no
-  //    intersections to IntersectionObserver, which unmounts every
-  //    virtualized PDF page (spinners + re-render on switch-back).
-  // visibility keeps the pane in the rendering tree (iframes alive, real
-  // measurements, Monaco/PDF layouts valid) while staying unpainted,
-  // unclickable, unfocusable, and out of the a11y tree.
-  //
-  // Safari caveat: visibility:hidden is NOT safe for iframe-bearing panes
-  // (HTML preview). WebKit fails to repaint a hidden-then-shown iframe
-  // (intermittent white screen) and its wheel scrolling gets stuck. HTML
-  // panes therefore hide OFFScreen instead (bodyPaneHiddenHtml): the pane
-  // stays fully rendered at a real size, just parked outside the clipped
-  // body — no visibility flip, no repaint invalidation, no scroll breakage.
-  // inert + aria-hidden (set in the render) remove it from tab order and
-  // the a11y tree while hidden.
+  // Each pane is a flex column filling the body. Hidden pinned panes use
+  // pinnedPaneHiddenStyle / pinnedPaneHiddenHtmlStyle from previewShared —
+  // see that module for the full hide contract (opacity:0 is mandatory so
+  // a descendant cannot punch through with visibility:visible).
   body: {
     flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
     position: 'relative',
@@ -820,25 +791,8 @@ const styles: Record<string, React.CSSProperties> = {
   bodyPane: {
     flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
   },
-  bodyPaneHidden: {
-    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    visibility: 'hidden', pointerEvents: 'none',
-    display: 'flex', flexDirection: 'column', overflow: 'hidden',
-  },
-  // Offscreen keep-alive for iframe panes (HTML): same size, parked
-  // 10000px left, clipped by body's overflow:hidden. opacity 0 + pointer-
-  // events none are belt-and-braces (the pane is off-viewport anyway);
-  // inert (render prop) covers focus + a11y.
-  // Cost: each pinned HTML document stays fully rendered and composited
-  // (rAF/CSS animation/video decode/timers keep running) — the price of
-  // keeping WebKit's iframe repaint + scroll machinery intact, and the
-  // user's explicit opt-in for pinned tabs.
-  bodyPaneHiddenHtml: {
-    position: 'absolute', top: 0, left: -10000,
-    width: '100%', height: '100%',
-    opacity: 0, pointerEvents: 'none',
-    display: 'flex', flexDirection: 'column', overflow: 'hidden',
-  },
+  // Hidden pinned panes use pinnedPaneHiddenStyle / pinnedPaneHiddenHtmlStyle
+  // from previewShared (opacity:0 is required — see that module's contract).
   contextMenu: {
     position: 'fixed', zIndex: 1000, width: 190,
     padding: 4, border: `1px solid ${c.border}`, borderRadius: radius.md,
