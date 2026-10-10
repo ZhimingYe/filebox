@@ -5,7 +5,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 ## Unreleased
 
 ### Fixed
-- **Pinned PDF overlay** — a pinned PDF (and Office→PDF) tab no longer paints over the active preview after you switch away. PdfPreview stopped forcing `visibility: visible` on its pages column (that CSS property punches through an ancestor's `visibility: hidden`), and pinned inactive panes now also use `opacity: 0` plus `inert`/`aria-hidden` for every type, not only HTML.
+- **Pinned PDF overlay / pin host model** — a pinned PDF (and Office→PDF) tab no longer paints over the active preview after you switch away. PdfPreview no longer forces `visibility: visible` on its pages column. Pin semantics move toward **keep state, one active mount**: heavy viewers (HTML/PDF/Office) park offscreen in a capped DOM keep-alive; light viewers (image/Monaco/Markdown/CSV) unmount and restore from a viewer-state registry. Park style is always offscreen + `opacity: 0` (no `visibility:hidden`), so descendants cannot punch through into the active slot.
 
 ### Added
 - **Monaco preview for Quarto / R Markdown** — `.qmd`, `.rmd`, and `.rmarkdown` open in the read-only code viewer with a custom Monarch `quarto` language (YAML front matter, `{r}` / `{python}` / … fenced chunks embedding built-in highlighters, `:::` divs, inline `` `r` ``). Rich rendered Rmd and Jupyter `.ipynb` remain follow-ups.

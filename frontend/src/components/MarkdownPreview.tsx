@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -13,6 +14,7 @@ import {
   previewLoadingMessage,
   styles,
 } from './previewShared';
+import { getViewerState, setViewerState } from './previewKeepAlive';
 import { FileDownloadLink } from './FileDownloadLink';
 
 interface Props {
@@ -20,12 +22,34 @@ interface Props {
   agentId: string;
   root: string;
   path: string;
+  /** Pin state-restore key (see previewKeepAlive). */
+  stateKey?: string;
 }
 
-export function MarkdownPreview({ url, agentId, root, path }: Props) {
+export function MarkdownPreview({ url, agentId, root, path, stateKey }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.markdown });
   const canLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
   const { text, error, loading, retrying, cancel, retry, received, total, slow } = useFetchText(url, canLoad, agentId);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Pin = keep state: restore scroll after content mounts; save on unmount.
+  useEffect(() => {
+    if (!stateKey || !text) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const saved = getViewerState(stateKey);
+    if (saved?.kind === 'scroll') {
+      el.scrollTop = saved.scrollTop;
+      if (saved.scrollLeft != null) el.scrollLeft = saved.scrollLeft;
+    }
+    return () => {
+      setViewerState(stateKey, {
+        kind: 'scroll',
+        scrollTop: el.scrollTop,
+        scrollLeft: el.scrollLeft,
+      });
+    };
+  }, [stateKey, text]);
 
   if (gate.sizeUnknown) {
     return (
@@ -77,7 +101,7 @@ export function MarkdownPreview({ url, agentId, root, path }: Props) {
   const displayText = isTruncated ? raw.slice(0, 500000) + '\n\n---\n*File truncated*' : raw;
 
   return (
-    <div style={styles.markdownContainer}>
+    <div ref={scrollRef} style={styles.markdownContainer}>
       <div style={styles.codeToolbar}>
         <span style={styles.metaInfo}>{raw.length.toLocaleString()} chars{isTruncated ? ' · truncated' : ''}</span>
         <CopyButton text={raw} />

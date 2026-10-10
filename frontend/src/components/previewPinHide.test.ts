@@ -1,24 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { pinnedPaneHiddenHtmlStyle, pinnedPaneHiddenStyle } from './previewShared';
+import { keepAliveParkStyle } from './previewKeepAlive';
 
-// Pin-hide contract regression: a pinned inactive pane must stay unpainted
-// even if a viewer (historically PdfPreview) sets visibility:visible on a
-// descendant. opacity:0 is the property children cannot override.
+// Pin-hide contract regression: parked panes must stay unpainted by design
+// (offscreen + opacity 0). visibility:hidden was retired — a descendant
+// with visibility:visible can no longer punch through into the active slot.
 
-describe('pinned pane hide styles', () => {
-  it('ordinary hide uses opacity 0 so visibility:visible children cannot paint through', () => {
-    expect(pinnedPaneHiddenStyle.opacity).toBe(0);
-    expect(pinnedPaneHiddenStyle.visibility).toBe('hidden');
-    expect(pinnedPaneHiddenStyle.pointerEvents).toBe('none');
-    expect(pinnedPaneHiddenStyle.display).not.toBe('none');
-    expect(pinnedPaneHiddenStyle.position).toBe('absolute');
-  });
-
-  it('HTML offscreen hide also keeps opacity 0 and never uses display:none', () => {
-    expect(pinnedPaneHiddenHtmlStyle.opacity).toBe(0);
-    expect(pinnedPaneHiddenHtmlStyle.pointerEvents).toBe('none');
-    expect(pinnedPaneHiddenHtmlStyle.display).not.toBe('none');
-    expect(pinnedPaneHiddenHtmlStyle.position).toBe('absolute');
-    expect(pinnedPaneHiddenHtmlStyle.left).toBe(-10000);
+describe('pinned pane hide styles (unified keep-alive park)', () => {
+  it('ordinary and HTML aliases share the offscreen park contract', () => {
+    for (const style of [pinnedPaneHiddenStyle, pinnedPaneHiddenHtmlStyle, keepAliveParkStyle]) {
+      expect(style.opacity).toBe(0);
+      expect(style.pointerEvents).toBe('none');
+      expect(style.display).not.toBe('none');
+      expect(style.position).toBe('absolute');
+      expect(style.left).toBe(-10000);
+      expect(style.visibility).toBeUndefined();
+    }
   });
 });

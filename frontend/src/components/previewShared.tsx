@@ -329,57 +329,23 @@ export function isTextFile(ext: string): boolean {
 
 // HTML is the only viewer that renders an <iframe>. PreviewPane's dispatch
 // checks this so the sandboxed-session viewer is used instead of plain text
-// or a download fallback. PreviewWorkspace mirrors the same check to pick
-// pinnedPaneHiddenHtmlStyle (offscreen) vs pinnedPaneHiddenStyle (opacity +
-// visibility). Iframes are the only content Safari breaks under
-// visibility:hidden (no repaint on re-show → white screen; wheel scroll
-// stuck). Keep this as the single source of truth so dispatch and hide
-// scheme cannot drift apart.
+// or a download fallback. Pin keep-alive classifies HTML as `dom-park`
+// (see previewKeepAlive) because the iframe session must stay mounted.
 export function isHtmlPreviewExt(ext: string): boolean {
   return ext === 'html' || ext === 'htm';
 }
 
-// ── Pinned inactive pane hide ─────────────────────────────────────────────
-// PreviewWorkspace parks pinned-but-inactive preview bodies with these
-// styles (ordinary / non-iframe panes). Contract:
-//   * Never `display:none` — Chrome unloads display:none iframe documents,
-//     and RO/IO report zero size (virtualized PDF pages unmount).
-//   * Always include `opacity: 0`. CSS `visibility: hidden` alone is NOT
-//     enough: a descendant with `visibility: visible` paints through the
-//     ancestor (PdfPreview historically set that on its pages column once
-//     pages loaded, so a pinned PDF covered the active tab). Opacity is
-//     multiplied down the tree and cannot be overridden by children.
-//   * Keep `visibility: hidden` + `pointerEvents: none` for a11y / input.
-//   * Callers should also set `inert` + `aria-hidden` on the pane.
-// HTML panes use a separate offscreen scheme (Safari iframe repaint/scroll).
-export const pinnedPaneHiddenStyle: React.CSSProperties = {
-  position: 'absolute',
-  top: 0,
-  left: 0,
-  right: 0,
-  bottom: 0,
-  visibility: 'hidden',
-  opacity: 0,
-  pointerEvents: 'none',
-  display: 'flex',
-  flexDirection: 'column',
-  overflow: 'hidden',
-};
-
-// Offscreen keep-alive for iframe panes (HTML). Same size, parked far left,
-// clipped by the body's overflow:hidden. No visibility flip (WebKit).
-export const pinnedPaneHiddenHtmlStyle: React.CSSProperties = {
-  position: 'absolute',
-  top: 0,
-  left: -10000,
-  width: '100%',
-  height: '100%',
-  opacity: 0,
-  pointerEvents: 'none',
-  display: 'flex',
-  flexDirection: 'column',
-  overflow: 'hidden',
-};
+// ── Pinned inactive pane hide (keep-alive park) ───────────────────────────
+// Pin host model lives in previewKeepAlive: only the active tab paints in
+// the normal slot; pinned heavy viewers (HTML/PDF/Office) park offscreen;
+// light viewers unmount and restore from ViewerStateRegistry. Both aliases
+// are the same offscreen park style — visibility:hidden was retired so a
+// descendant cannot punch through with visibility:visible.
+export {
+  keepAliveParkStyle,
+  pinnedPaneHiddenStyle,
+  pinnedPaneHiddenHtmlStyle,
+} from './previewKeepAlive';
 
 // ── LoadingOverlay ────────────────────────────────────────────────────────
 

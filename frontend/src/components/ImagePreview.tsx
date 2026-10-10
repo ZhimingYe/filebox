@@ -13,6 +13,7 @@ import {
   PREVIEW_SIZE_THRESHOLDS,
   styles,
 } from './previewShared';
+import { getViewerState, setViewerState } from './previewKeepAlive';
 import { FileDownloadLink } from './FileDownloadLink';
 
 // Extracted from PreviewPane so the TIFF decoder (UTIF, ~50KB) can be lazy-
@@ -35,6 +36,8 @@ interface Props {
   path: string;
   url: string;
   ext: string;
+  /** Pin state-restore key (see previewKeepAlive). */
+  stateKey?: string;
 }
 
 function clampZoom(z: number): number {
@@ -141,7 +144,7 @@ async function maybeDownscaleBlob(
   }
 }
 
-export function ImagePreview({ agentId, root, path, url, ext }: Props) {
+export function ImagePreview({ agentId, root, path, url, ext, stateKey }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.image });
   const fileSize = gate.size;
   const [objectURL, setObjectURL] = useState<string | null>(null);
@@ -152,9 +155,11 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
   const [total, setTotal] = useState<number | null>(null);
   const [imgError, setImgError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
-  const [zoom, setZoom] = useState(1);
-  const [rotation, setRotation] = useState(0);
-  const [pos, setPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const savedImage = stateKey ? getViewerState(stateKey) : undefined;
+  const initialImage = savedImage?.kind === 'image' ? savedImage : null;
+  const [zoom, setZoom] = useState(initialImage?.zoom ?? 1);
+  const [rotation, setRotation] = useState(initialImage?.rotation ?? 0);
+  const [pos, setPos] = useState<{ x: number; y: number }>(initialImage?.pos ?? { x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const dragStartRef = useRef<{ x: number; y: number; posX: number; posY: number } | null>(null);
@@ -174,8 +179,24 @@ export function ImagePreview({ agentId, root, path, url, ext }: Props) {
   // Refs so onLoad/onError always see the latest in-flight decode flag
   // without depending on a render-closure that can go stale across retries.
   const decodingRef = useRef(false);
-  const zoomRef = useRef(1);
-  const posRef = useRef({ x: 0, y: 0 });
+  const zoomRef = useRef(initialImage?.zoom ?? 1);
+  const posRef = useRef(initialImage?.pos ?? { x: 0, y: 0 });
+  const rotationRef = useRef(rotation);
+  rotationRef.current = rotation;
+
+  // Pin = keep state: persist view transform when this body unmounts
+  // (pinned inactive light types no longer stay in the DOM park).
+  useEffect(() => {
+    if (!stateKey) return;
+    return () => {
+      setViewerState(stateKey, {
+        kind: 'image',
+        zoom: zoomRef.current,
+        rotation: rotationRef.current,
+        pos: posRef.current,
+      });
+    };
+  }, [stateKey]);
 
   const isTiff = ext === 'tiff' || ext === 'tif';
 

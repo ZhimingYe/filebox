@@ -1,8 +1,13 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { PreviewPane } from './PreviewPane';
 import { PreviewErrorBoundary } from './PreviewErrorBoundary';
 import { PreviewHeaderActions } from './PreviewHeaderActions';
-import { isHtmlPreviewExt, pinnedPaneHiddenStyle, pinnedPaneHiddenHtmlStyle } from './previewShared';
+import {
+  keepAliveParkStyle,
+  pruneViewerStates,
+  selectDomParkTabIds,
+  viewerStateKey,
+} from './previewKeepAlive';
 import PinIcon from './PinIcon';
 import { c, radius, font, shadow, menuList, menuListItemStyle, menuListSubStyle } from '../theme';
 import type { PreviewTab } from '../hooks/usePreviewTabs';
@@ -12,24 +17,20 @@ import type { RootInfo } from '../api/client';
 //
 // Renders the desktop preview area: an optional tab strip (shown once more
 // than one tab is open), the active tab's header (path + download + close),
-// and the preview bodies: exactly one VISIBLE pane (the active tab), plus
-// one hidden pane per PINNED tab (user opt-in via the pin button on the
-// tab, see usePreviewTabs) so switching back to a pinned tab is instant and
-// its viewer state (PDF page/zoom, image zoom, Monaco scroll) survives.
-// Unpinned inactive tabs never mount a body. The manual refresh button
-// (rev bump) remounts a body so stale content can always be re-fetched.
+// and the preview host:
+//   * Active slot — exactly one interactive/visible body (the active tab).
+//   * Keep-alive park — offscreen mounts for pinned inactive HTML/PDF/Office
+//     (dom-park strategy; see previewKeepAlive). Cap: MAX_DOM_PARKED.
+//   * Light pinned types (image/Monaco/markdown/CSV) unmount when inactive
+//     and restore from ViewerStateRegistry (pin = keep state, not paint).
+// Unpinned inactive tabs never mount a body. Manual refresh (rev bump)
+// remounts a body so stale content can always be re-fetched.
 //
-// Each mounted body is keyed on `id:rev` (stable tab id + refresh
-// generation) so switching tabs never remounts a mounted body, while a
-// refresh bump does. PreviewPane stays memoized on primitive props, so
-// dragging the file/preview splitter (which re-renders App and this
-// component) does NOT re-render the preview subtree — only a real change
-// to a tab's primitives does. Hidden pinned panes use the shared hide
-// styles in previewShared (pinnedPaneHiddenStyle / Html): never display:none
-// (Chrome iframe unload + zeroed RO/IO for PDF); ordinary panes hide with
-// visibility:hidden + opacity:0 (opacity blocks descendants that set
-// visibility:visible — the pin-PDF bleed bug); HTML panes park offscreen
-// for Safari iframe repaint/scroll. See previewShared for the contract.
+// Each mounted body is keyed on `id:rev` so switching never remounts a
+// kept-alive body, while a refresh bump does. PreviewPane stays memoized
+// on primitive props, so splitter drags do not re-render the preview
+// subtree. Park style is always offscreen + opacity 0 (never
+// visibility:hidden / display:none) — see keepAliveParkStyle.
 
 interface Props {
   agentId: string;
@@ -43,7 +44,7 @@ interface Props {
   onCloseRight: (tabId: string) => void;
   /** Bump a tab's refresh generation so its preview body remounts. */
   onRefresh: (tabId: string) => void;
-  /** Pin/unpin a tab — pinned tabs keep their body mounted when inactive. */
+  /** Pin/unpin a tab — pinned tabs keep viewer state (DOM park or registry). */
   onTogglePin: (tabId: string) => void;
   /** Agent roots — used to compose the full server-side address for copy. */
   roots: RootInfo[];
@@ -125,6 +126,29 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
   activeTabIdRef.current = activeTabId;
   highlightedPickerIdRef.current = highlightedPickerId;
   onActivateRef.current = onActivate;
+
+  // Oldest→newest activation ids (most recent last). Updated during render
+  // from props so park selection sees the latest order in the same pass.
+  const activationOrderRef = useRef<string[]>([]);
+  {
+    const live = new Set(tabs.map((t) => t.id));
+    let next = activationOrderRef.current.filter((id) => live.has(id));
+    if (activeTabId && live.has(activeTabId)) {
+      next = next.filter((id) => id !== activeTabId);
+      next.push(activeTabId);
+    }
+    activationOrderRef.current = next;
+  }
+
+  // Drop viewer-state snapshots for closed tabs / superseded refresh revs.
+  useEffect(() => {
+    const live = new Set(tabs.map((t) => viewerStateKey(t.id, t.rev)));
+    pruneViewerStates(live);
+  }, [tabs]);
+
+  const parkTabIds = useMemo(() => {
+    return new Set(selectDomParkTabIds(tabs, activeTabId, activationOrderRef.current));
+  }, [tabs, activeTabId]);
 
   const dismissMenu = () => {
     setMenu(null);
@@ -378,8 +402,8 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
                     onMouseEnter={() => setHoveredPinId(tab.id)}
                     onMouseLeave={() => setHoveredPinId(null)}
                     title={tab.pinned
-                      ? 'Unpin — stop keeping this preview mounted in the background'
-                      : 'Pin — keep this preview mounted in the background'}
+                      ? "Unpin — stop keeping this preview's state when you switch away"
+                      : "Pin — keep this preview's state when you switch away"}
                     aria-label={`${tab.pinned ? 'Unpin' : 'Pin'} ${tab.title}`}
                     style={{
                       ...styles.tabPin,
@@ -530,33 +554,20 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
               </button>
             </div>
           </div>
-          {/* Preview bodies: the active tab's pane (visible) plus one hidden
-              pane per PINNED tab (user opt-in, see usePreviewTabs). Hide
-              styles come from previewShared (opacity:0 required — see
-              pinnedPaneHiddenStyle). Keyed on id + rev: a refresh bump
-              remounts that tab's viewers; switching never remounts a
-              mounted body. */}
+          {/* Preview host: one active slot + optional keep-alive park.
+              Pin = keep state (see previewKeepAlive). Keyed on id + rev. */}
           <div style={styles.body}>
             {tabs.map((tab) => {
               const active = tab.id === activeTabId;
-              if (!active && !tab.pinned) return null;
-              // Mirror PreviewPane's dispatch: HTML is the only viewer that
-              // renders an <iframe>, and iframes are the only content Safari
-              // breaks when hidden with visibility:hidden.
-              const ext = tab.path.split('.').pop()?.toLowerCase() || '';
-              const htmlPane = isHtmlPreviewExt(ext);
+              if (!active && !parkTabIds.has(tab.id)) return null;
               return (
                 <div
                   key={`${tab.id}:${tab.rev}`}
-                  style={active
-                    ? styles.bodyPane
-                    : (htmlPane ? pinnedPaneHiddenHtmlStyle : pinnedPaneHiddenStyle)}
-                  // Inactive panes stay in the tab order and a11y tree unless
-                  // inert removes both (React 19 boolean prop, Safari 15.5+).
-                  // Apply to every inactive pane — not only HTML: a child that
-                  // sets visibility:visible would otherwise re-enter a11y.
+                  style={active ? styles.bodyPane : keepAliveParkStyle}
+                  // Parked panes stay out of tab order / a11y (React 19 inert).
                   inert={!active ? true : undefined}
                   aria-hidden={!active ? true : undefined}
+                  data-preview-slot={active ? 'active' : 'park'}
                 >
                   <PreviewErrorBoundary>
                     <PreviewPane
@@ -567,6 +578,7 @@ export const PreviewWorkspace = memo(function PreviewWorkspace({
                       denied={tab.entry.denied}
                       officeCapable={officeCapable}
                       rev={tab.rev}
+                      stateKey={viewerStateKey(tab.id, tab.rev)}
                     />
                   </PreviewErrorBoundary>
                 </div>
@@ -779,11 +791,9 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'none', border: 'none', color: c.textMuted, fontSize: 18,
     cursor: 'pointer', padding: '0 4px', borderRadius: radius.sm,
   },
-  // ── Preview bodies ──
-  // Each pane is a flex column filling the body. Hidden pinned panes use
-  // pinnedPaneHiddenStyle / pinnedPaneHiddenHtmlStyle from previewShared —
-  // see that module for the full hide contract (opacity:0 is mandatory so
-  // a descendant cannot punch through with visibility:visible).
+  // ── Preview host ──
+  // Active pane fills the body. Parked keep-alives use keepAliveParkStyle
+  // (offscreen; see previewKeepAlive) — never stacked in the paint path.
   body: {
     flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
     position: 'relative',
@@ -791,8 +801,6 @@ const styles: Record<string, React.CSSProperties> = {
   bodyPane: {
     flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
   },
-  // Hidden pinned panes use pinnedPaneHiddenStyle / pinnedPaneHiddenHtmlStyle
-  // from previewShared (opacity:0 is required — see that module's contract).
   contextMenu: {
     position: 'fixed', zIndex: 1000, width: 190,
     padding: 4, border: `1px solid ${c.border}`, borderRadius: radius.md,

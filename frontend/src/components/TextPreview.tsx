@@ -18,6 +18,7 @@ import {
   extToLang,
   styles,
 } from './previewShared';
+import { getViewerState, setViewerState } from './previewKeepAlive';
 import { FileDownloadLink } from './FileDownloadLink';
 
 ensureMonacoConfigured();
@@ -28,9 +29,11 @@ interface Props {
   agentId: string;
   root: string;
   path: string;
+  /** Pin state-restore key (see previewKeepAlive). */
+  stateKey?: string;
 }
 
-export function TextPreview({ url, ext, agentId, root, path }: Props) {
+export function TextPreview({ url, ext, agentId, root, path, stateKey }: Props) {
   const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.text });
   const canLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
   const { text, error, loading, retrying, cancel, retry, received, total, slow } = useFetchText(url, canLoad, agentId);
@@ -41,6 +44,15 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
   useEffect(() => {
     editorRef.current?.updateOptions({ wordWrap: wrap ? 'on' : 'off' });
   }, [wrap]);
+
+  // Pin = keep state: persist Monaco viewState (scroll/selection) on unmount.
+  useEffect(() => {
+    if (!stateKey) return;
+    return () => {
+      const vs = editorRef.current?.saveViewState();
+      if (vs) setViewerState(stateKey, { kind: 'monaco', viewState: vs });
+    };
+  }, [stateKey]);
 
   if (gate.sizeUnknown) {
     return (
@@ -100,6 +112,12 @@ export function TextPreview({ url, ext, agentId, root, path }: Props) {
   const handleMount: OnMount = (ed) => {
     editorRef.current = ed;
     ed.updateOptions({ wordWrap: wrap ? 'on' : 'off' });
+    if (stateKey) {
+      const saved = getViewerState(stateKey);
+      if (saved?.kind === 'monaco' && saved.viewState) {
+        ed.restoreViewState(saved.viewState as MonacoEditor.ICodeEditorViewState);
+      }
+    }
   };
 
   const openFind = () => {
