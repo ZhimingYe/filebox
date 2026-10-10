@@ -2,24 +2,28 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   DockviewReact,
   themeDark,
+  type DockviewApi,
   type DockviewReadyEvent,
   type IDockviewPanelProps,
 } from 'dockview-react'
 import { FileTreePanel } from './panels/FileTreePanel'
 import { PreviewPanel } from './panels/PreviewPanel'
 import { fetchHubHealth, type HubHealth } from './hubStatus'
+import { WorkspaceProvider } from './state/workspace'
 
 const components = {
   fileTree: (_props: IDockviewPanelProps) => <FileTreePanel />,
-  preview: (_props: IDockviewPanelProps) => <PreviewPanel />,
+  preview: (props: IDockviewPanelProps) => <PreviewPanel {...props} />,
 }
 
-function App() {
+function NeoShell() {
   const [health, setHealth] = useState<HubHealth>({
     ok: false,
     detail: 'Checking Hub…',
   })
   const abortRef = useRef<AbortController | null>(null)
+  const apiRef = useRef<DockviewApi | null>(null)
+  const previewSeq = useRef(1)
 
   const refreshHealth = useCallback(async () => {
     abortRef.current?.abort()
@@ -40,6 +44,7 @@ function App() {
 
   const onReady = useCallback((event: DockviewReadyEvent) => {
     const { api } = event
+    apiRef.current = api
     api.addPanel({
       id: 'file-tree',
       component: 'fileTree',
@@ -47,10 +52,24 @@ function App() {
       initialWidth: 320,
     })
     api.addPanel({
-      id: 'preview',
+      id: 'preview-1',
       component: 'preview',
-      title: 'Preview',
+      title: 'Preview 1',
       position: { referencePanel: 'file-tree', direction: 'right' },
+    })
+  }, [])
+
+  const addPreviewPanel = useCallback(() => {
+    const api = apiRef.current
+    if (!api) return
+    previewSeq.current += 1
+    const n = previewSeq.current
+    const id = `preview-${n}`
+    api.addPanel({
+      id,
+      component: 'preview',
+      title: `Preview ${n}`,
+      position: { referencePanel: 'preview-1', direction: 'within' },
     })
   }, [])
 
@@ -62,6 +81,9 @@ function App() {
           <span className="neo-topbar__badge">experimental</span>
         </div>
         <div className="neo-topbar__meta">
+          <button type="button" className="neo-topbar__btn" onClick={addPreviewPanel}>
+            + Preview panel
+          </button>
           <span
             className={
               health.ok ? 'neo-topbar__status ok' : 'neo-topbar__status bad'
@@ -87,4 +109,10 @@ function App() {
   )
 }
 
-export default App
+export default function App() {
+  return (
+    <WorkspaceProvider>
+      <NeoShell />
+    </WorkspaceProvider>
+  )
+}

@@ -1,16 +1,11 @@
-/** Placeholder for the neo Preview panel.
- *  Later: mount PreviewWorkspace / pin park (MAX_DOM_PARKED=3) here.
- */
-export function PreviewPanel() {
+import type { IDockviewPanelProps } from 'dockview-react'
+import { NeoPreviewHost } from '../preview/NeoPreviewHost'
+
+export function PreviewPanel(props: IDockviewPanelProps) {
   return (
     <div className="neo-panel">
-      <header className="neo-panel__header">Preview</header>
-      <div className="neo-panel__body">
-        <p className="neo-panel__muted">
-          Placeholder. Will host the active preview mount and keep-alive park /
-          registry (eat #86 pin contract: MAX_DOM_PARKED=3).
-        </p>
-      </div>
+      <header className="neo-panel__header">Preview · {props.api.title}</header>
+      <NeoPreviewHost panelId={props.api.id} />
     </div>
   )
 }
