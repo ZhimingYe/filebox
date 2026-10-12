@@ -39,7 +39,7 @@ import {
 import { FilesPanel } from './panels/FilesPanel';
 import { DockBackAction } from './shell/DockBackAction';
 import { EmptyTabGroupChip } from './shell/EmptyTabGroupChip';
-import { IconLogout, IconPlusPanel, IconPopOut, IconRefresh } from '@classic/components/icons';
+import { IconLogout, IconRefresh } from '@classic/components/icons';
 import { PreviewPanel } from './panels/PreviewPanel';
 import { setPreviewAgentContext, useNeoAgent } from './preview/agentContext';
 import {
@@ -47,7 +47,6 @@ import {
   closePreviewsForOtherAgents,
   findPreviewPanels,
   openFileInDock,
-  popoutPreviewPanel,
   rememberFocusedPreview,
 } from './preview/openInDock';
 import { PREVIEW_COMPONENT } from './preview/types';
@@ -216,6 +215,11 @@ export default function App() {
     openChromePanel(id, id[0]!.toUpperCase() + id.slice(1));
   }, [openChromePanel]);
 
+  const onNewPreview = useCallback(() => {
+    const api = dockApiRef.current;
+    if (api) addEmptyPreviewPanel(api);
+  }, []);
+
   // App-wide drag & drop → Transfer (classic uploadRequest handoff).
   const tempCapable = !!selectedAgent?.capabilities?.temp_upload && !!selectedAgent?.temp_root_name;
   useEffect(() => {
@@ -309,30 +313,6 @@ export default function App() {
         <span style={{ color: c.textMuted, fontSize: 12, marginRight: 4 }}>
           {selectedAgent ? (selectedAgent.name || selectedAgent.id) : 'no agent'}
         </span>
-        <button
-          type="button"
-          className="neo-chrome-icon-btn"
-          onClick={() => {
-            const api = dockApiRef.current;
-            if (api) addEmptyPreviewPanel(api);
-          }}
-          title="New Preview"
-          aria-label="New Preview"
-        >
-          <IconPlusPanel style={{ width: 15, height: 15 }} />
-        </button>
-        <button
-          type="button"
-          className="neo-chrome-icon-btn"
-          onClick={() => {
-            const api = dockApiRef.current;
-            if (api) void popoutPreviewPanel(api);
-          }}
-          title="Pop out"
-          aria-label="Pop out"
-        >
-          <IconPopOut style={{ width: 15, height: 15 }} />
-        </button>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
           <button
             type="button"
@@ -358,6 +338,7 @@ export default function App() {
       <div style={{ flex: 1, minHeight: 0, display: 'flex', position: 'relative' }}>
         <NeoSidebar
           onChrome={onSidebarChrome}
+          onNewPreview={onNewPreview}
           onOpenAbout={() => setAboutOpen(true)}
           hubVersion={health?.hub.version}
         />

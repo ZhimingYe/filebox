@@ -1,13 +1,14 @@
 /**
  * Dock group header actions:
- * - Preview groups (grid): icon Pop out
- * - Popout groups: icon Dock back
- * - Other chrome groups: nothing (top bar covers focused preview)
+ * - Preview groups (grid): quiet New Preview + Pop out
+ * - Popout groups: Dock back only
+ * - Other chrome groups: nothing
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import type { IDockviewHeaderActionsProps } from 'dockview-react';
-import { IconDockBack, IconPopOut } from '@classic/components/icons';
+import { IconDockBack, IconPlusPanel, IconPopOut } from '@classic/components/icons';
+import { addEmptyPreviewPanel } from '../preview/openInDock';
 import { c } from '../theme';
 
 const PREVIEW_COMPONENT = 'preview';
@@ -36,9 +37,22 @@ function groupHasPreview(group: IDockviewHeaderActionsProps['group']): boolean {
   }
 }
 
+function applyHoverHandlers(
+  el: HTMLButtonElement,
+  enter: boolean,
+) {
+  if (enter) {
+    el.style.background = c.accentBg;
+    el.style.color = c.accent;
+  } else {
+    el.style.background = 'transparent';
+    el.style.color = c.textMuted;
+  }
+}
+
 export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActionsProps) {
   const [isPopout, setIsPopout] = useState(() => api.location.type === 'popout');
-  const showPopout = useMemo(() => groupHasPreview(group), [group]);
+  const showPreviewActions = useMemo(() => groupHasPreview(group), [group]);
 
   useEffect(() => {
     const sub = api.onDidLocationChange((ev) => {
@@ -49,21 +63,15 @@ export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActi
 
   if (isPopout) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: 0, gap: 2 }}>
         <button
           type="button"
           title="Dock back"
           aria-label="Dock back"
           onClick={() => api.moveTo({ position: 'right' })}
           style={iconBtn}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = c.accentBg;
-            e.currentTarget.style.color = c.accent;
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'transparent';
-            e.currentTarget.style.color = c.textMuted;
-          }}
+          onMouseEnter={(e) => applyHoverHandlers(e.currentTarget, true)}
+          onMouseLeave={(e) => applyHoverHandlers(e.currentTarget, false)}
         >
           <IconDockBack style={{ width: 13, height: 13 }} />
         </button>
@@ -71,10 +79,23 @@ export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActi
     );
   }
 
-  if (!showPopout) return null;
+  if (!showPreviewActions) return null;
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: 0 }}>
+    <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: 0, gap: 2 }}>
+      <button
+        type="button"
+        title="New Preview"
+        aria-label="New Preview"
+        onClick={() => {
+          addEmptyPreviewPanel(containerApi);
+        }}
+        style={iconBtn}
+        onMouseEnter={(e) => applyHoverHandlers(e.currentTarget, true)}
+        onMouseLeave={(e) => applyHoverHandlers(e.currentTarget, false)}
+      >
+        <IconPlusPanel style={{ width: 13, height: 13 }} />
+      </button>
       <button
         type="button"
         title="Pop out"
@@ -83,14 +104,8 @@ export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActi
           void containerApi.addPopoutGroup(group);
         }}
         style={iconBtn}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = c.accentBg;
-          e.currentTarget.style.color = c.accent;
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = 'transparent';
-          e.currentTarget.style.color = c.textMuted;
-        }}
+        onMouseEnter={(e) => applyHoverHandlers(e.currentTarget, true)}
+        onMouseLeave={(e) => applyHoverHandlers(e.currentTarget, false)}
       >
         <IconPopOut style={{ width: 13, height: 13 }} />
       </button>
