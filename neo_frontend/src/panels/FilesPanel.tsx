@@ -21,9 +21,12 @@ import { useHealth } from '@classic/state/health';
 import { c, font } from '../theme';
 import {
   emitNeoAgentSelected,
+  emitNeoCollectionPicker,
   emitNeoOpenFile,
   onNeoRevealInBrowser,
+  onNeoSelectAgent,
 } from '../events/openFile';
+import { setBrowsePos, subscribeBrowsePos, getBrowsePos } from '../shell/browsePos';
 
 export function FilesPanel(_props: IDockviewPanelProps) {
   const { agents, error: healthError, refresh } = useHealth(true);
@@ -44,6 +47,9 @@ export function FilesPanel(_props: IDockviewPanelProps) {
       /* ignore */
     }
   }, [selectedAgentId]);
+
+  // Sidebar BackendList can switch agents.
+  useEffect(() => onNeoSelectAgent((id) => setSelectedAgentId(id)), []);
 
 
 
@@ -137,10 +143,21 @@ export function FilesPanel(_props: IDockviewPanelProps) {
         filePosByAgent.current.set(selectedAgent.id, { root, path });
         pathMemory.current.set(memKey(selectedAgent.id, root), path);
         persistNavState(filePosByAgent.current, pathMemory.current);
+        setBrowsePos({ agentId: selectedAgent.id, root, path });
       }
     },
     [selectedAgent],
   );
+
+  // Explorer (or other chrome) updated browse position — keep Files in sync.
+  useEffect(() => {
+    return subscribeBrowsePos(() => {
+      const p = getBrowsePos();
+      if (!p || !selectedAgentId || p.agentId !== selectedAgentId) return;
+      setSelectedRoot(p.root);
+      setCurrentPath(p.path);
+    });
+  }, [selectedAgentId]);
 
   useEffect(() => {
     return onNeoRevealInBrowser(({ root, dirPath }) => {
@@ -244,6 +261,9 @@ export function FilesPanel(_props: IDockviewPanelProps) {
           currentPath={currentPath}
           onApplyNav={applyNav}
           onSwitchRoot={switchRoot}
+          onAddToCollection={(root, path, anchor) => {
+            emitNeoCollectionPicker({ root, path, anchor });
+          }}
         />
       </div>
     </div>

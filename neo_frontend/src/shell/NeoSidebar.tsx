@@ -1,18 +1,19 @@
 /**
- * Desktop neo sidebar: chrome nav + classic PinnedFolders.
- * Collapsed rail is a simple width toggle (no classic spacer animation).
+ * Desktop neo sidebar: agent picker + chrome nav + classic PinnedFolders.
  */
 
 import { useCallback, useMemo, useState, type CSSProperties } from 'react';
 import { patchRoot } from '@classic/api/client';
+import { BackendList } from '@classic/components/BackendList';
 import { PinnedFolders } from '@classic/components/PinnedFolders';
 import { useHealth } from '@classic/state/health';
-import { emitNeoRevealInBrowser } from '../events/openFile';
+import { emitNeoRevealInBrowser, emitNeoSelectAgent } from '../events/openFile';
 import { useNeoAgent } from '../preview/agentContext';
 import { c, font } from '../theme';
 
 export type NeoSidebarChrome =
   | 'search'
+  | 'explorer'
   | 'collections'
   | 'transfer'
   | 'terminal'
@@ -22,6 +23,7 @@ export type NeoSidebarChrome =
 
 const NAV: { id: NeoSidebarChrome; label: string }[] = [
   { id: 'search', label: 'Search' },
+  { id: 'explorer', label: 'Explorer' },
   { id: 'collections', label: 'Collections' },
   { id: 'transfer', label: 'Transfer' },
   { id: 'terminal', label: 'Terminal' },
@@ -30,7 +32,7 @@ const NAV: { id: NeoSidebarChrome; label: string }[] = [
   { id: 'audit', label: 'Audit' },
 ];
 
-const W_EXPANDED = 180;
+const W_EXPANDED = 200;
 const W_COLLAPSED = 48;
 
 interface Props {
@@ -41,8 +43,8 @@ interface Props {
 }
 
 export function NeoSidebar({ searchOpen, onChrome, onOpenAbout, hubVersion }: Props) {
-  const { agent } = useNeoAgent();
-  const { refresh } = useHealth(true);
+  const { agent, agentId } = useNeoAgent();
+  const { agents, refresh } = useHealth(true);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem('filebox.neo.sidebarCollapsed') === '1';
@@ -107,11 +109,21 @@ export function NeoSidebar({ searchOpen, onChrome, onOpenAbout, hubVersion }: Pr
         </button>
       </div>
 
+      <div style={agentsWrap}>
+        {!collapsed && <div style={sectionHeader}>Agents</div>}
+        <BackendList
+          agents={agents}
+          selectedId={agentId}
+          onSelect={(id) => emitNeoSelectAgent(id)}
+          collapsed={collapsed}
+          compact
+        />
+      </div>
+
       <nav style={navStyle}>
         {NAV.map(({ id, label }) => {
           const needsAgent = id !== 'audit' && id !== 'search';
           const disabled = needsAgent && !agent;
-          // Search can open without agent? Classic requires agent for SearchFloatWindow.
           const searchDisabled = id === 'search' && !agent;
           const isDisabled = disabled || searchDisabled;
           const active = id === 'search' && searchOpen;
@@ -193,6 +205,14 @@ const brand: CSSProperties = {
   fontSize: 11,
   textTransform: 'uppercase',
   letterSpacing: 0.4,
+};
+
+const agentsWrap: CSSProperties = {
+  padding: '4px 6px 8px',
+  borderBottom: `1px solid ${c.border}`,
+  maxHeight: 160,
+  overflow: 'auto',
+  minHeight: 0,
 };
 
 const navStyle: CSSProperties = {

@@ -19,10 +19,9 @@ classic `frontend/` — does **not** replace it. Long-lived work lands on the
 
 ## What is intentionally NOT included
 
-- Agent settings, pins sidebar chrome, collections, search, terminal
-- Layout persistence / pin registry (#86 contract)
 - Mobile layout (desktop dock only for now)
-- Full pin/keep-alive park from classic `PreviewWorkspace` (later)
+- Preview viewer DOM park / zoom-scroll restore across full page reload
+  (tab paths + pin flags persist; #86 keep-alive still works within a session)
 
 ## Classic reuse
 
@@ -33,6 +32,10 @@ classic `frontend/` — does **not** replace it. Long-lived work lands on the
 | `components/Login.tsx`, `lib/pow.ts` | **Reused** (neo session gate) |
 | `components/FileBrowser.tsx`, `DirectoryTree.tsx`, file list | **Reused** in Files panel |
 | `components/PreviewPane.tsx` + `*Preview.tsx` | **Reused** in Preview panel |
+| `PreviewWorkspace` / `usePreviewTabs` / `previewKeepAlive` | **Reused** (#86 pin/park) |
+| `CollectionPicker` | **Reused** (Files / Explorer hover → App overlay) |
+| `ExplorerView` | **Reused** as Explorer dock panel |
+| `BackendList` | **Reused** in NeoSidebar agent picker |
 | `theme.ts` / icons | **Reused** (neo keeps a small chrome mirror) |
 | `App.tsx` shell / `WorkspaceSplit` | **Rewritten** as dockview shell |
 
@@ -55,10 +58,12 @@ Mobile drawer / bottom sheet search are intentionally skipped.
 
 ### Desktop chrome extras
 
-- Left **NeoSidebar**: classic `PinnedFolders` + chrome nav (collapsible)
+- Left **NeoSidebar**: classic `BackendList` agent picker + `PinnedFolders` + chrome nav (collapsible)
+- **Explorer** dock: classic `ExplorerView`, browse position shared with Files via `browsePos`
+- **CollectionPicker** from Files / Explorer row actions
 - App-wide drag-drop → Transfer (`uploadRequest` handoff + overlay)
 - SSE progress toasts + new-version toast (shared dismiss key with classic)
-- Dockview layout persist/restore (`localStorage` `filebox.neo.dockLayout.v1`) — panel geometry only; preview tab bodies remain ephemeral
+- Dockview layout persist (`filebox.neo.dockLayout.v1`) + best-effort preview tabs/pins (`filebox.neo.previewTabs.v1`)
 
 
 ## Preview dock (this track)

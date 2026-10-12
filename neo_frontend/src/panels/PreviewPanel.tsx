@@ -1,11 +1,8 @@
 /**
- * Neo preview dock panel — hosts classic usePreviewTabs + PreviewWorkspace
- * via `@classic` so #86 pin / DOM keep-alive park / ViewerStateRegistry
- * apply unchanged. Dockview supplies multi-panel splits; classic tab strip
- * + pin affordances live inside each panel.
+ * Neo preview dock panel — hosts classic usePreviewTabs + PreviewWorkspace.
  */
 
-import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import type { RootInfo } from '@classic/api/client';
 import { PreviewWorkspace } from '@classic/components/PreviewWorkspace';
@@ -18,7 +15,9 @@ import {
 } from '../preview/agentContext';
 import { registerPreviewHost, unregisterPreviewHost } from '../preview/hostRegistry';
 import { rememberFocusedPreview } from '../preview/openInDock';
+import type { PersistedPreviewHost } from '../preview/tabPersistence';
 import { type PreviewPanelParams } from '../preview/types';
+import { notifyPreviewTabsChanged } from '../shell/layoutPersistence';
 
 function detailToTabInput(detail: NeoOpenFileDetail) {
   return {
@@ -33,6 +32,8 @@ function detailToTabInput(detail: NeoOpenFileDetail) {
 export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
   const { api, containerApi, params: initialParams } = props;
   const previewTabs = usePreviewTabs();
+  const tabsRef = useRef(previewTabs);
+  tabsRef.current = previewTabs;
   const [agentCtx, setAgentCtx] = useState(getPreviewAgentContext);
 
   useEffect(() => subscribePreviewAgentContext(() => {
@@ -48,24 +49,59 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
   }, [api]);
 
   const openOrActivate = useCallback((detail: NeoOpenFileDetail) => {
-    previewTabs.openOrActivate(detailToTabInput(detail));
-  }, [previewTabs]);
+    tabsRef.current.openOrActivate(detailToTabInput(detail));
+  }, []);
 
-  // Register host for openFileInDock routing; drain pending opens.
+  const restore = useCallback((snap: PersistedPreviewHost) => {
+    const hooks = tabsRef.current;
+    hooks.closeAll();
+    for (const t of snap.tabs) {
+      hooks.openOrActivate({
+        agentId: t.agentId,
+        root: t.root,
+        path: t.path,
+        entry: t.entry,
+      });
+    }
+    // Pins start false after openOrActivate — toggle once for each pinned tab.
+    for (const t of snap.tabs) {
+      if (!t.pinned) continue;
+      const id = tabIdFor(t);
+      hooks.togglePin(id);
+    }
+    if (snap.activeTabId) hooks.activate(snap.activeTabId);
+  }, []);
+
   useEffect(() => {
     registerPreviewHost({
       panelId: api.id,
       openOrActivate,
-      hasTabs: () => previewTabs.tabs.length > 0,
-      hasFile: (detail) => previewTabs.tabs.some((t) => t.id === tabIdFor(detail)),
+      hasTabs: () => tabsRef.current.tabs.length > 0,
+      hasFile: (detail) => tabsRef.current.tabs.some((t) => t.id === tabIdFor(detail)),
       belongsToOtherAgent: (agentId) =>
-        previewTabs.tabs.some((t) => t.agentId !== agentId),
-      closeAll: () => previewTabs.closeAll(),
+        tabsRef.current.tabs.some((t) => t.agentId !== agentId),
+      closeAll: () => tabsRef.current.closeAll(),
+      snapshot: () => ({
+        tabs: tabsRef.current.tabs.map((t) => ({
+          agentId: t.agentId,
+          root: t.root,
+          path: t.path,
+          entry: t.entry,
+          title: t.title,
+          pinned: t.pinned,
+        })),
+        activeTabId: tabsRef.current.activeTabId,
+      }),
+      restore,
     });
     return () => unregisterPreviewHost(api.id);
-  }, [api.id, openOrActivate, previewTabs]);
+  }, [api.id, openOrActivate, restore]);
 
-  // One-shot pendingOpen from dock params (addPanel race).
+  // Persist when tab set / pins / active change.
+  useEffect(() => {
+    notifyPreviewTabsChanged();
+  }, [previewTabs.tabs, previewTabs.activeTabId]);
+
   useEffect(() => {
     const d = api.onDidParametersChange((next) => {
       const pending = (next as PreviewPanelParams | undefined)?.pendingOpen;
@@ -79,10 +115,8 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
       api.updateParameters({} satisfies PreviewPanelParams);
     }
     return () => d.dispose();
-    // Only on mount / api identity — openOrActivate is stable enough via previewTabs memo.
-  }, [api]);
+  }, [api, openOrActivate, initialParams?.pendingOpen]);
 
-  // Sync dock tab title with classic active preview tab.
   useEffect(() => {
     const title = previewTabs.activeTab?.title ?? 'Preview';
     if (api.title !== title) api.setTitle(title);
@@ -124,12 +158,7 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
             <span style={{ color: c.textMuted }}>No file open</span>
           )}
         </div>
-        <button
-          type="button"
-          style={btnStyle}
-          onClick={onPopout}
-          title="Pop out to a same-origin window (dockview addPopoutGroup)"
-        >
+        <button type="button" style={btnStyle} onClick={onPopout} title="Pop out">
           Pop out
         </button>
       </div>
@@ -155,10 +184,9 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
           <div style={emptyStyle}>
             <div style={{ fontWeight: 600, color: c.text, marginBottom: 6 }}>Preview</div>
             <div style={{ color: c.textMuted, lineHeight: 1.5 }}>
-              Select a file in Files to open it here. Classic{' '}
-              <code style={{ fontFamily: font.mono }}>PreviewWorkspace</code> provides
-              multi-tab, pin, DOM keep-alive (HTML/PDF/Office), and ViewerStateRegistry
-              restore (image/Monaco/markdown/CSV) — same #86 contract as desktop classic.
+              Select a file in Files or Explorer. Classic PreviewWorkspace provides
+              multi-tab + #86 pin/keep-alive. Tab paths/pins persist with dock layout
+              (viewer zoom/scroll is not restored across reload).
             </div>
           </div>
         )}

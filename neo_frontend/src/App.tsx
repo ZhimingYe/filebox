@@ -17,6 +17,7 @@ import {
 import 'dockview-react/dist/styles/dockview.css';
 import { ensureCookieSuffix, getCsrfToken, type FsEntry } from '@classic/api/client';
 import { AboutDialog } from '@classic/components/AboutDialog';
+import { CollectionPicker } from '@classic/components/CollectionPicker';
 import { Login } from '@classic/components/Login';
 import { SearchFloatWindow } from '@classic/components/SearchFloatWindow';
 import { useHealth } from '@classic/state/health';
@@ -26,11 +27,14 @@ import {
   emitNeoOpenFile,
   emitNeoRevealInBrowser,
   onNeoAgentSelected,
+  onNeoCollectionPicker,
   onNeoOpenFile,
+  type NeoCollectionPickerDetail,
 } from './events/openFile';
 import {
   AuditPanel,
   CollectionsPanel,
+  ExplorerPanel,
   SettingsPanel,
   StatsPanel,
   TerminalPanel,
@@ -64,6 +68,7 @@ import { c, font } from './theme';
 const components: Record<string, FunctionComponent<IDockviewPanelProps>> = {
   fileTree: FilesPanel,
   preview: PreviewPanel,
+  explorer: ExplorerPanel,
   collections: CollectionsPanel,
   transfer: TransferPanel,
   terminal: TerminalPanel,
@@ -72,7 +77,7 @@ const components: Record<string, FunctionComponent<IDockviewPanelProps>> = {
   audit: AuditPanel,
 };
 
-type ChromeKind = 'collections' | 'transfer' | 'terminal' | 'settings' | 'stats' | 'audit';
+type ChromeKind = 'explorer' | 'collections' | 'transfer' | 'terminal' | 'settings' | 'stats' | 'audit';
 
 function StatusChip({ health }: { health: HubHealth | null }) {
   if (!health) {
@@ -109,6 +114,7 @@ export default function App() {
   const dockApiRef = useRef<DockviewApi | null>(null);
   const [dockReady, setDockReady] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [collectionPicker, setCollectionPicker] = useState<NeoCollectionPickerDetail | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [dragOverWindow, setDragOverWindow] = useState(false);
   const dragDepthRef = useRef(0);
@@ -229,6 +235,10 @@ export default function App() {
       direction: 'below',
     });
   }, []);
+
+  useEffect(() => onNeoCollectionPicker((detail) => {
+    setCollectionPicker(detail);
+  }), []);
 
   const onSidebarChrome = useCallback((id: NeoSidebarChrome) => {
     if (id === 'search') {
@@ -429,6 +439,16 @@ export default function App() {
         onHealthRefresh={refresh}
         onTempUpdated={bumpTempRefreshNonce}
       />
+
+      {collectionPicker && selectedAgent ? (
+        <CollectionPicker
+          agent={selectedAgent}
+          target={{ root: collectionPicker.root, path: collectionPicker.path }}
+          anchorEl={collectionPicker.anchor}
+          onClose={() => setCollectionPicker(null)}
+          onChanged={() => { void refresh(); }}
+        />
+      ) : null}
 
       {dragOverWindow ? (
         <div style={dropOverlay} aria-hidden>
