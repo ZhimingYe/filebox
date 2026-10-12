@@ -41,6 +41,7 @@ import {
   TransferPanel,
 } from './panels/chrome';
 import { FilesPanel } from './panels/FilesPanel';
+import { getBrowsePos, setBrowsePos } from './shell/browsePos';
 import { PreviewPanel } from './panels/PreviewPanel';
 import { setPreviewAgentContext, useNeoAgent } from './preview/agentContext';
 import {
@@ -256,6 +257,40 @@ export default function App() {
     openChromePanel(id, id[0]!.toUpperCase() + id.slice(1));
   }, [openChromePanel]);
 
+  // Classic `openInFiles`: a search hit row opens its folder in Files (or
+  // reveals it in Explorer when that is the active browsing surface). In neo
+  // that means making sure the Files dock panel exists and is focused, then
+  // navigating it; Explorer follows the shared browse position.
+  const onOpenFromSearch = useCallback((root: string, path: string) => {
+    const api = dockApiRef.current;
+    if (selectedAgent) setBrowsePos({ agentId: selectedAgent.id, root, path });
+    if (!api) {
+      emitNeoRevealInBrowser({ root, dirPath: path });
+      return;
+    }
+    if (api.activePanel?.id === 'chrome-explorer') {
+      emitNeoRevealInBrowser({ root, dirPath: path });
+      return;
+    }
+    let files = api.getPanel('file-tree');
+    const created = !files;
+    if (!files) {
+      files = api.addPanel({
+        id: 'file-tree',
+        component: 'fileTree',
+        title: 'Files',
+        position: { direction: 'left' },
+      });
+    }
+    files.api.setActive();
+    if (created) {
+      // Let the freshly mounted FilesPanel subscribe before navigating.
+      window.setTimeout(() => emitNeoRevealInBrowser({ root, dirPath: path }), 0);
+    } else {
+      emitNeoRevealInBrowser({ root, dirPath: path });
+    }
+  }, [selectedAgent]);
+
   const onPreviewFromSearch = useCallback((root: string, path: string) => {
     if (!selectedAgent) return;
     const name = path.split('/').filter(Boolean).pop() ?? path;
@@ -424,9 +459,11 @@ export default function App() {
         <SearchFloatWindow
           open={searchOpen}
           agent={selectedAgent}
-          onOpenFile={(root, path) => {
-            emitNeoRevealInBrowser({ root, dirPath: path });
-          }}
+          initialRoot={(() => {
+            const pos = getBrowsePos();
+            return pos && pos.agentId === selectedAgent.id ? pos.root : null;
+          })()}
+          onOpenFile={onOpenFromSearch}
           onPreviewFile={onPreviewFromSearch}
           onClose={() => setSearchOpen(false)}
         />
