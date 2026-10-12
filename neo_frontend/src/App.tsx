@@ -383,15 +383,7 @@ export default function App() {
           onOpenAbout={() => setAboutOpen(true)}
           hubVersion={health?.hub.version}
         />
-        <div
-          style={{
-            flex: 1,
-            minWidth: 0,
-            minHeight: 0,
-            padding: 8,
-            background: c.bgSubtle,
-          }}
-        >
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, background: c.bg }}>
           <DockviewReact
             components={components}
             theme={themeLight}

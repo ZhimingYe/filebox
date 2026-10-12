@@ -28,19 +28,19 @@ code {
 
 /*
  * dockview chrome → classic filebox tokens (indigo / slate).
- * Overrides stock themeLight greys so the shell matches reused components.
+ * Keep outer dock tabs ~28px to match classic PreviewWorkspace tab strip.
  */
 .dockview-theme-light {
   --dv-group-view-background-color: #ffffff;
   --dv-tabs-and-actions-container-background-color: #f8fafc;
-  --dv-tabs-and-actions-container-height: 30px;
+  --dv-tabs-and-actions-container-height: 28px;
   --dv-tabs-and-actions-container-font-size: 12px;
   --dv-tab-font-size: 12px;
-  --dv-tab-margin: 0 1px 0 0;
-  --dv-tab-border-radius: 6px 6px 0 0;
-  --dv-border-radius: 8px;
-  --dv-spacing-padding: 6px;
-  --dv-tab-divider-color: #e2e8f0;
+  --dv-tab-margin: 0;
+  --dv-tab-border-radius: 0;
+  --dv-border-radius: 0;
+  --dv-spacing-padding: 0;
+  --dv-tab-divider-color: transparent;
   --dv-separator-border: #e2e8f0;
   --dv-paneview-header-border-color: #e2e8f0;
   --dv-paneview-active-outline-color: #6366f1;
@@ -62,7 +62,7 @@ code {
   --dv-drag-over-background-color: rgba(99, 102, 241, 0.14);
   --dv-drag-over-border-color: #6366f1;
   --dv-edge-dock-indicator-color: rgba(99, 102, 241, 0.9);
-  --dv-sash-color: #e2e8f0;
+  --dv-sash-color: transparent;
   --dv-active-sash-color: #6366f1;
 
   --dv-floating-box-shadow: 0 10px 15px -3px rgba(15, 23, 42, 0.1),
@@ -78,31 +78,37 @@ code {
 
 .dockview-theme-light .dv-dockview {
   font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #f8fafc;
+  background: #ffffff;
 }
 
+/* Single seam between groups — no per-panel box border stacking with content */
 .dockview-theme-light .dv-groupview {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border: none;
+  border-radius: 0;
   overflow: hidden;
   background: #ffffff;
 }
 
 .dockview-theme-light .dv-tabs-and-actions-container {
-  padding: 0 4px;
-  gap: 2px;
+  padding: 0 4px 0 0;
+  gap: 0;
+  /* one hairline under the strip; kill dockview's extra border-bottom */
   border-bottom: 1px solid #e2e8f0 !important;
   background: #f8fafc !important;
+  min-height: 28px !important;
+  max-height: 28px !important;
 }
 
 .dockview-theme-light .dv-tab {
-  border-radius: 6px 6px 0 0;
-  padding: 0 2px;
+  border-radius: 0;
+  padding: 0;
+  height: 28px;
 }
 
 .dockview-theme-light .dv-tab .dv-default-tab {
   padding: 0 10px;
   gap: 6px;
+  height: 28px;
   font-weight: 500;
   letter-spacing: 0.01em;
 }
@@ -128,21 +134,19 @@ code {
   opacity: 1;
 }
 
+/* Hide the fake divider line between tabs that reads as double borders */
+.dockview-theme-light .dv-tabs-container.dv-horizontal .dv-tab:not(:first-child)::before,
+.dockview-theme-light .dv-tabs-container.dv-vertical .dv-tab:not(:first-child)::before {
+  display: none !important;
+}
+
 .dockview-theme-light .dv-watermark {
   color: #94a3b8;
   font-size: 13px;
 }
 
-.dockview-theme-light .dv-resize-container {
-  background: transparent;
-}
-
-.dockview-theme-light .dv-sash-container .dv-sash {
-  transition: background-color 0.12s ease;
-}
-
 .dockview-theme-light .dv-sash-container .dv-sash:hover,
 .dockview-theme-light .dv-sash-container .dv-sash.dv-enabled {
   background-color: #6366f1 !important;
-  opacity: 0.55;
+  opacity: 0.45;
 }
