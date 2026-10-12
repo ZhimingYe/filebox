@@ -80,6 +80,11 @@ function activateHostPanel(api: DockviewApi, panelId: string): void {
   lastFocusedPreviewId = panelId;
 }
 
+function previewHostTitle(api: DockviewApi): string {
+  const n = findPreviewPanels(api).length;
+  return n === 0 ? 'Preview' : `Preview ${n + 1}`;
+}
+
 /** Add an empty preview dock panel (header "New Preview"). */
 export function addEmptyPreviewPanel(api: DockviewApi): string {
   const focused = findFocusedPreview(api);
@@ -88,7 +93,7 @@ export function addEmptyPreviewPanel(api: DockviewApi): string {
   api.addPanel({
     id,
     component: PREVIEW_COMPONENT,
-    title: 'Preview',
+    title: previewHostTitle(api),
     params: {} satisfies PreviewPanelParams,
     position: focused
       ? { referencePanel: focused.id, direction: 'within' }
@@ -108,7 +113,7 @@ function addPreviewPanelWithOpen(api: DockviewApi, detail: NeoOpenFileDetail): v
   api.addPanel({
     id,
     component: PREVIEW_COMPONENT,
-    title: detail.entry.name || 'Preview',
+    title: previewHostTitle(api),
     params: { pendingOpen: detail } satisfies PreviewPanelParams,
     position: focused
       ? { referencePanel: focused.id, direction: 'within' }

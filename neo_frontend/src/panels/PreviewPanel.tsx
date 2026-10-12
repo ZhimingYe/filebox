@@ -119,11 +119,8 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
     return () => d.dispose();
   }, [api, openOrActivate, initialParams?.pendingOpen]);
 
-  // Dock tab title: filename only (short).
-  useEffect(() => {
-    const title = previewTabs.activeTab?.title ?? 'Preview';
-    if (api.title !== title) api.setTitle(title);
-  }, [api, previewTabs.activeTab?.title]);
+  // Dock tab title stays fixed (set at panel create: Preview / Preview N).
+  // Filenames live only on the classic PreviewWorkspace tab bar.
 
   const onRevealInBrowser = useCallback((root: string, dirPath: string) => {
     emitNeoRevealInBrowser({ root, dirPath });
