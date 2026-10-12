@@ -1,4 +1,4 @@
-/** Hide dockview's default tab-group overflow chip ("v N") — too noisy for product chrome. */
+/** Hide dockview tab-group chips. Overflow "v N" is hidden in index.css. */
 export function EmptyTabGroupChip() {
   return null;
 }

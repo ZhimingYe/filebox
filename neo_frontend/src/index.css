@@ -154,3 +154,8 @@ code {
   background-color: #6366f1 !important;
   opacity: 0.45;
 }
+
+/* Hide dockview overflow "v N" chip — EmptyTabGroupChip only covers group chips */
+.dockview-theme-light .dv-tabs-overflow-dropdown-root {
+  display: none !important;
+}
