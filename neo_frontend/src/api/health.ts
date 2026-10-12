@@ -1,16 +1,18 @@
 /**
- * Thin hub health probe — proves same-origin API reachability from the neo shell.
+ * Thin hub health probe for the neo chrome status chip.
  *
- * TODO(neo): Prefer sharing CSRF / cookie-suffix helpers with classic
- * `frontend/src/api/client.ts` once a clean import path exists (monorepo package
- * or Vite alias into ../frontend/src). For this spike we only hit the public
- * `/api/health` endpoint (no session / CSRF required).
+ * Session / CSRF for real API calls go through classic
+ * `@classic/api/client` (`ensureCookieSuffix`, `withCsrf`, cookie reads).
+ * This helper only reports reachability + whether a CSRF cookie is present
+ * after classic suffix resolution.
  */
 
 export type HubHealth = {
   ok: boolean;
   status: number;
   cookieSuffix: string | null;
+  /** True when classic client can read a CSRF token (cookie or in-memory). */
+  hasCsrf?: boolean;
   error?: string;
 };
 

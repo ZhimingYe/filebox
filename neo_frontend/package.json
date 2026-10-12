@@ -11,17 +11,32 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "dockview-react": "^8.5.1",
+    "monaco-editor": "^0.55.1",
+    "pako": "^2.2.0",
+    "pdfjs-dist": "^5.4.296",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "react-pdf": "^10.5.0",
+    "react-window": "^1.8.11",
+    "remark-gfm": "^4.0.1",
+    "utif": "^3.1.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "@types/pako": "^2.0.4",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
+    "@types/react-window": "^1.8.8",
+    "@types/utif": "^3.0.6",
     "@vitejs/plugin-react": "^6.1.1",
     "oxlint": "^1.81.0",
     "typescript": "~6.0.2",
     "vite": "^8.3.0"
+  },
+  "overrides": {
+    "dompurify": "3.4.12"
   }
 }

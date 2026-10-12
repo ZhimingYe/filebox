@@ -7,60 +7,61 @@ classic `frontend/` — does **not** replace it. Long-lived work lands on the
 ## What this PR / spike includes
 
 - Vite + React + TypeScript app with `base: '/neo/'`
-- Empty **dockview** layout: file-tree placeholder + preview placeholder
-- Same-origin popout stub at `/neo/popout.html` (for later `addPopoutGroup`)
-- Thin `/api/health` probe to prove hub reachability
+- Dockview layout: **Files** (classic `FileBrowser` / `DirectoryTree`) + **Preview**
+  (classic `PreviewPane` viewers, multi-tab via dockview)
+- Vite alias `@classic` → `../frontend/src` (classic sources imported in-place;
+  React deduped so hooks share one copy)
+- Classic session / CSRF (`ensureCookieSuffix`, `withCsrf`, login PoW) for `/neo/`
+- Open-file bridge: `filebox-neo:open-file` → `openFileInDock` (activate / fill
+  empty / new preview tab)
+- Same-origin popout stub at `/neo/popout.html`
 - Hub serves `neo_frontend/dist` under `/neo`
 
 ## What is intentionally NOT included
 
-- PDF / HTML / Monaco / image / CSV / Markdown viewers
-- Login, agent list, pins, collections, search, terminal
+- Agent settings, pins sidebar chrome, collections, search, terminal
 - Layout persistence / pin registry (#86 contract)
+- Mobile layout (desktop dock only for now)
+- Full pin/keep-alive park from classic `PreviewWorkspace` (later)
 
-## Classic reuse plan
+## Classic reuse
 
-| Classic module | Plan |
+| Classic module | Status |
 | --- | --- |
-| `frontend/src/theme.ts` | **Reuse** (mirrored subset now; later share via package/alias) |
-| `frontend/src/api/client.ts` (CSRF, cookie suffix, `withCsrf`) | **Reuse** — TODO thin alias or shared package; stubbed health-only for now |
-| `frontend/src/api/retry.ts` | **Reuse** when real FS/API calls arrive |
-| `frontend/src/components/DirectoryTree.tsx`, `FileBrowser.tsx`, `FileEntryList.tsx`, `fileListShared.tsx` | **Reuse** behind dockview panels (adapt props; no rewrite unless dock constraints force it) |
-| `frontend/src/components/icons.tsx` | **Reuse** |
-| `frontend/src/components/PinnedFolders.tsx` + pin storage | **Reuse** against #86 pin-registry contract |
-| `frontend/src/components/PreviewPane.tsx` + `*Preview.tsx` | **Reuse** inside preview dock tabs (later PRs) |
-| `frontend/src/hooks/usePreviewTabs.ts` | Likely **rewrite** around dockview panel model |
-| `frontend/src/components/WorkspaceSplit.tsx` | **Rewrite** — replaced by dockview grid |
-| `frontend/src/App.tsx` shell / mobile drawer | **Rewrite** as neo shell + responsive dock layout |
-| `frontend/src/state/session.ts`, `events.ts`, `health.ts` | **Reuse** with possible thin adapters |
-| `frontend/src/monacoSetup.ts` | **Reuse** when Monaco panel lands |
+| `api/client.ts`, `api/retry.ts` | **Reused** via `@classic` |
+| `state/session.ts`, `health.ts`, `navPersistence.ts` | **Reused** |
+| `components/Login.tsx`, `lib/pow.ts` | **Reused** (neo session gate) |
+| `components/FileBrowser.tsx`, `DirectoryTree.tsx`, file list | **Reused** in Files panel |
+| `components/PreviewPane.tsx` + `*Preview.tsx` | **Reused** in Preview panel |
+| `theme.ts` / icons | **Reused** (neo keeps a small chrome mirror) |
+| `App.tsx` shell / `WorkspaceSplit` | **Rewritten** as dockview shell |
 
 ## Dev
 
 ```bash
-# Terminal A — hub (classic frontend optional)
+# Terminal A — hub
 cd frontend && npm run build && cd ..
 cargo run -p filebox-hub
 
 # Terminal B — neo Vite (proxies /api and /ws to :3000)
 cd neo_frontend
 npm install
+npm run build   # must succeed
 npm run dev
 # open http://localhost:5174/neo/
+# Log in → pick agent in Files → browse tree/list → click a file → Preview tab
 ```
 
 ## Production-like (hub serves built neo)
 
 ```bash
 cd neo_frontend && npm install && npm run build && cd ..
-# optional override:
-#   FILEBOX_NEO_FRONTEND_DIR="$(pwd)/neo_frontend/dist"
+# optional: FILEBOX_NEO_FRONTEND_DIR="$(pwd)/neo_frontend/dist"
 cargo run -p filebox-hub
 # open http://localhost:3000/neo/
 ```
 
-Release packaging copies `neo_frontend/dist` → `$STAGE/frontend/neo/` so the
-hub find path `frontend/neo` (sibling of classic `frontend/dist`) resolves.
+Release packaging copies `neo_frontend/dist` → `$STAGE/frontend/neo/`.
 
 ## Scripts
 
