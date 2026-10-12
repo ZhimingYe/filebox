@@ -47,7 +47,7 @@ function applyHoverHandlers(el: HTMLButtonElement, enter: boolean) {
   }
 }
 
-export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActionsProps) {
+export function DockBackAction({ api, containerApi }: IDockviewHeaderActionsProps) {
   const [isPopout, setIsPopout] = useState(() => api.location.type === 'popout');
   const isPreviewGroup = useMemo(() => groupHasPreview(group), [group]);
 
