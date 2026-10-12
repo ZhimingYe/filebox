@@ -10,6 +10,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import type { IDockviewPanelProps } from 'dockview-react';
 import type { AgentInfo, FsEntry } from '@classic/api/client';
 import { FileBrowser } from '@classic/components/FileBrowser';
+import { PinnedFolders } from '@classic/components/PinnedFolders';
+import { patchRoot } from '@classic/api/client';
 import {
   LAST_AGENT_STORAGE,
   loadNavPosMap,
@@ -27,6 +29,20 @@ import {
   onNeoSelectAgent,
 } from '../events/openFile';
 import { setBrowsePos, subscribeBrowsePos, getBrowsePos } from '../shell/browsePos';
+
+// Classic desktop Files shows the DirectoryTree beside the list. FileBrowser
+// persists the toggle in `filebox.treeOpen`; seed it open on first neo use so
+// the panel matches the classic desktop layout out of the box.
+function seedTreeOpen() {
+  try {
+    if (localStorage.getItem('filebox.treeOpen') === null) {
+      localStorage.setItem('filebox.treeOpen', '1');
+    }
+  } catch {
+    /* ignore */
+  }
+}
+seedTreeOpen();
 
 export function FilesPanel(_props: IDockviewPanelProps) {
   const { agents, error: healthError, refresh } = useHealth(true);
@@ -166,6 +182,30 @@ export function FilesPanel(_props: IDockviewPanelProps) {
     });
   }, [selectedAgent, applyNav]);
 
+  // Classic PinnedFolders drives FileBrowser through a nonce'd navRequest so
+  // re-clicking the same pin still navigates.
+  const [navRequest, setNavRequest] = useState<{ root: string; path: string; nonce: number } | null>(null);
+  const pinnedCount = useMemo(
+    () =>
+      selectedAgent
+        ? selectedAgent.roots.reduce((n, r) => (r.enabled ? n + r.pinned_folders.length : n), 0)
+        : 0,
+    [selectedAgent],
+  );
+  const handleUnpin = useCallback(
+    async (root: string, path: string): Promise<boolean> => {
+      if (!selectedAgent) return false;
+      try {
+        await patchRoot(selectedAgent.id, root, { pin_remove: path });
+        void refresh();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [selectedAgent, refresh],
+  );
+
   const switchRoot = useCallback(
     (root: string) => {
       if (!selectedAgent) return;
@@ -251,8 +291,22 @@ export function FilesPanel(_props: IDockviewPanelProps) {
           {selectedAgent.status}
         </span>
       </div>
-      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        {pinnedCount > 0 ? (
+          <div style={pinsColumnStyle}>
+            <div style={pinsHeaderStyle}>Pinned</div>
+            <PinnedFolders
+              agent={selectedAgent}
+              collapsed={false}
+              onNavigate={(root, path) => setNavRequest({ root, path, nonce: Date.now() })}
+              onUnpin={handleUnpin}
+            />
+          </div>
+        ) : null}
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         <FileBrowser
+          navRequest={navRequest}
+          onNavHandled={() => setNavRequest(null)}
           agentId={selectedAgent.id}
           roots={selectedAgent.roots}
           onFileSelect={handleFileSelect}
@@ -265,6 +319,7 @@ export function FilesPanel(_props: IDockviewPanelProps) {
             emitNeoCollectionPicker({ root, path, anchor });
           }}
         />
+        </div>
       </div>
     </div>
   );
@@ -345,4 +400,23 @@ const btnStyle: CSSProperties = {
   background: c.surface,
   color: c.text,
   cursor: 'pointer',
+};
+
+const pinsColumnStyle: CSSProperties = {
+  width: 200,
+  flexShrink: 0,
+  overflowY: 'auto',
+  borderRight: `1px solid ${c.border}`,
+  background: c.surface,
+  padding: '6px 4px',
+  boxSizing: 'border-box',
+};
+
+const pinsHeaderStyle: CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  textTransform: 'uppercase',
+  letterSpacing: 0.4,
+  color: c.textMuted,
+  padding: '2px 8px 6px',
 };
