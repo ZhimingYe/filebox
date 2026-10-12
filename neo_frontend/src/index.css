@@ -53,7 +53,7 @@ code {
   --dv-activegroup-hiddenpanel-tab-color: #475569;
 
   --dv-inactivegroup-visiblepanel-tab-background-color: #ffffff;
-  --dv-inactivegroup-visiblepanel-tab-color: #475569;
+  --dv-inactivegroup-visiblepanel-tab-color: #64748b;
   --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
   --dv-inactivegroup-hiddenpanel-tab-color: #94a3b8;
 
@@ -106,6 +106,13 @@ code {
   border-radius: 0;
   padding: 0;
   height: 28px;
+  /* classic-like hairline between tabs */
+  border-right: 1px solid #e2e8f0;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.dockview-theme-light .dv-tab:last-of-type {
+  border-right: none;
 }
 
 .dockview-theme-light .dv-tab .dv-default-tab {
@@ -114,6 +121,15 @@ code {
   height: 28px;
   font-weight: 500;
   letter-spacing: 0.01em;
+  min-width: 0;
+}
+
+.dockview-theme-light .dv-tab .dv-default-tab .dv-default-tab-content {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .dockview-theme-light .dv-tab.dv-active-tab {
@@ -128,8 +144,15 @@ code {
   color: #0f172a !important;
 }
 
+/* Close: hidden until hover / active */
 .dockview-theme-light .dv-tab .dv-default-tab .dv-default-tab-action {
   border-radius: 4px;
+  opacity: 0;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+
+.dockview-theme-light .dv-tab:hover .dv-default-tab .dv-default-tab-action,
+.dockview-theme-light .dv-tab.dv-active-tab .dv-default-tab .dv-default-tab-action {
   opacity: 0.55;
 }
 
@@ -144,18 +167,54 @@ code {
   display: none !important;
 }
 
+.dockview-theme-light .dv-right-actions-container {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  gap: 2px;
+}
+
 .dockview-theme-light .dv-watermark {
-  color: #94a3b8;
-  font-size: 13px;
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+/* Soft sash: transparent idle, quiet indigo on hover */
+.dockview-theme-light .dv-sash-container .dv-sash {
+  background-color: transparent !important;
+  transition: background-color 120ms ease, opacity 120ms ease;
 }
 
 .dockview-theme-light .dv-sash-container .dv-sash:hover,
-.dockview-theme-light .dv-sash-container .dv-sash.dv-enabled {
+.dockview-theme-light .dv-sash-container .dv-sash.dv-enabled:hover,
+.dockview-theme-light .dv-sash-container .dv-sash:active {
   background-color: #6366f1 !important;
-  opacity: 0.45;
+  opacity: 0.35;
 }
 
 /* Hide dockview overflow "v N" chip — EmptyTabGroupChip only covers group chips */
 .dockview-theme-light .dv-tabs-overflow-dropdown-root {
   display: none !important;
+}
+
+/* Header chrome icon buttons — quiet hover matching DockBackAction */
+.neo-chrome-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.neo-chrome-icon-btn:hover {
+  background: #eef2ff;
+  color: #6366f1;
 }

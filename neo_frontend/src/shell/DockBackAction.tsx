@@ -16,14 +16,16 @@ const iconBtn: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  width: 24,
-  height: 24,
+  width: 22,
+  height: 22,
   padding: 0,
-  borderRadius: 6,
+  borderRadius: 5,
   border: 'none',
   background: 'transparent',
   color: c.textMuted,
   cursor: 'pointer',
+  transition: 'background-color 120ms ease, color 120ms ease',
+  flexShrink: 0,
 };
 
 function groupHasPreview(group: IDockviewHeaderActionsProps['group']): boolean {
@@ -47,7 +49,7 @@ export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActi
 
   if (isPopout) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: '0 4px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: 0 }}>
         <button
           type="button"
           title="Dock back"
@@ -63,7 +65,7 @@ export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActi
             e.currentTarget.style.color = c.textMuted;
           }}
         >
-          <IconDockBack style={{ width: 14, height: 14 }} />
+          <IconDockBack style={{ width: 13, height: 13 }} />
         </button>
       </div>
     );
@@ -72,7 +74,7 @@ export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActi
   if (!showPopout) return null;
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: '0 4px' }}>
+    <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: 0 }}>
       <button
         type="button"
         title="Pop out"
@@ -90,7 +92,7 @@ export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActi
           e.currentTarget.style.color = c.textMuted;
         }}
       >
-        <IconPopOut style={{ width: 14, height: 14 }} />
+        <IconPopOut style={{ width: 13, height: 13 }} />
       </button>
     </div>
   );

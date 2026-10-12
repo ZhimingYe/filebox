@@ -157,8 +157,8 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
         />
       ) : (
         <div style={emptyStyle}>
-          <div style={{ fontWeight: 600, color: c.text, marginBottom: 6 }}>Preview</div>
-          <div style={{ color: c.textMuted, lineHeight: 1.5 }}>
+          <div style={emptyTitleStyle}>Preview</div>
+          <div style={emptyCopyStyle}>
             Select a file in Files or Explorer to open it here.
           </div>
         </div>
@@ -182,6 +182,25 @@ const shellStyle: CSSProperties = {
 const emptyStyle: CSSProperties = {
   height: '100%',
   boxSizing: 'border-box',
-  padding: 16,
+  padding: 24,
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  textAlign: 'center',
   color: c.textSecondary,
+};
+
+const emptyTitleStyle: CSSProperties = {
+  fontSize: 14,
+  fontWeight: 600,
+  color: c.text,
+  marginBottom: 6,
+};
+
+const emptyCopyStyle: CSSProperties = {
+  color: c.textMuted,
+  fontSize: 13,
+  lineHeight: 1.5,
+  maxWidth: 280,
 };

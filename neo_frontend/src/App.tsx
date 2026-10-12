@@ -312,7 +312,7 @@ export default function App() {
         </span>
         <button
           type="button"
-          style={headerIconBtn}
+          className="neo-chrome-icon-btn"
           onClick={() => {
             const api = dockApiRef.current;
             if (api) addEmptyPreviewPanel(api);
@@ -324,7 +324,7 @@ export default function App() {
         </button>
         <button
           type="button"
-          style={headerIconBtn}
+          className="neo-chrome-icon-btn"
           onClick={() => {
             const api = dockApiRef.current;
             if (api) void popoutPreviewPanel(api);
@@ -337,7 +337,7 @@ export default function App() {
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
           <button
             type="button"
-            style={headerIconBtn}
+            className="neo-chrome-icon-btn"
             onClick={() => void refresh()}
             title="Refresh"
             aria-label="Refresh"
@@ -346,7 +346,7 @@ export default function App() {
           </button>
           <button
             type="button"
-            style={headerIconBtn}
+            className="neo-chrome-icon-btn"
             onClick={() => void logout()}
             title="Log out"
             aria-label="Log out"
@@ -421,21 +421,6 @@ const bootStyle: CSSProperties = {
   width: '100%',
   height: '100%',
   background: c.bg,
-};
-
-const headerIconBtn: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  width: 28,
-  height: 28,
-  padding: 0,
-  borderRadius: 6,
-  border: 'none',
-  background: 'transparent',
-  color: c.textMuted,
-  cursor: 'pointer',
-  flexShrink: 0,
 };
 
 const dropOverlay: CSSProperties = {
