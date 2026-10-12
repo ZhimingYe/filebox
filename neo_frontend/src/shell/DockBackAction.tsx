@@ -1,8 +1,8 @@
 /**
  * Dock group header actions:
- * - Preview groups (grid): quiet New Preview + Pop out
+ * - All grid groups: Pop out (always)
+ * - Preview groups: New Preview before Pop out
  * - Popout groups: Dock back only
- * - Other chrome groups: nothing
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
@@ -37,10 +37,7 @@ function groupHasPreview(group: IDockviewHeaderActionsProps['group']): boolean {
   }
 }
 
-function applyHoverHandlers(
-  el: HTMLButtonElement,
-  enter: boolean,
-) {
+function applyHoverHandlers(el: HTMLButtonElement, enter: boolean) {
   if (enter) {
     el.style.background = c.accentBg;
     el.style.color = c.accent;
@@ -52,7 +49,7 @@ function applyHoverHandlers(
 
 export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActionsProps) {
   const [isPopout, setIsPopout] = useState(() => api.location.type === 'popout');
-  const showPreviewActions = useMemo(() => groupHasPreview(group), [group]);
+  const isPreviewGroup = useMemo(() => groupHasPreview(group), [group]);
 
   useEffect(() => {
     const sub = api.onDidLocationChange((ev) => {
@@ -63,7 +60,7 @@ export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActi
 
   if (isPopout) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: 0, gap: 2 }}>
+      <div style={rowStyle}>
         <button
           type="button"
           title="Dock back"
@@ -79,23 +76,23 @@ export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActi
     );
   }
 
-  if (!showPreviewActions) return null;
-
   return (
-    <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: 0, gap: 2 }}>
-      <button
-        type="button"
-        title="New Preview"
-        aria-label="New Preview"
-        onClick={() => {
-          addEmptyPreviewPanel(containerApi);
-        }}
-        style={iconBtn}
-        onMouseEnter={(e) => applyHoverHandlers(e.currentTarget, true)}
-        onMouseLeave={(e) => applyHoverHandlers(e.currentTarget, false)}
-      >
-        <IconPlusPanel style={{ width: 13, height: 13 }} />
-      </button>
+    <div style={rowStyle}>
+      {isPreviewGroup ? (
+        <button
+          type="button"
+          title="New Preview"
+          aria-label="New Preview"
+          onClick={() => {
+            addEmptyPreviewPanel(containerApi);
+          }}
+          style={iconBtn}
+          onMouseEnter={(e) => applyHoverHandlers(e.currentTarget, true)}
+          onMouseLeave={(e) => applyHoverHandlers(e.currentTarget, false)}
+        >
+          <IconPlusPanel style={{ width: 13, height: 13 }} />
+        </button>
+      ) : null}
       <button
         type="button"
         title="Pop out"
@@ -112,3 +109,11 @@ export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActi
     </div>
   );
 }
+
+const rowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  height: '100%',
+  padding: 0,
+  gap: 2,
+};

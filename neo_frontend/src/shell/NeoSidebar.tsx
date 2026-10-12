@@ -1,8 +1,16 @@
 /**
  * Desktop neo sidebar: agent picker + chrome nav + classic PinnedFolders.
+ * Collapsed = VS Code–style icon activity bar; expanded = icon + label rows.
  */
 
-import { useCallback, useMemo, useState, type CSSProperties, type FunctionComponent } from 'react';
+import {
+  useCallback,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type FunctionComponent,
+  type MouseEvent,
+} from 'react';
 import { patchRoot } from '@classic/api/client';
 import { BackendList } from '@classic/components/BackendList';
 import { PinnedFolders } from '@classic/components/PinnedFolders';
@@ -34,6 +42,8 @@ export type NeoSidebarChrome =
   | 'settings'
   | 'stats'
   | 'audit';
+
+type NavId = NeoSidebarChrome | 'preview';
 
 type SvgProps = { style?: CSSProperties };
 
@@ -72,6 +82,7 @@ export function NeoSidebar({ onChrome, onNewPreview, onOpenAbout, hubVersion }: 
       return false;
     }
   });
+  const [activeNav, setActiveNav] = useState<NavId | null>(null);
 
   const toggleCollapsed = useCallback(() => {
     setCollapsed((prev) => {
@@ -109,6 +120,66 @@ export function NeoSidebar({ onChrome, onNewPreview, onOpenAbout, hubVersion }: 
 
   const width = collapsed ? W_COLLAPSED : W_EXPANDED;
 
+  const applyNavHover = (el: HTMLButtonElement, enter: boolean, active: boolean) => {
+    if (active) {
+      el.style.background = c.accentBg;
+      el.style.color = c.accent;
+      return;
+    }
+    if (enter) {
+      el.style.background = c.bgMuted;
+      el.style.color = c.text;
+    } else {
+      el.style.background = 'transparent';
+      el.style.color = c.textSecondary;
+    }
+  };
+
+  const navItemStyle = (active: boolean, disabled: boolean): CSSProperties => ({
+    ...(collapsed ? navBtnCollapsed : navBtnExpanded),
+    ...(active
+      ? { background: c.accentBg, color: c.accent }
+      : { background: 'transparent', color: c.textSecondary }),
+    ...(disabled ? { opacity: 0.4, cursor: 'not-allowed' } : null),
+  });
+
+  const renderNavButton = (
+    id: NavId,
+    label: string,
+    Icon: FunctionComponent<SvgProps>,
+    onClick: () => void,
+    disabled = false,
+  ) => {
+    const active = activeNav === id;
+    const iconSize = collapsed ? 18 : 16;
+    return (
+      <button
+        key={id}
+        type="button"
+        disabled={disabled}
+        style={navItemStyle(active, disabled)}
+        title={label}
+        aria-label={label}
+        aria-current={active ? 'page' : undefined}
+        onClick={() => {
+          if (disabled) return;
+          setActiveNav(id);
+          onClick();
+        }}
+        onMouseEnter={(e: MouseEvent<HTMLButtonElement>) => {
+          if (!disabled) applyNavHover(e.currentTarget, true, active);
+        }}
+        onMouseLeave={(e: MouseEvent<HTMLButtonElement>) => {
+          if (!disabled) applyNavHover(e.currentTarget, false, active);
+        }}
+      >
+        {active ? <span style={activeRail} aria-hidden /> : null}
+        <Icon style={{ width: iconSize, height: iconSize, flexShrink: 0 }} />
+        {!collapsed ? <span style={navLabel}>{label}</span> : null}
+      </button>
+    );
+  };
+
   return (
     <aside
       style={{
@@ -117,24 +188,32 @@ export function NeoSidebar({ onChrome, onNewPreview, onOpenAbout, hubVersion }: 
         minWidth: width,
       }}
     >
-      <div style={topRow}>
+      <div style={collapsed ? topRowCollapsed : topRowExpanded}>
         {!collapsed && <span style={brand}>Navigate</span>}
         <button
           type="button"
-          style={iconBtn}
+          style={collapseBtn}
           onClick={toggleCollapsed}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = c.bgMuted;
+            e.currentTarget.style.color = c.text;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.color = c.textMuted;
+          }}
         >
           {collapsed ? (
-            <IconChevronRight style={{ width: 14, height: 14 }} />
+            <IconChevronRight style={{ width: 16, height: 16 }} />
           ) : (
-            <IconChevronLeft style={{ width: 14, height: 14 }} />
+            <IconChevronLeft style={{ width: 16, height: 16 }} />
           )}
         </button>
       </div>
 
-      <div style={agentsWrap}>
+      <div style={collapsed ? agentsWrapCollapsed : agentsWrapExpanded}>
         {!collapsed && <div style={sectionHeader}>Agents</div>}
         <BackendList
           agents={agents}
@@ -145,58 +224,17 @@ export function NeoSidebar({ onChrome, onNewPreview, onOpenAbout, hubVersion }: 
         />
       </div>
 
-      <nav style={navStyle}>
-        <button
-          type="button"
-          style={{
-            ...navBtn,
-            ...(collapsed ? navBtnCollapsed : null),
-          }}
-          title="Preview"
-          aria-label="Preview"
-          onClick={onNewPreview}
-        >
-          {collapsed ? (
-            <IconPreview style={{ width: 16, height: 16, margin: '0 auto' }} />
-          ) : (
-            <>
-              <IconPreview style={{ width: 14, height: 14, flexShrink: 0 }} />
-              <span>Preview</span>
-            </>
-          )}
-        </button>
+      <nav style={collapsed ? navStyleCollapsed : navStyleExpanded}>
+        {renderNavButton('preview', 'Preview', IconPreview, onNewPreview)}
         {NAV.map(({ id, label, Icon }) => {
           const needsAgent = id !== 'audit';
           const disabled = needsAgent && !agent;
-          return (
-            <button
-              key={id}
-              type="button"
-              disabled={disabled}
-              style={{
-                ...navBtn,
-                ...(collapsed ? navBtnCollapsed : null),
-                ...(disabled ? { opacity: 0.45, cursor: 'not-allowed' } : null),
-              }}
-              title={label}
-              aria-label={label}
-              onClick={() => onChrome(id)}
-            >
-              {collapsed ? (
-                <Icon style={{ width: 16, height: 16, margin: '0 auto' }} />
-              ) : (
-                <>
-                  <Icon style={{ width: 14, height: 14, flexShrink: 0 }} />
-                  <span>{label}</span>
-                </>
-              )}
-            </button>
-          );
+          return renderNavButton(id, label, Icon, () => onChrome(id), disabled);
         })}
       </nav>
 
       {agent && pinnedCount > 0 ? (
-        <div style={pinsWrap}>
+        <div style={collapsed ? pinsWrapCollapsed : pinsWrapExpanded}>
           {!collapsed && <div style={sectionHeader}>Pinned</div>}
           <PinnedFolders
             agent={agent}
@@ -211,20 +249,25 @@ export function NeoSidebar({ onChrome, onNewPreview, onOpenAbout, hubVersion }: 
 
       <div style={{ flex: 1 }} />
 
-      <div style={footer}>
-        {hubVersion && !collapsed ? (
-          <button type="button" style={aboutBtn} onClick={onOpenAbout} title="About filebox">
-            v{hubVersion}
-          </button>
-        ) : hubVersion && collapsed ? (
+      <div style={collapsed ? footerCollapsed : footerExpanded}>
+        {hubVersion ? (
           <button
             type="button"
-            style={iconBtn}
+            style={collapsed ? aboutBtnCollapsed : aboutBtnExpanded}
             onClick={onOpenAbout}
             title={`About filebox (v${hubVersion})`}
             aria-label={`About filebox (v${hubVersion})`}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = c.bgMuted;
+              e.currentTarget.style.color = c.text;
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.color = c.textMuted;
+            }}
           >
-            <IconBrandMark style={{ width: 14, height: 14 }} />
+            <IconBrandMark style={{ width: collapsed ? 18 : 14, height: collapsed ? 18 : 14, flexShrink: 0 }} />
+            {!collapsed ? <span style={{ fontFamily: font.mono, fontSize: 11 }}>v{hubVersion}</span> : null}
           </button>
         ) : null}
       </div>
@@ -245,23 +288,49 @@ const asideStyle: CSSProperties = {
   transition: 'width 120ms ease',
 };
 
-const topRow: CSSProperties = {
+const topRowExpanded: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  padding: '8px 8px 4px',
+  padding: '8px 8px 6px',
   gap: 4,
+  minHeight: 36,
+};
+
+const topRowCollapsed: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: '8px 0 6px',
+  minHeight: 36,
 };
 
 const brand: CSSProperties = {
   fontWeight: 600,
-  color: c.textSecondary,
-  fontSize: 11,
+  color: c.textMuted,
+  fontSize: 10,
   textTransform: 'uppercase',
-  letterSpacing: 0.4,
+  letterSpacing: 0.5,
+  paddingLeft: 4,
 };
 
-const agentsWrap: CSSProperties = {
+const collapseBtn: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 28,
+  height: 28,
+  padding: 0,
+  borderRadius: 6,
+  border: 'none',
+  background: 'transparent',
+  color: c.textMuted,
+  cursor: 'pointer',
+  flexShrink: 0,
+  transition: 'background-color 120ms ease, color 120ms ease',
+};
+
+const agentsWrapExpanded: CSSProperties = {
   padding: '4px 6px 8px',
   borderBottom: `1px solid ${c.border}`,
   maxHeight: 160,
@@ -269,41 +338,97 @@ const agentsWrap: CSSProperties = {
   minHeight: 0,
 };
 
-const navStyle: CSSProperties = {
+const agentsWrapCollapsed: CSSProperties = {
+  padding: '4px 0 8px',
+  borderBottom: `1px solid ${c.border}`,
+  maxHeight: 160,
+  overflow: 'auto',
+  minHeight: 0,
   display: 'flex',
   flexDirection: 'column',
-  gap: 2,
-  padding: '4px 6px',
+  alignItems: 'center',
 };
 
-const navBtn: CSSProperties = {
+const navStyleExpanded: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 1,
+  padding: '6px 6px',
+};
+
+const navStyleCollapsed: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 0,
+  padding: '4px 0',
+};
+
+const navBtnExpanded: CSSProperties = {
+  position: 'relative',
   display: 'flex',
   alignItems: 'center',
   gap: 8,
+  width: '100%',
   textAlign: 'left',
   fontFamily: font.sans,
   fontSize: 12,
-  padding: '6px 8px',
+  fontWeight: 500,
+  padding: '6px 8px 6px 10px',
   borderRadius: 6,
   border: 'none',
-  background: 'transparent',
-  color: c.text,
   cursor: 'pointer',
+  transition: 'background-color 120ms ease, color 120ms ease',
+  boxSizing: 'border-box',
+  minHeight: 30,
 };
 
 const navBtnCollapsed: CSSProperties = {
+  position: 'relative',
+  display: 'flex',
+  alignItems: 'center',
   justifyContent: 'center',
-  textAlign: 'center',
-  padding: '8px 0',
-  gap: 0,
-  fontWeight: 600,
+  width: '100%',
+  height: 40,
+  padding: 0,
+  borderRadius: 0,
+  border: 'none',
+  cursor: 'pointer',
+  transition: 'background-color 120ms ease, color 120ms ease',
+  flexShrink: 0,
 };
 
-const pinsWrap: CSSProperties = {
+const navLabel: CSSProperties = {
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  lineHeight: 1.2,
+};
+
+const activeRail: CSSProperties = {
+  position: 'absolute',
+  left: 0,
+  top: 8,
+  bottom: 8,
+  width: 2,
+  borderRadius: 1,
+  background: c.accent,
+};
+
+const pinsWrapExpanded: CSSProperties = {
   padding: '8px 6px',
   borderTop: `1px solid ${c.border}`,
   overflow: 'auto',
   minHeight: 0,
+};
+
+const pinsWrapCollapsed: CSSProperties = {
+  padding: '8px 0',
+  borderTop: `1px solid ${c.border}`,
+  overflow: 'auto',
+  minHeight: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
 };
 
 const sectionHeader: CSSProperties = {
@@ -311,32 +436,51 @@ const sectionHeader: CSSProperties = {
   fontWeight: 600,
   color: c.textMuted,
   textTransform: 'uppercase',
-  letterSpacing: 0.4,
+  letterSpacing: 0.5,
   margin: '0 4px 6px',
+  opacity: 0.85,
 };
 
-const footer: CSSProperties = {
-  padding: 8,
+const footerExpanded: CSSProperties = {
+  padding: '6px 6px 8px',
   borderTop: `1px solid ${c.border}`,
 };
 
-const aboutBtn: CSSProperties = {
-  ...navBtn,
-  color: c.textMuted,
-  fontFamily: font.mono,
-  fontSize: 11,
+const footerCollapsed: CSSProperties = {
+  padding: '4px 0 6px',
+  borderTop: `1px solid ${c.border}`,
 };
 
-const iconBtn: CSSProperties = {
+const aboutBtnExpanded: CSSProperties = {
+  position: 'relative',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  width: '100%',
+  textAlign: 'left',
+  fontFamily: font.sans,
+  fontSize: 12,
+  padding: '6px 8px 6px 10px',
+  borderRadius: 6,
+  border: 'none',
+  background: 'transparent',
+  color: c.textMuted,
+  cursor: 'pointer',
+  transition: 'background-color 120ms ease, color 120ms ease',
+  boxSizing: 'border-box',
+};
+
+const aboutBtnCollapsed: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  fontFamily: font.sans,
-  fontSize: 12,
-  padding: '4px 6px',
-  borderRadius: 4,
-  border: `1px solid ${c.border}`,
-  background: c.surface,
-  color: c.textSecondary,
+  width: '100%',
+  height: 40,
+  padding: 0,
+  borderRadius: 0,
+  border: 'none',
+  background: 'transparent',
+  color: c.textMuted,
   cursor: 'pointer',
+  transition: 'background-color 120ms ease, color 120ms ease',
 };
