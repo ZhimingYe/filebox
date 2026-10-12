@@ -19,7 +19,11 @@ import {
 } from '@classic/state/navPersistence';
 import { useHealth } from '@classic/state/health';
 import { c, font } from '../theme';
-import { emitNeoAgentSelected, emitNeoOpenFile } from '../events/openFile';
+import {
+  emitNeoAgentSelected,
+  emitNeoOpenFile,
+  onNeoRevealInBrowser,
+} from '../events/openFile';
 
 export function FilesPanel(_props: IDockviewPanelProps) {
   const { agents, error: healthError, refresh } = useHealth(true);
@@ -41,10 +45,7 @@ export function FilesPanel(_props: IDockviewPanelProps) {
     }
   }, [selectedAgentId]);
 
-  // Let Preview dock drop tabs that belong to a previous agent (classic contract).
-  useEffect(() => {
-    emitNeoAgentSelected(selectedAgentId);
-  }, [selectedAgentId]);
+
 
   useEffect(() => {
     if (!selectedAgentId || agents.length === 0) return;
@@ -63,6 +64,15 @@ export function FilesPanel(_props: IDockviewPanelProps) {
     () => agents.find((a) => a.id === selectedAgentId) ?? null,
     [agents, selectedAgentId],
   );
+
+  // Preview context + foreign-tab cleanup (classic: previews never outlive agent).
+  useEffect(() => {
+    emitNeoAgentSelected({
+      agentId: selectedAgentId,
+      roots: selectedAgent?.roots,
+      officeCapable: !!selectedAgent?.capabilities?.office_pdf_preview,
+    });
+  }, [selectedAgentId, selectedAgent]);
 
   const [filePosSeed] = useState(loadNavPosMap);
   const [pathMemSeed] = useState(loadPathMemoryMap);
@@ -131,6 +141,13 @@ export function FilesPanel(_props: IDockviewPanelProps) {
     [selectedAgent],
   );
 
+  useEffect(() => {
+    return onNeoRevealInBrowser(({ root, dirPath }) => {
+      if (!selectedAgent) return;
+      applyNav(root, dirPath);
+    });
+  }, [selectedAgent, applyNav]);
+
   const switchRoot = useCallback(
     (root: string) => {
       if (!selectedAgent) return;
@@ -152,6 +169,7 @@ export function FilesPanel(_props: IDockviewPanelProps) {
         path,
         entry,
         officeCapable: !!selectedAgent.capabilities?.office_pdf_preview,
+        roots: selectedAgent.roots,
       });
     },
     [selectedAgent],

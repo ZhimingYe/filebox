@@ -38,12 +38,12 @@ classic `frontend/` — does **not** replace it. Long-lived work lands on the
 
 ## Preview dock (this track)
 
-- Classic `PreviewPane` (+ lazy PDF/HTML/Monaco/image/CSV/Markdown/Office) via `@classic`
-- Multi-panel: openOrActivate into dockview tabs; **New Preview** adds an empty tab
-- `filebox-neo:open-file` from Files → `openFileInDock` (focused / empty / new)
-- `filebox-neo:agent-selected` closes preview tabs for other agents
+- Each preview dock panel hosts classic `usePreviewTabs` + `PreviewWorkspace` via `@classic`
+- #86 pin / DOM keep-alive park (HTML/PDF/Office) / ViewerStateRegistry (image/Monaco/md/CSV)
+- Multi-panel: openOrActivate across hosts; **New Preview** adds an empty dock panel
+- `filebox-neo:open-file` → `openFileInDock`; `filebox-neo:agent-selected` drops foreign docks
+- `filebox-neo:reveal-in-browser` from PreviewWorkspace path click → Files `applyNav`
 - Same-origin **Pop out** → dockview `addPopoutGroup` + `/neo/popout.html`
-- Not yet: classic `PreviewWorkspace` pin keep-alive / #86 registry
 
 ## Dev
 

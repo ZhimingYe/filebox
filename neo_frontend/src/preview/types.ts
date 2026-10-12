@@ -1,20 +1,15 @@
-/** Dockview panel params for neo preview panels (one file per panel). */
+import type { NeoOpenFileDetail } from '../events/openFile';
+
+/**
+ * Dockview panel params for neo preview panels.
+ * Each panel hosts classic usePreviewTabs + PreviewWorkspace (#86 pin/park).
+ * `pendingOpen` is a one-shot queue applied when the host mounts or params update.
+ */
 export type PreviewPanelParams = {
-  agentId?: string;
-  root?: string;
-  path?: string;
-  entryType?: string;
-  denied?: boolean;
-  officeCapable?: boolean;
-  /** Refresh generation — bump to remount PreviewPane / bust raw URL cache. */
-  rev?: number;
+  pendingOpen?: NeoOpenFileDetail;
 };
 
 export const PREVIEW_COMPONENT = 'preview';
-
-export function previewPanelHasFile(params: PreviewPanelParams | undefined): boolean {
-  return !!(params?.agentId && params?.root && params?.path);
-}
 
 export function basenamePath(path: string): string {
   const parts = path.split('/').filter(Boolean);

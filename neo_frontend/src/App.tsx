@@ -19,6 +19,7 @@ import { Login } from '@classic/components/Login';
 import { useSession } from '@classic/state/session';
 import { fetchHubHealth, type HubHealth } from './api/health';
 import { onNeoAgentSelected, onNeoOpenFile } from './events/openFile';
+import { setPreviewAgentContext } from './preview/agentContext';
 import { FilesPanel } from './panels/FilesPanel';
 import { PreviewPanel } from './panels/PreviewPanel';
 import {
@@ -85,26 +86,38 @@ export default function App() {
     return () => ac.abort();
   }, [loggedIn]);
 
-  // FilesPanel emits open-file; Preview track routes into dock panels.
+  // FilesPanel emits open-file; Preview track routes into dock hosts.
   useEffect(() => {
     return onNeoOpenFile((detail) => {
+      if (detail.roots || detail.officeCapable !== undefined) {
+        setPreviewAgentContext({
+          agentId: detail.agentId,
+          roots: detail.roots,
+          officeCapable: detail.officeCapable,
+        });
+      }
       const api = dockApiRef.current;
       if (!api) return;
       openFileInDock(api, detail);
     });
   }, []);
 
-  // Agent switch: close preview tabs for other agents (or all if cleared).
+  // Agent switch: update preview context + close foreign preview docks.
   useEffect(() => {
-    return onNeoAgentSelected((agentId) => {
+    return onNeoAgentSelected((detail) => {
+      setPreviewAgentContext({
+        agentId: detail.agentId,
+        roots: detail.roots,
+        officeCapable: detail.officeCapable,
+      });
       const api = dockApiRef.current;
       if (!api) return;
-      if (!agentId) {
+      if (!detail.agentId) {
         for (const p of findPreviewPanels(api)) p.api.close();
         rememberFocusedPreview(null);
         return;
       }
-      closePreviewsForOtherAgents(api, agentId);
+      closePreviewsForOtherAgents(api, detail.agentId);
     });
   }, []);
 
