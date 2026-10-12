@@ -2,11 +2,12 @@
  * Route a Files open-file event into neo preview dock hosts.
  *
  * Each preview dock panel hosts classic usePreviewTabs + PreviewWorkspace
- * (#86 pin / DOM park / ViewerStateRegistry). Routing mirrors
- * openOrActivate across hosts:
- *  - file already open in a host → activate that host + tab
- *  - else open into an empty host (no tabs)
- *  - else add a new preview dock panel and queue the open until mount
+ * (#86 pin / DOM park / ViewerStateRegistry). Default open adds/activates a
+ * tab inside the focused preview host (same PreviewWorkspace). A new dock
+ * preview panel is created only when:
+ *  - detail.newPanel is set, or
+ *  - no preview host / shell exists yet.
+ * Header "New Preview" uses addEmptyPreviewPanel (empty host for splits).
  */
 
 import type { DockviewApi } from 'dockview-react';
@@ -67,13 +68,16 @@ export function closePreviewsForOtherAgents(api: DockviewApi, agentId: string): 
       p.api.close();
       continue;
     }
-    // Host not mounted yet / empty — leave empty shells alone.
   }
-  // Also drop in-host tabs for other agents when the host is shared (shouldn't
-  // happen with per-agent close-panel policy, but keep hosts consistent).
   for (const host of listPreviewHosts()) {
     if (host.belongsToOtherAgent(agentId)) host.closeAll();
   }
+}
+
+function activateHostPanel(api: DockviewApi, panelId: string): void {
+  const panel = api.getPanel(panelId);
+  panel?.api.setActive();
+  lastFocusedPreviewId = panelId;
 }
 
 /** Add an empty preview dock panel (header "New Preview"). */
@@ -96,41 +100,7 @@ export function addEmptyPreviewPanel(api: DockviewApi): string {
   return id;
 }
 
-export function openFileInDock(api: DockviewApi, detail: NeoOpenFileDetail): void {
-  closePreviewsForOtherAgents(api, detail.agentId);
-
-  if (!detail.newPanel) {
-    const existing = findHostForFile(detail);
-    if (existing) {
-      existing.openOrActivate(detail);
-      const panel = api.getPanel(existing.panelId);
-      panel?.api.setActive();
-      lastFocusedPreviewId = existing.panelId;
-      return;
-    }
-
-    const empty = findEmptyHost();
-    if (empty) {
-      empty.openOrActivate(detail);
-      const panel = api.getPanel(empty.panelId);
-      panel?.api.setActive();
-      lastFocusedPreviewId = empty.panelId;
-      return;
-    }
-
-    // Prefer a dock panel with no host yet (initial empty "Preview" shell).
-    const shell = findPreviewPanels(api).find((p) => !getPreviewHost(p.id));
-    if (shell) {
-      enqueuePendingOpen(shell.id, detail);
-      // Host may already be registering — also try immediate if it appears.
-      const host = getPreviewHost(shell.id);
-      if (host) host.openOrActivate(detail);
-      shell.api.setActive();
-      lastFocusedPreviewId = shell.id;
-      return;
-    }
-  }
-
+function addPreviewPanelWithOpen(api: DockviewApi, detail: NeoOpenFileDetail): void {
   const focused = findFocusedPreview(api);
   const files = api.getPanel('file-tree');
   const id = nextPreviewId();
@@ -147,6 +117,70 @@ export function openFileInDock(api: DockviewApi, detail: NeoOpenFileDetail): voi
         : undefined,
   });
   lastFocusedPreviewId = id;
+}
+
+export function openFileInDock(api: DockviewApi, detail: NeoOpenFileDetail): void {
+  closePreviewsForOtherAgents(api, detail.agentId);
+
+  // Explicit "open in new dock panel" (rare; New Preview uses addEmptyPreviewPanel).
+  if (detail.newPanel) {
+    addPreviewPanelWithOpen(api, detail);
+    return;
+  }
+
+  // File already open somewhere → activate that host + tab.
+  const existing = findHostForFile(detail);
+  if (existing) {
+    existing.openOrActivate(detail);
+    activateHostPanel(api, existing.panelId);
+    return;
+  }
+
+  // Default: add/activate a tab inside the focused preview host's classic
+  // usePreviewTabs (same PreviewWorkspace) so #86 pin UI can appear with 2+ tabs.
+  const focusedPanel = findFocusedPreview(api);
+  if (focusedPanel) {
+    const host = getPreviewHost(focusedPanel.id);
+    if (host) {
+      host.openOrActivate(detail);
+      activateHostPanel(api, host.panelId);
+      return;
+    }
+    // Shell exists but host not registered yet — queue until mount.
+    enqueuePendingOpen(focusedPanel.id, detail);
+    focusedPanel.api.setActive();
+    lastFocusedPreviewId = focusedPanel.id;
+    return;
+  }
+
+  // Any mounted host (e.g. focus lost / no lastFocused) — prefer one with tabs,
+  // else an empty host, else first listed.
+  const withTabs = listPreviewHosts().find((h) => h.hasTabs());
+  if (withTabs) {
+    withTabs.openOrActivate(detail);
+    activateHostPanel(api, withTabs.panelId);
+    return;
+  }
+  const empty = findEmptyHost();
+  if (empty) {
+    empty.openOrActivate(detail);
+    activateHostPanel(api, empty.panelId);
+    return;
+  }
+
+  // Unmounted preview shell still in dock layout.
+  const shell = findPreviewPanels(api).find((p) => !getPreviewHost(p.id));
+  if (shell) {
+    enqueuePendingOpen(shell.id, detail);
+    const host = getPreviewHost(shell.id);
+    if (host) host.openOrActivate(detail);
+    shell.api.setActive();
+    lastFocusedPreviewId = shell.id;
+    return;
+  }
+
+  // No preview at all — create the first dock preview panel.
+  addPreviewPanelWithOpen(api, detail);
 }
 
 /** Same-origin popout of a preview panel (or its group). */

@@ -70,7 +70,7 @@ Mobile drawer / bottom sheet search are intentionally skipped.
 
 - Each preview dock panel hosts classic `usePreviewTabs` + `PreviewWorkspace` via `@classic`
 - #86 pin / DOM keep-alive park (HTML/PDF/Office) / ViewerStateRegistry (image/Monaco/md/CSV)
-- Multi-panel: openOrActivate across hosts; **New Preview** adds an empty dock panel
+- Default open adds/activates a classic tab in the **focused** PreviewWorkspace; **New Preview** adds an empty dock panel for splits/popout
 - `filebox-neo:open-file` → `openFileInDock`; `filebox-neo:agent-selected` drops foreign docks
 - `filebox-neo:reveal-in-browser` from PreviewWorkspace path click → Files `applyNav`
 - Same-origin **Pop out** → dockview `addPopoutGroup` + `/neo/popout.html`
