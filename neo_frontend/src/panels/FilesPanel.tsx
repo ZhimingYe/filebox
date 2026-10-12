@@ -1,17 +1,13 @@
 /**
  * Neo Files dock panel — mounts classic FileBrowser (DirectoryTree + list)
- * against the hub with the same session/CSRF client as classic.
- *
- * Desktop-only for this spike (no mobile drawer layout). Preview open is
- * emitted via `emitNeoOpenFile` for 开发助手2 to wire.
+ * against the hub. Pinned folders stay in NeoSidebar only (no Files-panel
+ * duplicate). Desktop-only; preview open via `emitNeoOpenFile`.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import type { AgentInfo, FsEntry } from '@classic/api/client';
 import { FileBrowser } from '@classic/components/FileBrowser';
-import { PinnedFolders } from '@classic/components/PinnedFolders';
-import { patchRoot } from '@classic/api/client';
 import {
   LAST_AGENT_STORAGE,
   loadNavPosMap,
@@ -182,30 +178,6 @@ export function FilesPanel(_props: IDockviewPanelProps) {
     });
   }, [selectedAgent, applyNav]);
 
-  // Classic PinnedFolders drives FileBrowser through a nonce'd navRequest so
-  // re-clicking the same pin still navigates.
-  const [navRequest, setNavRequest] = useState<{ root: string; path: string; nonce: number } | null>(null);
-  const pinnedCount = useMemo(
-    () =>
-      selectedAgent
-        ? selectedAgent.roots.reduce((n, r) => (r.enabled ? n + r.pinned_folders.length : n), 0)
-        : 0,
-    [selectedAgent],
-  );
-  const handleUnpin = useCallback(
-    async (root: string, path: string): Promise<boolean> => {
-      if (!selectedAgent) return false;
-      try {
-        await patchRoot(selectedAgent.id, root, { pin_remove: path });
-        void refresh();
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    [selectedAgent, refresh],
-  );
-
   const switchRoot = useCallback(
     (root: string) => {
       if (!selectedAgent) return;
@@ -279,48 +251,22 @@ export function FilesPanel(_props: IDockviewPanelProps) {
     );
   }
 
+  // Pinned folders live in NeoSidebar only (match classic). Files is tree + list.
   return (
     <div style={{ ...shellStyle, padding: 0, gap: 0 }}>
-      <div style={toolbarStyle}>
-        <AgentSelect
-          agents={agents}
-          value={selectedAgentId}
-          onChange={setSelectedAgentId}
-        />
-        <span style={{ color: c.textMuted, fontSize: 11, fontFamily: font.mono }}>
-          {selectedAgent.status}
-        </span>
-      </div>
-      <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
-        {pinnedCount > 0 ? (
-          <div style={pinsColumnStyle}>
-            <div style={pinsHeaderStyle}>Pinned</div>
-            <PinnedFolders
-              agent={selectedAgent}
-              collapsed={false}
-              onNavigate={(root, path) => setNavRequest({ root, path, nonce: Date.now() })}
-              onUnpin={handleUnpin}
-            />
-          </div>
-        ) : null}
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <FileBrowser
-          navRequest={navRequest}
-          onNavHandled={() => setNavRequest(null)}
-          agentId={selectedAgent.id}
-          roots={selectedAgent.roots}
-          onFileSelect={handleFileSelect}
-          onRootsChange={refresh}
-          selectedRoot={selectedRoot}
-          currentPath={currentPath}
-          onApplyNav={applyNav}
-          onSwitchRoot={switchRoot}
-          onAddToCollection={(root, path, anchor) => {
-            emitNeoCollectionPicker({ agentId: selectedAgent.id, root, path, anchor });
-          }}
-        />
-        </div>
-      </div>
+      <FileBrowser
+        agentId={selectedAgent.id}
+        roots={selectedAgent.roots}
+        onFileSelect={handleFileSelect}
+        onRootsChange={refresh}
+        selectedRoot={selectedRoot}
+        currentPath={currentPath}
+        onApplyNav={applyNav}
+        onSwitchRoot={switchRoot}
+        onAddToCollection={(root, path, anchor) => {
+          emitNeoCollectionPicker({ agentId: selectedAgent.id, root, path, anchor });
+        }}
+      />
     </div>
   );
 }
@@ -402,21 +348,3 @@ const btnStyle: CSSProperties = {
   cursor: 'pointer',
 };
 
-const pinsColumnStyle: CSSProperties = {
-  width: 200,
-  flexShrink: 0,
-  overflowY: 'auto',
-  borderRight: `1px solid ${c.border}`,
-  background: c.surface,
-  padding: '6px 4px',
-  boxSizing: 'border-box',
-};
-
-const pinsHeaderStyle: CSSProperties = {
-  fontSize: 11,
-  fontWeight: 600,
-  textTransform: 'uppercase',
-  letterSpacing: 0.4,
-  color: c.textMuted,
-  padding: '2px 8px 6px',
-};

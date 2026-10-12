@@ -19,7 +19,7 @@ import { ensureCookieSuffix, getCsrfToken, type FsEntry } from '@classic/api/cli
 import { AboutDialog } from '@classic/components/AboutDialog';
 import { CollectionPicker } from '@classic/components/CollectionPicker';
 import { Login } from '@classic/components/Login';
-import { SearchFloatWindow } from '@classic/components/SearchFloatWindow';
+import { NeoSearchFloat } from './shell/NeoSearchFloat';
 import { useHealth } from '@classic/state/health';
 import { useSession } from '@classic/state/session';
 import { fetchHubHealth, type HubHealth } from './api/health';
@@ -458,7 +458,7 @@ export default function App() {
       </div>
 
       {selectedAgent ? (
-        <SearchFloatWindow
+        <NeoSearchFloat
           open={searchOpen}
           agent={selectedAgent}
           initialRoot={(() => {

@@ -45,7 +45,7 @@ Topbar opens dock panels / overlays by reusing classic components via `@classic`
 
 | Entry | Classic module | Mount |
 | --- | --- | --- |
-| Search | `SearchFloatWindow` + `WorkspaceSearch` | Floating overlay |
+| Search | `WorkspaceSearch` via thin `NeoSearchFloat` | Floating overlay (no classic window chrome) |
 | Collections | `CollectionsView` | Dock panel |
 | Transfer | `TempTransferView` | Dock panel |
 | Terminal | `TerminalView` | Dock panel |
@@ -58,7 +58,8 @@ Mobile drawer / bottom sheet search are intentionally skipped.
 
 ### Desktop chrome extras
 
-- Left **NeoSidebar**: classic `BackendList` agent picker + `PinnedFolders` + chrome nav (collapsible)
+- Left **NeoSidebar**: classic `BackendList` agent picker + `PinnedFolders` (only place pins appear) + chrome nav (collapsible)
+- **Files** dock: classic `FileBrowser` tree + list only (no duplicate pinned column)
 - **Explorer** dock: classic `ExplorerView`, browse position shared with Files via `browsePos`
 - **CollectionPicker** from Files / Explorer row actions
 - App-wide drag-drop → Transfer (`uploadRequest` handoff + overlay)
