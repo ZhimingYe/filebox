@@ -15,17 +15,14 @@ import {
   type IDockviewPanelProps,
 } from 'dockview-react';
 import 'dockview-react/dist/styles/dockview.css';
-import { ensureCookieSuffix, getCsrfToken, type FsEntry } from '@classic/api/client';
+import { ensureCookieSuffix, getCsrfToken } from '@classic/api/client';
 import { AboutDialog } from '@classic/components/AboutDialog';
 import { CollectionPicker } from '@classic/components/CollectionPicker';
 import { Login } from '@classic/components/Login';
-import { NeoSearchFloat } from './shell/NeoSearchFloat';
 import { useHealth } from '@classic/state/health';
 import { useSession } from '@classic/state/session';
 import { fetchHubHealth, type HubHealth } from './api/health';
 import {
-  emitNeoOpenFile,
-  emitNeoRevealInBrowser,
   onNeoAgentSelected,
   onNeoCollectionPicker,
   onNeoOpenFile,
@@ -35,6 +32,7 @@ import {
   AuditPanel,
   CollectionsPanel,
   ExplorerPanel,
+  SearchPanel,
   SettingsPanel,
   StatsPanel,
   TerminalPanel,
@@ -42,7 +40,6 @@ import {
 } from './panels/chrome';
 import { FilesPanel } from './panels/FilesPanel';
 import { DockBackAction } from './shell/DockBackAction';
-import { getBrowsePos, setBrowsePos } from './shell/browsePos';
 import { PreviewPanel } from './panels/PreviewPanel';
 import { setPreviewAgentContext, useNeoAgent } from './preview/agentContext';
 import {
@@ -70,6 +67,7 @@ import { c, font } from './theme';
 const components: Record<string, FunctionComponent<IDockviewPanelProps>> = {
   fileTree: FilesPanel,
   preview: PreviewPanel,
+  search: SearchPanel,
   explorer: ExplorerPanel,
   collections: CollectionsPanel,
   transfer: TransferPanel,
@@ -79,7 +77,7 @@ const components: Record<string, FunctionComponent<IDockviewPanelProps>> = {
   audit: AuditPanel,
 };
 
-type ChromeKind = 'explorer' | 'collections' | 'transfer' | 'terminal' | 'settings' | 'stats' | 'audit';
+type ChromeKind = 'search' | 'explorer' | 'collections' | 'transfer' | 'terminal' | 'settings' | 'stats' | 'audit';
 
 function StatusChip({ health }: { health: HubHealth | null }) {
   if (!health) {
@@ -115,7 +113,6 @@ export default function App() {
   const [hubChip, setHubChip] = useState<HubHealth | null>(null);
   const dockApiRef = useRef<DockviewApi | null>(null);
   const [dockReady, setDockReady] = useState(0);
-  const [searchOpen, setSearchOpen] = useState(false);
   const [collectionPicker, setCollectionPicker] = useState<NeoCollectionPickerDetail | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [dragOverWindow, setDragOverWindow] = useState(false);
@@ -251,67 +248,8 @@ export default function App() {
   }), []);
 
   const onSidebarChrome = useCallback((id: NeoSidebarChrome) => {
-    if (id === 'search') {
-      setSearchOpen((o) => !o);
-      return;
-    }
     openChromePanel(id, id[0]!.toUpperCase() + id.slice(1));
   }, [openChromePanel]);
-
-  // Classic `openInFiles`: a search hit row opens its folder in Files (or
-  // reveals it in Explorer when that is the active browsing surface). In neo
-  // that means making sure the Files dock panel exists and is focused, then
-  // navigating it; Explorer follows the shared browse position.
-  const onOpenFromSearch = useCallback((root: string, path: string) => {
-    const api = dockApiRef.current;
-    if (selectedAgent) setBrowsePos({ agentId: selectedAgent.id, root, path });
-    if (!api) {
-      emitNeoRevealInBrowser({ root, dirPath: path });
-      return;
-    }
-    if (api.activePanel?.id === 'chrome-explorer') {
-      emitNeoRevealInBrowser({ root, dirPath: path });
-      return;
-    }
-    let files = api.getPanel('file-tree');
-    const created = !files;
-    if (!files) {
-      files = api.addPanel({
-        id: 'file-tree',
-        component: 'fileTree',
-        title: 'Files',
-        position: { direction: 'left' },
-      });
-    }
-    files.api.setActive();
-    if (created) {
-      // Let the freshly mounted FilesPanel subscribe before navigating.
-      window.setTimeout(() => emitNeoRevealInBrowser({ root, dirPath: path }), 0);
-    } else {
-      emitNeoRevealInBrowser({ root, dirPath: path });
-    }
-  }, [selectedAgent]);
-
-  const onPreviewFromSearch = useCallback((root: string, path: string) => {
-    if (!selectedAgent) return;
-    const name = path.split('/').filter(Boolean).pop() ?? path;
-    const entry: FsEntry = {
-      name,
-      entry_type: 'file',
-      size: null,
-      modified: null,
-      denied: false,
-    };
-    emitNeoOpenFile({
-      agentId: selectedAgent.id,
-      root,
-      path,
-      entry,
-      roots: selectedAgent.roots,
-      officeCapable: !!selectedAgent.capabilities?.office_pdf_preview,
-      refresh: true,
-    });
-  }, [selectedAgent]);
 
   // App-wide drag & drop → Transfer (classic uploadRequest handoff).
   const tempCapable = !!selectedAgent?.capabilities?.temp_upload && !!selectedAgent?.temp_root_name;
@@ -441,7 +379,6 @@ export default function App() {
 
       <div style={{ flex: 1, minHeight: 0, display: 'flex', position: 'relative' }}>
         <NeoSidebar
-          searchOpen={searchOpen}
           onChrome={onSidebarChrome}
           onOpenAbout={() => setAboutOpen(true)}
           hubVersion={health?.hub.version}
@@ -456,20 +393,6 @@ export default function App() {
           />
         </div>
       </div>
-
-      {selectedAgent ? (
-        <NeoSearchFloat
-          open={searchOpen}
-          agent={selectedAgent}
-          initialRoot={(() => {
-            const pos = getBrowsePos();
-            return pos && pos.agentId === selectedAgent.id ? pos.root : null;
-          })()}
-          onOpenFile={onOpenFromSearch}
-          onPreviewFile={onPreviewFromSearch}
-          onClose={() => setSearchOpen(false)}
-        />
-      ) : null}
 
       <AboutDialog
         open={aboutOpen}

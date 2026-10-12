@@ -1,5 +1,5 @@
 /**
- * Open or focus a neo chrome dock panel (Collections / Transfer / …).
+ * Open or focus a neo chrome dock panel (Search / Collections / Transfer / …).
  * Idempotent: activates an existing panel id instead of duplicating.
  */
 

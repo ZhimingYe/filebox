@@ -45,7 +45,7 @@ Topbar opens dock panels / overlays by reusing classic components via `@classic`
 
 | Entry | Classic module | Mount |
 | --- | --- | --- |
-| Search | `WorkspaceSearch` via thin `NeoSearchFloat` | Floating overlay (no classic window chrome) |
+| Search | `WorkspaceSearch` | Dock panel (same as Explorer / Collections) |
 | Collections | `CollectionsView` | Dock panel |
 | Transfer | `TempTransferView` | Dock panel |
 | Terminal | `TerminalView` | Dock panel |

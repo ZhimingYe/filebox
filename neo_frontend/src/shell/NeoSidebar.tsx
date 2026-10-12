@@ -36,13 +36,12 @@ const W_EXPANDED = 200;
 const W_COLLAPSED = 48;
 
 interface Props {
-  searchOpen: boolean;
   onChrome: (id: NeoSidebarChrome) => void;
   onOpenAbout: () => void;
   hubVersion?: string | null;
 }
 
-export function NeoSidebar({ searchOpen, onChrome, onOpenAbout, hubVersion }: Props) {
+export function NeoSidebar({ onChrome, onOpenAbout, hubVersion }: Props) {
   const { agent, agentId } = useNeoAgent();
   const { agents, refresh } = useHealth(true);
   const [collapsed, setCollapsed] = useState(() => {
@@ -122,21 +121,17 @@ export function NeoSidebar({ searchOpen, onChrome, onOpenAbout, hubVersion }: Pr
 
       <nav style={navStyle}>
         {NAV.map(({ id, label }) => {
-          const needsAgent = id !== 'audit' && id !== 'search';
+          const needsAgent = id !== 'audit';
           const disabled = needsAgent && !agent;
-          const searchDisabled = id === 'search' && !agent;
-          const isDisabled = disabled || searchDisabled;
-          const active = id === 'search' && searchOpen;
           return (
             <button
               key={id}
               type="button"
-              disabled={isDisabled}
+              disabled={disabled}
               style={{
                 ...navBtn,
                 ...(collapsed ? navBtnCollapsed : null),
-                ...(active ? navBtnActive : null),
-                ...(isDisabled ? { opacity: 0.45, cursor: 'not-allowed' } : null),
+                ...(disabled ? { opacity: 0.45, cursor: 'not-allowed' } : null),
               }}
               title={label}
               onClick={() => onChrome(id)}
@@ -238,11 +233,6 @@ const navBtnCollapsed: CSSProperties = {
   textAlign: 'center',
   padding: '8px 0',
   fontWeight: 600,
-};
-
-const navBtnActive: CSSProperties = {
-  background: c.accentBg,
-  color: c.accent,
 };
 
 const pinsWrap: CSSProperties = {
