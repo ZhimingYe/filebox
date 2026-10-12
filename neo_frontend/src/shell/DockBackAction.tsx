@@ -1,26 +1,29 @@
 /**
  * Dock group header actions:
- * - Preview groups (grid): "Pop out" opens that group in a same-origin window
- * - Popout groups: "Dock back" returns the group to the main dock grid
- * - Other chrome groups (Files / Search / …): no per-group Pop out (top bar covers focused preview)
+ * - Preview groups (grid): icon Pop out
+ * - Popout groups: icon Dock back
+ * - Other chrome groups: nothing (top bar covers focused preview)
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import type { IDockviewHeaderActionsProps } from 'dockview-react';
-import { c, font } from '../theme';
+import { IconDockBack, IconPopOut } from '@classic/components/icons';
+import { c } from '../theme';
 
 const PREVIEW_COMPONENT = 'preview';
 
-const btnStyle: CSSProperties = {
-  fontFamily: font.sans,
-  fontSize: 11,
-  padding: '1px 8px',
+const iconBtn: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 24,
+  height: 24,
+  padding: 0,
   borderRadius: 6,
-  border: `1px solid ${c.border}`,
-  background: c.surface,
-  color: c.text,
+  border: 'none',
+  background: 'transparent',
+  color: c.textMuted,
   cursor: 'pointer',
-  lineHeight: '18px',
 };
 
 function groupHasPreview(group: IDockviewHeaderActionsProps['group']): boolean {
@@ -47,11 +50,20 @@ export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActi
       <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: '0 4px' }}>
         <button
           type="button"
-          title="Return this group to the main window"
+          title="Dock back"
+          aria-label="Dock back"
           onClick={() => api.moveTo({ position: 'right' })}
-          style={btnStyle}
+          style={iconBtn}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = c.accentBg;
+            e.currentTarget.style.color = c.accent;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.color = c.textMuted;
+          }}
         >
-          Dock back
+          <IconDockBack style={{ width: 14, height: 14 }} />
         </button>
       </div>
     );
@@ -63,13 +75,22 @@ export function DockBackAction({ api, containerApi, group }: IDockviewHeaderActi
     <div style={{ display: 'flex', alignItems: 'center', height: '100%', padding: '0 4px' }}>
       <button
         type="button"
-        title="Pop this preview group out to a separate window"
+        title="Pop out"
+        aria-label="Pop out"
         onClick={() => {
           void containerApi.addPopoutGroup(group);
         }}
-        style={btnStyle}
+        style={iconBtn}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = c.accentBg;
+          e.currentTarget.style.color = c.accent;
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'transparent';
+          e.currentTarget.style.color = c.textMuted;
+        }}
       >
-        Pop out
+        <IconPopOut style={{ width: 14, height: 14 }} />
       </button>
     </div>
   );

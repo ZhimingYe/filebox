@@ -40,6 +40,8 @@ import {
 } from './panels/chrome';
 import { FilesPanel } from './panels/FilesPanel';
 import { DockBackAction } from './shell/DockBackAction';
+import { EmptyTabGroupChip } from './shell/EmptyTabGroupChip';
+import { IconLogout, IconPlusPanel, IconPopOut, IconRefresh } from '@classic/components/icons';
 import { PreviewPanel } from './panels/PreviewPanel';
 import { setPreviewAgentContext, useNeoAgent } from './preview/agentContext';
 import {
@@ -346,33 +348,47 @@ export default function App() {
         </span>
         <button
           type="button"
-          style={headerBtnStyle}
+          style={headerIconBtn}
           onClick={() => {
             const api = dockApiRef.current;
             if (api) addEmptyPreviewPanel(api);
           }}
-          title="Add an empty preview dock panel"
+          title="New Preview"
+          aria-label="New Preview"
         >
-          New Preview
+          <IconPlusPanel style={{ width: 15, height: 15 }} />
         </button>
         <button
           type="button"
-          style={headerBtnStyle}
+          style={headerIconBtn}
           onClick={() => {
             const api = dockApiRef.current;
             if (api) void popoutPreviewPanel(api);
           }}
-          title="Pop out the focused preview panel"
+          title="Pop out"
+          aria-label="Pop out"
         >
-          Pop out
+          <IconPopOut style={{ width: 15, height: 15 }} />
         </button>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
           <StatusChip health={hubChip} />
-          <button type="button" style={headerBtnStyle} onClick={() => void refresh()} title="Refresh agents/health">
-            Refresh
+          <button
+            type="button"
+            style={headerIconBtn}
+            onClick={() => void refresh()}
+            title="Refresh"
+            aria-label="Refresh"
+          >
+            <IconRefresh style={{ width: 14, height: 14 }} />
           </button>
-          <button type="button" style={headerBtnStyle} onClick={() => void logout()}>
-            Log out
+          <button
+            type="button"
+            style={headerIconBtn}
+            onClick={() => void logout()}
+            title="Log out"
+            aria-label="Log out"
+          >
+            <IconLogout style={{ width: 14, height: 14 }} />
           </button>
         </div>
       </header>
@@ -389,6 +405,7 @@ export default function App() {
             theme={themeLight}
             popoutUrl={`${import.meta.env.BASE_URL}popout.html`}
             rightHeaderActionsComponent={DockBackAction}
+            tabGroupChipComponent={EmptyTabGroupChip}
             onReady={onReady}
           />
         </div>
@@ -443,15 +460,19 @@ const bootStyle: CSSProperties = {
   background: c.bg,
 };
 
-const headerBtnStyle: CSSProperties = {
-  fontFamily: font.sans,
-  fontSize: 11,
-  padding: '2px 8px',
+const headerIconBtn: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 28,
+  height: 28,
+  padding: 0,
   borderRadius: 6,
-  border: `1px solid ${c.border}`,
-  background: c.bgMuted,
-  color: c.textSecondary,
+  border: 'none',
+  background: 'transparent',
+  color: c.textMuted,
   cursor: 'pointer',
+  flexShrink: 0,
 };
 
 const dropOverlay: CSSProperties = {
