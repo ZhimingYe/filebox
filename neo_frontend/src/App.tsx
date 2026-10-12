@@ -15,13 +15,12 @@ import {
   type IDockviewPanelProps,
 } from 'dockview-react';
 import 'dockview-react/dist/styles/dockview.css';
-import { ensureCookieSuffix, getCsrfToken } from '@classic/api/client';
+import { ensureCookieSuffix } from '@classic/api/client';
 import { AboutDialog } from '@classic/components/AboutDialog';
 import { CollectionPicker } from '@classic/components/CollectionPicker';
 import { Login } from '@classic/components/Login';
 import { useHealth } from '@classic/state/health';
 import { useSession } from '@classic/state/session';
-import { fetchHubHealth, type HubHealth } from './api/health';
 import {
   onNeoAgentSelected,
   onNeoCollectionPicker,
@@ -81,38 +80,9 @@ const components: Record<string, FunctionComponent<IDockviewPanelProps>> = {
 
 type ChromeKind = 'search' | 'explorer' | 'collections' | 'transfer' | 'terminal' | 'settings' | 'stats' | 'audit';
 
-function StatusChip({ health }: { health: HubHealth | null }) {
-  if (!health) {
-    return <span style={chipStyle(c.textMuted)}>hub: …</span>;
-  }
-  if (health.ok) {
-    const csrf = health.hasCsrf ? ' · csrf ok' : '';
-    const suffix = health.cookieSuffix ? ` · ${health.cookieSuffix}` : '';
-    return <span style={chipStyle(c.accent)}>hub ok{suffix}{csrf}</span>;
-  }
-  return (
-    <span style={chipStyle('#ef4444')}>
-      hub unreachable{health.error ? `: ${health.error}` : ''}
-    </span>
-  );
-}
-
-function chipStyle(color: string): CSSProperties {
-  return {
-    fontFamily: font.mono,
-    fontSize: 11,
-    color,
-    background: c.bgMuted,
-    border: `1px solid ${c.border}`,
-    borderRadius: 9999,
-    padding: '2px 8px',
-    whiteSpace: 'nowrap',
-  };
-}
 
 export default function App() {
   const { loggedIn, login, logout } = useSession();
-  const [hubChip, setHubChip] = useState<HubHealth | null>(null);
   const dockApiRef = useRef<DockviewApi | null>(null);
   const [dockReady, setDockReady] = useState(0);
   const [collectionPicker, setCollectionPicker] = useState<NeoCollectionPickerDetail | null>(null);
@@ -125,13 +95,7 @@ export default function App() {
 
   useEffect(() => {
     const ac = new AbortController();
-    void (async () => {
-      await ensureCookieSuffix(ac.signal);
-      const h = await fetchHubHealth(ac.signal);
-      if (!ac.signal.aborted) {
-        setHubChip({ ...h, hasCsrf: !!getCsrfToken() });
-      }
-    })();
+    void ensureCookieSuffix(ac.signal);
     return () => ac.abort();
   }, [loggedIn]);
 
@@ -371,7 +335,6 @@ export default function App() {
           <IconPopOut style={{ width: 15, height: 15 }} />
         </button>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <StatusChip health={hubChip} />
           <button
             type="button"
             style={headerIconBtn}
