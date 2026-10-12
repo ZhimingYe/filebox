@@ -29,6 +29,8 @@ export type NeoRevealInBrowserDetail = {
 };
 
 export type NeoCollectionPickerDetail = {
+  /** Agent that owns the file; resolved against live health in App. */
+  agentId?: string;
   root: string;
   path: string;
   anchor: HTMLElement;

@@ -316,7 +316,7 @@ export function FilesPanel(_props: IDockviewPanelProps) {
           onApplyNav={applyNav}
           onSwitchRoot={switchRoot}
           onAddToCollection={(root, path, anchor) => {
-            emitNeoCollectionPicker({ root, path, anchor });
+            emitNeoCollectionPicker({ agentId: selectedAgent.id, root, path, anchor });
           }}
         />
         </div>

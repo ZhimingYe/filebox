@@ -236,6 +236,14 @@ export default function App() {
     });
   }, []);
 
+  // Classic renders the picker against the live agent from health so a
+  // just-created collection (or a toggle) shows up immediately after refresh.
+  const pickerAgent = useMemo(() => {
+    if (!collectionPicker) return null;
+    const id = collectionPicker.agentId ?? agentId;
+    return agents.find((a) => a.id === id) ?? (selectedAgent?.id === id ? selectedAgent : null);
+  }, [collectionPicker, agentId, agents, selectedAgent]);
+
   useEffect(() => onNeoCollectionPicker((detail) => {
     setCollectionPicker(detail);
   }), []);
@@ -440,9 +448,9 @@ export default function App() {
         onTempUpdated={bumpTempRefreshNonce}
       />
 
-      {collectionPicker && selectedAgent ? (
+      {collectionPicker && pickerAgent ? (
         <CollectionPicker
-          agent={selectedAgent}
+          agent={pickerAgent}
           target={{ root: collectionPicker.root, path: collectionPicker.path }}
           anchorEl={collectionPicker.anchor}
           onClose={() => setCollectionPicker(null)}

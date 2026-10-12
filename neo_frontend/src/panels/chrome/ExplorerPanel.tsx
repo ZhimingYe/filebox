@@ -45,8 +45,8 @@ export function ExplorerPanel(_props: IDockviewPanelProps) {
   }, [agent]);
 
   const onAddToCollection = useCallback((root: string, path: string, anchor: HTMLElement) => {
-    emitNeoCollectionPicker({ root, path, anchor });
-  }, []);
+    emitNeoCollectionPicker({ agentId: agent?.id, root, path, anchor });
+  }, [agent]);
 
   if (!agent) {
     return (
