@@ -14,7 +14,6 @@ import {
   type DockviewReadyEvent,
   type IDockviewPanelProps,
 } from 'dockview-react';
-import 'dockview-react/dist/styles/dockview.css';
 import { ensureCookieSuffix } from '@classic/api/client';
 import { AboutDialog } from '@classic/components/AboutDialog';
 import { CollectionPicker } from '@classic/components/CollectionPicker';

@@ -30,6 +30,8 @@ code {
  * dockview chrome → classic filebox tokens (indigo / slate).
  * Keep outer dock tabs ~28px to match classic PreviewWorkspace tab strip.
  * Flat white shell like classic (no slate gutters / card chrome).
+ * Load after dockview.css (see main.tsx) so theme vars win; inactive-group
+ * colors also use !important selectors below (dockview ships its own).
  * Active tab uses the same top inset accent as classic PreviewWorkspace.
  */
 .dockview-theme-light {
@@ -132,11 +134,27 @@ code {
   min-width: 0;
 }
 
-.dockview-theme-light .dv-tab.dv-active-tab {
+.dockview-theme-light .dv-groupview.dv-active-group .dv-tab.dv-active-tab {
   /* Match classic PreviewWorkspace: top inset accent, not a heavy bottom bar */
   box-shadow: inset 0 2px 0 #6366f1;
   background: #ffffff !important;
   color: #0f172a !important;
+}
+
+/* Inactive group: muted tabs (dockview.css vars alone lose to later !important) */
+.dockview-theme-light .dv-groupview.dv-inactive-group .dv-tab.dv-active-tab {
+  box-shadow: inset 0 2px 0 #a5b4fc;
+  background: #ffffff !important;
+  color: #64748b !important;
+}
+
+.dockview-theme-light .dv-groupview.dv-inactive-group .dv-tab.dv-inactive-tab {
+  color: #94a3b8 !important;
+}
+
+.dockview-theme-light .dv-groupview.dv-inactive-group .dv-tab.dv-inactive-tab:hover {
+  background: #eef2ff !important;
+  color: #64748b !important;
 }
 
 .dockview-theme-light .dv-tab.dv-inactive-tab:hover {
