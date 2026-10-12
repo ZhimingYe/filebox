@@ -160,7 +160,6 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
           <div style={emptyTitleStyle}>Preview</div>
           <div style={emptyCopyStyle}>
             Select a file in Files or Explorer to open it here.
-            Use Preview in the sidebar to reopen a host, or drag tabs to split.
           </div>
         </div>
       )}
