@@ -69,6 +69,7 @@ export function FilesPanel(_props: IDockviewPanelProps) {
   useEffect(() => {
     emitNeoAgentSelected({
       agentId: selectedAgentId,
+      agent: selectedAgent,
       roots: selectedAgent?.roots,
       officeCapable: !!selectedAgent?.capabilities?.office_pdf_preview,
     });

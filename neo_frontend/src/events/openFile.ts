@@ -5,7 +5,7 @@
  * subscribes. Keeps FileBrowser decoupled from dockview panel ids.
  */
 
-import type { FsEntry, RootInfo } from '@classic/api/client';
+import type { AgentInfo, FsEntry, RootInfo } from '@classic/api/client';
 
 export type NeoOpenFileDetail = {
   agentId: string;
@@ -27,6 +27,8 @@ export type NeoOpenFileDetail = {
 
 export type NeoAgentSelectedDetail = {
   agentId: string | null;
+  /** Full agent snapshot when selected (chrome panels need capabilities). */
+  agent?: AgentInfo | null;
   roots?: RootInfo[];
   officeCapable?: boolean;
 };

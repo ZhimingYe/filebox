@@ -36,6 +36,23 @@ classic `frontend/` — does **not** replace it. Long-lived work lands on the
 | `theme.ts` / icons | **Reused** (neo keeps a small chrome mirror) |
 | `App.tsx` shell / `WorkspaceSplit` | **Rewritten** as dockview shell |
 
+## Classic chrome (desktop)
+
+Topbar opens dock panels / overlays by reusing classic components via `@classic`:
+
+| Entry | Classic module | Mount |
+| --- | --- | --- |
+| Search | `SearchFloatWindow` + `WorkspaceSearch` | Floating overlay |
+| Collections | `CollectionsView` | Dock panel |
+| Transfer | `TempTransferView` | Dock panel |
+| Terminal | `TerminalView` | Dock panel |
+| Settings | `AgentSettings` | Dock panel |
+| Stats | `SystemStats` | Dock panel |
+| Audit | `LoginAudit` | Dock panel |
+| About | `AboutDialog` | Modal (version chip) |
+
+Mobile drawer / bottom sheet search are intentionally skipped.
+
 ## Preview dock (this track)
 
 - Each preview dock panel hosts classic `usePreviewTabs` + `PreviewWorkspace` via `@classic`
