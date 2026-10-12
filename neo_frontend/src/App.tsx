@@ -18,11 +18,13 @@ import { ensureCookieSuffix, getCsrfToken } from '@classic/api/client';
 import { Login } from '@classic/components/Login';
 import { useSession } from '@classic/state/session';
 import { fetchHubHealth, type HubHealth } from './api/health';
-import { onNeoOpenFile } from './events/openFile';
+import { onNeoAgentSelected, onNeoOpenFile } from './events/openFile';
 import { FilesPanel } from './panels/FilesPanel';
 import { PreviewPanel } from './panels/PreviewPanel';
 import {
   addEmptyPreviewPanel,
+  closePreviewsForOtherAgents,
+  findPreviewPanels,
   openFileInDock,
   popoutPreviewPanel,
   rememberFocusedPreview,
@@ -89,6 +91,20 @@ export default function App() {
       const api = dockApiRef.current;
       if (!api) return;
       openFileInDock(api, detail);
+    });
+  }, []);
+
+  // Agent switch: close preview tabs for other agents (or all if cleared).
+  useEffect(() => {
+    return onNeoAgentSelected((agentId) => {
+      const api = dockApiRef.current;
+      if (!api) return;
+      if (!agentId) {
+        for (const p of findPreviewPanels(api)) p.api.close();
+        rememberFocusedPreview(null);
+        return;
+      }
+      closePreviewsForOtherAgents(api, agentId);
     });
   }, []);
 

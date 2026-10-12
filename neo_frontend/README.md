@@ -36,6 +36,15 @@ classic `frontend/` — does **not** replace it. Long-lived work lands on the
 | `theme.ts` / icons | **Reused** (neo keeps a small chrome mirror) |
 | `App.tsx` shell / `WorkspaceSplit` | **Rewritten** as dockview shell |
 
+## Preview dock (this track)
+
+- Classic `PreviewPane` (+ lazy PDF/HTML/Monaco/image/CSV/Markdown/Office) via `@classic`
+- Multi-panel: openOrActivate into dockview tabs; **New Preview** adds an empty tab
+- `filebox-neo:open-file` from Files → `openFileInDock` (focused / empty / new)
+- `filebox-neo:agent-selected` closes preview tabs for other agents
+- Same-origin **Pop out** → dockview `addPopoutGroup` + `/neo/popout.html`
+- Not yet: classic `PreviewWorkspace` pin keep-alive / #86 registry
+
 ## Dev
 
 ```bash

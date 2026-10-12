@@ -2,9 +2,12 @@
  * Route a Files open-file event into dockview preview panels.
  *
  * Semantics mirror classic `usePreviewTabs.openOrActivate`:
- *  - same file already open → activate that panel
+ *  - same file already open → activate that panel (keep rev / viewer state)
  *  - else fill an empty preview panel if one exists
  *  - else add a new preview panel as a tab in the focused preview group
+ *
+ * Opening a file for agent A closes preview panels that still belong to
+ * another agent (classic: previews never outlive the agent).
  *
  * `detail.newPanel` always creates a fresh panel.
  */
@@ -29,7 +32,7 @@ function isPreviewPanel(component: string | undefined): boolean {
   return component === PREVIEW_COMPONENT;
 }
 
-function toParams(detail: NeoOpenFileDetail): PreviewPanelParams {
+function toParams(detail: NeoOpenFileDetail, rev = 0): PreviewPanelParams {
   return {
     agentId: detail.agentId,
     root: detail.root,
@@ -37,7 +40,7 @@ function toParams(detail: NeoOpenFileDetail): PreviewPanelParams {
     entryType: detail.entry.entry_type,
     denied: detail.entry.denied,
     officeCapable: detail.officeCapable,
-    rev: 0,
+    rev,
   };
 }
 
@@ -85,6 +88,20 @@ export function findPanelForFile(api: DockviewApi, detail: NeoOpenFileDetail) {
   });
 }
 
+/**
+ * Close preview panels whose file belongs to a different agent.
+ * Safe to call from Files on agent switch without importing dock internals.
+ */
+export function closePreviewsForOtherAgents(api: DockviewApi, agentId: string): void {
+  for (const p of findPreviewPanels(api)) {
+    const prm = p.api.getParameters<PreviewPanelParams>();
+    if (prm?.agentId && prm.agentId !== agentId) {
+      if (lastFocusedPreviewId === p.id) lastFocusedPreviewId = null;
+      p.api.close();
+    }
+  }
+}
+
 /** Add an empty preview panel (header "New Preview" affordance). */
 export function addEmptyPreviewPanel(api: DockviewApi): string {
   const focused = findFocusedPreview(api);
@@ -106,13 +123,17 @@ export function addEmptyPreviewPanel(api: DockviewApi): string {
 }
 
 export function openFileInDock(api: DockviewApi, detail: NeoOpenFileDetail): void {
-  const params = toParams(detail);
+  // Classic: previews never outlive the agent they belong to.
+  closePreviewsForOtherAgents(api, detail.agentId);
+
   const title = titleFor(detail);
 
   if (!detail.newPanel) {
     const existing = findPanelForFile(api, detail);
     if (existing) {
-      existing.api.updateParameters(params);
+      const prev = existing.api.getParameters<PreviewPanelParams>();
+      // Preserve rev so a plain re-click does not remount / reset the viewer.
+      existing.api.updateParameters(toParams(detail, prev?.rev ?? 0));
       existing.api.setTitle(title);
       existing.api.setActive();
       lastFocusedPreviewId = existing.id;
@@ -121,7 +142,7 @@ export function openFileInDock(api: DockviewApi, detail: NeoOpenFileDetail): voi
 
     const empty = findEmptyPreview(api);
     if (empty) {
-      empty.api.updateParameters(params);
+      empty.api.updateParameters(toParams(detail, 0));
       empty.api.setTitle(title);
       empty.api.setActive();
       lastFocusedPreviewId = empty.id;
@@ -136,7 +157,7 @@ export function openFileInDock(api: DockviewApi, detail: NeoOpenFileDetail): voi
     id,
     component: PREVIEW_COMPONENT,
     title,
-    params,
+    params: toParams(detail, 0),
     position: focused
       ? { referencePanel: focused.id, direction: 'within' }
       : files

@@ -1,10 +1,8 @@
 /**
  * Hook for neo Files → Preview open-file routing.
  *
- * 开发助手3 owns Files browsing; 开发助手2 owns PreviewPane reuse.
- * FilesPanel emits here on file click; App/preview dock subscribes and
- * routes into the focused (or new) preview panel without coupling to
- * FileBrowser internals.
+ * Files panel (FileBrowser) emits; Preview dock (openFileInDock / PreviewPanel)
+ * subscribes. Keeps FileBrowser decoupled from dockview panel ids.
  */
 
 import type { FsEntry } from '@classic/api/client';
@@ -24,6 +22,7 @@ export type NeoOpenFileDetail = {
 };
 
 export const NEO_OPEN_FILE_EVENT = 'filebox-neo:open-file';
+export const NEO_AGENT_SELECTED_EVENT = 'filebox-neo:agent-selected';
 
 export function emitNeoOpenFile(detail: NeoOpenFileDetail): void {
   window.dispatchEvent(new CustomEvent(NEO_OPEN_FILE_EVENT, { detail }));
@@ -38,4 +37,20 @@ export function onNeoOpenFile(
   };
   window.addEventListener(NEO_OPEN_FILE_EVENT, listener);
   return () => window.removeEventListener(NEO_OPEN_FILE_EVENT, listener);
+}
+
+/** Files emits when the selected agent changes so Preview can drop foreign tabs. */
+export function emitNeoAgentSelected(agentId: string | null): void {
+  window.dispatchEvent(new CustomEvent(NEO_AGENT_SELECTED_EVENT, { detail: { agentId } }));
+}
+
+export function onNeoAgentSelected(
+  handler: (agentId: string | null) => void,
+): () => void {
+  const listener = (ev: Event) => {
+    const detail = (ev as CustomEvent<{ agentId: string | null }>).detail;
+    handler(detail?.agentId ?? null);
+  };
+  window.addEventListener(NEO_AGENT_SELECTED_EVENT, listener);
+  return () => window.removeEventListener(NEO_AGENT_SELECTED_EVENT, listener);
 }

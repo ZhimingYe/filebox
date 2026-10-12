@@ -19,7 +19,7 @@ import {
 } from '@classic/state/navPersistence';
 import { useHealth } from '@classic/state/health';
 import { c, font } from '../theme';
-import { emitNeoOpenFile } from '../events/openFile';
+import { emitNeoAgentSelected, emitNeoOpenFile } from '../events/openFile';
 
 export function FilesPanel(_props: IDockviewPanelProps) {
   const { agents, error: healthError, refresh } = useHealth(true);
@@ -39,6 +39,11 @@ export function FilesPanel(_props: IDockviewPanelProps) {
     } catch {
       /* ignore */
     }
+  }, [selectedAgentId]);
+
+  // Let Preview dock drop tabs that belong to a previous agent (classic contract).
+  useEffect(() => {
+    emitNeoAgentSelected(selectedAgentId);
   }, [selectedAgentId]);
 
   useEffect(() => {
