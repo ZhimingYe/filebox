@@ -48,7 +48,17 @@ import {
   rememberFocusedPreview,
 } from './preview/openInDock';
 import { PREVIEW_COMPONENT } from './preview/types';
+import { ChromeToasts } from './shell/ChromeToasts';
+import {
+  bindDockLayoutPersistence,
+  tryRestoreDockLayout,
+} from './shell/layoutPersistence';
+import { NeoSidebar, type NeoSidebarChrome } from './shell/NeoSidebar';
 import { ensureChromePanel } from './shell/openChromePanel';
+import {
+  bumpTempRefreshNonce,
+  setUploadRequest,
+} from './shell/uploadHandoff';
 import { c, font } from './theme';
 
 const components: Record<string, FunctionComponent<IDockviewPanelProps>> = {
@@ -63,15 +73,6 @@ const components: Record<string, FunctionComponent<IDockviewPanelProps>> = {
 };
 
 type ChromeKind = 'collections' | 'transfer' | 'terminal' | 'settings' | 'stats' | 'audit';
-
-const CHROME: { kind: ChromeKind; title: string; direction?: 'below' | 'right' }[] = [
-  { kind: 'collections', title: 'Collections', direction: 'below' },
-  { kind: 'transfer', title: 'Transfer', direction: 'below' },
-  { kind: 'terminal', title: 'Terminal', direction: 'below' },
-  { kind: 'settings', title: 'Settings', direction: 'below' },
-  { kind: 'stats', title: 'Stats', direction: 'below' },
-  { kind: 'audit', title: 'Audit', direction: 'below' },
-];
 
 function StatusChip({ health }: { health: HubHealth | null }) {
   if (!health) {
@@ -109,6 +110,8 @@ export default function App() {
   const [dockReady, setDockReady] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [dragOverWindow, setDragOverWindow] = useState(false);
+  const dragDepthRef = useRef(0);
 
   const { health, agents, error: healthError, refresh } = useHealth(loggedIn === true);
   const { agent: selectedAgent, agentId } = useNeoAgent();
@@ -125,7 +128,6 @@ export default function App() {
     return () => ac.abort();
   }, [loggedIn]);
 
-  // Keep agent context fresh when health refresh updates the same agent id.
   useEffect(() => {
     if (!agentId) return;
     const live = agents.find((a) => a.id === agentId);
@@ -176,7 +178,16 @@ export default function App() {
   const onReady = useCallback((event: DockviewReadyEvent) => {
     dockApiRef.current = event.api;
     setDockReady((n) => n + 1);
+
     if (event.api.panels.length > 0) return;
+
+    const restored = tryRestoreDockLayout(event.api);
+    if (restored) {
+      const preview = event.api.panels.find((p) => p.api.component === PREVIEW_COMPONENT);
+      if (preview) rememberFocusedPreview(preview.id);
+      return;
+    }
+
     event.api.addPanel({
       id: 'file-tree',
       component: 'fileTree',
@@ -196,24 +207,36 @@ export default function App() {
     if (!loggedIn || dockReady === 0) return;
     const api = dockApiRef.current;
     if (!api) return;
-    const sub = api.onDidActivePanelChange((ev) => {
+    const focusSub = api.onDidActivePanelChange((ev) => {
       if (ev.panel?.api.component === PREVIEW_COMPONENT) {
         rememberFocusedPreview(ev.panel.id);
       }
     });
-    return () => sub.dispose();
+    const persistDispose = bindDockLayoutPersistence(api);
+    return () => {
+      focusSub.dispose();
+      persistDispose();
+    };
   }, [loggedIn, dockReady]);
 
-  const openChrome = useCallback((kind: ChromeKind, title: string, direction?: 'below' | 'right') => {
+  const openChromePanel = useCallback((kind: ChromeKind, title: string) => {
     const api = dockApiRef.current;
     if (!api) return;
     ensureChromePanel(api, {
       id: `chrome-${kind}`,
       component: kind,
       title,
-      direction,
+      direction: 'below',
     });
   }, []);
+
+  const onSidebarChrome = useCallback((id: NeoSidebarChrome) => {
+    if (id === 'search') {
+      setSearchOpen((o) => !o);
+      return;
+    }
+    openChromePanel(id, id[0]!.toUpperCase() + id.slice(1));
+  }, [openChromePanel]);
 
   const onPreviewFromSearch = useCallback((root: string, path: string) => {
     if (!selectedAgent) return;
@@ -236,10 +259,55 @@ export default function App() {
     });
   }, [selectedAgent]);
 
+  // App-wide drag & drop → Transfer (classic uploadRequest handoff).
+  const tempCapable = !!selectedAgent?.capabilities?.temp_upload && !!selectedAgent?.temp_root_name;
+  useEffect(() => {
+    if (!tempCapable) return;
+    const hasFiles = (e: DragEvent) =>
+      Array.from(e.dataTransfer?.types ?? []).includes('Files');
+    const onDragEnter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepthRef.current += 1;
+      setDragOverWindow(true);
+    };
+    const onDragOver = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    };
+    const onDragLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+      if (dragDepthRef.current === 0) setDragOverWindow(false);
+    };
+    const onDrop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepthRef.current = 0;
+      setDragOverWindow(false);
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (files.length === 0) return;
+      setUploadRequest({ files, nonce: Date.now() });
+      openChromePanel('transfer', 'Transfer');
+    };
+    window.addEventListener('dragenter', onDragEnter);
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter);
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [tempCapable, openChromePanel]);
+
   const isLikelyDev = useMemo(() => {
     if (typeof window === 'undefined') return false;
-    const { hostname, port } = window.location;
-    return hostname === 'localhost' || hostname === '127.0.0.1' || port === '5174';
+    const { hostname, protocol } = window.location;
+    const isLoopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+    return protocol !== 'https:' && isLoopback;
   }, []);
 
   if (loggedIn === null) {
@@ -284,63 +352,30 @@ export default function App() {
         <span style={{ color: c.textMuted, fontSize: 12, marginRight: 4 }}>
           {selectedAgent ? (selectedAgent.name || selectedAgent.id) : 'no agent'}
         </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            style={headerBtnStyle}
-            disabled={!selectedAgent}
-            onClick={() => setSearchOpen((o) => !o)}
-            title="Workspace search (classic floating window)"
-          >
-            Search
-          </button>
-          {CHROME.map(({ kind, title, direction }) => (
-            <button
-              key={kind}
-              type="button"
-              style={headerBtnStyle}
-              disabled={kind !== 'audit' && !selectedAgent}
-              onClick={() => openChrome(kind, title, direction)}
-              title={`Open ${title} dock panel`}
-            >
-              {title}
-            </button>
-          ))}
-          <button
-            type="button"
-            style={headerBtnStyle}
-            onClick={() => {
-              const api = dockApiRef.current;
-              if (api) addEmptyPreviewPanel(api);
-            }}
-            title="Add an empty preview dock panel"
-          >
-            New Preview
-          </button>
-          <button
-            type="button"
-            style={headerBtnStyle}
-            onClick={() => {
-              const api = dockApiRef.current;
-              if (api) void popoutPreviewPanel(api);
-            }}
-            title="Pop out the focused preview panel"
-          >
-            Pop out
-          </button>
-        </div>
+        <button
+          type="button"
+          style={headerBtnStyle}
+          onClick={() => {
+            const api = dockApiRef.current;
+            if (api) addEmptyPreviewPanel(api);
+          }}
+          title="Add an empty preview dock panel"
+        >
+          New Preview
+        </button>
+        <button
+          type="button"
+          style={headerBtnStyle}
+          onClick={() => {
+            const api = dockApiRef.current;
+            if (api) void popoutPreviewPanel(api);
+          }}
+          title="Pop out the focused preview panel"
+        >
+          Pop out
+        </button>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
           <StatusChip health={hubChip} />
-          {health?.hub.version ? (
-            <button
-              type="button"
-              style={headerBtnStyle}
-              onClick={() => setAboutOpen(true)}
-              title="About filebox"
-            >
-              v{health.hub.version}
-            </button>
-          ) : null}
           <button type="button" style={headerBtnStyle} onClick={() => void refresh()} title="Refresh agents/health">
             Refresh
           </button>
@@ -349,13 +384,22 @@ export default function App() {
           </button>
         </div>
       </header>
-      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-        <DockviewReact
-          components={components}
-          theme={themeLight}
-          popoutUrl={`${import.meta.env.BASE_URL}popout.html`}
-          onReady={onReady}
+
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', position: 'relative' }}>
+        <NeoSidebar
+          searchOpen={searchOpen}
+          onChrome={onSidebarChrome}
+          onOpenAbout={() => setAboutOpen(true)}
+          hubVersion={health?.hub.version}
         />
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+          <DockviewReact
+            components={components}
+            theme={themeLight}
+            popoutUrl={`${import.meta.env.BASE_URL}popout.html`}
+            onReady={onReady}
+          />
+        </div>
       </div>
 
       {selectedAgent ? (
@@ -363,7 +407,6 @@ export default function App() {
           open={searchOpen}
           agent={selectedAgent}
           onOpenFile={(root, path) => {
-            // WorkspaceSearch already parentDir()'s for folder open.
             emitNeoRevealInBrowser({ root, dirPath: path });
           }}
           onPreviewFile={onPreviewFromSearch}
@@ -379,6 +422,24 @@ export default function App() {
         isLikelyDev={isLikelyDev}
         onClose={() => setAboutOpen(false)}
       />
+
+      <ChromeToasts
+        hubVersion={health?.hub.version}
+        selectedAgentId={agentId}
+        onHealthRefresh={refresh}
+        onTempUpdated={bumpTempRefreshNonce}
+      />
+
+      {dragOverWindow ? (
+        <div style={dropOverlay} aria-hidden>
+          <div style={dropCard}>
+            <span style={{ color: c.accent, fontSize: 17, fontWeight: 600 }}>Drop files to upload</span>
+            <span style={{ color: c.textSecondary, fontSize: 13 }}>
+              Opens Transfer and uploads into this agent&apos;s temp folder
+            </span>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -401,4 +462,27 @@ const headerBtnStyle: CSSProperties = {
   background: c.bgMuted,
   color: c.textSecondary,
   cursor: 'pointer',
+};
+
+const dropOverlay: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  zIndex: 60,
+  background: 'rgba(15, 23, 42, 0.35)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  pointerEvents: 'none',
+};
+
+const dropCard: CSSProperties = {
+  background: c.surface,
+  border: `2px dashed ${c.accent}`,
+  borderRadius: 12,
+  padding: '28px 36px',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  alignItems: 'center',
+  fontFamily: font.sans,
 };

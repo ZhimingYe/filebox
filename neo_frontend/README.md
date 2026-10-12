@@ -53,6 +53,14 @@ Topbar opens dock panels / overlays by reusing classic components via `@classic`
 
 Mobile drawer / bottom sheet search are intentionally skipped.
 
+### Desktop chrome extras
+
+- Left **NeoSidebar**: classic `PinnedFolders` + chrome nav (collapsible)
+- App-wide drag-drop → Transfer (`uploadRequest` handoff + overlay)
+- SSE progress toasts + new-version toast (shared dismiss key with classic)
+- Dockview layout persist/restore (`localStorage` `filebox.neo.dockLayout.v1`) — panel geometry only; preview tab bodies remain ephemeral
+
+
 ## Preview dock (this track)
 
 - Each preview dock panel hosts classic `usePreviewTabs` + `PreviewWorkspace` via `@classic`
