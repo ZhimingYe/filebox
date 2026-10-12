@@ -82,7 +82,6 @@ export function NeoSidebar({ onChrome, onNewPreview, onOpenAbout, hubVersion }: 
       return false;
     }
   });
-  const [activeNav, setActiveNav] = useState<NavId | null>(null);
 
   const toggleCollapsed = useCallback(() => {
     setCollapsed((prev) => {
@@ -120,12 +119,7 @@ export function NeoSidebar({ onChrome, onNewPreview, onOpenAbout, hubVersion }: 
 
   const width = collapsed ? W_COLLAPSED : W_EXPANDED;
 
-  const applyNavHover = (el: HTMLButtonElement, enter: boolean, active: boolean) => {
-    if (active) {
-      el.style.background = c.accentBg;
-      el.style.color = c.accent;
-      return;
-    }
+  const applyNavHover = (el: HTMLButtonElement, enter: boolean) => {
     if (enter) {
       el.style.background = c.bgMuted;
       el.style.color = c.text;
@@ -135,11 +129,10 @@ export function NeoSidebar({ onChrome, onNewPreview, onOpenAbout, hubVersion }: 
     }
   };
 
-  const navItemStyle = (active: boolean, disabled: boolean): CSSProperties => ({
+  const navItemStyle = (disabled: boolean): CSSProperties => ({
     ...(collapsed ? navBtnCollapsed : navBtnExpanded),
-    ...(active
-      ? { background: c.accentBg, color: c.accent }
-      : { background: 'transparent', color: c.textSecondary }),
+    background: 'transparent',
+    color: c.textSecondary,
     ...(disabled ? { opacity: 0.4, cursor: 'not-allowed' } : null),
   });
 
@@ -150,30 +143,26 @@ export function NeoSidebar({ onChrome, onNewPreview, onOpenAbout, hubVersion }: 
     onClick: () => void,
     disabled = false,
   ) => {
-    const active = activeNav === id;
     const iconSize = collapsed ? 18 : 16;
     return (
       <button
         key={id}
         type="button"
         disabled={disabled}
-        style={navItemStyle(active, disabled)}
+        style={navItemStyle(disabled)}
         title={label}
         aria-label={label}
-        aria-current={active ? 'page' : undefined}
         onClick={() => {
           if (disabled) return;
-          setActiveNav(id);
           onClick();
         }}
         onMouseEnter={(e: MouseEvent<HTMLButtonElement>) => {
-          if (!disabled) applyNavHover(e.currentTarget, true, active);
+          if (!disabled) applyNavHover(e.currentTarget, true);
         }}
         onMouseLeave={(e: MouseEvent<HTMLButtonElement>) => {
-          if (!disabled) applyNavHover(e.currentTarget, false, active);
+          if (!disabled) applyNavHover(e.currentTarget, false);
         }}
       >
-        {active ? <span style={activeRail} aria-hidden /> : null}
         <Icon style={{ width: iconSize, height: iconSize, flexShrink: 0 }} />
         {!collapsed ? <span style={navLabel}>{label}</span> : null}
       </button>
@@ -404,15 +393,6 @@ const navLabel: CSSProperties = {
   lineHeight: 1.2,
 };
 
-const activeRail: CSSProperties = {
-  position: 'absolute',
-  left: 0,
-  top: 8,
-  bottom: 8,
-  width: 2,
-  borderRadius: 1,
-  background: c.accent,
-};
 
 const pinsWrapExpanded: CSSProperties = {
   padding: '8px 6px',
