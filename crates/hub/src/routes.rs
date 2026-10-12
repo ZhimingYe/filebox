@@ -109,7 +109,7 @@ pub fn create_router(state: AppState) -> Router {
             require_session,
         ));
 
-    // Resolve frontend/dist.
+    // Resolve classic frontend/dist.
     // Order: FILEBOX_FRONTEND_DIR env → cwd → walk up from binary location.
     let frontend_path = find_frontend_dist().unwrap_or_else(|| {
         eprintln!("[hub] WARNING: frontend/dist not found");
@@ -118,6 +118,16 @@ pub fn create_router(state: AppState) -> Router {
         std::path::PathBuf::from("frontend/dist")
     });
     eprintln!("[hub] frontend: {}", frontend_path.display());
+
+    // Resolve neo frontend (dockview shell) served under /neo.
+    // Order: FILEBOX_NEO_FRONTEND_DIR → neo_frontend/dist → frontend/neo
+    // (release tarball stages neo at frontend/neo next to classic frontend/dist).
+    let neo_path = find_neo_frontend_dist().unwrap_or_else(|| {
+        eprintln!("[hub] WARNING: neo frontend dist not found (/neo will 404)");
+        eprintln!("[hub] Set FILEBOX_NEO_FRONTEND_DIR, or build neo_frontend/dist.");
+        std::path::PathBuf::from("neo_frontend/dist")
+    });
+    eprintln!("[hub] neo frontend: {}", neo_path.display());
 
     fn find_frontend_dist() -> Option<std::path::PathBuf> {
         // 1. Explicit env override (highest priority)
@@ -152,7 +162,42 @@ pub fn create_router(state: AppState) -> Router {
         None
     }
 
+    fn find_neo_frontend_dist() -> Option<std::path::PathBuf> {
+        if let Ok(p) = std::env::var("FILEBOX_NEO_FRONTEND_DIR") {
+            let path = std::path::PathBuf::from(&p);
+            if path.exists() {
+                return Some(path);
+            }
+            eprintln!(
+                "[hub] WARNING: FILEBOX_NEO_FRONTEND_DIR={} does not exist, ignoring",
+                p
+            );
+        }
+
+        for rel in ["neo_frontend/dist", "frontend/neo"] {
+            let cwd_candidate = std::path::PathBuf::from(rel);
+            if cwd_candidate.exists() {
+                return Some(cwd_candidate);
+            }
+        }
+
+        let mut dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+        for _ in 0..5 {
+            for rel in ["neo_frontend/dist", "frontend/neo"] {
+                let candidate = dir.join(rel);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+        None
+    }
+
     let frontend = ServeDir::new(frontend_path);
+    let neo_frontend = ServeDir::new(neo_path);
 
     // CORS: mirror request origin so credentials work (browsers reject ACAO:* with credentials)
     let cors = CorsLayer::new()
@@ -169,6 +214,7 @@ pub fn create_router(state: AppState) -> Router {
     let cors_app = Router::new()
         .merge(public)
         .merge(protected)
+        .nest_service("/neo", neo_frontend)
         .fallback_service(frontend)
         .layer(cors);
 
