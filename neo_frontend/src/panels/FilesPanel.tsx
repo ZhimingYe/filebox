@@ -253,7 +253,7 @@ export function FilesPanel(_props: IDockviewPanelProps) {
 
   // Pinned folders live in NeoSidebar only (match classic). Files is tree + list.
   return (
-    <div style={{ ...shellStyle, padding: 0, gap: 0 }}>
+    <div style={{ ...shellStyle, padding: 0, gap: 0, background: c.bg }}>
       <FileBrowser
         agentId={selectedAgent.id}
         roots={selectedAgent.roots}
@@ -314,7 +314,7 @@ const shellStyle: CSSProperties = {
   flexDirection: 'column',
   gap: 8,
   padding: 8,
-  background: c.bgSubtle,
+  background: c.bg,
   color: c.textSecondary,
   fontFamily: font.sans,
   fontSize: 13,

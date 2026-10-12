@@ -159,9 +159,7 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
         <div style={emptyStyle}>
           <div style={{ fontWeight: 600, color: c.text, marginBottom: 6 }}>Preview</div>
           <div style={{ color: c.textMuted, lineHeight: 1.5 }}>
-            Select a file in Files or Explorer. Classic PreviewWorkspace provides
-            multi-tab + #86 pin/keep-alive. Tab paths/pins persist with dock layout
-            (viewer zoom/scroll is not restored across reload).
+            Select a file in Files or Explorer to open it here.
           </div>
         </div>
       )}
