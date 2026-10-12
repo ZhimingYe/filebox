@@ -11,14 +11,11 @@ import {
 import { ChromeNeedAgent, ChromeShell, ChromeUnsupported } from './ChromeShell';
 
 function useUploadHandoff() {
-  return useSyncExternalStore(
-    subscribeUploadHandoff,
-    () => ({
-      uploadRequest: getUploadRequest(),
-      tempRefreshNonce: getTempRefreshNonce(),
-    }),
-    () => ({ uploadRequest: null, tempRefreshNonce: 0 }),
-  );
+  // Separate subscriptions so each getSnapshot returns a stable value
+  // (a fresh object per call triggers React #185 infinite re-render).
+  const uploadRequest = useSyncExternalStore(subscribeUploadHandoff, getUploadRequest, () => null);
+  const tempRefreshNonce = useSyncExternalStore(subscribeUploadHandoff, getTempRefreshNonce, () => 0);
+  return { uploadRequest, tempRefreshNonce };
 }
 
 export function TransferPanel(_props: IDockviewPanelProps) {
