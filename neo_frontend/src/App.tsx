@@ -41,6 +41,7 @@ import {
   TransferPanel,
 } from './panels/chrome';
 import { FilesPanel } from './panels/FilesPanel';
+import { DockBackAction } from './shell/DockBackAction';
 import { getBrowsePos, setBrowsePos } from './shell/browsePos';
 import { PreviewPanel } from './panels/PreviewPanel';
 import { setPreviewAgentContext, useNeoAgent } from './preview/agentContext';
@@ -450,6 +451,7 @@ export default function App() {
             components={components}
             theme={themeLight}
             popoutUrl={`${import.meta.env.BASE_URL}popout.html`}
+            rightHeaderActionsComponent={DockBackAction}
             onReady={onReady}
           />
         </div>
