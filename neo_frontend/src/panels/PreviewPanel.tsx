@@ -6,9 +6,9 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
-import type { RootInfo } from '@classic/api/client';
-import { PreviewWorkspace } from '@classic/components/PreviewWorkspace';
-import { tabIdFor, usePreviewTabs } from '@classic/hooks/usePreviewTabs';
+import type { RootInfo } from '@lib/api/client';
+import { PreviewWorkspace } from '@lib/components/PreviewWorkspace';
+import { tabIdFor, usePreviewTabs } from '@lib/hooks/usePreviewTabs';
 import { c, font } from '../theme';
 import { emitNeoRevealInBrowser, type NeoOpenFileDetail } from '../events/openFile';
 import {

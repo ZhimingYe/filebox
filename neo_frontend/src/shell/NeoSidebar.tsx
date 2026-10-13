@@ -11,9 +11,9 @@ import {
   type FunctionComponent,
   type MouseEvent,
 } from 'react';
-import { patchRoot } from '@classic/api/client';
-import { BackendList } from '@classic/components/BackendList';
-import { PinnedFolders } from '@classic/components/PinnedFolders';
+import { patchRoot } from '@lib/api/client';
+import { BackendList } from '@lib/components/BackendList';
+import { PinnedFolders } from '@lib/components/PinnedFolders';
 import {
   IconAudit,
   IconBrandMark,
@@ -27,8 +27,8 @@ import {
   IconStats,
   IconTerminal,
   IconUpload,
-} from '@classic/components/icons';
-import { useHealth } from '@classic/state/health';
+} from '@lib/components/icons';
+import { useHealth } from '@lib/state/health';
 import { emitNeoRevealInBrowser, emitNeoSelectAgent } from '../events/openFile';
 import { useNeoAgent } from '../preview/agentContext';
 import { c, font } from '../theme';

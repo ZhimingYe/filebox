@@ -9,7 +9,7 @@ classic `frontend/` — does **not** replace it. Long-lived work lands on the
 - Vite + React + TypeScript app with `base: '/neo/'`
 - Dockview layout: **Files** (classic `FileBrowser` / `DirectoryTree`) + **Preview**
   (classic `PreviewPane` viewers, multi-tab via dockview)
-- Vite alias `@classic` → `src/classic/` (vendored **closure-only** fork of classic modules neo imports; classic `frontend/` untouched; React deduped to neo `node_modules`)
+- Vite alias `@lib` → `src/lib/` (vendored **closure-only** fork of classic modules neo imports; classic `frontend/` untouched; React deduped to neo `node_modules`)
 - Classic session / CSRF (`ensureCookieSuffix`, `withCsrf`, login PoW) for `/neo/`
 - Open-file bridge: `filebox-neo:open-file` → `openFileInDock` (activate / fill
   empty / new preview tab)
@@ -26,7 +26,7 @@ classic `frontend/` — does **not** replace it. Long-lived work lands on the
 
 | Classic module | Status |
 | --- | --- |
-| `api/client.ts`, `api/retry.ts` | **Reused** via `@classic` |
+| `api/client.ts`, `api/retry.ts` | **Reused** via `@lib` |
 | `state/session.ts`, `health.ts`, `navPersistence.ts` | **Reused** |
 | `components/Login.tsx`, `lib/pow.ts` | **Reused** (neo session gate) |
 | `components/FileBrowser.tsx`, `DirectoryTree.tsx`, file list | **Reused** in Files panel |
@@ -40,7 +40,7 @@ classic `frontend/` — does **not** replace it. Long-lived work lands on the
 
 ## Classic chrome (desktop)
 
-Topbar opens dock panels / overlays by reusing classic components via `@classic`:
+Topbar opens dock panels / overlays by reusing classic components via `@lib`:
 
 | Entry | Classic module | Mount |
 | --- | --- | --- |
@@ -68,7 +68,7 @@ Mobile drawer / bottom sheet search are intentionally skipped.
 
 ## Preview dock (this track)
 
-- Each preview dock panel hosts classic `usePreviewTabs` + `PreviewWorkspace` via `@classic`
+- Each preview dock panel hosts classic `usePreviewTabs` + `PreviewWorkspace` via `@lib`
 - #86 pin / DOM keep-alive park (HTML/PDF/Office) / ViewerStateRegistry (image/Monaco/md/CSV)
 - Default open adds/activates a classic tab in the **focused** PreviewWorkspace; **New Preview** adds an empty dock panel for splits/popout
 - `filebox-neo:open-file` → `openFileInDock`; `filebox-neo:agent-selected` drops foreign docks

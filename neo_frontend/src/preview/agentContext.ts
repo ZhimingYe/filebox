@@ -4,7 +4,7 @@
  */
 
 import { useSyncExternalStore } from 'react';
-import type { AgentInfo, RootInfo } from '@classic/api/client';
+import type { AgentInfo, RootInfo } from '@lib/api/client';
 
 export type NeoPreviewAgentContext = {
   agentId: string | null;

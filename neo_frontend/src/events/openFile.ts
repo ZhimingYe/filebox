@@ -3,7 +3,7 @@
  * Keeps FileBrowser decoupled from dockview panel ids.
  */
 
-import type { AgentInfo, FsEntry, RootInfo } from '@classic/api/client';
+import type { AgentInfo, FsEntry, RootInfo } from '@lib/api/client';
 
 export type NeoOpenFileDetail = {
   agentId: string;

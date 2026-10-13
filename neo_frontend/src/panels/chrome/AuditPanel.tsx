@@ -1,5 +1,5 @@
 import type { IDockviewPanelProps } from 'dockview-react';
-import { LoginAudit } from '@classic/components/LoginAudit';
+import { LoginAudit } from '@lib/components/LoginAudit';
 import { ChromeShell } from './ChromeShell';
 
 /** Hub login audit — no agent required. */

@@ -1,8 +1,8 @@
 import { useCallback, useState } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
-import { CollectionsView } from '@classic/components/CollectionsView';
-import { usePreviewTabs } from '@classic/hooks/usePreviewTabs';
-import { useHealth } from '@classic/state/health';
+import { CollectionsView } from '@lib/components/CollectionsView';
+import { usePreviewTabs } from '@lib/hooks/usePreviewTabs';
+import { useHealth } from '@lib/state/health';
 import { emitNeoRevealInBrowser } from '../../events/openFile';
 import { useNeoAgent } from '../../preview/agentContext';
 import { ChromeNeedAgent, ChromeShell } from './ChromeShell';

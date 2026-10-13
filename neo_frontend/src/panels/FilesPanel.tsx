@@ -6,16 +6,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
-import type { AgentInfo, FsEntry } from '@classic/api/client';
-import { FileBrowser } from '@classic/components/FileBrowser';
+import type { AgentInfo, FsEntry } from '@lib/api/client';
+import { FileBrowser } from '@lib/components/FileBrowser';
 import {
   LAST_AGENT_STORAGE,
   loadNavPosMap,
   loadPathMemoryMap,
   memKey,
   persistNavState,
-} from '@classic/state/navPersistence';
-import { useHealth } from '@classic/state/health';
+} from '@lib/state/navPersistence';
+import { useHealth } from '@lib/state/health';
 import { c, font } from '../theme';
 import {
   emitNeoAgentSelected,

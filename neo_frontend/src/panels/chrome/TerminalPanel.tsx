@@ -1,5 +1,5 @@
 import type { IDockviewPanelProps } from 'dockview-react';
-import { TerminalView } from '@classic/components/TerminalView';
+import { TerminalView } from '@lib/components/TerminalView';
 import { useNeoAgent } from '../../preview/agentContext';
 import { ChromeNeedAgent, ChromeShell, ChromeUnsupported } from './ChromeShell';
 

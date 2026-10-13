@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
-import { TempTransferView } from '@classic/components/TempTransferView';
+import { TempTransferView } from '@lib/components/TempTransferView';
 import { useNeoAgent } from '../../preview/agentContext';
 import {
   clearUploadRequest,

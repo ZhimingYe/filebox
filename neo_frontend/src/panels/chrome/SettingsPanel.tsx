@@ -1,6 +1,6 @@
 import type { IDockviewPanelProps } from 'dockview-react';
-import { AgentSettings } from '@classic/components/AgentSettings';
-import { useHealth } from '@classic/state/health';
+import { AgentSettings } from '@lib/components/AgentSettings';
+import { useHealth } from '@lib/state/health';
 import { useNeoAgent } from '../../preview/agentContext';
 import { ChromeNeedAgent, ChromeShell } from './ChromeShell';
 

@@ -14,12 +14,12 @@ import {
   type DockviewReadyEvent,
   type IDockviewPanelProps,
 } from 'dockview-react';
-import { ensureCookieSuffix } from '@classic/api/client';
-import { AboutDialog } from '@classic/components/AboutDialog';
-import { CollectionPicker } from '@classic/components/CollectionPicker';
-import { Login } from '@classic/components/Login';
-import { useHealth } from '@classic/state/health';
-import { useSession } from '@classic/state/session';
+import { ensureCookieSuffix } from '@lib/api/client';
+import { AboutDialog } from '@lib/components/AboutDialog';
+import { CollectionPicker } from '@lib/components/CollectionPicker';
+import { Login } from '@lib/components/Login';
+import { useHealth } from '@lib/state/health';
+import { useSession } from '@lib/state/session';
 import {
   onNeoAgentSelected,
   onNeoCollectionPicker,
@@ -40,7 +40,7 @@ import {
 import { FilesPanel } from './panels/FilesPanel';
 import { DockBackAction } from './shell/DockBackAction';
 import { EmptyTabGroupChip } from './shell/EmptyTabGroupChip';
-import { IconLogout, IconRefresh } from '@classic/components/icons';
+import { IconLogout, IconRefresh } from '@lib/components/icons';
 import { PreviewPanel } from './panels/PreviewPanel';
 import { setPreviewAgentContext, useNeoAgent } from './preview/agentContext';
 import { fileTabId } from './preview/hostRegistry';

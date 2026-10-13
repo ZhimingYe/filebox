@@ -2,7 +2,7 @@
  * Thin hub health probe for the neo chrome status chip.
  *
  * Session / CSRF for real API calls go through classic
- * `@classic/api/client` (`ensureCookieSuffix`, `withCsrf`, cookie reads).
+ * `@lib/api/client` (`ensureCookieSuffix`, `withCsrf`, cookie reads).
  * This helper only reports reachability + whether a CSRF cookie is present
  * after classic suffix resolution.
  */

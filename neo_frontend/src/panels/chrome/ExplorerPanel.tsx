@@ -5,9 +5,9 @@
 
 import { useCallback, useSyncExternalStore } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
-import type { FsEntry } from '@classic/api/client';
-import { ExplorerView } from '@classic/components/ExplorerView';
-import { useHealth } from '@classic/state/health';
+import type { FsEntry } from '@lib/api/client';
+import { ExplorerView } from '@lib/components/ExplorerView';
+import { useHealth } from '@lib/state/health';
 import {
   emitNeoCollectionPicker,
   emitNeoOpenFile,

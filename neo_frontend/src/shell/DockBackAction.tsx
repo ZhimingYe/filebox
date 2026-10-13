@@ -7,7 +7,7 @@
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import type { IDockviewHeaderActionsProps } from 'dockview-react';
-import { IconDockBack, IconPopOut } from '@classic/components/icons';
+import { IconDockBack, IconPopOut } from '@lib/components/icons';
 import { c } from '../theme';
 
 const iconBtn: CSSProperties = {

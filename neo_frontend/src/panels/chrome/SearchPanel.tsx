@@ -5,8 +5,8 @@
 
 import { useCallback } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
-import type { FsEntry } from '@classic/api/client';
-import { WorkspaceSearch } from '@classic/components/WorkspaceSearch';
+import type { FsEntry } from '@lib/api/client';
+import { WorkspaceSearch } from '@lib/components/WorkspaceSearch';
 import {
   emitNeoOpenFile,
   emitNeoRevealInBrowser,

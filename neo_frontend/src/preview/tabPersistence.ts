@@ -4,7 +4,7 @@
  * (would need deeper classic PreviewWorkspace hooks).
  */
 
-import type { FsEntry } from '@classic/api/client';
+import type { FsEntry } from '@lib/api/client';
 
 export type PersistedPreviewTab = {
   agentId: string;

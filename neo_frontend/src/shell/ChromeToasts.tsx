@@ -3,7 +3,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { useSse } from '@classic/state/events';
+import { useSse } from '@lib/state/events';
 import { c, font, shadow } from '../theme';
 import { formatBytes } from './formatBytes';
 import { getDismissedVersion, setDismissedVersion } from './versionToast';

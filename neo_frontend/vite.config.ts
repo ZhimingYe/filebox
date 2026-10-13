@@ -6,7 +6,7 @@ import react from '@vitejs/plugin-react'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Vendored classic import closure lives inside neo_frontend (knife-cut fork).
 // Do not resolve sources from ../frontend — classic `/` keeps its own tree.
-const classicSrc = path.resolve(__dirname, 'src/classic')
+const libSrc = path.resolve(__dirname, 'src/lib')
 const neoReact = path.resolve(__dirname, 'node_modules/react')
 const neoReactDom = path.resolve(__dirname, 'node_modules/react-dom')
 
@@ -16,11 +16,11 @@ export default defineConfig({
   base: '/neo/',
   plugins: [react()],
   resolve: {
-    // Import vendored classic modules as `@classic/...`.
+    // Import vendored classic modules as `@lib/...`.
     // Deduplicate React so neo + vendored classic share one copy (hooks break
     // otherwise when Vite resolves two react trees).
     alias: {
-      '@classic': classicSrc,
+      '@lib': libSrc,
       react: neoReact,
       'react-dom': neoReactDom,
     },
@@ -40,7 +40,7 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    // Classic viewers pulled through @classic — pre-bundle heavy deps.
+    // Classic viewers pulled through @lib — pre-bundle heavy deps.
     include: [
       'pdfjs-dist',
       'react-pdf',

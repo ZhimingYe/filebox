@@ -1,5 +1,5 @@
 import type { IDockviewPanelProps } from 'dockview-react';
-import { SystemStats } from '@classic/components/SystemStats';
+import { SystemStats } from '@lib/components/SystemStats';
 import { useNeoAgent } from '../../preview/agentContext';
 import { ChromeNeedAgent, ChromeShell } from './ChromeShell';
 

@@ -2,7 +2,7 @@
  * Registry of neo preview dock hosts (one classic PreviewWorkspace per panel).
  */
 
-import { tabIdFor } from '@classic/hooks/usePreviewTabs';
+import { tabIdFor } from '@lib/hooks/usePreviewTabs';
 import type { NeoOpenFileDetail } from '../events/openFile';
 import type { PersistedPreviewHost } from './tabPersistence';
 
