@@ -13,6 +13,7 @@ import {
 } from '../../events/openFile';
 import { useNeoAgent } from '../../preview/agentContext';
 import { getBrowsePos, setBrowsePos } from '../../shell/browsePos';
+import { ensureFilesThenReveal } from '../../shell/revealInFiles';
 import { ChromeNeedAgent, ChromeShell } from './ChromeShell';
 
 export function SearchPanel(props: IDockviewPanelProps) {
@@ -25,27 +26,16 @@ export function SearchPanel(props: IDockviewPanelProps) {
   // navigating it; Explorer follows the shared browse position.
   const onOpenFile = useCallback((root: string, path: string) => {
     if (agent) setBrowsePos({ agentId: agent.id, root, path });
+    const detail = {
+      root,
+      dirPath: path,
+      ...(agent ? { agentId: agent.id } : {}),
+    };
     if (api.activePanel?.id === 'chrome-explorer') {
-      emitNeoRevealInBrowser({ root, dirPath: path });
+      emitNeoRevealInBrowser(detail);
       return;
     }
-    let files = api.getPanel('file-tree');
-    const created = !files;
-    if (!files) {
-      files = api.addPanel({
-        id: 'file-tree',
-        component: 'fileTree',
-        title: 'Files',
-        position: { direction: 'left' },
-      });
-    }
-    files.api.setActive();
-    if (created) {
-      // Let the freshly mounted FilesPanel subscribe before navigating.
-      window.setTimeout(() => emitNeoRevealInBrowser({ root, dirPath: path }), 0);
-    } else {
-      emitNeoRevealInBrowser({ root, dirPath: path });
-    }
+    ensureFilesThenReveal(api, detail);
   }, [agent, api]);
 
   const onPreviewFile = useCallback((root: string, path: string) => {

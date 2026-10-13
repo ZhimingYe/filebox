@@ -12,7 +12,8 @@ import { PreviewWorkspace } from '@lib/components/PreviewWorkspace';
 import { tabIdFor, usePreviewTabs } from '@lib/hooks/usePreviewTabs';
 import { useHealth } from '@lib/state/health';
 import { c, font } from '../theme';
-import { emitNeoRevealInBrowser, type NeoOpenFileDetail } from '../events/openFile';
+import { type NeoOpenFileDetail } from '../events/openFile';
+import { ensureFilesThenReveal } from '../shell/revealInFiles';
 import { registerPreviewHost, unregisterPreviewHost } from '../preview/hostRegistry';
 import { clearFocusedPreviewIf, rememberFocusedPreview } from '../preview/openInDock';
 import type { PersistedPreviewHost } from '../preview/tabPersistence';
@@ -30,7 +31,7 @@ function detailToTabInput(detail: NeoOpenFileDetail) {
 }
 
 export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
-  const { api, params: initialParams } = props;
+  const { api, params: initialParams, containerApi } = props;
   const previewTabs = usePreviewTabs();
   const tabsRef = useRef(previewTabs);
   tabsRef.current = previewTabs;
@@ -161,8 +162,13 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
   }, [previewTabs.tabs, previewTabs.activeTab, api]);
 
   const onRevealInBrowser = useCallback((root: string, dirPath: string) => {
-    emitNeoRevealInBrowser({ root, dirPath });
-  }, []);
+    const tab = tabsRef.current.activeTab ?? tabsRef.current.tabs[0];
+    ensureFilesThenReveal(containerApi, {
+      root,
+      dirPath,
+      ...(tab?.agentId ? { agentId: tab.agentId } : {}),
+    });
+  }, [containerApi]);
 
   /** Closing the (only) file disposes the dock panel immediately. */
   const onClose = useCallback((tabId: string) => {

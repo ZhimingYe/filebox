@@ -229,7 +229,7 @@ export function NeoSidebar({ onChrome, onNewPreview, onOpenAbout, hubVersion }: 
             agent={agent}
             collapsed={collapsed}
             onNavigate={(root, path) => {
-              emitNeoRevealInBrowser({ root, dirPath: path });
+              emitNeoRevealInBrowser({ root, dirPath: path, agentId: agent.id });
             }}
             onUnpin={handleUnpin}
           />

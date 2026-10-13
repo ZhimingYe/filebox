@@ -26,6 +26,8 @@ export type NeoAgentSelectedDetail = {
 export type NeoRevealInBrowserDetail = {
   root: string;
   dirPath: string;
+  /** When set and ≠ Files selected agent, Files switches agent then navigates. */
+  agentId?: string;
 };
 
 export type NeoCollectionPickerDetail = {

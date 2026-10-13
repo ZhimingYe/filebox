@@ -9,17 +9,22 @@ import type { IDockviewPanelProps } from 'dockview-react';
 import type { FsEntry } from '@lib/api/client';
 import { CollectionsView } from '@lib/components/CollectionsView';
 import { useHealth } from '@lib/state/health';
-import { emitNeoOpenFile, emitNeoRevealInBrowser } from '../../events/openFile';
+import { emitNeoOpenFile } from '../../events/openFile';
 import { useNeoAgent } from '../../preview/agentContext';
+import { ensureFilesThenReveal } from '../../shell/revealInFiles';
 import { ChromeNeedAgent, ChromeShell } from './ChromeShell';
 
-export function CollectionsPanel(_props: IDockviewPanelProps) {
+export function CollectionsPanel(props: IDockviewPanelProps) {
   const { agent } = useNeoAgent();
   const { refresh } = useHealth(true);
 
   const onOpenInFiles = useCallback((root: string, path: string) => {
-    emitNeoRevealInBrowser({ root, dirPath: path });
-  }, []);
+    ensureFilesThenReveal(props.containerApi, {
+      root,
+      dirPath: path,
+      ...(agent ? { agentId: agent.id } : {}),
+    });
+  }, [props.containerApi, agent]);
 
   const onPreviewFile = useCallback((root: string, path: string, entry: FsEntry) => {
     if (!agent) return;

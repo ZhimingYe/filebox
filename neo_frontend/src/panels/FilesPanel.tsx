@@ -23,6 +23,7 @@ import {
   emitNeoOpenFile,
   onNeoRevealInBrowser,
   onNeoSelectAgent,
+  type NeoRevealInBrowserDetail,
 } from '../events/openFile';
 import { setBrowsePos, subscribeBrowsePos, getBrowsePos } from '../shell/browsePos';
 
@@ -110,6 +111,8 @@ export function FilesPanel(_props: IDockviewPanelProps) {
   );
 
   const prevAgentIdRef = useRef<string | null>(null);
+  // Pending reveal when switching agent: applyNav only after selectedAgent settles.
+  const pendingRevealRef = useRef<NeoRevealInBrowserDetail | null>(null);
   useEffect(() => {
     if (!selectedAgent) {
       setSelectedRoot(null);
@@ -174,11 +177,30 @@ export function FilesPanel(_props: IDockviewPanelProps) {
     });
   }, [selectedAgentId]);
 
+  // Reveal: if detail.agentId ≠ selected, switch first; applyNav only after settle (knife-cut #4).
   useEffect(() => {
-    return onNeoRevealInBrowser(({ root, dirPath }) => {
-      if (!selectedAgent) return;
+    return onNeoRevealInBrowser((detail) => {
+      const { root, dirPath, agentId: revealAgentId } = detail;
+      if (revealAgentId && revealAgentId !== selectedAgentId) {
+        pendingRevealRef.current = detail;
+        setSelectedAgentId(revealAgentId);
+        return;
+      }
+      if (!selectedAgent) {
+        if (revealAgentId) pendingRevealRef.current = detail;
+        return;
+      }
       applyNav(root, dirPath);
     });
+  }, [selectedAgent, selectedAgentId, applyNav]);
+
+  // Consume pending reveal once Files has the target agent (after agent-change restore).
+  useEffect(() => {
+    const pending = pendingRevealRef.current;
+    if (!pending || !selectedAgent) return;
+    if (pending.agentId && pending.agentId !== selectedAgent.id) return;
+    pendingRevealRef.current = null;
+    applyNav(pending.root, pending.dirPath);
   }, [selectedAgent, applyNav]);
 
   const switchRoot = useCallback(

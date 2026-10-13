@@ -29,7 +29,7 @@ export function ExplorerPanel(_props: IDockviewPanelProps) {
   const onNavigateDir = useCallback((root: string, path: string) => {
     if (!agent) return;
     setBrowsePos({ agentId: agent.id, root, path });
-    emitNeoRevealInBrowser({ root, dirPath: path });
+    emitNeoRevealInBrowser({ root, dirPath: path, agentId: agent.id });
   }, [agent]);
 
   const onFileSelect = useCallback((root: string, path: string, entry: FsEntry) => {
