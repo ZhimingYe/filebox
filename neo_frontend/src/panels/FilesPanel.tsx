@@ -65,16 +65,17 @@ export function FilesPanel(_props: IDockviewPanelProps) {
 
 
 
+  // Keep selection coherent with health without emitting a null intermediate
+  // when switching A→B or when an id briefly vanishes while others remain.
   useEffect(() => {
-    if (!selectedAgentId || agents.length === 0) return;
-    if (!agents.some((a) => a.id === selectedAgentId)) setSelectedAgentId(null);
-  }, [agents, selectedAgentId]);
-
-  // Prefer restored agent; otherwise first online/slow, else first listed.
-  useEffect(() => {
-    if (selectedAgentId || agents.length === 0) return;
+    if (agents.length === 0) {
+      if (selectedAgentId !== null) setSelectedAgentId(null);
+      return;
+    }
+    if (selectedAgentId && agents.some((a) => a.id === selectedAgentId)) return;
     const preferred =
       agents.find((a) => a.status === 'online' || a.status === 'slow') ?? agents[0];
+    // Jump straight to a live agent — never null while agents exist (knife-cut #3).
     setSelectedAgentId(preferred.id);
   }, [agents, selectedAgentId]);
 
@@ -84,14 +85,16 @@ export function FilesPanel(_props: IDockviewPanelProps) {
   );
 
   // Publish selected-agent context for chrome / Files. Preview dock tabs are sticky across agents (knife-cut #3).
+  // Skip transient null while agents still exist (A→B must not wipe previews).
   useEffect(() => {
+    if (!selectedAgentId && agents.length > 0) return;
     emitNeoAgentSelected({
       agentId: selectedAgentId,
       agent: selectedAgent,
       roots: selectedAgent?.roots,
       officeCapable: !!selectedAgent?.capabilities?.office_pdf_preview,
     });
-  }, [selectedAgentId, selectedAgent]);
+  }, [selectedAgentId, selectedAgent, agents.length]);
 
   const [filePosSeed] = useState(loadNavPosMap);
   const [pathMemSeed] = useState(loadPathMemoryMap);
@@ -285,7 +288,11 @@ function AgentSelect({
       <span style={{ color: c.textMuted }}>Agent</span>
       <select
         value={value ?? ''}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          const id = e.target.value;
+          // Never emit '' / falsy mid-switch (would wipe all Preview tabs).
+          if (id) onChange(id);
+        }}
         style={{
           fontFamily: font.sans,
           fontSize: 12,

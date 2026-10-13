@@ -49,8 +49,22 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
 
   const openOrActivate = useCallback((detail: NeoOpenFileDetail) => {
     // ≤1 file per dock panel: replace rather than append an inner tab.
+    // tab.agentId must match the opening agent (sticky ownership / no cross-agent leak).
+    if (!detail.agentId) {
+      console.warn('[neo] PreviewPanel.openOrActivate: missing agentId', {
+        panelId: api.id,
+        path: detail.path,
+      });
+      return;
+    }
+    console.debug('[neo] PreviewPanel.openOrActivate', {
+      panelId: api.id,
+      agentId: detail.agentId,
+      path: detail.path,
+      tabId: tabIdFor(detail),
+    });
     tabsRef.current.replaceAll(detailToTabInput(detail));
-  }, []);
+  }, [api.id]);
 
   const restore = useCallback((snap: PersistedPreviewHost) => {
     const hooks = tabsRef.current;

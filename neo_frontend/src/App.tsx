@@ -136,6 +136,10 @@ export default function App() {
     });
   }, []);
 
+  // Latest agents list for event handlers (effect deps stay []).
+  const agentsRef = useRef(agents);
+  agentsRef.current = agents;
+
   useEffect(() => {
     return onNeoAgentSelected((detail) => {
       setPreviewAgentContext({
@@ -146,32 +150,83 @@ export default function App() {
       });
       const api = dockApiRef.current;
       if (!api) return;
-      // Knife-cut #3: A→B switch keeps both agents' Preview dock tabs.
-      // Only clear everything when selection is wiped (agentId null).
+      // Knife-cut #3: A→B keeps both agents' Preview dock tabs.
+      // Only close ALL when there are truly no agents — never on transient
+      // null / '' during a switch or a brief deselection blip.
       if (!detail.agentId) {
-        for (const p of findPreviewPanels(api)) p.api.close();
-        rememberFocusedPreview(null);
+        if (agentsRef.current.length === 0) {
+          console.debug('[neo] closeAllPreviews', {
+            reason: 'no-agents-left',
+            agentId: detail.agentId,
+          });
+          for (const p of findPreviewPanels(api)) p.api.close();
+          rememberFocusedPreview(null);
+        } else {
+          console.debug('[neo] skip closeAllPreviews', {
+            reason: 'transient-null-while-agents-remain',
+            agentId: detail.agentId,
+            agentCount: agentsRef.current.length,
+          });
+        }
       }
     });
   }, []);
 
-  // Close only that agent's Preview panels when it leaves health / goes offline.
-  const knownLiveAgentIdsRef = useRef<Set<string>>(new Set());
+  // Close that agent's Preview panels only after it stays out of the live
+  // health set for a grace period (avoids wipe on transient poll blips / switch).
+  const OFFLINE_PREVIEW_GRACE_MS = 3000;
+  const liveAgentIdsRef = useRef<Set<string>>(new Set());
+  const offlineCloseTimersRef = useRef<Map<string, number>>(new Map());
   useEffect(() => {
     const live = new Set(
       agents
         .filter((a) => a.status === 'online' || a.status === 'slow')
         .map((a) => a.id),
     );
-    const api = dockApiRef.current;
-    const prev = knownLiveAgentIdsRef.current;
-    if (api && prev.size > 0) {
-      for (const id of prev) {
-        if (!live.has(id)) closePreviewsForAgent(api, id);
+    const prev = liveAgentIdsRef.current;
+    const timers = offlineCloseTimersRef.current;
+
+    for (const id of live) {
+      const t = timers.get(id);
+      if (t !== undefined) {
+        window.clearTimeout(t);
+        timers.delete(id);
       }
     }
-    knownLiveAgentIdsRef.current = live;
+
+    if (prev.size > 0) {
+      for (const id of prev) {
+        if (live.has(id) || timers.has(id)) continue;
+        const goneId = id;
+        console.debug('[neo] agent left live set; scheduling preview close', {
+          agentId: goneId,
+          graceMs: OFFLINE_PREVIEW_GRACE_MS,
+        });
+        const handle = window.setTimeout(() => {
+          timers.delete(goneId);
+          if (liveAgentIdsRef.current.has(goneId)) return;
+          const dock = dockApiRef.current;
+          if (!dock) return;
+          console.debug('[neo] closePreviewsForAgent', {
+            agentId: goneId,
+            reason: 'offline-or-missing-after-grace',
+            graceMs: OFFLINE_PREVIEW_GRACE_MS,
+          });
+          closePreviewsForAgent(dock, goneId);
+        }, OFFLINE_PREVIEW_GRACE_MS);
+        timers.set(goneId, handle);
+      }
+    }
+
+    liveAgentIdsRef.current = live;
   }, [agents]);
+
+  useEffect(() => {
+    return () => {
+      for (const t of offlineCloseTimersRef.current.values()) window.clearTimeout(t);
+      offlineCloseTimersRef.current.clear();
+    };
+  }, []);
 
   const flushPendingOpens = useCallback((api: DockviewApi) => {
     const queued = pendingOpenRef.current.splice(0);
