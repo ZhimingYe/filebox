@@ -43,6 +43,7 @@ import { EmptyTabGroupChip } from './shell/EmptyTabGroupChip';
 import { IconLogout, IconRefresh } from '@classic/components/icons';
 import { PreviewPanel } from './panels/PreviewPanel';
 import { setPreviewAgentContext, useNeoAgent } from './preview/agentContext';
+import { fileTabId } from './preview/hostRegistry';
 import {
   addEmptyPreviewPanel,
   clearFocusedPreviewIf,
@@ -125,7 +126,10 @@ export default function App() {
       }
       const api = dockApiRef.current;
       if (!api) {
-        pendingOpenRef.current.push(detail);
+        const tid = fileTabId(detail);
+        if (!pendingOpenRef.current.some((d) => fileTabId(d) === tid)) {
+          pendingOpenRef.current.push(detail);
+        }
         return;
       }
       openFileInDock(api, detail);
