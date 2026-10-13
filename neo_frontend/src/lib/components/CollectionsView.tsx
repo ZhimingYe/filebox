@@ -12,15 +12,21 @@ import { useIsMobile } from '../state/useIsMobile';
 
 interface Props {
   agent: AgentInfo;
-  previewTabs: ReturnType<typeof usePreviewTabs>;
-  splitRatio: number;
-  onSplitRatioChange: (ratio: number) => void;
+  /** Required for embedded preview; omit when hidePreview / onPreviewFile (neo list-only). */
+  previewTabs?: ReturnType<typeof usePreviewTabs>;
+  splitRatio?: number;
+  onSplitRatioChange?: (ratio: number) => void;
   onOpenInFiles: (root: string, path: string) => void;
   onRefresh: () => void;
   /** Mobile: hide file list while preview is fullscreen in App. */
   hideList?: boolean;
-  /** Mobile: preview is rendered by App, not inline here. */
+  /** Hide embedded PreviewWorkspace (mobile App host, or neo dock Preview host). */
   hidePreview?: boolean;
+  /**
+   * Neo dock: open via main Preview host instead of local previewTabs.
+   * Receives the FsEntry already resolved from Collections meta / fsStat.
+   */
+  onPreviewFile?: (root: string, path: string, entry: FsEntry) => void;
 }
 
 type ItemStatus = 'ok' | 'missing' | 'denied' | 'unknown';
@@ -67,13 +73,16 @@ function basenameFromPath(path: string): string {
 export function CollectionsView({
   agent,
   previewTabs,
-  splitRatio,
+  splitRatio = 0.42,
   onSplitRatioChange,
   onOpenInFiles,
   onRefresh,
   hideList = false,
   hidePreview = false,
+  onPreviewFile,
 }: Props) {
+  /** Neo list-only / mobile App-hosted preview: no embedded split preview half. */
+  const listOnly = hidePreview || !!onPreviewFile;
   const isMobile = useIsMobile();
   const collections = agent.collections ?? [];
   const [selectedName, setSelectedName] = useState<string | null>(collections[0]?.name ?? null);
@@ -126,8 +135,8 @@ export function CollectionsView({
   // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedItemsKey tracks item content
   }, [selectedName, selectedItemsKey]);
 
-  const activeTab = previewTabs.activeTab;
-  const showInlinePreview = !hidePreview && !!activeTab && activeTab.agentId === agent.id;
+  const activeTab = previewTabs?.activeTab;
+  const showInlinePreview = !listOnly && !!activeTab && activeTab.agentId === agent.id;
 
   const rawListRows: FileEntryListRowModel[] = useMemo(() => {
     if (!selected) return [];
@@ -255,6 +264,14 @@ export function CollectionsView({
           }
           entry = statToFsEntry(res.stat, item.path);
         }
+        if (onPreviewFile) {
+          onPreviewFile(item.root, item.path, entry);
+          return;
+        }
+        if (!previewTabs) {
+          setError('Preview host unavailable');
+          return;
+        }
         const input = {
           agentId: agent.id,
           root: item.root,
@@ -270,7 +287,7 @@ export function CollectionsView({
         setError(api.friendlyMessage(e));
       }
     },
-    [agent.id, isMobile, previewTabs],
+    [agent.id, isMobile, onPreviewFile, previewTabs],
   );
 
   const removeItem = useCallback(
@@ -381,7 +398,7 @@ export function CollectionsView({
 
   // ← → flip through collection files (same affordance as Files directory nav).
   useEffect(() => {
-    if (isMobile || hidePreview || !activeTab || activeTab.agentId !== agent.id) return;
+    if (isMobile || listOnly || !activeTab || activeTab.agentId !== agent.id) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       const target = e.target as HTMLElement | null;
@@ -402,7 +419,7 @@ export function CollectionsView({
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [isMobile, hidePreview, activeTab, agent.id, listRows, openItem]);
+  }, [isMobile, listOnly, activeTab, agent.id, listRows, openItem]);
 
   if (collections.length === 0) {
     return (
@@ -474,10 +491,24 @@ export function CollectionsView({
       )}
       {error && <div style={styles.errorBar}>{error}</div>}
 
-      {!hideList && (
+      {!hideList && (listOnly ? (
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          <FileEntryList
+            rows={listRows}
+            sortBy={sortBy}
+            sortAsc={sortAsc}
+            onToggleSort={toggleSort}
+            showRootColumn
+            emptyMessage="Empty — add from Files."
+            onRowClick={(row) => handleSelectRow(row)}
+            renderNameHoverActions={renderNameHoverActions}
+            allowHoverActionsWhenBlocked
+          />
+        </div>
+      ) : (
         <WorkspaceSplit
           splitRatio={splitRatio}
-          onSplitRatioChange={onSplitRatioChange}
+          onSplitRatioChange={onSplitRatioChange ?? (() => {})}
           showPreview={showInlinePreview}
           style={{ flex: 1 }}
           list={(
@@ -493,11 +524,11 @@ export function CollectionsView({
               allowHoverActionsWhenBlocked
             />
           )}
-          preview={(
+          preview={previewTabs ? (
             <PreviewWorkspace
               agentId={agent.id}
               tabs={previewTabs.tabs}
-              activeTab={activeTab}
+              activeTab={activeTab ?? null}
               activeTabId={previewTabs.activeTabId}
               onActivate={previewTabs.activate}
               onClose={previewTabs.close}
@@ -510,9 +541,9 @@ export function CollectionsView({
               officeCapable={!!agent.capabilities?.office_pdf_preview}
               onRevealInBrowser={onOpenInFiles}
             />
-          )}
+          ) : null}
         />
-      )}
+      ))}
     </div>
   );
 }
