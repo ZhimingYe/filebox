@@ -1,7 +1,8 @@
 /**
- * Neo preview dock panel — hosts classic usePreviewTabs + PreviewWorkspace.
- * No neo path bar: classic PreviewWorkspace owns tabs/path/actions; Pop out
- * lives on the dock group header (see DockBackAction).
+ * Neo preview dock panel — one file per panel (knife-cut #1).
+ * Hosts classic usePreviewTabs + PreviewWorkspace with ≤1 tab so the inner
+ * tab strip stays hidden. Dock tab title = file basename. Closing the dock
+ * tab (or the last inner file) disposes this panel.
  */
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
@@ -37,6 +38,9 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
   const tabsRef = useRef(previewTabs);
   tabsRef.current = previewTabs;
   const [agentCtx, setAgentCtx] = useState(getPreviewAgentContext);
+  /** Skip dispose while applying a restore snapshot. */
+  const restoringRef = useRef(false);
+  const hadFileRef = useRef(false);
 
   useEffect(() => subscribePreviewAgentContext(() => {
     setAgentCtx(getPreviewAgentContext());
@@ -51,28 +55,43 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
   }, [api]);
 
   const openOrActivate = useCallback((detail: NeoOpenFileDetail) => {
-    tabsRef.current.openOrActivate(detailToTabInput(detail));
+    // ≤1 file per dock panel: replace rather than append an inner tab.
+    tabsRef.current.replaceAll(detailToTabInput(detail));
   }, []);
 
   const restore = useCallback((snap: PersistedPreviewHost) => {
     const hooks = tabsRef.current;
-    hooks.closeAll();
-    for (const t of snap.tabs) {
-      hooks.openOrActivate({
-        agentId: t.agentId,
-        root: t.root,
-        path: t.path,
-        entry: t.entry,
+    restoringRef.current = true;
+    try {
+      // Migration / callers may still pass multi-tab; keep only one here.
+      // Extra tabs are expanded into sibling dock panels in layoutPersistence.
+      const preferred =
+        (snap.activeTabId
+          ? snap.tabs.find((t) => tabIdFor(t) === snap.activeTabId)
+          : undefined)
+        ?? snap.tabs[0];
+      if (!preferred) {
+        hooks.replaceAll(null);
+        return;
+      }
+      hooks.replaceAll({
+        agentId: preferred.agentId,
+        root: preferred.root,
+        path: preferred.path,
+        entry: preferred.entry,
+      });
+      if (preferred.pinned) {
+        hooks.togglePin(tabIdFor(preferred));
+      }
+      api.setTitle(preferred.title || preferred.entry?.name || preferred.path);
+      hadFileRef.current = true;
+    } finally {
+      // Defer clearing so the replaceAll commit does not trip dispose-on-empty.
+      void Promise.resolve().then(() => {
+        restoringRef.current = false;
       });
     }
-    // Pins start false after openOrActivate — toggle once for each pinned tab.
-    for (const t of snap.tabs) {
-      if (!t.pinned) continue;
-      const id = tabIdFor(t);
-      hooks.togglePin(id);
-    }
-    if (snap.activeTabId) hooks.activate(snap.activeTabId);
-  }, []);
+  }, [api]);
 
   useEffect(() => {
     registerPreviewHost({
@@ -112,22 +131,50 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
       const pending = (next as PreviewPanelParams | undefined)?.pendingOpen;
       if (!pending) return;
       openOrActivate(pending);
+      api.setTitle(pending.entry?.name || pending.path);
       api.updateParameters({} satisfies PreviewPanelParams);
     });
     const initial = initialParams?.pendingOpen;
     if (initial) {
       openOrActivate(initial);
+      api.setTitle(initial.entry?.name || initial.path);
       api.updateParameters({} satisfies PreviewPanelParams);
     }
     return () => d.dispose();
   }, [api, openOrActivate, initialParams?.pendingOpen]);
 
-  // Dock tab title stays fixed (set at panel create: Preview / Preview N).
-  // Filenames live only on the classic PreviewWorkspace tab bar.
+  // Sync dock tab title to the open file; dispose panel when last file closes
+  // (empty shells stay only via Sidebar New Preview / default layout).
+  useEffect(() => {
+    if (restoringRef.current) return;
+    if (previewTabs.tabs.length > 0) {
+      hadFileRef.current = true;
+      const tab = previewTabs.activeTab ?? previewTabs.tabs[0];
+      if (tab) api.setTitle(tab.title);
+      return;
+    }
+    if (hadFileRef.current) {
+      hadFileRef.current = false;
+      api.close();
+    }
+  }, [previewTabs.tabs, previewTabs.activeTab, api]);
 
   const onRevealInBrowser = useCallback((root: string, dirPath: string) => {
     emitNeoRevealInBrowser({ root, dirPath });
   }, []);
+
+  /** Closing the (only) file disposes the dock panel immediately. */
+  const onClose = useCallback((tabId: string) => {
+    if (tabsRef.current.tabs.length <= 1) {
+      api.close();
+      return;
+    }
+    tabsRef.current.close(tabId);
+  }, [api]);
+
+  const onCloseAll = useCallback(() => {
+    api.close();
+  }, [api]);
 
   const agentId =
     previewTabs.activeTab?.agentId
@@ -148,8 +195,8 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
           activeTab={previewTabs.activeTab}
           activeTabId={previewTabs.activeTabId}
           onActivate={previewTabs.activate}
-          onClose={previewTabs.close}
-          onCloseAll={previewTabs.closeAll}
+          onClose={onClose}
+          onCloseAll={onCloseAll}
           onCloseLeft={previewTabs.closeLeft}
           onCloseRight={previewTabs.closeRight}
           onRefresh={previewTabs.refresh}

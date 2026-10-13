@@ -2,8 +2,9 @@ import type { NeoOpenFileDetail } from '../events/openFile';
 
 /**
  * Dockview panel params for neo preview panels.
- * Each panel hosts classic usePreviewTabs + PreviewWorkspace (#86 pin/park).
- * `pendingOpen` is a one-shot queue applied when the host mounts or params update.
+ * Each panel hosts classic usePreviewTabs + PreviewWorkspace with ≤1 file
+ * (dock tab title = basename). `pendingOpen` is a one-shot queue applied when
+ * the host mounts or params update.
  */
 export type PreviewPanelParams = {
   pendingOpen?: NeoOpenFileDetail;

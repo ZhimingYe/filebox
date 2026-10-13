@@ -1,18 +1,26 @@
 /**
  * Persist / restore dockview layout + best-effort preview tab metadata.
+ *
+ * On restore, legacy v1 multi-tab preview hosts are expanded into one dock
+ * panel per file (knife-cut #1).
  */
 
 import type { DockviewApi } from 'dockview-react';
+import { tabIdFor } from '@lib/hooks/usePreviewTabs';
 import {
   enqueuePendingRestore,
   snapshotAllPreviewHosts,
 } from '../preview/hostRegistry';
+import { allocatePreviewPanelId } from '../preview/openInDock';
 import {
   clearPreviewTabs,
   loadPreviewTabs,
   savePreviewTabs,
+  type PersistedPreviewHost,
   type PersistedPreviewMap,
+  type PersistedPreviewTab,
 } from '../preview/tabPersistence';
+import { PREVIEW_COMPONENT } from '../preview/types';
 
 const STORAGE_KEY = 'filebox.neo.dockLayout.v1';
 const SAVE_DEBOUNCE_MS = 400;
@@ -85,10 +93,51 @@ export function tryRestoreDockLayout(api: DockviewApi): boolean {
   }
 }
 
+function pickPrimaryTab(snap: PersistedPreviewHost): PersistedPreviewTab | undefined {
+  if (!snap.tabs.length) return undefined;
+  if (snap.activeTabId) {
+    const active = snap.tabs.find((t) => tabIdFor(t) === snap.activeTabId);
+    if (active) return active;
+  }
+  return snap.tabs[0];
+}
+
+function singleTabSnap(tab: PersistedPreviewTab): PersistedPreviewHost {
+  return {
+    tabs: [tab],
+    activeTabId: tabIdFor(tab),
+  };
+}
+
+/**
+ * Restore preview files onto dock panels. If a legacy snapshot has multiple
+ * tabs on one panel, keep the primary on that panel and expand the rest into
+ * sibling dock panels (within the same group).
+ */
 function queuePreviewRestores(api: DockviewApi, tabs: PersistedPreviewMap): void {
-  for (const panel of api.panels) {
-    if (panel.api.component !== 'preview') continue;
+  for (const panel of [...api.panels]) {
+    if (panel.api.component !== PREVIEW_COMPONENT) continue;
     const snap = tabs[panel.id];
-    if (snap?.tabs?.length) enqueuePendingRestore(panel.id, snap);
+    if (!snap?.tabs?.length) continue;
+
+    const primary = pickPrimaryTab(snap);
+    if (!primary) continue;
+
+    enqueuePendingRestore(panel.id, singleTabSnap(primary));
+    panel.api.setTitle(primary.title || primary.entry?.name || primary.path);
+
+    const primaryId = tabIdFor(primary);
+    const extras = snap.tabs.filter((t) => tabIdFor(t) !== primaryId);
+    for (const t of extras) {
+      const id = allocatePreviewPanelId();
+      api.addPanel({
+        id,
+        component: PREVIEW_COMPONENT,
+        title: t.title || t.entry?.name || t.path,
+        params: {},
+        position: { referencePanel: panel.id, direction: 'within' },
+      });
+      enqueuePendingRestore(id, singleTabSnap(t));
+    }
   }
 }
