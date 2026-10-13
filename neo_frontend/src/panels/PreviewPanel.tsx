@@ -16,7 +16,7 @@ import {
   subscribePreviewAgentContext,
 } from '../preview/agentContext';
 import { registerPreviewHost, unregisterPreviewHost } from '../preview/hostRegistry';
-import { rememberFocusedPreview } from '../preview/openInDock';
+import { clearFocusedPreviewIf, rememberFocusedPreview } from '../preview/openInDock';
 import type { PersistedPreviewHost } from '../preview/tabPersistence';
 import { type PreviewPanelParams } from '../preview/types';
 import { notifyPreviewTabsChanged } from '../shell/layoutPersistence';
@@ -96,7 +96,10 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
       }),
       restore,
     });
-    return () => unregisterPreviewHost(api.id);
+    return () => {
+      unregisterPreviewHost(api.id);
+      clearFocusedPreviewIf(api.id);
+    };
   }, [api.id, openOrActivate, restore]);
 
   // Persist when tab set / pins / active change.

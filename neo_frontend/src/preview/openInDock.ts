@@ -7,7 +7,15 @@
  * preview panel is created only when:
  *  - detail.newPanel is set, or
  *  - no preview host / shell exists yet.
- * Header "New Preview" uses addEmptyPreviewPanel (empty host for splits).
+ * Sidebar Preview uses addEmptyPreviewPanel (empty host for splits).
+ *
+ * Resolve order when opening a file:
+ *  1. Host that already has this file (activate tab)
+ *  2. Focused / last-focused Preview (survives Files becoming active)
+ *  3. Empty Preview shell (user likely opened it to receive the file)
+ *  4. Any host with tabs
+ *  5. Unmounted preview shell still in the layout
+ *  6. Create a new preview panel
  */
 
 import type { DockviewApi } from 'dockview-react';
@@ -43,6 +51,11 @@ export function getLastFocusedPreviewId(): string | null {
   return lastFocusedPreviewId;
 }
 
+/** Clear sticky focus when the remembered preview panel is disposed. */
+export function clearFocusedPreviewIf(panelId: string): void {
+  if (lastFocusedPreviewId === panelId) lastFocusedPreviewId = null;
+}
+
 export function findPreviewPanels(api: DockviewApi) {
   return api.panels.filter((p) => isPreviewPanel(p.api.component));
 }
@@ -53,8 +66,10 @@ export function findFocusedPreview(api: DockviewApi) {
   if (lastFocusedPreviewId) {
     const p = api.getPanel(lastFocusedPreviewId);
     if (p && isPreviewPanel(p.api.component)) return p;
+    // Stale id (panel closed) — drop it so callers use empty/withTabs fallbacks.
+    lastFocusedPreviewId = null;
   }
-  return findPreviewPanels(api)[0];
+  return undefined;
 }
 
 /**
@@ -64,7 +79,7 @@ export function closePreviewsForOtherAgents(api: DockviewApi, agentId: string): 
   for (const p of findPreviewPanels(api)) {
     const host = getPreviewHost(p.id);
     if (host?.belongsToOtherAgent(agentId)) {
-      if (lastFocusedPreviewId === p.id) lastFocusedPreviewId = null;
+      clearFocusedPreviewIf(p.id);
       p.api.close();
       continue;
     }
@@ -85,7 +100,7 @@ function previewHostTitle(api: DockviewApi): string {
   return n === 0 ? 'Preview' : `Preview ${n + 1}`;
 }
 
-/** Add an empty preview dock panel (header "New Preview"). */
+/** Add an empty preview dock panel (sidebar Preview). */
 export function addEmptyPreviewPanel(api: DockviewApi): string {
   const focused = findFocusedPreview(api);
   const files = api.getPanel('file-tree');
@@ -109,7 +124,7 @@ function addPreviewPanelWithOpen(api: DockviewApi, detail: NeoOpenFileDetail): v
   const focused = findFocusedPreview(api);
   const files = api.getPanel('file-tree');
   const id = nextPreviewId();
-  enqueuePendingOpen(id, detail);
+  // Only params.pendingOpen — do not also enqueue (would double-open on mount).
   api.addPanel({
     id,
     component: PREVIEW_COMPONENT,
@@ -127,7 +142,7 @@ function addPreviewPanelWithOpen(api: DockviewApi, detail: NeoOpenFileDetail): v
 export function openFileInDock(api: DockviewApi, detail: NeoOpenFileDetail): void {
   closePreviewsForOtherAgents(api, detail.agentId);
 
-  // Explicit "open in new dock panel" (rare; New Preview uses addEmptyPreviewPanel).
+  // Explicit "open in new dock panel" (rare; sidebar Preview uses addEmptyPreviewPanel).
   if (detail.newPanel) {
     addPreviewPanelWithOpen(api, detail);
     return;
@@ -158,18 +173,18 @@ export function openFileInDock(api: DockviewApi, detail: NeoOpenFileDetail): voi
     return;
   }
 
-  // Any mounted host (e.g. focus lost / no lastFocused) — prefer one with tabs,
-  // else an empty host, else first listed.
-  const withTabs = listPreviewHosts().find((h) => h.hasTabs());
-  if (withTabs) {
-    withTabs.openOrActivate(detail);
-    activateHostPanel(api, withTabs.panelId);
-    return;
-  }
+  // Focus unknown: prefer an empty Preview shell (user likely opened one to
+  // receive the file), then any host that already has tabs.
   const empty = findEmptyHost();
   if (empty) {
     empty.openOrActivate(detail);
     activateHostPanel(api, empty.panelId);
+    return;
+  }
+  const withTabs = listPreviewHosts().find((h) => h.hasTabs());
+  if (withTabs) {
+    withTabs.openOrActivate(detail);
+    activateHostPanel(api, withTabs.panelId);
     return;
   }
 

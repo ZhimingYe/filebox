@@ -25,6 +25,7 @@ import {
   onNeoCollectionPicker,
   onNeoOpenFile,
   type NeoCollectionPickerDetail,
+  type NeoOpenFileDetail,
 } from './events/openFile';
 import {
   AuditPanel,
@@ -44,6 +45,7 @@ import { PreviewPanel } from './panels/PreviewPanel';
 import { setPreviewAgentContext, useNeoAgent } from './preview/agentContext';
 import {
   addEmptyPreviewPanel,
+  clearFocusedPreviewIf,
   closePreviewsForOtherAgents,
   findPreviewPanels,
   openFileInDock,
@@ -82,6 +84,8 @@ type ChromeKind = 'search' | 'explorer' | 'collections' | 'transfer' | 'terminal
 export default function App() {
   const { loggedIn, login, logout } = useSession();
   const dockApiRef = useRef<DockviewApi | null>(null);
+  /** Opens that arrived before dockview was ready. */
+  const pendingOpenRef = useRef<NeoOpenFileDetail[]>([]);
   const [dockReady, setDockReady] = useState(0);
   const [collectionPicker, setCollectionPicker] = useState<NeoCollectionPickerDetail | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -120,7 +124,10 @@ export default function App() {
         });
       }
       const api = dockApiRef.current;
-      if (!api) return;
+      if (!api) {
+        pendingOpenRef.current.push(detail);
+        return;
+      }
       openFileInDock(api, detail);
     });
   }, []);
@@ -144,16 +151,25 @@ export default function App() {
     });
   }, []);
 
+  const flushPendingOpens = useCallback((api: DockviewApi) => {
+    const queued = pendingOpenRef.current.splice(0);
+    for (const detail of queued) openFileInDock(api, detail);
+  }, []);
+
   const onReady = useCallback((event: DockviewReadyEvent) => {
     dockApiRef.current = event.api;
     setDockReady((n) => n + 1);
 
-    if (event.api.panels.length > 0) return;
+    if (event.api.panels.length > 0) {
+      flushPendingOpens(event.api);
+      return;
+    }
 
     const restored = tryRestoreDockLayout(event.api);
     if (restored) {
       const preview = event.api.panels.find((p) => p.api.component === PREVIEW_COMPONENT);
       if (preview) rememberFocusedPreview(preview.id);
+      flushPendingOpens(event.api);
       return;
     }
 
@@ -170,7 +186,8 @@ export default function App() {
       position: { referencePanel: 'file-tree', direction: 'right' },
     });
     rememberFocusedPreview('preview');
-  }, []);
+    flushPendingOpens(event.api);
+  }, [flushPendingOpens]);
 
   useEffect(() => {
     if (!loggedIn || dockReady === 0) return;
@@ -181,9 +198,15 @@ export default function App() {
         rememberFocusedPreview(ev.panel.id);
       }
     });
+    const removeSub = api.onDidRemovePanel((ev) => {
+      if (ev.api.component === PREVIEW_COMPONENT) {
+        clearFocusedPreviewIf(ev.id);
+      }
+    });
     const persistDispose = bindDockLayoutPersistence(api);
     return () => {
       focusSub.dispose();
+      removeSub.dispose();
       persistDispose();
     };
   }, [loggedIn, dockReady]);

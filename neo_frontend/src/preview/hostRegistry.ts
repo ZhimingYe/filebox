@@ -62,6 +62,8 @@ export function findEmptyHost(): PreviewHostController | undefined {
 
 export function enqueuePendingOpen(panelId: string, detail: NeoOpenFileDetail): void {
   const q = pendingByPanel.get(panelId) ?? [];
+  const tid = fileTabId(detail);
+  if (q.some((d) => fileTabId(d) === tid)) return;
   q.push(detail);
   pendingByPanel.set(panelId, q);
 }
