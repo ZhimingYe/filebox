@@ -1,0 +1,190 @@
+import { useState, useRef, useEffect } from 'react';
+import Editor, { type OnMount } from '@monaco-editor/react';
+import type { editor as MonacoEditor } from 'monaco-editor';
+
+import { ensureMonacoConfigured, MONACO_THEME, monacoFontFamily } from '../monacoSetup';
+import {
+  useFetchText,
+  useFileGate,
+  FileGateError,
+  LargeFileWarning,
+  PREVIEW_SIZE_THRESHOLDS,
+  CopyButton,
+  LoadingOverlay,
+  gateLoadingMessage,
+  previewLoadingMessage,
+  wrapPref,
+  setWrapPref,
+  extToLang,
+  styles,
+} from './previewShared';
+import { getViewerState, setViewerState } from './previewKeepAlive';
+import { FileDownloadLink } from './FileDownloadLink';
+
+ensureMonacoConfigured();
+
+interface Props {
+  url: string;
+  ext: string;
+  agentId: string;
+  root: string;
+  path: string;
+  /** Pin state-restore key (see previewKeepAlive). */
+  stateKey?: string;
+}
+
+export function TextPreview({ url, ext, agentId, root, path, stateKey }: Props) {
+  const gate = useFileGate({ agentId, root, path, threshold: PREVIEW_SIZE_THRESHOLDS.text });
+  const canLoad = !gate.sizeUnknown && !gate.error && (!gate.isLarge || gate.bypassed);
+  const { text, error, loading, retrying, cancel, retry, received, total, slow } = useFetchText(url, canLoad, agentId);
+  const [wrap, setWrap] = useState(wrapPref);
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+
+  // Keep word-wrap in sync when the toolbar toggle flips after mount.
+  useEffect(() => {
+    editorRef.current?.updateOptions({ wordWrap: wrap ? 'on' : 'off' });
+  }, [wrap]);
+
+  // Pin = keep state: persist Monaco viewState (scroll/selection) on unmount.
+  useEffect(() => {
+    if (!stateKey) return;
+    return () => {
+      const vs = editorRef.current?.saveViewState();
+      if (vs) setViewerState(stateKey, { kind: 'monaco', viewState: vs });
+    };
+  }, [stateKey]);
+
+  if (gate.sizeUnknown) {
+    return (
+      <div style={styles.container}>
+        <LoadingOverlay
+          message={gateLoadingMessage(gate.retrying)}
+          onCancel={gate.cancel}
+        />
+      </div>
+    );
+  }
+  if (gate.error) return <FileGateError message={gate.error} onRetry={gate.retry} />;
+  if (gate.isLarge && !gate.bypassed) {
+    return (
+      <LargeFileWarning
+        size={gate.size!}
+        flavor="file"
+        onForceLoad={gate.forceLoad}
+        agentId={agentId}
+        root={root}
+        path={path}
+      />
+    );
+  }
+
+  const toggleWrap = () => {
+    const next = !wrap;
+    setWrapPref(next);
+    setWrap(next);
+  };
+
+  if (loading) {
+    return (
+      <div style={styles.container}>
+        <LoadingOverlay message={previewLoadingMessage(retrying, 'Loading file...', { received, total }, slow)} onCancel={cancel} />
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.largeImageWarning}>
+          <p style={styles.errorText}>{error}</p>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button onClick={retry} style={styles.retryBtn}>Retry</button>
+            <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const raw = text!;
+  const totalLines = raw.split('\n').length;
+  const lang = extToLang[ext] || 'plaintext';
+
+  const handleMount: OnMount = (ed) => {
+    editorRef.current = ed;
+    ed.updateOptions({ wordWrap: wrap ? 'on' : 'off' });
+    if (stateKey) {
+      const saved = getViewerState(stateKey);
+      if (saved?.kind === 'monaco' && saved.viewState) {
+        ed.restoreViewState(saved.viewState as MonacoEditor.ICodeEditorViewState);
+      }
+    }
+  };
+
+  const openFind = () => {
+    void editorRef.current?.getAction('actions.find')?.run();
+  };
+
+  return (
+    <div style={styles.monacoContainer}>
+      <div style={styles.codeToolbar}>
+        <span style={styles.metaInfo}>
+          {totalLines.toLocaleString()} lines · {raw.length.toLocaleString()} chars · {lang}
+        </span>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <button onClick={openFind} style={styles.toolBtn} title="Find (Ctrl/Cmd+F)">
+            Find
+          </button>
+          <button onClick={toggleWrap} style={styles.toolBtn}>
+            {wrap ? 'Wrap: On' : 'Wrap: Off'}
+          </button>
+          <CopyButton text={raw} />
+        </div>
+      </div>
+      <div style={styles.monacoEditorHost}>
+        <Editor
+          height="100%"
+          language={lang}
+          value={raw}
+          theme={MONACO_THEME}
+          onMount={handleMount}
+          loading={<LoadingOverlay message="Loading editor..." />}
+          options={{
+            readOnly: true,
+            domReadOnly: true,
+            wordWrap: wrap ? 'on' : 'off',
+            minimap: { enabled: false },
+            scrollBeyondLastLine: false,
+            fontFamily: monacoFontFamily,
+            fontSize: 13,
+            lineHeight: 20,
+            padding: { top: 12, bottom: 12 },
+            automaticLayout: true,
+            folding: true,
+            renderLineHighlight: 'line',
+            contextmenu: true,
+            quickSuggestions: false,
+            suggestOnTriggerCharacters: false,
+            parameterHints: { enabled: false },
+            // Read-only viewer: hover tooltips add little value and can sit
+            // under the Find widget / toolbar, so keep them off.
+            hover: { enabled: false },
+            links: true,
+            find: {
+              addExtraSpaceOnTop: false,
+              autoFindInSelection: 'never',
+              seedSearchStringFromSelection: 'selection',
+            },
+            // Read-only: hide the cursor caret blink noise; selection still works.
+            cursorStyle: 'line-thin',
+            overviewRulerLanes: 0,
+            hideCursorInOverviewRuler: true,
+            scrollbar: {
+              verticalScrollbarSize: 10,
+              horizontalScrollbarSize: 10,
+            },
+          }}
+        />
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,379 @@
+/**
+ * Neo Files dock panel — mounts classic FileBrowser (DirectoryTree + list)
+ * against the hub. Pinned folders stay in NeoSidebar only (no Files-panel
+ * duplicate). Desktop-only; preview open via `emitNeoOpenFile`.
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import type { IDockviewPanelProps } from 'dockview-react';
+import type { AgentInfo, FsEntry } from '@lib/api/client';
+import { FileBrowser } from '@lib/components/FileBrowser';
+import {
+  LAST_AGENT_STORAGE,
+  loadNavPosMap,
+  loadPathMemoryMap,
+  memKey,
+  persistNavState,
+} from '@lib/state/navPersistence';
+import { useHealth } from '@lib/state/health';
+import { c, font } from '../theme';
+import {
+  emitNeoAgentSelected,
+  emitNeoCollectionPicker,
+  emitNeoOpenFile,
+  onNeoRevealInBrowser,
+  onNeoSelectAgent,
+  type NeoRevealInBrowserDetail,
+} from '../events/openFile';
+import { setBrowsePos, subscribeBrowsePos, getBrowsePos } from '../shell/browsePos';
+
+// Classic desktop Files shows the DirectoryTree beside the list. FileBrowser
+// persists the toggle in `filebox.treeOpen`; seed it open on first neo use so
+// the panel matches the classic desktop layout out of the box.
+function seedTreeOpen() {
+  try {
+    if (localStorage.getItem('filebox.treeOpen') === null) {
+      localStorage.setItem('filebox.treeOpen', '1');
+    }
+  } catch {
+    /* ignore */
+  }
+}
+seedTreeOpen();
+
+export function FilesPanel(_props: IDockviewPanelProps) {
+  const { agents, error: healthError, refresh } = useHealth(true);
+
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(LAST_AGENT_STORAGE);
+    } catch {
+      return null;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (selectedAgentId) localStorage.setItem(LAST_AGENT_STORAGE, selectedAgentId);
+      else localStorage.removeItem(LAST_AGENT_STORAGE);
+    } catch {
+      /* ignore */
+    }
+  }, [selectedAgentId]);
+
+  // Sidebar BackendList can switch agents.
+  useEffect(() => onNeoSelectAgent((id) => setSelectedAgentId(id)), []);
+
+
+
+  // Keep selection coherent with health without emitting a null intermediate
+  // when switching A→B or when an id briefly vanishes while others remain.
+  useEffect(() => {
+    if (agents.length === 0) {
+      if (selectedAgentId !== null) setSelectedAgentId(null);
+      return;
+    }
+    if (selectedAgentId && agents.some((a) => a.id === selectedAgentId)) return;
+    const preferred =
+      agents.find((a) => a.status === 'online' || a.status === 'slow') ?? agents[0];
+    // Jump straight to a live agent — never null while agents exist (knife-cut #3).
+    setSelectedAgentId(preferred.id);
+  }, [agents, selectedAgentId]);
+
+  const selectedAgent: AgentInfo | null = useMemo(
+    () => agents.find((a) => a.id === selectedAgentId) ?? null,
+    [agents, selectedAgentId],
+  );
+
+  // Publish selected-agent context for chrome / Files. Preview dock tabs are sticky across agents (knife-cut #3).
+  // Skip transient null while agents still exist (A→B must not wipe previews).
+  useEffect(() => {
+    if (!selectedAgentId && agents.length > 0) return;
+    emitNeoAgentSelected({
+      agentId: selectedAgentId,
+      agent: selectedAgent,
+      roots: selectedAgent?.roots,
+      officeCapable: !!selectedAgent?.capabilities?.office_pdf_preview,
+    });
+  }, [selectedAgentId, selectedAgent, agents.length]);
+
+  const [filePosSeed] = useState(loadNavPosMap);
+  const [pathMemSeed] = useState(loadPathMemoryMap);
+  const filePosByAgent = useRef(filePosSeed);
+  const pathMemory = useRef(pathMemSeed);
+
+  const [selectedRoot, setSelectedRoot] = useState<string | null>(null);
+  const [currentPath, setCurrentPath] = useState('/');
+
+  const enabledRoots = useMemo(
+    () => (selectedAgent ? selectedAgent.roots.filter((r) => r.enabled) : []),
+    [selectedAgent],
+  );
+
+  const prevAgentIdRef = useRef<string | null>(null);
+  // Pending reveal when switching agent: applyNav only after selectedAgent settles.
+  const pendingRevealRef = useRef<NeoRevealInBrowserDetail | null>(null);
+  useEffect(() => {
+    if (!selectedAgent) {
+      setSelectedRoot(null);
+      setCurrentPath('/');
+      prevAgentIdRef.current = null;
+      return;
+    }
+    const agentId = selectedAgent.id;
+    const agentChanged = prevAgentIdRef.current !== agentId;
+
+    if (enabledRoots.length === 0) {
+      setSelectedRoot(null);
+      prevAgentIdRef.current = agentId;
+      return;
+    }
+
+    if (agentChanged) {
+      prevAgentIdRef.current = agentId;
+      const saved = filePosByAgent.current.get(agentId);
+      const root =
+        saved && enabledRoots.some((r) => r.name === saved.root)
+          ? saved.root
+          : enabledRoots[0].name;
+      const path =
+        saved && saved.root === root
+          ? saved.path
+          : pathMemory.current.get(memKey(agentId, root)) || '/';
+      setSelectedRoot(root);
+      setCurrentPath(path);
+      return;
+    }
+
+    const rootValid = selectedRoot && enabledRoots.some((r) => r.name === selectedRoot);
+    if (!rootValid) {
+      const fallback = enabledRoots[0].name;
+      setSelectedRoot(fallback);
+      setCurrentPath(pathMemory.current.get(memKey(agentId, fallback)) || '/');
+    }
+  }, [selectedAgent, enabledRoots, selectedRoot]);
+
+  const applyNav = useCallback(
+    (root: string, path: string) => {
+      setSelectedRoot(root);
+      setCurrentPath(path);
+      if (selectedAgent) {
+        filePosByAgent.current.set(selectedAgent.id, { root, path });
+        pathMemory.current.set(memKey(selectedAgent.id, root), path);
+        persistNavState(filePosByAgent.current, pathMemory.current);
+        setBrowsePos({ agentId: selectedAgent.id, root, path });
+      }
+    },
+    [selectedAgent],
+  );
+
+  // Explorer (or other chrome) updated browse position — keep Files in sync.
+  useEffect(() => {
+    return subscribeBrowsePos(() => {
+      const p = getBrowsePos();
+      if (!p || !selectedAgentId || p.agentId !== selectedAgentId) return;
+      setSelectedRoot(p.root);
+      setCurrentPath(p.path);
+    });
+  }, [selectedAgentId]);
+
+  // Reveal: if detail.agentId ≠ selected, switch first; applyNav only after settle (knife-cut #4).
+  useEffect(() => {
+    return onNeoRevealInBrowser((detail) => {
+      const { root, dirPath, agentId: revealAgentId } = detail;
+      if (revealAgentId && revealAgentId !== selectedAgentId) {
+        pendingRevealRef.current = detail;
+        setSelectedAgentId(revealAgentId);
+        return;
+      }
+      if (!selectedAgent) {
+        if (revealAgentId) pendingRevealRef.current = detail;
+        return;
+      }
+      applyNav(root, dirPath);
+    });
+  }, [selectedAgent, selectedAgentId, applyNav]);
+
+  // Consume pending reveal once Files has the target agent (after agent-change restore).
+  useEffect(() => {
+    const pending = pendingRevealRef.current;
+    if (!pending || !selectedAgent) return;
+    if (pending.agentId && pending.agentId !== selectedAgent.id) return;
+    pendingRevealRef.current = null;
+    applyNav(pending.root, pending.dirPath);
+  }, [selectedAgent, applyNav]);
+
+  const switchRoot = useCallback(
+    (root: string) => {
+      if (!selectedAgent) return;
+      if (selectedRoot) {
+        pathMemory.current.set(memKey(selectedAgent.id, selectedRoot), currentPath);
+      }
+      const restored = pathMemory.current.get(memKey(selectedAgent.id, root)) || '/';
+      applyNav(root, restored);
+    },
+    [selectedAgent, selectedRoot, currentPath, applyNav],
+  );
+
+  const handleFileSelect = useCallback(
+    (root: string, path: string, entry: FsEntry) => {
+      if (!selectedAgent) return;
+      emitNeoOpenFile({
+        agentId: selectedAgent.id,
+        root,
+        path,
+        entry,
+        officeCapable: !!selectedAgent.capabilities?.office_pdf_preview,
+        roots: selectedAgent.roots,
+      });
+    },
+    [selectedAgent],
+  );
+
+  if (agents.length === 0) {
+    return (
+      <div style={shellStyle}>
+        <div style={msgStyle}>
+          {healthError
+            ? `Could not load agents: ${healthError}`
+            : 'No agents yet. Connect an agent to the hub, then refresh.'}
+        </div>
+        <button type="button" style={btnStyle} onClick={() => void refresh()}>
+          Refresh
+        </button>
+      </div>
+    );
+  }
+
+  if (!selectedAgent) {
+    return (
+      <div style={shellStyle}>
+        <div style={msgStyle}>Select an agent to browse files.</div>
+        <AgentSelect
+          agents={agents}
+          value={selectedAgentId}
+          onChange={setSelectedAgentId}
+        />
+      </div>
+    );
+  }
+
+  if (enabledRoots.length === 0) {
+    return (
+      <div style={shellStyle}>
+        <div style={toolbarStyle}>
+          <AgentSelect
+            agents={agents}
+            value={selectedAgentId}
+            onChange={setSelectedAgentId}
+          />
+        </div>
+        <div style={msgStyle}>
+          Agent <strong>{selectedAgent.name || selectedAgent.id}</strong> has no
+          enabled roots.
+        </div>
+      </div>
+    );
+  }
+
+  // Pinned folders live in NeoSidebar only (match classic). Files is tree + list.
+  return (
+    <div style={{ ...shellStyle, padding: 0, gap: 0, background: c.bg }}>
+      <FileBrowser
+        agentId={selectedAgent.id}
+        roots={selectedAgent.roots}
+        onFileSelect={handleFileSelect}
+        onRootsChange={refresh}
+        selectedRoot={selectedRoot}
+        currentPath={currentPath}
+        onApplyNav={applyNav}
+        onSwitchRoot={switchRoot}
+        onAddToCollection={(root, path, anchor) => {
+          emitNeoCollectionPicker({ agentId: selectedAgent.id, root, path, anchor });
+        }}
+      />
+    </div>
+  );
+}
+
+function AgentSelect({
+  agents,
+  value,
+  onChange,
+}: {
+  agents: AgentInfo[];
+  value: string | null;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+      <span style={{ color: c.textMuted }}>Agent</span>
+      <select
+        value={value ?? ''}
+        onChange={(e) => {
+          const id = e.target.value;
+          // Never emit '' / falsy mid-switch (would wipe all Preview tabs).
+          if (id) onChange(id);
+        }}
+        style={{
+          fontFamily: font.sans,
+          fontSize: 12,
+          padding: '2px 6px',
+          border: `1px solid ${c.border}`,
+          borderRadius: 6,
+          background: c.surface,
+          color: c.text,
+          maxWidth: 220,
+        }}
+      >
+        {agents.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.name || a.id} ({a.status})
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+const shellStyle: CSSProperties = {
+  height: '100%',
+  boxSizing: 'border-box',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  padding: 8,
+  background: c.bg,
+  color: c.textSecondary,
+  fontFamily: font.sans,
+  fontSize: 13,
+};
+
+const toolbarStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  padding: '6px 8px',
+  borderBottom: `1px solid ${c.border}`,
+  background: c.surface,
+  flexShrink: 0,
+};
+
+const msgStyle: CSSProperties = {
+  color: c.textMuted,
+  lineHeight: 1.5,
+  padding: 8,
+};
+
+const btnStyle: CSSProperties = {
+  alignSelf: 'flex-start',
+  fontFamily: font.sans,
+  fontSize: 12,
+  padding: '4px 10px',
+  borderRadius: 6,
+  border: `1px solid ${c.border}`,
+  background: c.surface,
+  color: c.text,
+  cursor: 'pointer',
+};
+

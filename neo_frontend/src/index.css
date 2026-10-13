@@ -1,0 +1,238 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: #0f172a;
+  background: #ffffff;
+}
+
+code {
+  font-size: 0.92em;
+}
+
+/*
+ * dockview chrome → classic filebox tokens (indigo / slate).
+ * Keep outer dock tabs ~28px to match classic PreviewWorkspace tab strip.
+ * Flat white shell like classic (no slate gutters / card chrome).
+ * Load after dockview.css (see main.tsx) so theme vars win; inactive-group
+ * colors also use !important selectors below (dockview ships its own).
+ * Active tab uses the same top inset accent as classic PreviewWorkspace.
+ */
+.dockview-theme-light {
+  --dv-group-view-background-color: #ffffff;
+  --dv-tabs-and-actions-container-background-color: #f8fafc;
+  --dv-tabs-and-actions-container-height: 28px;
+  --dv-tabs-and-actions-container-font-size: 12px;
+  --dv-tab-font-size: 12px;
+  --dv-tab-margin: 0;
+  --dv-tab-border-radius: 0;
+  --dv-border-radius: 0px;
+  --dv-spacing-padding: 0px;
+  --dv-tab-divider-color: transparent;
+  --dv-separator-border: #e2e8f0;
+  --dv-paneview-header-border-color: #e2e8f0;
+  --dv-paneview-active-outline-color: #6366f1;
+
+  --dv-activegroup-visiblepanel-tab-background-color: #ffffff;
+  --dv-activegroup-visiblepanel-tab-color: #0f172a;
+  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-activegroup-hiddenpanel-tab-color: #475569;
+
+  --dv-inactivegroup-visiblepanel-tab-background-color: #ffffff;
+  --dv-inactivegroup-visiblepanel-tab-color: #64748b;
+  --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-inactivegroup-hiddenpanel-tab-color: #94a3b8;
+
+  --dv-icon-hover-background-color: #eef2ff;
+  --dv-tabs-container-scrollbar-color: #cbd5e1;
+  --dv-scrollbar-background-color: rgba(148, 163, 184, 0.35);
+
+  --dv-drag-over-background-color: rgba(99, 102, 241, 0.14);
+  --dv-drag-over-border-color: #6366f1;
+  --dv-edge-dock-indicator-color: rgba(99, 102, 241, 0.9);
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: #6366f1;
+
+  --dv-floating-box-shadow: 0 10px 15px -3px rgba(15, 23, 42, 0.1),
+    0 4px 6px -4px rgba(15, 23, 42, 0.1);
+  --dv-floating-border: 1px solid #e2e8f0;
+  --dv-floating-titlebar-height: 28px;
+
+  --dv-tab-group-color-purple: #6366f1;
+  --dv-tab-group-color-blue: #4f46e5;
+  --dv-tab-group-chip-border-radius: 6px;
+  --dv-tab-group-chip-font-size: 11px;
+}
+
+.dockview-theme-light .dv-dockview {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #ffffff;
+}
+
+/* Flat panels like classic — no card gutter / shadow */
+.dockview-theme-light .dv-groupview {
+  border: none;
+  border-radius: 0;
+  overflow: hidden;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.dockview-theme-light .dv-tabs-and-actions-container {
+  padding: 0 4px 0 0;
+  gap: 0;
+  /* one hairline under the strip; kill dockview's extra border-bottom */
+  border-bottom: 1px solid #e2e8f0 !important;
+  background: #f8fafc !important;
+  min-height: 28px !important;
+  max-height: 28px !important;
+}
+
+.dockview-theme-light .dv-tab {
+  border-radius: 0;
+  padding: 0;
+  height: 28px;
+  /* classic-like hairline between tabs */
+  border-right: 1px solid #e2e8f0;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.dockview-theme-light .dv-tab:last-of-type {
+  border-right: none;
+}
+
+.dockview-theme-light .dv-tab .dv-default-tab {
+  padding: 0 10px;
+  gap: 6px;
+  height: 28px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  min-width: 0;
+}
+
+.dockview-theme-light .dv-tab .dv-default-tab .dv-default-tab-content {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.dockview-theme-light .dv-groupview.dv-active-group .dv-tab.dv-active-tab {
+  /* Match classic PreviewWorkspace: top inset accent, not a heavy bottom bar */
+  box-shadow: inset 0 2px 0 #6366f1;
+  background: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* Inactive group: muted tabs (dockview.css vars alone lose to later !important) */
+.dockview-theme-light .dv-groupview.dv-inactive-group .dv-tab.dv-active-tab {
+  box-shadow: inset 0 2px 0 #a5b4fc;
+  background: #ffffff !important;
+  color: #64748b !important;
+}
+
+.dockview-theme-light .dv-groupview.dv-inactive-group .dv-tab.dv-inactive-tab {
+  color: #94a3b8 !important;
+}
+
+.dockview-theme-light .dv-groupview.dv-inactive-group .dv-tab.dv-inactive-tab:hover {
+  background: #eef2ff !important;
+  color: #64748b !important;
+}
+
+.dockview-theme-light .dv-tab.dv-inactive-tab:hover {
+  background: #eef2ff !important;
+  color: #0f172a !important;
+}
+
+/* Close: hidden until hover / active */
+.dockview-theme-light .dv-tab .dv-default-tab .dv-default-tab-action {
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+
+.dockview-theme-light .dv-tab:hover .dv-default-tab .dv-default-tab-action,
+.dockview-theme-light .dv-tab.dv-active-tab .dv-default-tab .dv-default-tab-action {
+  opacity: 0.55;
+}
+
+.dockview-theme-light .dv-tab .dv-default-tab .dv-default-tab-action:hover {
+  background-color: #eef2ff !important;
+  opacity: 1;
+}
+
+/* Hide the fake divider line between tabs that reads as double borders */
+.dockview-theme-light .dv-tabs-container.dv-horizontal .dv-tab:not(:first-child)::before,
+.dockview-theme-light .dv-tabs-container.dv-vertical .dv-tab:not(:first-child)::before {
+  display: none !important;
+}
+
+.dockview-theme-light .dv-right-actions-container {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  gap: 2px;
+}
+
+.dockview-theme-light .dv-watermark {
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+/* Soft sash: transparent idle, quiet indigo on hover */
+.dockview-theme-light .dv-sash-container .dv-sash {
+  background-color: transparent !important;
+  transition: background-color 120ms ease, opacity 120ms ease;
+}
+
+.dockview-theme-light .dv-sash-container .dv-sash:hover,
+.dockview-theme-light .dv-sash-container .dv-sash.dv-enabled:hover,
+.dockview-theme-light .dv-sash-container .dv-sash:active {
+  background-color: #6366f1 !important;
+  opacity: 0.35;
+}
+
+/* Hide dockview overflow "v N" chip — EmptyTabGroupChip only covers group chips */
+.dockview-theme-light .dv-tabs-overflow-dropdown-root {
+  display: none !important;
+}
+
+/* Header chrome icon buttons — quiet hover matching DockBackAction */
+.neo-chrome-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.neo-chrome-icon-btn:hover {
+  background: #eef2ff;
+  color: #6366f1;
+}

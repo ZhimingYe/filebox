@@ -526,7 +526,7 @@ filebox/
     agent/src/              # … + search.rs, dir_cache.rs, temp_store.rs
                             # (write-scoped temp upload folder),
                             # terminal.rs (PTY sessions)
-  frontend/
+  frontend/                 # classic SPA (unchanged; still default /)
     vite.config.ts          # manualChunks: react / markdown / tiff
                             # (Monaco stays behind TextPreview lazy import)
     src/
@@ -544,6 +544,11 @@ filebox/
         DirectoryTree AddressBar DateFilterControl PinnedFolders
         AgentSettings RootManager HealthPanel SystemStats AboutDialog
         LoginAudit
+  neo_frontend/             # dockview neo shell at /neo (filebox-neo branch;
+                            # do NOT merge to main until signed off)
+    vite.config.ts          # base: '/neo/'
+    public/popout.html      # dockview addPopoutGroup same-origin stub
+    src/App.tsx             # empty shell: file-tree + preview placeholders
   scripts/
     release.sh
     gen_notice.sh

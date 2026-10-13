@@ -304,3 +304,36 @@ export function IconTerminal({ style }: SvgProps) {
     </Svg>
   );
 }
+
+/// Arrow out of a window — pop a dock group into its own window.
+export function IconPopOut({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <rect x="2" y="3.5" width="8.5" height="9" rx="1.5" />
+      <path d="M8.5 2.5H13.5V7.5" />
+      <path d="M7.5 8.5L13.5 2.5" />
+    </Svg>
+  );
+}
+
+/// Arrow into a window — dock a popout group back into the main grid.
+export function IconDockBack({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <rect x="5.5" y="3.5" width="8.5" height="9" rx="1.5" />
+      <path d="M7.5 2.5H2.5V7.5" />
+      <path d="M8.5 8.5L2.5 2.5" />
+    </Svg>
+  );
+}
+
+/// Plus in a panel — "new preview host" in the neo shell header.
+export function IconPlusPanel({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <rect x="2.5" y="3" width="11" height="10" rx="1.5" />
+      <path d="M8 6v4M6 8h4" />
+    </Svg>
+  );
+}
+
