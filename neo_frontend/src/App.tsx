@@ -155,18 +155,8 @@ export default function App() {
       // null / '' during a switch or a brief deselection blip.
       if (!detail.agentId) {
         if (agentsRef.current.length === 0) {
-          console.debug('[neo] closeAllPreviews', {
-            reason: 'no-agents-left',
-            agentId: detail.agentId,
-          });
           for (const p of findPreviewPanels(api)) p.api.close();
           rememberFocusedPreview(null);
-        } else {
-          console.debug('[neo] skip closeAllPreviews', {
-            reason: 'transient-null-while-agents-remain',
-            agentId: detail.agentId,
-            agentCount: agentsRef.current.length,
-          });
         }
       }
     });
@@ -198,20 +188,11 @@ export default function App() {
       for (const id of prev) {
         if (live.has(id) || timers.has(id)) continue;
         const goneId = id;
-        console.debug('[neo] agent left live set; scheduling preview close', {
-          agentId: goneId,
-          graceMs: OFFLINE_PREVIEW_GRACE_MS,
-        });
         const handle = window.setTimeout(() => {
           timers.delete(goneId);
           if (liveAgentIdsRef.current.has(goneId)) return;
           const dock = dockApiRef.current;
           if (!dock) return;
-          console.debug('[neo] closePreviewsForAgent', {
-            agentId: goneId,
-            reason: 'offline-or-missing-after-grace',
-            graceMs: OFFLINE_PREVIEW_GRACE_MS,
-          });
           closePreviewsForAgent(dock, goneId);
         }, OFFLINE_PREVIEW_GRACE_MS);
         timers.set(goneId, handle);

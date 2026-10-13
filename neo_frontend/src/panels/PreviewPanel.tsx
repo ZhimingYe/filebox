@@ -57,12 +57,6 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
       });
       return;
     }
-    console.debug('[neo] PreviewPanel.openOrActivate', {
-      panelId: api.id,
-      agentId: detail.agentId,
-      path: detail.path,
-      tabId: tabIdFor(detail),
-    });
     tabsRef.current.replaceAll(detailToTabInput(detail));
   }, [api.id]);
 

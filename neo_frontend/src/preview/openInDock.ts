@@ -82,7 +82,6 @@ export function findFocusedPreview(api: DockviewApi) {
  * selection switch (knife-cut #3: sticky Preview ownership).
  */
 export function closePreviewsForAgent(api: DockviewApi, agentId: string): void {
-  console.debug('[neo] closePreviewsForAgent:start', { agentId });
   for (const p of findPreviewPanels(api)) {
     const host = getPreviewHost(p.id);
     // hasTabs + !belongsToOtherAgent ⇒ this host's file is for agentId
