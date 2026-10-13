@@ -1,0 +1,230 @@
+import { memo, lazy, Suspense } from 'react';
+import { fileRawUrl } from '../api/client';
+import { FileDownloadLink } from './FileDownloadLink';
+import { c } from '../theme';
+
+import {
+  isHtmlPreviewExt,
+  isTextFile,
+  styles,
+} from './previewShared';
+import {
+  isOfficePreviewExt,
+  readOfficePdfPreviewPref,
+} from './officePreviewSupport';
+
+// Heavy preview components are lazy-loaded so their deps only download when
+// the user actually opens that file type. The biggest is TextPreview
+// (monaco-editor ~2MB+), followed by MarkdownPreview (react-markdown +
+// remark-gfm ~80KB). PdfPreview pulls pdfjs-dist (~500KB + 1.2MB worker)
+// only when a PDF is opened. ImagePreview pulls UTIF (~50KB) only when a
+// TIFF is opened.
+const ImagePreview = lazy(() => import('./ImagePreview').then(m => ({ default: m.ImagePreview })));
+const PdfPreview = lazy(() => import('./PdfPreview').then(m => ({ default: m.PdfPreview })));
+const TextPreview = lazy(() => import('./TextPreview').then(m => ({ default: m.TextPreview })));
+const MarkdownPreview = lazy(() => import('./MarkdownPreview').then(m => ({ default: m.MarkdownPreview })));
+const HtmlPreview = lazy(() => import('./HtmlPreview').then(m => ({ default: m.HtmlPreview })));
+const CsvPreview = lazy(() => import('./CsvPreview').then(m => ({ default: m.CsvPreview })));
+const OfficePreview = lazy(() => import('./OfficePreview').then(m => ({ default: m.OfficePreview })));
+
+interface Props {
+  agentId: string;
+  root: string;
+  path: string;
+  entryType: string;
+  denied: boolean;
+  /** Agent advertised office_pdf_preview capability. */
+  officeCapable?: boolean;
+  /**
+   * Refresh generation. Appended to the raw URL as `&v=` so a manual
+   * refresh (which remounts this pane via a new key) also busts the
+   * browser HTTP cache: with the hub's ETag/304 revalidation, an
+   * unchanged file still answers 304 instantly, while a changed file is
+   * re-transferred even if its ETag would have collided (same size +
+   * same-second mtime, common on copied/restored HPC files).
+   */
+  rev?: number;
+  /**
+   * ViewerStateRegistry key (tabId@rev). Light pin strategy viewers
+   * (image / Monaco / markdown / CSV) save/restore under this key so
+   * pinning keeps state without a parked DOM mount.
+   */
+  stateKey?: string;
+}
+
+function SuspenseFallback({ label }: { label: string }) {
+  return (
+    <div style={styles.container}>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        height: '100%', color: c.textMuted, fontSize: 13,
+      }}>
+        {label}
+      </div>
+    </div>
+  );
+}
+
+function DownloadFallback({
+  agentId, root, path, ext, title, hint,
+}: {
+  agentId: string;
+  root: string;
+  path: string;
+  ext: string;
+  title?: string;
+  hint?: string;
+}) {
+  return (
+    <div style={styles.container}>
+      <div style={styles.download}>
+        {title ? (
+          <p style={{ ...styles.downloadText, color: c.text, fontWeight: 600, margin: 0 }}>
+            {title}
+          </p>
+        ) : null}
+        <p style={{
+          ...styles.downloadText,
+          margin: 0,
+          maxWidth: 360,
+          textAlign: 'center',
+          lineHeight: 1.45,
+        }}>
+          {hint || `No preview available for .${ext} files`}
+        </p>
+        <FileDownloadLink agentId={agentId} root={root} path={path} style={styles.downloadLink} />
+      </div>
+    </div>
+  );
+}
+
+// Memoized so dragging the file/preview splitter (which re-renders App and
+// would otherwise cascade into a Monaco layout pass on every animation
+// frame) does not re-render the preview subtree. Props are all primitives
+// that only change when the selected file changes.
+export const PreviewPane = memo(function PreviewPane({
+  agentId, root, path, entryType, denied, officeCapable = false, rev, stateKey,
+}: Props) {
+  if (denied) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.denied}>
+          <p style={styles.deniedTitle}>Access Denied</p>
+          <p style={styles.deniedText}>This is a sensitive file and cannot be previewed.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (entryType === 'directory') {
+    return (
+      <div style={styles.container}>
+        <div style={styles.download}>
+          <p style={styles.downloadText}>Select a file to preview</p>
+        </div>
+      </div>
+    );
+  }
+
+  // `rev` busts the browser cache on manual refresh (see Props.rev); the
+  // hub's ETag revalidation still makes repeat opens of an unchanged file
+  // answer 304 without re-transferring bytes.
+  const url = rev !== undefined && rev > 0
+    ? `${fileRawUrl(agentId, root, path)}&v=${rev}`
+    : fileRawUrl(agentId, root, path);
+  const ext = path.split('.').pop()?.toLowerCase() || '';
+
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif'].includes(ext)) {
+    // key by path so switching files (especially in mobile, where PreviewPane
+    // itself isn't keyed) remounts ImagePreview — fresh zoom/rotation/pos
+    // and a clean AbortController/blob-URL lifecycle per file.
+    return (
+      <Suspense fallback={<SuspenseFallback label="Loading image viewer..." />}>
+        <ImagePreview key={`${root}:${path}`} agentId={agentId} root={root} path={path} url={url} ext={ext} stateKey={stateKey} />
+      </Suspense>
+    );
+  }
+
+  if (ext === 'pdf') {
+    return (
+      <Suspense fallback={<SuspenseFallback label="Loading PDF viewer..." />}>
+        <PdfPreview key={`${root}:${path}`} agentId={agentId} root={root} path={path} url={url} />
+      </Suspense>
+    );
+  }
+
+  if (['md', 'markdown'].includes(ext)) {
+    return (
+      <Suspense fallback={<SuspenseFallback label="Loading markdown viewer..." />}>
+        <MarkdownPreview url={url} agentId={agentId} root={root} path={path} stateKey={stateKey} />
+      </Suspense>
+    );
+  }
+
+  if (isHtmlPreviewExt(ext)) {
+    const label = ext === 'ipynb' ? 'Loading notebook preview...' : 'Loading HTML viewer...';
+    return (
+      <Suspense fallback={<SuspenseFallback label={label} />}>
+        <HtmlPreview agentId={agentId} root={root} path={path} url={url} />
+      </Suspense>
+    );
+  }
+
+  if (['csv', 'tsv'].includes(ext)) {
+    return (
+      <Suspense fallback={<SuspenseFallback label="Loading CSV viewer..." />}>
+        <CsvPreview url={url} ext={ext} path={path} agentId={agentId} root={root} stateKey={stateKey} />
+      </Suspense>
+    );
+  }
+
+  if (isOfficePreviewExt(ext)) {
+    const prefOn = readOfficePdfPreviewPref();
+    if (officeCapable && prefOn) {
+      return (
+        <Suspense fallback={<SuspenseFallback label="Loading Office preview..." />}>
+          <OfficePreview
+            key={`${agentId}:${root}:${path}`}
+            agentId={agentId}
+            root={root}
+            path={path}
+          />
+        </Suspense>
+      );
+    }
+    if (!prefOn) {
+      return (
+        <DownloadFallback
+          agentId={agentId}
+          root={root}
+          path={path}
+          ext={ext}
+          title="Office preview is off"
+          hint="This browser downloads Office files instead of converting them. Turn preview on in Settings anytime — or keep it off and download."
+        />
+      );
+    }
+    return (
+      <DownloadFallback
+        agentId={agentId}
+        root={root}
+        path={path}
+        ext={ext}
+        title="Preview not available on this agent"
+        hint="In-browser Office preview is optional and needs LibreOffice on the agent. Browsing and download still work as usual."
+      />
+    );
+  }
+
+  if (isTextFile(ext)) {
+    return (
+      <Suspense fallback={<SuspenseFallback label="Loading code viewer..." />}>
+        <TextPreview url={url} ext={ext} agentId={agentId} root={root} path={path} stateKey={stateKey} />
+      </Suspense>
+    );
+  }
+
+  return (
+    <DownloadFallback agentId={agentId} root={root} path={path} ext={ext} />
+  );
+});

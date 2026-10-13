@@ -9,8 +9,7 @@ classic `frontend/` — does **not** replace it. Long-lived work lands on the
 - Vite + React + TypeScript app with `base: '/neo/'`
 - Dockview layout: **Files** (classic `FileBrowser` / `DirectoryTree`) + **Preview**
   (classic `PreviewPane` viewers, multi-tab via dockview)
-- Vite alias `@classic` → `../frontend/src` (classic sources imported in-place;
-  React deduped so hooks share one copy)
+- Vite alias `@classic` → `src/classic/` (vendored **closure-only** fork of classic modules neo imports; classic `frontend/` untouched; React deduped to neo `node_modules`)
 - Classic session / CSRF (`ensureCookieSuffix`, `withCsrf`, login PoW) for `/neo/`
 - Open-file bridge: `filebox-neo:open-file` → `openFileInDock` (activate / fill
   empty / new preview tab)

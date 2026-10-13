@@ -4,7 +4,9 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const classicSrc = path.resolve(__dirname, '../frontend/src')
+// Vendored classic import closure lives inside neo_frontend (knife-cut fork).
+// Do not resolve sources from ../frontend — classic `/` keeps its own tree.
+const classicSrc = path.resolve(__dirname, 'src/classic')
 const neoReact = path.resolve(__dirname, 'node_modules/react')
 const neoReactDom = path.resolve(__dirname, 'node_modules/react-dom')
 
@@ -14,8 +16,8 @@ export default defineConfig({
   base: '/neo/',
   plugins: [react()],
   resolve: {
-    // Import classic modules as `@classic/...` without a shared package yet.
-    // Deduplicate React so classic sources and neo share one copy (hooks break
+    // Import vendored classic modules as `@classic/...`.
+    // Deduplicate React so neo + vendored classic share one copy (hooks break
     // otherwise when Vite resolves two react trees).
     alias: {
       '@classic': classicSrc,
@@ -26,10 +28,6 @@ export default defineConfig({
   },
   server: {
     port: 5174,
-    // Allow Vite to read classic sources outside neo_frontend/.
-    fs: {
-      allow: [path.resolve(__dirname, '..')],
-    },
     proxy: {
       '/api': {
         target: 'http://localhost:3000',
