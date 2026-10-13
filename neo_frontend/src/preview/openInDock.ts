@@ -77,19 +77,22 @@ export function findFocusedPreview(api: DockviewApi) {
 }
 
 /**
- * Close preview dock panels whose tabs belong to a different agent.
+ * Close preview dock panels whose tabs belong to this agent.
+ * Used when the agent goes offline / disappears from health — not on A→B
+ * selection switch (knife-cut #3: sticky Preview ownership).
  */
-export function closePreviewsForOtherAgents(api: DockviewApi, agentId: string): void {
+export function closePreviewsForAgent(api: DockviewApi, agentId: string): void {
   for (const p of findPreviewPanels(api)) {
     const host = getPreviewHost(p.id);
-    if (host?.belongsToOtherAgent(agentId)) {
+    // hasTabs + !belongsToOtherAgent ⇒ this host's file is for agentId
+    if (host?.hasTabs() && !host.belongsToOtherAgent(agentId)) {
       clearFocusedPreviewIf(p.id);
       p.api.close();
       continue;
     }
   }
   for (const host of listPreviewHosts()) {
-    if (host.belongsToOtherAgent(agentId)) host.closeAll();
+    if (host.hasTabs() && !host.belongsToOtherAgent(agentId)) host.closeAll();
   }
 }
 
@@ -186,7 +189,7 @@ function fillEmptyPanel(
 }
 
 export function openFileInDock(api: DockviewApi, detail: NeoOpenFileDetail): void {
-  closePreviewsForOtherAgents(api, detail.agentId);
+  // Knife-cut #3: do not close other agents' Preview tabs on open (sticky ownership).
 
   // Explicit "open in new dock panel" — skip empty reuse.
   if (detail.newPanel) {

@@ -83,7 +83,7 @@ export function FilesPanel(_props: IDockviewPanelProps) {
     [agents, selectedAgentId],
   );
 
-  // Preview context + foreign-tab cleanup (classic: previews never outlive agent).
+  // Publish selected-agent context for chrome / Files. Preview dock tabs are sticky across agents (knife-cut #3).
   useEffect(() => {
     emitNeoAgentSelected({
       agentId: selectedAgentId,

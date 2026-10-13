@@ -47,7 +47,7 @@ import { fileTabId } from './preview/hostRegistry';
 import {
   addEmptyPreviewPanel,
   clearFocusedPreviewIf,
-  closePreviewsForOtherAgents,
+  closePreviewsForAgent,
   findPreviewPanels,
   openFileInDock,
   rememberFocusedPreview,
@@ -146,14 +146,32 @@ export default function App() {
       });
       const api = dockApiRef.current;
       if (!api) return;
+      // Knife-cut #3: A→B switch keeps both agents' Preview dock tabs.
+      // Only clear everything when selection is wiped (agentId null).
       if (!detail.agentId) {
         for (const p of findPreviewPanels(api)) p.api.close();
         rememberFocusedPreview(null);
-        return;
       }
-      closePreviewsForOtherAgents(api, detail.agentId);
     });
   }, []);
+
+  // Close only that agent's Preview panels when it leaves health / goes offline.
+  const knownLiveAgentIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const live = new Set(
+      agents
+        .filter((a) => a.status === 'online' || a.status === 'slow')
+        .map((a) => a.id),
+    );
+    const api = dockApiRef.current;
+    const prev = knownLiveAgentIdsRef.current;
+    if (api && prev.size > 0) {
+      for (const id of prev) {
+        if (!live.has(id)) closePreviewsForAgent(api, id);
+      }
+    }
+    knownLiveAgentIdsRef.current = live;
+  }, [agents]);
 
   const flushPendingOpens = useCallback((api: DockviewApi) => {
     const queued = pendingOpenRef.current.splice(0);

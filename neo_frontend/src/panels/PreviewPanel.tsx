@@ -5,17 +5,14 @@
  * tab (or the last inner file) disposes this panel.
  */
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
 import type { RootInfo } from '@lib/api/client';
 import { PreviewWorkspace } from '@lib/components/PreviewWorkspace';
 import { tabIdFor, usePreviewTabs } from '@lib/hooks/usePreviewTabs';
+import { useHealth } from '@lib/state/health';
 import { c, font } from '../theme';
 import { emitNeoRevealInBrowser, type NeoOpenFileDetail } from '../events/openFile';
-import {
-  getPreviewAgentContext,
-  subscribePreviewAgentContext,
-} from '../preview/agentContext';
 import { registerPreviewHost, unregisterPreviewHost } from '../preview/hostRegistry';
 import { clearFocusedPreviewIf, rememberFocusedPreview } from '../preview/openInDock';
 import type { PersistedPreviewHost } from '../preview/tabPersistence';
@@ -37,14 +34,10 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
   const previewTabs = usePreviewTabs();
   const tabsRef = useRef(previewTabs);
   tabsRef.current = previewTabs;
-  const [agentCtx, setAgentCtx] = useState(getPreviewAgentContext);
+  const { agents } = useHealth(true);
   /** Skip dispose while applying a restore snapshot. */
   const restoringRef = useRef(false);
   const hadFileRef = useRef(false);
-
-  useEffect(() => subscribePreviewAgentContext(() => {
-    setAgentCtx(getPreviewAgentContext());
-  }), []);
 
   useEffect(() => {
     const d = api.onDidActiveChange((ev) => {
@@ -176,14 +169,18 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
     api.close();
   }, [api]);
 
+  // Knife-cut #3: roots / officeCapable from the tab's agent via health —
+  // not the globally selected agentCtx (so A→B keeps A's Preview correct).
   const agentId =
     previewTabs.activeTab?.agentId
     ?? previewTabs.tabs[0]?.agentId
-    ?? agentCtx.agentId
     ?? '';
-
-  const roots: RootInfo[] = agentCtx.roots;
-  const officeCapable = agentCtx.officeCapable;
+  const tabAgent = useMemo(
+    () => (agentId ? agents.find((a) => a.id === agentId) ?? null : null),
+    [agents, agentId],
+  );
+  const roots: RootInfo[] = tabAgent?.roots ?? [];
+  const officeCapable = !!tabAgent?.capabilities?.office_pdf_preview;
   const hasTabs = previewTabs.tabs.length > 0;
 
   return (
