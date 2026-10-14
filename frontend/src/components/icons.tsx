@@ -304,3 +304,14 @@ export function IconTerminal({ style }: SvgProps) {
     </Svg>
   );
 }
+
+/** Three clustered panes — Herdr nav icon (a herd of coding agents). */
+export function IconHerd({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <circle cx="5" cy="10.5" r="2.15" />
+      <circle cx="11" cy="10.5" r="2.15" />
+      <circle cx="8" cy="5.4" r="2.15" />
+    </Svg>
+  );
+}

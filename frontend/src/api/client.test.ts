@@ -6,6 +6,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it.each(['herdr_unavailable', 'herdr_blocked', 'herdr_timeout'])(
+  'explains Herdr errors for %s',
+  (error) => {
+    expect(friendlyMessage({ error })).not.toBe('An unexpected error occurred.');
+  },
+);
+
 it.each(['temp_upload_stalled', 'temp_upload_stalled: upload queue is full; retry upload'])(
   'explains upload congestion and retry for %s', (error) => {
     const message = friendlyMessage({ error, retryable: true });

@@ -4,6 +4,9 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+### Added
+- **Herdr sidebar** — when a Filebox Agent finds a local `herdr` CLI (`FILEBOX_AGENT_HERDR` or `PATH`), it advertises `capabilities.herdr` and the UI shows a **Herdr** workspace item. List live coding agents, read latest output, send a prompt, and tap Esc / Enter / Ctrl+C (and other allowlisted keys) for blocked approvals. Relayed as `POST /api/agents/{id}/herdr`; the Agent runs only `agent list` / `read` / `prompt` / `send-keys`. Hidden on backends without Herdr.
+
 ## v2.2.0
 
 ### Fixed

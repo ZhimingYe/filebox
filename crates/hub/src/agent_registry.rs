@@ -139,6 +139,7 @@ impl AgentConnection {
                 terminal_agent_2fa: self.capabilities.terminal_agent_2fa,
                 terminal_manage: self.capabilities.terminal_manage,
                 terminal_persistent: self.capabilities.terminal_persistent,
+                herdr: self.capabilities.herdr,
             },
         }
     }
@@ -187,6 +188,7 @@ pub struct AgentCapabilitiesInfo {
     pub terminal_agent_2fa: bool,
     pub terminal_manage: bool,
     pub terminal_persistent: bool,
+    pub herdr: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

@@ -74,10 +74,11 @@ and free of I/O.
 | `denylist.rs` | Default-deny sensitive paths even inside allowed roots |
 | `temp.rs` | Shared temp-upload name validation (single path component) |
 | `totp.rs` | RFC 6238 TOTP core for Agent-local verification |
+| `herdr.rs` | Herdr CLI whitelist types (`status`/`read`/`prompt`/`send_keys`) |
 
 **Capability flags that matter:** `pinned_folders`, `collections`,
 `workspace_search`, `temp_upload`, `terminal`, `terminal_agent_2fa`,
-`terminal_manage`, `terminal_persistent`. Older agents omit them; the Hub returns
+`terminal_manage`, `terminal_persistent`, `herdr`. Older agents omit them; the Hub returns
 unsupported rather than silently no-op'ing. Vestigial flags
 (`image_preview`, `pdf_preview`, `serve_dir`) default `false` and are not
 gated on.
@@ -101,6 +102,7 @@ agent WebSocket.
 | `search_proxy.rs` | Workspace Search proxy (long timeout, cancel binding) |
 | `temp_proxy.rs` | Temp-folder upload relay (streams body → WS chunks) + one-click cleanup |
 | `terminal_proxy.rs` | Terminal WS relay, single-use transport tickets, session list/end |
+| `herdr_proxy.rs` | Herdr CLI relay (`POST /api/agents/{id}/herdr`) |
 | `audit.rs` / `audit/queued.rs` | Login/terminal audit trail; bounded background persistence for terminal acknowledgements |
 | `events.rs` | SSE fanout to browsers |
 | `health.rs` | Liveness + version |
@@ -141,7 +143,7 @@ Persists identity and desired config under `data_dir` (`agent_state.json`).
 | `connection/runtime.rs` | Resource state, caches, PTYs/TOTP and worker limits that survive reconnects |
 | `connection/handshake.rs` | Bounded connect/auth/register and capability advertisement |
 | `connection/session.rs` | Transport queues, liveness, dispatch, shutdown/Drop cancellation |
-| `connection/{resources,filesystem,search,office,uploads,terminal,control}.rs` | Business handlers borrowing the connection context |
+| `connection/{resources,filesystem,search,office,uploads,terminal,herdr,control}.rs` | Business handlers borrowing the connection context |
 | `resources.rs` | Validate + atomically apply roots / pins / collections |
 | `config_store.rs` | Persist `agent_id`, roots, pins, collections, revisions |
 | `fs.rs` | Read-only list/stat/read with path safety + denylist |
@@ -150,6 +152,7 @@ Persists identity and desired config under `data_dir` (`agent_state.json`).
 | `sysinfo.rs` | TTL-cached system stats (HPC-safe refresh) |
 | `temp_store.rs` | The ONLY write path: dedicated temp-upload folder (staging, quotas, no-clobber publish, symlink-safe cleanup) |
 | `terminal.rs` | PTY shell sessions (unix-only): persistent sessions, bounded history/writer queues, local TOTP anti-replay and failure limit |
+| `herdr.rs` | Optional local Herdr CLI probe (`FILEBOX_AGENT_HERDR` / PATH) and argv-only whitelist |
 | `config.rs` | TOML / env bootstrap |
 
 The receive loop reserves two control reply slots before accepting a request,

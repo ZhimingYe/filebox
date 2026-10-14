@@ -1,5 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::{Error as DeError, SeqAccess, Visitor};
+use crate::herdr::{HerdrAgent, HerdrOp, HerdrServerStatus};
 use crate::resources::{
     Capabilities, CollectionConfig, FileStat, FsEntry, RootConfig, SysStats, TempRootInfo,
 };
@@ -213,6 +214,20 @@ pub enum AgentMessage {
     TerminalListResponse {
         req_id: String,
         sessions: Vec<TerminalSessionInfo>,
+    },
+    /// Result of a Herdr CLI command (status/list, read, prompt, send-keys).
+    HerdrResponse {
+        req_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<HerdrServerStatus>,
+        #[serde(default)]
+        agents: Vec<HerdrAgent>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<HerdrAgent>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
     },
 }
 
@@ -434,6 +449,23 @@ pub enum HubMessage {
     /// recovery). Gated by `capabilities.terminal_manage`.
     TerminalListRequest {
         req_id: String,
+    },
+    /// Drive the agent's local Herdr CLI. Gated by `capabilities.herdr`.
+    HerdrRequest {
+        req_id: String,
+        op: HerdrOp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default)]
+        keys: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lines: Option<u32>,
+        #[serde(default)]
+        wait: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
     },
 }
 
@@ -1219,8 +1251,79 @@ mod tests {
     }
 
     #[test]
+    fn herdr_messages_round_trip_and_tags_are_frozen() {
+        let req = HubMessage::HerdrRequest {
+            req_id: "h1".into(),
+            op: crate::herdr::HerdrOp::Status,
+            target: None,
+            text: None,
+            keys: Vec::new(),
+            lines: None,
+            wait: false,
+            timeout_ms: None,
+        };
+        assert_eq!(serde_json::to_value(&req).unwrap()["type"], "herdr_request");
+        match round_trip_hub(&req) {
+            HubMessage::HerdrRequest { req_id, op, .. } => {
+                assert_eq!(req_id, "h1");
+                assert_eq!(op, crate::herdr::HerdrOp::Status);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let resp = AgentMessage::HerdrResponse {
+            req_id: "h1".into(),
+            error: None,
+            status: Some(crate::herdr::HerdrServerStatus {
+                installed: true,
+                reachable: true,
+                version: Some("1.2.3".into()),
+                message: None,
+            }),
+            agents: vec![crate::herdr::HerdrAgent {
+                target: "reviewer".into(),
+                name: Some("reviewer".into()),
+                kind: Some("codex".into()),
+                status: crate::herdr::HerdrAgentStatus::Working,
+                pane_id: "w1:p2".into(),
+                workspace_id: "w1".into(),
+                tab_id: "w1:t1".into(),
+                cwd: Some("/repo".into()),
+                title: None,
+                focused: false,
+            }],
+            agent: None,
+            output: None,
+        };
+        assert_eq!(serde_json::to_value(&resp).unwrap()["type"], "herdr_response");
+        match round_trip_agent(&resp) {
+            AgentMessage::HerdrResponse { req_id, agents, status, .. } => {
+                assert_eq!(req_id, "h1");
+                assert_eq!(agents.len(), 1);
+                assert_eq!(agents[0].target, "reviewer");
+                assert!(status.unwrap().reachable);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let legacy = serde_json::json!({
+            "fs_list": true,
+            "fs_stat": true,
+            "fs_read_range": true,
+            "image_preview": false,
+            "pdf_preview": false,
+            "serve_dir": false,
+            "resource_management": true,
+            "sys_stats": true
+        });
+        let caps: Capabilities = serde_json::from_value(legacy).unwrap();
+        assert!(!caps.herdr);
+    }
+
+    #[test]
     fn capabilities_default_has_terminal_false_and_legacy_agents_omit_it() {
         assert!(!Capabilities::default().terminal);
+        assert!(!Capabilities::default().herdr);
         let legacy = serde_json::json!({
             "fs_list": true,
             "fs_stat": true,

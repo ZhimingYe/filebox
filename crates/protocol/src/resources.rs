@@ -171,6 +171,10 @@ pub struct Capabilities {
     /// Supports authenticated attachment and detach without terminating PTYs.
     #[serde(default)]
     pub terminal_persistent: bool,
+    /// Whether this agent found a local Herdr CLI it can drive. Defaults to
+    /// `false` for rolling-upgrade safety and when `herdr` is not on PATH.
+    #[serde(default)]
+    pub herdr: bool,
 }
 
 impl Default for Capabilities {
@@ -196,6 +200,7 @@ impl Default for Capabilities {
             terminal_agent_2fa: false,
             terminal_manage: false,
             terminal_persistent: false,
+            herdr: false,
         }
     }
 }
@@ -431,6 +436,10 @@ mod tests {
         assert!(
             !caps.office_pdf_preview,
             "office_pdf_preview must default to false (legacy-detection sentinel)"
+        );
+        assert!(
+            !caps.herdr,
+            "herdr must default to false (legacy-detection sentinel)"
         );
     }
 

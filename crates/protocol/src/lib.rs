@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod denylist;
+pub mod herdr;
 pub mod message;
 pub mod resources;
 pub mod search;

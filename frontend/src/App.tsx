@@ -35,6 +35,7 @@ import { CollectionPicker } from './components/CollectionPicker';
 import { NoAgentSelected } from './components/NoAgentSelected';
 import { TempTransferView } from './components/TempTransferView';
 import { TerminalView } from './components/TerminalView';
+import { HerdrView } from './components/HerdrView';
 import {
   IconChevronLeft,
   IconFolder,
@@ -50,6 +51,7 @@ import {
   IconAudit,
   IconUpload,
   IconTerminal,
+  IconHerd,
 } from './components/icons';
 import type { FsEntry } from './api/client';
 import * as api from './api/client';
@@ -79,7 +81,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'explorer' | 'transfer' | 'terminal' | 'collections' | 'settings' | 'stats' | 'audit';
+type View = 'files' | 'explorer' | 'transfer' | 'terminal' | 'herdr' | 'collections' | 'settings' | 'stats' | 'audit';
 
 interface ProgressEvent {
   req_id: string;
@@ -543,6 +545,7 @@ export default function App() {
   const tempCapable = !!selectedAgent?.capabilities?.temp_upload && !!tempRootName;
   // Terminal nav entry is only meaningful on a terminal-capable agent.
   const terminalCapable = !!selectedAgent?.capabilities?.terminal;
+  const herdrCapable = !!selectedAgent?.capabilities?.herdr;
   useEffect(() => {
     if (!tempCapable) return;
     const hasFiles = (e: DragEvent) =>
@@ -809,6 +812,8 @@ export default function App() {
     { v: 'transfer' as const, label: 'Transfer', Icon: IconUpload },
     // Terminal is only meaningful on a terminal-capable agent.
     { v: 'terminal' as const, label: 'Terminal', Icon: IconTerminal },
+    // Herdr is only shown when the agent probed a local `herdr` CLI.
+    { v: 'herdr' as const, label: 'Herdr', Icon: IconHerd },
     { v: 'search' as const, label: 'Search', Icon: IconSearch },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
     { v: 'stats' as const, label: 'System', Icon: IconStats },
@@ -893,7 +898,8 @@ export default function App() {
               <div style={collapsed ? styles.navCollapsed : styles.nav}>
                 {navItems.filter((n) =>
                   (n.v !== 'transfer' || tempCapable)
-                  && (n.v !== 'terminal' || terminalCapable),
+                  && (n.v !== 'terminal' || terminalCapable)
+                  && (n.v !== 'herdr' || herdrCapable),
                 ).map(({ v, label, Icon }) => (
                   <SidebarNavButton
                     key={v}
@@ -1362,6 +1368,19 @@ export default function App() {
                     <div style={styles.transferUnsupported}>
                       <p style={styles.transferUnsupportedText}>
                         This agent does not support remote terminals.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+              {view === 'herdr' && (
+                <div style={styles.secondaryView}>
+                  {herdrCapable ? (
+                    <HerdrView key={selectedAgent.id} agent={selectedAgent} />
+                  ) : (
+                    <div style={styles.transferUnsupported}>
+                      <p style={styles.transferUnsupportedText}>
+                        Herdr is not installed on this backend.
                       </p>
                     </div>
                   )}
