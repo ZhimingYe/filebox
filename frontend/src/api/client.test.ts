@@ -6,7 +6,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it.each(['herdr_unavailable', 'herdr_blocked', 'herdr_timeout'])(
+it.each(['herdr_unavailable', 'herdr_blocked', 'herdr_timeout', 'herdr_not_idle'] as const)(
   'explains Herdr errors for %s',
   (error) => {
     expect(friendlyMessage({ error })).not.toBe('An unexpected error occurred.');

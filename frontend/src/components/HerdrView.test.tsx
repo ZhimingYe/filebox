@@ -127,4 +127,24 @@ describe('HerdrView', () => {
     await render();
     expect(container.textContent).toMatch(/not running/i);
   });
+
+  it('does not call a timeout a stopped server', async () => {
+    vi.mocked(api.herdrCommand).mockRejectedValue({ error: 'request_timeout', retryable: true });
+    await render();
+    expect(container.textContent).not.toMatch(/not running/i);
+    expect(container.textContent).toMatch(/timed out/i);
+  });
+
+  it('shows the validation message instead of a search error', async () => {
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
+      if (body.op === 'status') return listed;
+      if (body.op === 'read') return { req_id: 'r1', output: 'latest pane output' };
+      throw { error: 'invalid_request', message: 'unsupported key' };
+    });
+    await render();
+    const esc = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Esc');
+    await act(async () => esc!.click());
+    expect(container.textContent).toContain('unsupported key');
+    expect(container.textContent).not.toContain('Invalid search request');
+  });
 });

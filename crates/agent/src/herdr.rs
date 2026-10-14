@@ -109,16 +109,31 @@ impl HerdrClient {
             HerdrOp::Read => {
                 let target = required_target(target)?;
                 let n = clamp_lines(lines);
-                let args = vec![
+                // Full-screen agents refuse scrolled history (`agent_not_idle`)
+                // while working, blocked, or unknown. Fall back to the visible
+                // screen so "latest output" still works during a turn.
+                let history = vec![
                     "agent".into(),
                     "read".into(),
-                    target,
+                    target.clone(),
                     "--source".into(),
                     "recent-unwrapped".into(),
                     "--lines".into(),
                     n.to_string(),
                 ];
-                let out = run_cli(&self.bin, &args, READ_TIMEOUT, cancel).await?;
+                let first = run_cli(&self.bin, &history, READ_TIMEOUT, cancel).await?;
+                let out = if !first.ok && is_not_idle(&first) {
+                    let visible = vec![
+                        "agent".into(),
+                        "read".into(),
+                        target,
+                        "--source".into(),
+                        "visible".into(),
+                    ];
+                    run_cli(&self.bin, &visible, READ_TIMEOUT, cancel).await?
+                } else {
+                    first
+                };
                 if !out.ok {
                     return Err(map_cli_error(&out));
                 }
@@ -134,7 +149,9 @@ impl HerdrClient {
                 let target = required_target(target)?;
                 let text = text.unwrap_or_default();
                 validate_prompt_text(&text).map_err(|e| e.to_string())?;
-                let mut args = vec!["agent".into(), "prompt".into(), target, text];
+                // Flags before `--`; the prompt is positional so a message
+                // that starts with `-` is not parsed as a CLI option.
+                let mut args = vec!["agent".into(), "prompt".into(), target];
                 let timeout = if wait {
                     let ms = clamp_wait_timeout_ms(timeout_ms);
                     args.push("--wait".into());
@@ -144,6 +161,8 @@ impl HerdrClient {
                 } else {
                     PROMPT_TIMEOUT
                 };
+                args.push("--".into());
+                args.push(text);
                 let out = run_cli(&self.bin, &args, timeout, cancel).await?;
                 if !out.ok {
                     return Err(map_cli_error(&out));
@@ -234,6 +253,7 @@ struct OpResult {
     output: Option<String>,
 }
 
+#[derive(Debug)]
 struct CliOutput {
     ok: bool,
     stdout: String,
@@ -292,32 +312,65 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
     None
 }
 
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 fn probe_version(bin: &Path) -> Result<String, String> {
-    let mut cmd = std::process::Command::new(bin);
-    cmd.arg("--version")
+    probe_version_timeout(bin, VERSION_PROBE_TIMEOUT)
+}
+
+/// Bounded so a hung `herdr --version` cannot block agent registration.
+fn probe_version_timeout(bin: &Path, timeout: Duration) -> Result<String, String> {
+    let mut child = std::process::Command::new(bin)
+        .arg("--version")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .stdin(Stdio::null());
-    let output = cmd
-        .output()
+        .stdin(Stdio::null())
+        .spawn()
         .map_err(|e| format!("failed to spawn herdr: {e}"))?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let version = text
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .trim_start_matches("herdr")
-        .trim()
-        .to_string();
-    if !output.status.success() && version.is_empty() {
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= timeout => {
+                kill_herdr_group(child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("herdr --version timed out".to_string());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => return Err(format!("herdr --version failed: {e}")),
+        }
+    };
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        use std::io::Read;
+        let _ = pipe.read_to_string(&mut stdout);
+    }
+    let version = sanitize_version(&stdout);
+    if !status.success() && version == "unknown" {
         return Err("herdr --version failed".to_string());
     }
-    Ok(if version.is_empty() {
+    Ok(version)
+}
+
+fn sanitize_version(raw: &str) -> String {
+    let line = raw.lines().next().unwrap_or("").trim();
+    let line = line.trim_start_matches("herdr").trim();
+    let mut out = String::new();
+    for ch in line.chars() {
+        if out.len() >= 64 {
+            break;
+        }
+        if ch.is_ascii_graphic() || ch == ' ' {
+            out.push(ch);
+        }
+    }
+    let out = out.trim().to_string();
+    if out.is_empty() {
         "unknown".to_string()
     } else {
-        version
-    })
+        out
+    }
 }
 
 async fn run_cli(
@@ -337,22 +390,87 @@ async fn run_cli(
         .stdin(Stdio::null());
     #[cfg(unix)]
     {
+        // New group so timeout/cancel can reap helpers herdr spawned.
         cmd.process_group(0);
     }
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("herdr_unavailable: failed to spawn herdr: {e}"))?;
-    tokio::select! {
-        result = child.wait_with_output() => {
-            let output = result.map_err(|e| format!("herdr_unavailable: wait failed: {e}"))?;
-            Ok(CliOutput {
-                ok: output.status.success(),
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            })
+    let pid = child.id().unwrap_or(0);
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let out_fut = drain_capped(stdout, HERDR_OUTPUT_MAX_BYTES);
+    let err_fut = drain_capped(stderr, 16 * 1024);
+    tokio::pin!(out_fut);
+    tokio::pin!(err_fut);
+    let mut stdout_buf: Option<Vec<u8>> = None;
+    let mut stderr_buf: Option<Vec<u8>> = None;
+    let mut status = None;
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+
+    loop {
+        tokio::select! {
+            biased;
+            res = child.wait(), if status.is_none() => {
+                status = Some(res.map_err(|e| format!("herdr_unavailable: wait failed: {e}"))?);
+            }
+            buf = &mut out_fut, if stdout_buf.is_none() => {
+                stdout_buf = Some(buf);
+            }
+            buf = &mut err_fut, if stderr_buf.is_none() => {
+                stderr_buf = Some(buf);
+            }
+            _ = &mut deadline, if status.is_none() || stdout_buf.is_none() || stderr_buf.is_none() => {
+                kill_herdr_group(pid);
+                let _ = child.start_kill();
+                return Err("herdr_timeout".to_string());
+            }
+            _ = wait_until_cancel(cancel), if status.is_none() => {
+                kill_herdr_group(pid);
+                let _ = child.start_kill();
+                return Err("cancelled".to_string());
+            }
         }
-        _ = tokio::time::sleep(timeout) => Err("herdr_timeout".to_string()),
-        _ = wait_until_cancel(cancel) => Err("cancelled".to_string()),
+        if status.is_some() && stdout_buf.is_some() && stderr_buf.is_some() {
+            break;
+        }
+    }
+    let code = status.unwrap();
+    Ok(CliOutput {
+        ok: code.success(),
+        stdout: String::from_utf8_lossy(&stdout_buf.unwrap_or_default()).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr_buf.unwrap_or_default()).into_owned(),
+    })
+}
+
+async fn drain_capped(pipe: Option<impl tokio::io::AsyncRead + Unpin>, cap: usize) -> Vec<u8> {
+    let Some(mut reader) = pipe else {
+        return Vec::new();
+    };
+    let mut kept = Vec::new();
+    let mut tmp = [0u8; 8192];
+    loop {
+        match tokio::io::AsyncReadExt::read(&mut reader, &mut tmp).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if kept.len() < cap {
+                    let room = cap - kept.len();
+                    kept.extend_from_slice(&tmp[..n.min(room)]);
+                }
+            }
+        }
+    }
+    kept
+}
+
+fn kill_herdr_group(pid: u32) {
+    if pid == 0 {
+        return;
+    }
+    #[cfg(unix)]
+    unsafe {
+        let _ = libc::kill(-(pid as i32), libc::SIGKILL);
     }
 }
 
@@ -415,10 +533,17 @@ fn map_cli_error(out: &CliOutput) -> String {
     if blob.contains("blocked") {
         return "herdr_blocked".to_string();
     }
+    if blob.contains("not_idle") || blob.contains("not idle") {
+        return "herdr_not_idle".to_string();
+    }
     if blob.contains("not found") {
         return "herdr_agent_missing".to_string();
     }
     "herdr_failed".to_string()
+}
+
+fn is_not_idle(out: &CliOutput) -> bool {
+    map_cli_error(out) == "herdr_not_idle"
 }
 
 fn normalize_herdr_code(code: &str) -> String {
@@ -426,6 +551,7 @@ fn normalize_herdr_code(code: &str) -> String {
         "agent_blocked" => "herdr_blocked".to_string(),
         "agent_not_found" | "agent_not_running" => "herdr_agent_missing".to_string(),
         "agent_not_ready" | "agent_prompt_stalled" => "herdr_not_ready".to_string(),
+        "agent_not_idle" => "herdr_not_idle".to_string(),
         "timeout" => "herdr_timeout".to_string(),
         other => {
             if other.starts_with("herdr_") {
@@ -440,10 +566,13 @@ fn normalize_herdr_code(code: &str) -> String {
 fn trim_error_text(raw: &str) -> String {
     let t = raw.trim();
     if t.len() <= 400 {
-        t.to_string()
-    } else {
-        format!("{}…", &t[..400])
+        return t.to_string();
     }
+    let mut end = 400;
+    while end > 0 && !t.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &t[..end])
 }
 
 fn parse_json_blob(raw: &str) -> Option<Value> {
@@ -470,7 +599,26 @@ fn extract_agents(v: &Value) -> Vec<HerdrAgent> {
         .and_then(|a| a.as_array())
         .cloned()
         .unwrap_or_default();
-    list.iter().filter_map(parse_agent).collect()
+    let mut agents: Vec<HerdrAgent> = list.iter().filter_map(parse_agent).collect();
+    let mut seen = std::collections::HashSet::new();
+    agents.retain(|agent| seen.insert(agent.target.clone()));
+    agents
+}
+
+/// Prefer a validated live name (it follows the agent across pane moves).
+/// Fall back to the pane id when the name is missing or not a safe argv target.
+fn address_target(name: Option<&str>, pane_id: &str) -> Option<String> {
+    if let Some(name) = name.map(str::trim).filter(|s| !s.is_empty()) {
+        if validate_target(name).is_ok() {
+            return Some(name.to_string());
+        }
+    }
+    let pane_id = pane_id.trim();
+    if validate_target(pane_id).is_ok() {
+        Some(pane_id.to_string())
+    } else {
+        None
+    }
 }
 
 fn extract_agent(v: &Value) -> Option<HerdrAgent> {
@@ -502,7 +650,7 @@ fn parse_agent(v: &Value) -> Option<HerdrAgent> {
         .and_then(|x| x.as_str())
         .map(HerdrAgentStatus::parse_label)
         .unwrap_or_default();
-    let target = name.clone().unwrap_or_else(|| pane_id.clone());
+    let target = address_target(name.as_deref(), &pane_id)?;
     Some(HerdrAgent {
         target,
         name,
@@ -632,5 +780,165 @@ exit 1
         assert!(res.status.unwrap().reachable);
         assert_eq!(res.agents[0].target, "bot");
         assert_eq!(res.agents[0].kind.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn unsafe_name_falls_back_to_pane_id() {
+        let v = serde_json::json!({
+            "name": "code review",
+            "agent": "codex",
+            "agent_status": "idle",
+            "pane_id": "w1:p9",
+            "focused": false
+        });
+        let agent = parse_agent(&v).unwrap();
+        assert_eq!(agent.target, "w1:p9");
+        assert_eq!(agent.name.as_deref(), Some("code review"));
+    }
+
+    #[test]
+    fn trim_error_text_keeps_char_boundary() {
+        let raw = format!("{}€", "a".repeat(399));
+        let trimmed = trim_error_text(&raw);
+        assert!(trimmed.ends_with('…'));
+        assert!(trimmed.is_char_boundary(trimmed.len()));
+    }
+
+    #[test]
+    fn version_probe_times_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        std::fs::write(&bin, "#!/bin/sh\nsleep 30\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let started = std::time::Instant::now();
+        let err = probe_version_timeout(&bin, Duration::from_millis(400)).unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn read_falls_back_when_history_requires_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        std::fs::write(
+            &bin,
+            r#"#!/bin/sh
+src=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--source" ]; then src="$a"; fi
+  prev="$a"
+done
+if [ "$src" = "recent-unwrapped" ]; then
+  echo '{"error":{"code":"agent_not_idle","message":"working"}}' >&2
+  exit 1
+fi
+if [ "$src" = "visible" ]; then
+  echo 'visible screen'
+  exit 0
+fi
+exit 1
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let client = HerdrClient { bin, version: "1".into() };
+        let cancel = AtomicBool::new(false);
+        let msg = client
+            .handle(
+                "r1".into(),
+                HerdrOp::Read,
+                Some("reviewer".into()),
+                None,
+                Vec::new(),
+                Some(40),
+                false,
+                None,
+                Arc::new(cancel),
+            )
+            .await;
+        match msg {
+            AgentMessage::HerdrResponse { output, error, .. } => {
+                assert!(error.is_none(), "{error:?}");
+                assert_eq!(output.as_deref(), Some("visible screen"));
+            }
+            _ => panic!("unexpected message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_places_text_after_double_dash() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        let log = dir.path().join("args");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" > {}\nif [ \"$2\" = prompt ]; then echo '{{}}'; exit 0; fi\nexit 1\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let client = HerdrClient { bin, version: "1".into() };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let msg = client
+            .handle(
+                "p1".into(),
+                HerdrOp::Prompt,
+                Some("reviewer".into()),
+                Some("--help".into()),
+                Vec::new(),
+                None,
+                false,
+                None,
+                cancel,
+            )
+            .await;
+        match msg {
+            AgentMessage::HerdrResponse { error, .. } => assert!(error.is_none(), "{error:?}"),
+            _ => panic!("unexpected"),
+        }
+        let logged = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            logged.contains("prompt reviewer -- --help"),
+            "argv was: {logged}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cli_timeout_returns_before_the_child_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        std::fs::write(&bin, "#!/bin/sh\nsleep 30\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let cancel = AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        let err = run_cli(
+            &bin,
+            &["agent".into(), "list".into()],
+            Duration::from_millis(400),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "herdr_timeout");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

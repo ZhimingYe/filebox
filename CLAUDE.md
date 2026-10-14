@@ -461,8 +461,11 @@ When the Agent finds a `herdr` binary (`FILEBOX_AGENT_HERDR` or `PATH`) and
 shell, never layout/attach commands. The Hub relays
 `POST /api/agents/{id}/herdr`. The UI lists live agents, shows latest
 output, sends a prompt, and exposes large tap targets for Esc / Enter /
-Ctrl+C (useful on a phone when an agent is `blocked`). If the CLI is
-present but the Herdr server is down, the view stays visible and says so.
+Ctrl+C (useful on a phone when an agent is `blocked`). Reads try
+`recent-unwrapped` and fall back to `visible` on `agent_not_idle` (full-screen
+agents refuse scrolled history while working). Prompt text is passed after
+`--`. If the CLI is present but the Herdr server is down, the view stays
+visible and says so.
 Installing Herdr later requires reconnecting the Filebox Agent so it can
 re-probe.
 

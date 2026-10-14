@@ -54,6 +54,29 @@ function sortAgents(items: api.HerdrAgent[]): api.HerdrAgent[] {
   });
 }
 
+function errorCode(error: unknown): string {
+  if (!error || typeof error !== 'object') return '';
+  const raw = (error as { error?: unknown }).error;
+  if (typeof raw !== 'string') return '';
+  return raw.includes(':') ? raw.split(':')[0] : raw;
+}
+
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && (error as { name?: string }).name === 'AbortError';
+}
+
+/** Null means the failure should stay quiet (abort, or a superseded request). */
+function herdrFailureMessage(error: unknown): string | null {
+  if (isAbortError(error)) return null;
+  if (errorCode(error) === 'invalid_request') {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message.trim();
+  }
+  return friendlyMessage(error);
+}
+
 /**
  * Sidebar Herdr panel: list coding agents on the selected backend, read the
  * latest output, send a prompt, and tap keys for blocked approvals. The
@@ -80,6 +103,21 @@ export function HerdrView({ agent }: Props) {
   const abortSend = useRef<AbortController | null>(null);
   const outputBoxRef = useRef<HTMLPreElement | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
+  const tailRef = useRef<Promise<unknown>>(Promise.resolve());
+  const sendingRef = useRef(false);
+  const selectedRef = useRef<string | null>(null);
+  const refreshScheduled = useRef(false);
+  const versionRef = useRef<string | null>(null);
+  const agentsRef = useRef(agents);
+  versionRef.current = status?.version ?? null;
+  selectedRef.current = selected;
+  agentsRef.current = agents;
+
+  const enqueue = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
+    const run = tailRef.current.then(task, task);
+    tailRef.current = run.then(() => undefined, () => undefined);
+    return run;
+  }, []);
 
   const selectedAgent = useMemo(
     () => agents.find((a) => a.target === selected) ?? null,
@@ -98,6 +136,7 @@ export function HerdrView({ agent }: Props) {
       const next = sortAgents(res.agents ?? []);
       setStatus(res.status ?? null);
       setAgents(next);
+      agentsRef.current = next;
       setListError(res.error ? friendlyMessage({ error: res.error }) : null);
       setSelected((prev) => {
         if (prev && next.some((a) => a.target === prev)) return prev;
@@ -108,28 +147,34 @@ export function HerdrView({ agent }: Props) {
       });
     } catch (e) {
       if (genRef.current !== gen) return;
-      setListError(friendlyMessage(e));
-      const details = e as { error?: string };
-      if (details?.error === 'herdr_unavailable') {
+      const message = herdrFailureMessage(e);
+      if (message === null) return;
+      if (silent && errorCode(e) === 'agent_busy') return;
+      setListError(message);
+      if (errorCode(e) === 'herdr_unavailable') {
         setStatus({
           installed: true,
           reachable: false,
-          version: status?.version ?? null,
-          message: friendlyMessage(e),
+          version: versionRef.current,
+          message,
         });
+        setAgents([]);
+        agentsRef.current = [];
       }
     } finally {
       if (genRef.current === gen) setLoadingList(false);
     }
-  }, [agent.id, isMobile, status?.version]);
+  }, [agent.id, isMobile]);
 
   const loadOutput = useCallback(async (target: string, silent = false) => {
     const gen = ++outputGenRef.current;
     abortOutput.current?.abort();
     const controller = new AbortController();
     abortOutput.current = controller;
-    if (!silent) setLoadingOutput(true);
-    setActionError(null);
+    if (!silent) {
+      setLoadingOutput(true);
+      setActionError(null);
+    }
     try {
       const res = await api.herdrCommand(
         agent.id,
@@ -147,41 +192,60 @@ export function HerdrView({ agent }: Props) {
       }
     } catch (e) {
       if (outputGenRef.current !== gen) return;
-      setActionError(friendlyMessage(e));
+      const message = herdrFailureMessage(e);
+      if (message === null) return;
+      if (silent && (errorCode(e) === 'agent_busy' || errorCode(e) === 'herdr_not_idle')) return;
+      setActionError(message);
     } finally {
       if (outputGenRef.current === gen) setLoadingOutput(false);
     }
   }, [agent.id]);
 
   useEffect(() => {
-    void loadList(false);
+    void enqueue(() => loadList(false));
     return () => {
       abortList.current?.abort();
       abortOutput.current?.abort();
       abortSend.current?.abort();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agent.id]);
+  }, [agent.id, enqueue, loadList]);
 
   useEffect(() => {
     if (!selected) {
       setOutput('');
       return;
     }
-    void loadOutput(selected, false);
-  }, [selected, loadOutput]);
+    // Drop the previous agent's text immediately so a slow read cannot
+    // keep showing it under the new header.
+    setOutput('');
+    setActionError(null);
+    void enqueue(() => loadOutput(selected, false));
+  }, [selected, loadOutput, enqueue]);
 
   // Live list (and working/blocked output) while this view is open.
+  // One refresh at a time, and never alongside a user send — the agent
+  // only runs a couple of Herdr commands at once.
   useEffect(() => {
     const timer = window.setInterval(() => {
-      if (sending) return;
-      void loadList(true);
-      if (selectedAgent && (selectedAgent.status === 'working' || selectedAgent.status === 'blocked')) {
-        void loadOutput(selectedAgent.target, true);
-      }
+      if (sendingRef.current || refreshScheduled.current) return;
+      refreshScheduled.current = true;
+      void enqueue(async () => {
+        try {
+          if (sendingRef.current) return;
+          await loadList(true);
+          const target = selectedRef.current;
+          const item = agentsRef.current.find((a) => a.target === target);
+          if (!item || sendingRef.current) return;
+          if (item.status === 'working' || item.status === 'blocked') {
+            await loadOutput(item.target, true);
+          }
+        } finally {
+          refreshScheduled.current = false;
+        }
+      });
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [loadList, loadOutput, selectedAgent, sending]);
+  }, [enqueue, loadList, loadOutput]);
 
   useEffect(() => {
     const el = outputBoxRef.current;
@@ -194,60 +258,90 @@ export function HerdrView({ agent }: Props) {
     setActionError(null);
   };
 
-  const sendPrompt = async () => {
-    if (!selectedAgent || sending) return;
-    const text = prompt.trim();
-    if (!text) return;
-    abortSend.current?.abort();
-    const controller = new AbortController();
-    abortSend.current = controller;
-    setSending(true);
-    setActionError(null);
+  const runCommand = async (
+    body: api.HerdrCommandBody,
+    signal: AbortSignal,
+    timeoutMs: number,
+  ) => {
     try {
-      await api.herdrCommand(
-        agent.id,
-        {
-          op: 'prompt',
-          target: selectedAgent.target,
-          text,
-          wait,
-          timeout_ms: wait ? 60_000 : undefined,
-        },
-        controller.signal,
-        wait ? 80_000 : 25_000,
-      );
-      setPrompt('');
-      await loadOutput(selectedAgent.target, true);
-      await loadList(true);
+      return await api.herdrCommand(agent.id, body, signal, timeoutMs);
     } catch (e) {
-      setActionError(friendlyMessage(e));
-      void loadOutput(selectedAgent.target, true);
-    } finally {
-      setSending(false);
+      if (isAbortError(e) || errorCode(e) !== 'agent_busy') throw e;
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+      if (signal.aborted) throw e;
+      return api.herdrCommand(agent.id, body, signal, timeoutMs);
     }
   };
 
-  const sendKeys = async (keys: string[]) => {
-    if (!selectedAgent || sending) return;
+  const beginUserAction = () => {
+    // Drop in-flight list/read so a Send is not rejected as agent_busy.
+    abortList.current?.abort();
+    abortOutput.current?.abort();
+    sendingRef.current = true;
+    setSending(true);
+    setActionError(null);
+  };
+
+  const sendPrompt = () => {
+    if (!selectedAgent || sendingRef.current) return;
+    const text = prompt.trim();
+    if (!text) return;
+    const target = selectedAgent.target;
+    beginUserAction();
     abortSend.current?.abort();
     const controller = new AbortController();
     abortSend.current = controller;
-    setSending(true);
-    setActionError(null);
-    try {
-      await api.herdrCommand(
-        agent.id,
-        { op: 'send_keys', target: selectedAgent.target, keys },
-        controller.signal,
-        15_000,
-      );
-      await loadOutput(selectedAgent.target, true);
-      await loadList(true);
-    } catch (e) {
-      setActionError(friendlyMessage(e));
-    } finally {
-      setSending(false);
-    }
+    void enqueue(async () => {
+      try {
+        await runCommand(
+          {
+            op: 'prompt',
+            target,
+            text,
+            wait,
+            timeout_ms: wait ? 60_000 : undefined,
+          },
+          controller.signal,
+          wait ? 80_000 : 25_000,
+        );
+        setPrompt('');
+        await loadOutput(target, true);
+        await loadList(true);
+      } catch (e) {
+        const message = herdrFailureMessage(e);
+        if (message) setActionError(message);
+        await loadOutput(target, true);
+      } finally {
+        sendingRef.current = false;
+        setSending(false);
+      }
+    });
+  };
+
+  const sendKeys = (keys: string[]) => {
+    if (!selectedAgent || sendingRef.current) return;
+    const target = selectedAgent.target;
+    beginUserAction();
+    abortSend.current?.abort();
+    const controller = new AbortController();
+    abortSend.current = controller;
+    void enqueue(async () => {
+      try {
+        await runCommand(
+          { op: 'send_keys', target, keys },
+          controller.signal,
+          15_000,
+        );
+        await loadOutput(target, true);
+        await loadList(true);
+      } catch (e) {
+        const message = herdrFailureMessage(e);
+        if (message) setActionError(message);
+      } finally {
+        sendingRef.current = false;
+        setSending(false);
+      }
+    });
   };
 
   const reachable = status?.reachable === true;
@@ -289,8 +383,11 @@ export function HerdrView({ agent }: Props) {
         <button
           type="button"
           onClick={() => {
-            void loadList(false);
-            if (selectedAgent) void loadOutput(selectedAgent.target, false);
+            const target = selectedRef.current;
+            void enqueue(async () => {
+              await loadList(false);
+              if (target) await loadOutput(target, false);
+            });
           }}
           style={styles.iconBtn}
           title="Refresh"
@@ -308,8 +405,16 @@ export function HerdrView({ agent }: Props) {
       <div style={isMobile ? styles.bodyMobile : styles.bodyDesktop}>
         {showList && (
           <aside style={isMobile ? styles.listMobile : styles.listDesktop} aria-label="Herdr agents">
-            {loadingList && agents.length === 0 ? (
+            {loadingList && agents.length === 0 && !listError ? (
               <div style={styles.empty}>Looking for agents…</div>
+            ) : !reachable && listError && !status?.installed ? (
+              <div style={styles.emptyCard}>
+                <div style={styles.emptyTitle}>Could not reach Herdr</div>
+                <p style={styles.emptyText}>{listError}</p>
+                <button type="button" style={styles.primaryBtn} onClick={() => void enqueue(() => loadList(false))}>
+                  Check again
+                </button>
+              </div>
             ) : !reachable ? (
               <div style={styles.emptyCard}>
                 <div style={styles.emptyTitle}>Herdr is not running</div>

@@ -7,6 +7,9 @@ All notable changes to filebox are listed here. Dates are UTC.
 ### Added
 - **Herdr sidebar** — when a Filebox Agent finds a local `herdr` CLI (`FILEBOX_AGENT_HERDR` or `PATH`), it advertises `capabilities.herdr` and the UI shows a **Herdr** workspace item. List live coding agents, read latest output, send a prompt, and tap Esc / Enter / Ctrl+C (and other allowlisted keys) for blocked approvals. Relayed as `POST /api/agents/{id}/herdr`; the Agent runs only `agent list` / `read` / `prompt` / `send-keys`. Hidden on backends without Herdr.
 
+### Fixed
+- **Herdr while an agent is working** — `agent read --lines` returns `agent_not_idle` for full-screen agents; Filebox retries the visible screen so latest output still loads. Prompts are passed after `--`, so text that starts with `-` is not parsed as a flag. `herdr --version` is time-bounded, and a timed-out CLI is killed with its process group. The sidebar no longer reports a stopped server for an unrelated error, and a background refresh no longer races Send into `agent_busy`.
+
 ## v2.2.0
 
 ### Fixed
