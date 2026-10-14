@@ -135,6 +135,62 @@ describe('HerdrView', () => {
     expect(container.textContent).toMatch(/timed out/i);
   });
 
+  it('shows the selected agent output and ignores a late read from the previous one', async () => {
+    let releaseStale: (value: api.HerdrResponse) => void = () => {};
+    const stale = new Promise<api.HerdrResponse>((resolve) => {
+      releaseStale = resolve;
+    });
+    let reviewerReads = 0;
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
+      if (body.op === 'status') {
+        return {
+          req_id: 'h1',
+          status: { installed: true, reachable: true, version: '1.4.0' },
+          agents: [
+            listed.agents[0],
+            {
+              target: 'explore',
+              name: 'explore',
+              kind: 'opencode',
+              status: 'idle' as const,
+              pane_id: 'w1:p1',
+              workspace_id: 'w1',
+              tab_id: 'w1:t1',
+              focused: true,
+            },
+          ],
+        };
+      }
+      if (body.op === 'read' && body.target === 'reviewer') {
+        reviewerReads += 1;
+        if (reviewerReads === 1) return { req_id: 'r1', output: 'reviewer transcript' };
+        return stale;
+      }
+      if (body.op === 'read' && body.target === 'explore') {
+        return { req_id: 'r2', output: 'explore transcript' };
+      }
+      return { req_id: 'x' };
+    });
+
+    await render();
+    expect(container.textContent).toContain('reviewer transcript');
+
+    const refresh = container.querySelector('button[aria-label="Refresh"]') as HTMLButtonElement;
+    await act(async () => refresh.click());
+    const explore = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes('explore'));
+    await act(async () => explore!.click());
+    expect(container.textContent).not.toContain('reviewer transcript');
+
+    await act(async () => {
+      releaseStale({ req_id: 'stale', output: 'STALE reviewer transcript' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('explore transcript');
+    expect(container.textContent).not.toContain('STALE');
+    expect(container.textContent).not.toContain('reviewer transcript');
+  });
+
   it('shows the validation message instead of a search error', async () => {
     vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
       if (body.op === 'status') return listed;

@@ -265,7 +265,7 @@ fn human_herdr_error(error: &str) -> &'static str {
         "herdr_blocked" => "That agent is waiting for an approval. Inspect the output, then send a key.",
         "herdr_agent_missing" => "That Herdr agent is no longer running",
         "herdr_not_ready" => "The agent did not become ready in time. Read the output before retrying.",
-        "herdr_not_idle" => "That agent is busy, so scrolled history is unavailable. Retry to read the visible screen.",
+        "herdr_not_idle" => "That agent is busy, so its latest output could not be read. Retry in a moment.",
         "agent_busy" => "Another Herdr command is already running on this backend",
         "invalid_request" => "Invalid Herdr request",
         "cancelled" => "Herdr command was cancelled",

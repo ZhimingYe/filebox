@@ -9,6 +9,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ### Fixed
 - **Herdr while an agent is working** — `agent read --lines` returns `agent_not_idle` for full-screen agents; Filebox retries the visible screen so latest output still loads. Prompts are passed after `--`, so text that starts with `-` is not parsed as a flag. `herdr --version` is time-bounded, and a timed-out CLI is killed with its process group. The sidebar no longer reports a stopped server for an unrelated error, and a background refresh no longer races Send into `agent_busy`.
+- **Herdr agent switch** — a slow read for the previous agent can no longer paint under the newly selected header. Crossing the phone breakpoint no longer reloads the list. When a working agent becomes idle, the next refresh reads its finished transcript once. Output stays put if you have scrolled up.
 
 ## v2.2.0
 

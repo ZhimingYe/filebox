@@ -85,6 +85,8 @@ function herdrFailureMessage(error: unknown): string | null {
  */
 export function HerdrView({ agent }: Props) {
   const isMobile = useIsMobile();
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
   const [status, setStatus] = useState<api.HerdrServerStatus | null>(null);
   const [agents, setAgents] = useState<api.HerdrAgent[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -109,6 +111,10 @@ export function HerdrView({ agent }: Props) {
   const refreshScheduled = useRef(false);
   const versionRef = useRef<string | null>(null);
   const agentsRef = useRef(agents);
+  const stickToBottomRef = useRef(true);
+  // Last selected target+status the poll already treated as fresh, so an
+  // idle agent is not re-read every tick, but a working → idle transition is.
+  const seenPollRef = useRef<string | null>(null);
   versionRef.current = status?.version ?? null;
   selectedRef.current = selected;
   agentsRef.current = agents;
@@ -142,7 +148,7 @@ export function HerdrView({ agent }: Props) {
         if (prev && next.some((a) => a.target === prev)) return prev;
         // Desktop lands on the highest-priority agent so output is visible.
         // Mobile stays on the list until the user taps a card.
-        if (isMobile) return null;
+        if (isMobileRef.current) return null;
         return next[0]?.target ?? null;
       });
     } catch (e) {
@@ -164,7 +170,7 @@ export function HerdrView({ agent }: Props) {
     } finally {
       if (genRef.current === gen) setLoadingList(false);
     }
-  }, [agent.id, isMobile]);
+  }, [agent.id]);
 
   const loadOutput = useCallback(async (target: string, silent = false) => {
     const gen = ++outputGenRef.current;
@@ -173,7 +179,7 @@ export function HerdrView({ agent }: Props) {
     abortOutput.current = controller;
     if (!silent) {
       setLoadingOutput(true);
-      setActionError(null);
+      if (selectedRef.current === target) setActionError(null);
     }
     try {
       const res = await api.herdrCommand(
@@ -182,7 +188,7 @@ export function HerdrView({ agent }: Props) {
         controller.signal,
         25_000,
       );
-      if (outputGenRef.current !== gen) return;
+      if (outputGenRef.current !== gen || selectedRef.current !== target) return;
       setOutput(res.output ?? '');
       if (res.agent) {
         setAgents((prev) => {
@@ -191,7 +197,7 @@ export function HerdrView({ agent }: Props) {
         });
       }
     } catch (e) {
-      if (outputGenRef.current !== gen) return;
+      if (outputGenRef.current !== gen || selectedRef.current !== target) return;
       const message = herdrFailureMessage(e);
       if (message === null) return;
       if (silent && (errorCode(e) === 'agent_busy' || errorCode(e) === 'herdr_not_idle')) return;
@@ -211,12 +217,19 @@ export function HerdrView({ agent }: Props) {
   }, [agent.id, enqueue, loadList]);
 
   useEffect(() => {
+    // Invalidate an in-flight read before it can paint the previous agent
+    // under this header. The generation bump wins even if the response
+    // arrives before the abort is observed.
+    outputGenRef.current += 1;
+    abortOutput.current?.abort();
+    stickToBottomRef.current = true;
     if (!selected) {
+      seenPollRef.current = null;
       setOutput('');
       return;
     }
-    // Drop the previous agent's text immediately so a slow read cannot
-    // keep showing it under the new header.
+    const item = agentsRef.current.find((a) => a.target === selected);
+    seenPollRef.current = item ? `${item.target}\0${item.status}` : null;
     setOutput('');
     setActionError(null);
     void enqueue(() => loadOutput(selected, false));
@@ -236,7 +249,16 @@ export function HerdrView({ agent }: Props) {
           const target = selectedRef.current;
           const item = agentsRef.current.find((a) => a.target === target);
           if (!item || sendingRef.current) return;
-          if (item.status === 'working' || item.status === 'blocked') {
+          const signature = `${item.target}\0${item.status}`;
+          const statusChanged = seenPollRef.current !== signature;
+          seenPollRef.current = signature;
+          // Keep reading while a turn is in progress, and once more when it
+          // finishes, so the idle card does not keep the mid-turn transcript.
+          if (
+            statusChanged
+            || item.status === 'working'
+            || item.status === 'blocked'
+          ) {
             await loadOutput(item.target, true);
           }
         } finally {
@@ -249,7 +271,7 @@ export function HerdrView({ agent }: Props) {
 
   useEffect(() => {
     const el = outputBoxRef.current;
-    if (!el) return;
+    if (!el || !stickToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
   }, [output]);
 
@@ -422,7 +444,7 @@ export function HerdrView({ agent }: Props) {
                   Start Herdr on this backend with <span style={styles.inlineCode}>herdr</span> or{' '}
                   <span style={styles.inlineCode}>herdr server</span>, then refresh. Filebox only talks to the local CLI — never to agents on other machines.
                 </p>
-                <button type="button" style={styles.primaryBtn} onClick={() => void loadList(false)}>
+                <button type="button" style={styles.primaryBtn} onClick={() => void enqueue(() => loadList(false))}>
                   Check again
                 </button>
               </div>
@@ -490,7 +512,16 @@ export function HerdrView({ agent }: Props) {
 
             {actionError && <div style={styles.actionError}>{actionError}</div>}
 
-            <pre ref={outputBoxRef} style={styles.output} aria-live="polite">
+            <pre
+              ref={outputBoxRef}
+              style={styles.output}
+              aria-live="polite"
+              onScroll={(e) => {
+                const el = e.currentTarget;
+                const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+                stickToBottomRef.current = distance < 48;
+              }}
+            >
               {loadingOutput && !output
                 ? 'Reading latest output…'
                 : output || 'No output yet. Send a prompt or wait for the agent to write.'}

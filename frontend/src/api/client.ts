@@ -194,7 +194,7 @@ export function friendlyMessage(error: unknown): string {
     herdr_blocked: 'That agent is waiting for an approval. Inspect the output, then tap a key.',
     herdr_agent_missing: 'That Herdr agent is no longer running.',
     herdr_not_ready: 'The agent did not become ready in time. Read the output before retrying.',
-    herdr_not_idle: 'That agent is busy, so scrolled history is unavailable. Retry to read the visible screen.',
+    herdr_not_idle: 'That agent is busy, so its latest output could not be read. Retry in a moment.',
     herdr_failed: 'The Herdr command failed. Check the output and retry.',
     terminal_unavailable: 'The terminal is not available on this agent.',
     terminal_overloaded: 'The hub is already running the maximum number of terminal sessions.',
