@@ -95,9 +95,17 @@ export function HerdrView({ agent }: Props) {
     try {
       const res = await api.herdrCommand(agent.id, { op: 'status' }, controller.signal, 20_000);
       if (genRef.current !== gen) return;
+      const next = sortAgents(res.agents ?? []);
       setStatus(res.status ?? null);
-      setAgents(sortAgents(res.agents ?? []));
+      setAgents(next);
       setListError(res.error ? friendlyMessage({ error: res.error }) : null);
+      setSelected((prev) => {
+        if (prev && next.some((a) => a.target === prev)) return prev;
+        // Desktop lands on the highest-priority agent so output is visible.
+        // Mobile stays on the list until the user taps a card.
+        if (isMobile) return null;
+        return next[0]?.target ?? null;
+      });
     } catch (e) {
       if (genRef.current !== gen) return;
       setListError(friendlyMessage(e));
@@ -113,7 +121,7 @@ export function HerdrView({ agent }: Props) {
     } finally {
       if (genRef.current === gen) setLoadingList(false);
     }
-  }, [agent.id, status?.version]);
+  }, [agent.id, isMobile, status?.version]);
 
   const loadOutput = useCallback(async (target: string, silent = false) => {
     const gen = ++outputGenRef.current;

@@ -70,6 +70,14 @@ describe('HerdrView', () => {
     expect(container.textContent).toContain('reviewer');
     expect(container.textContent).toContain('Working');
     expect(container.textContent).toContain('Herdr 1.4.0');
+    // Desktop auto-selects the first agent and loads latest output.
+    expect(api.herdrCommand).toHaveBeenCalledWith(
+      agent.id,
+      { op: 'read', target: 'reviewer', lines: 120 },
+      expect.any(AbortSignal),
+      25_000,
+    );
+    expect(container.textContent).toContain('latest pane output');
   });
 
   it('opens an agent, shows output, and sends a prompt', async () => {
