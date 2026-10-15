@@ -406,6 +406,11 @@ Use an isolated Hub/Agent and real PTY. Test 320px/390px portrait, a coarse-poin
 landscape viewport, and a reduced visible height representing the soft keyboard.
 Opening Focus, rotating, opening Text input, and returning to the normal layout
 must retain the same socket/session. Check `stty size` after resizing settles.
+Compare the terminal chrome with the Files toolbar at the same viewport: light
+surfaces, small SVG controls, and matching borders/type. Desktop keys are hidden
+until Terminal keys is toggled. On phones, verify that the single key row scrolls
+horizontally, never stretches into equal-width tiles, and uses compact 28px controls without extra touch padding.
+Check session expansion, text entry, and disconnect notices for overflow too.
 
 Generate bounded output (`printf 'SCROLL-%s\n' {1..300}` in bash/zsh), then swipe
 down to older history and up toward newer output. Repeat while a bounded loop

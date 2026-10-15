@@ -7,6 +7,8 @@ import { useTerminalMobile, useTerminalViewport } from '../state/useTerminalLayo
 import { c, radius, font } from '../theme';
 import { TerminalInputQueue } from '../lib/terminalInput';
 import { installTerminalTouchScroll } from '../lib/terminalTouch';
+import { TerminalAction } from './TerminalAction';
+import { IconTerminal, IconTextInput, IconKeyboard, IconScrollBottom, IconExpand, IconCollapse } from './icons';
 
 interface Props {
   ticket: string;
@@ -105,6 +107,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
   const [altArmed, setAltArmed] = useState(false);
   const isMobile = useTerminalMobile();
   const [focused, setFocused] = useState(false);
+  const [showKeys, setShowKeys] = useState(false);
   const viewport = useTerminalViewport(true);
   const [textInput, setTextInput] = useState(false);
   const [draft, setDraft] = useState('');
@@ -142,6 +145,13 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     ctrlRef.current = false; altRef.current = false;
     setCtrlArmed(false); setAltArmed(false);
   };
+
+  useEffect(() => {
+    // A modifier must not stay armed after its controls disappear on resize.
+    // One update per layout transition keeps the visible state in sync with xterm input refs.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!isMobile && !showKeys) clearModifiers();
+  }, [isMobile, showKeys]);
 
   const sendUserInput = (text: string) => {
     touchScrollRef.current?.stop();
@@ -545,8 +555,8 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     return () => { window.clearTimeout(startTimer); cleanupSocket(); };
   }, [agent.id, ticket, agentCode, sessionId, onSessionOpened, onReconnect]);
 
-  const keyBtnStyle = (armed = false): React.CSSProperties => ({
-    ...(armed ? { ...styles.keyBtn, ...styles.keyBtnArmed } : styles.keyBtn),
+  const keyBtnStyle = (): React.CSSProperties => ({
+    ...styles.keyBtn,
     ...(isMobile ? styles.keyBtnMobile : null),
   });
 
@@ -554,19 +564,26 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     <div data-terminal-pane style={{ ...styles.wrap, ...(focused ? { ...styles.focused, ...viewport } : null) }}>
       <div onPointerDownCapture={() => touchScrollRef.current?.stop()}
         style={{ ...styles.controls, ...(isMobile ? styles.controlsMobile : null) }}>
-        <span style={styles.agentName} title={agent.name}>{agent.name}</span>
-        <button type="button" style={keyBtnStyle()} aria-pressed={textInput} onClick={() => {
-          clearModifiers(); composingRef.current = false; setTextInput(value => !value);
-        }}>Text input</button>
-        <button type="button" style={keyBtnStyle()} disabled={status !== 'open'} onClick={() => {
-          if (textInput) draftRef.current?.focus(); else termRef.current?.focus();
-        }}>Keyboard</button>
-        <button type="button" style={keyBtnStyle()} onClick={() => {
-          touchScrollRef.current?.stop(); termRef.current?.scrollToBottom();
-        }}>Latest</button>
-        <button type="button" style={keyBtnStyle()} aria-pressed={focused} onClick={() => setFocused(value => !value)}>
-          {focused ? 'Exit focus' : 'Focus'}
-        </button>
+        <span style={styles.identity}>
+          <IconTerminal />
+          <span style={styles.agentName} title={agent.name}>{agent.name}</span>
+        </span>
+        <div role="toolbar" aria-label="Terminal display" style={styles.actions}>
+          <TerminalAction label="Text input" pressed={textInput} onClick={() => {
+            clearModifiers(); composingRef.current = false; setTextInput(value => !value);
+          }}><IconTextInput /></TerminalAction>
+          <TerminalAction label={isMobile ? 'Keyboard' : 'Terminal keys'}
+            pressed={isMobile ? undefined : showKeys} disabled={isMobile && status !== 'open'} onClick={() => {
+              if (isMobile) {
+                if (textInput) draftRef.current?.focus(); else termRef.current?.focus();
+              } else { clearModifiers(); setShowKeys(value => !value); }
+            }}><IconKeyboard /></TerminalAction>
+          <TerminalAction label="Latest" onClick={() => {
+            touchScrollRef.current?.stop(); termRef.current?.scrollToBottom();
+          }}><IconScrollBottom /></TerminalAction>
+          <TerminalAction label={focused ? 'Exit focus' : 'Focus'} pressed={focused}
+            onClick={() => setFocused(value => !value)}>{focused ? <IconCollapse /> : <IconExpand />}</TerminalAction>
+        </div>
       </div>
       <div ref={containerRef} style={{ ...styles.termHost, visibility: status === 'connecting' ? 'hidden' : 'visible', ...(isMobile ? styles.termHostMobile : null) }} />
       {textInput && (
@@ -587,7 +604,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
             onCompositionStart={() => { touchScrollRef.current?.stop(); composingRef.current = true; }}
             onCompositionEnd={() => { composingRef.current = false; }}
             onChange={event => { touchScrollRef.current?.stop(); setDraft(event.target.value); setDraftError(null); }} />
-          <button type="button" style={keyBtnStyle()} disabled={status !== 'open' || !draft}
+          <button type="button" style={{ ...styles.insertBtn, opacity: status !== 'open' || !draft ? 0.45 : 1 }} disabled={status !== 'open' || !draft}
             onPointerDown={event => event.preventDefault()} onClick={insertDraft}>Insert</button>
           <span style={styles.composerHint}>Insert adds no Enter. Pasted line breaks may run commands.</span>
           {draftError && <span role="status" style={styles.composerHint}>{draftError}</span>}
@@ -595,17 +612,16 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
       )}
       {/* Aux keys for keyboards without Esc/Tab/Ctrl/arrows (mobile), and a
           convenience row on desktop. Ctrl/Alt are sticky one-shot modifiers. */}
-      <fieldset disabled={status !== 'open'} aria-label="Terminal keys"
+      {(isMobile || showKeys) && <fieldset disabled={status !== 'open'} aria-label="Terminal keys"
         onPointerDownCapture={() => touchScrollRef.current?.stop()} onKeyDownCapture={() => touchScrollRef.current?.stop()}
         style={{ ...styles.toolbar,
-        ...(isMobile ? styles.toolbarMobile : null),
-        ...(isMobile && viewport.width >= 600 ? { gridTemplateColumns: 'repeat(12, minmax(0, 1fr))' } : null) }}>
+        ...(isMobile ? styles.toolbarMobile : null) }}>
         <KeyButton label="Esc" style={keyBtnStyle()} onPress={() => sendUserInput(applyStickyModifiers('\x1b'))} />
         <KeyButton label="Tab" style={keyBtnStyle()} onPress={() => sendUserInput(applyStickyModifiers('\t'))} />
         <KeyButton
           label="Ctrl"
           ariaPressed={ctrlArmed}
-          style={keyBtnStyle(ctrlArmed)}
+          style={keyBtnStyle()}
           onPress={() => {
             ctrlRef.current = !ctrlRef.current;
             setCtrlArmed(ctrlRef.current);
@@ -614,7 +630,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
         <KeyButton
           label="Alt"
           ariaPressed={altArmed}
-          style={keyBtnStyle(altArmed)}
+          style={keyBtnStyle()}
           onPress={() => {
             altRef.current = !altRef.current;
             setAltArmed(altRef.current);
@@ -630,7 +646,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
         <KeyButton label="↑" ariaLabel="Arrow up" style={keyBtnStyle()} onPress={() => sendArrow('up')} />
         <KeyButton label="↓" ariaLabel="Arrow down" style={keyBtnStyle()} onPress={() => sendArrow('down')} />
         <KeyButton label="→" ariaLabel="Arrow right" style={keyBtnStyle()} onPress={() => sendArrow('right')} />
-      </fieldset>
+      </fieldset>}
       {(status !== 'open' || notice || pendingInputBytes > 0 || outputSlow) && (
         <div style={{ ...styles.footer, ...(isMobile ? styles.footerMobile : null) }}>
           <span role="status" style={styles.footerText}>
@@ -674,11 +690,12 @@ function KeyButton({
       type="button"
       style={style}
       aria-pressed={ariaPressed}
-      aria-label={ariaLabel}
+      aria-label={ariaLabel ?? label}
+      title={ariaLabel ?? label}
       onPointerDown={(e) => e.preventDefault()}
       onClick={onPress}
     >
-      {label}
+      <span aria-hidden="true" style={{ ...styles.keyFace, ...(ariaPressed ? styles.keyBtnArmed : null) }}>{label}</span>
     </button>
   );
 }
@@ -688,13 +705,19 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'fixed', zIndex: 300, borderRadius: 0,
     padding: 'env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)',
   },
-  controls: { display: 'flex', flexShrink: 0, gap: 6, padding: '4px 8px', alignItems: 'center' },
-  controlsMobile: { gap: 4, padding: '2px 4px' },
-  agentName: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: c.bgSubtle, fontSize: 12 },
-  composer: { display: 'flex', flexWrap: 'wrap', flexShrink: 0, gap: 4, padding: '4px 6px', alignItems: 'center' },
-  draft: { flex: 1, minWidth: 0, resize: 'none', maxHeight: 80, padding: 8, fontSize: 16, fontFamily: font.mono,
-    border: `1px solid ${c.border}`, borderRadius: radius.sm, background: c.bg, color: c.text },
-  composerHint: { flexBasis: '100%', color: c.bgSubtle, fontSize: 11, lineHeight: 1.3 },
+  controls: { display: 'flex', flexShrink: 0, gap: 12, padding: '4px 10px', alignItems: 'center',
+    background: c.bgSubtle, borderBottom: `1px solid ${c.border}`, fontFamily: font.sans },
+  controlsMobile: { gap: 4, padding: '4px 6px 4px 10px' },
+  identity: { display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, color: c.textSecondary },
+  actions: { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 },
+  agentName: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: c.textSecondary, fontSize: 12, fontWeight: 500 },
+  composer: { display: 'flex', flexWrap: 'wrap', flexShrink: 0, gap: 6, padding: '6px 8px', alignItems: 'center',
+    background: c.bgSubtle, borderTop: `1px solid ${c.border}`, fontFamily: font.sans },
+  draft: { flex: 1, minWidth: 0, resize: 'none', maxHeight: 80, padding: '8px 10px', fontSize: 16, fontFamily: font.mono,
+    border: `1px solid ${c.border}`, borderRadius: radius.md, background: c.surface, color: c.text },
+  insertBtn: { minHeight: 32, padding: '0 14px', border: 'none', borderRadius: radius.md,
+    background: c.accent, color: c.onAccent, fontFamily: font.sans, fontSize: 12, fontWeight: 500, cursor: 'pointer' },
+  composerHint: { flexBasis: '100%', color: c.textSecondary, fontSize: 11, lineHeight: 1.4 },
   wrap: {
     display: 'flex',
     flexDirection: 'column',
@@ -710,68 +733,38 @@ const styles: Record<string, React.CSSProperties> = {
     flex: '1 1 auto',
     minHeight: 0,
     overflow: 'hidden',
-    padding: '8px 4px 4px 10px',
+    padding: '12px 8px 8px 12px',
     boxSizing: 'border-box',
   },
   termHostMobile: {
-    padding: '4px 2px 2px 6px',
+    padding: '10px 4px 6px 10px',
   },
   toolbar: {
-    display: 'flex',
-    flexShrink: 0,
-    minWidth: 0,
-    margin: 0,
-    border: 'none',
-    alignItems: 'center',
-    gap: 6,
-    padding: '4px 10px',
-    borderTop: `1px solid ${c.border}40`,
-    background: c.text,
-    userSelect: 'none',
-    WebkitUserSelect: 'none',
-    touchAction: 'manipulation',
-    overflowX: 'auto',
+    display: 'flex', flexShrink: 0, minWidth: 0, margin: 0, border: 'none', alignItems: 'center',
+    gap: 4, padding: '3px 8px', borderTop: `1px solid ${c.border}`, background: c.bgSubtle,
+    userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'pan-x', overflowX: 'auto',
+    overscrollBehaviorX: 'contain', scrollbarWidth: 'thin',
   },
-  toolbarMobile: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
-    padding: '4px',
-    gap: 4,
-  },
+  toolbarMobile: { gap: 4, padding: '3px 6px' },
   keyBtn: {
-    flexShrink: 0,
-    minWidth: 30,
-    minHeight: 26,
-    padding: '2px 8px',
-    borderRadius: radius.sm,
-    border: `1px solid ${c.bgSubtle}44`,
-    background: 'transparent',
-    color: c.bgSubtle,
-    cursor: 'pointer',
-    fontSize: 12,
-    fontWeight: 500,
-    fontFamily: font.mono,
-    touchAction: 'manipulation',
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+    minWidth: 28, height: 28, padding: 0, borderRadius: radius.sm, border: 'none',
+    background: 'transparent', color: c.textSecondary, cursor: 'pointer',
+    fontSize: 11, fontWeight: 500, fontFamily: font.mono, touchAction: 'pan-x',
   },
-  keyBtnArmed: {
-    background: c.accent,
-    border: `1px solid ${c.accent}`,
-    color: c.onAccent,
-  },
-  keyBtnMobile: {
-    minWidth: 44,
-    minHeight: 44,
-    padding: '2px 3px',
-    fontSize: 12,
-  },
+  keyFace: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    minWidth: 28, height: 28, padding: '0 7px', boxSizing: 'border-box',
+    border: `1px solid ${c.border}`, borderRadius: radius.sm, background: c.surface },
+  keyBtnArmed: { background: c.accentBg, border: `1px solid ${c.accent}`, color: c.accent },
+  keyBtnMobile: { minWidth: 28, height: 28, padding: 0 },
   footer: {
     display: 'flex',
     flexShrink: 0,
     alignItems: 'center',
     gap: 10,
     padding: '6px 12px',
-    borderTop: `1px solid ${c.border}40`,
-    background: c.text,
+    borderTop: `1px solid ${c.border}`,
+    background: c.bgSubtle,
   },
   footerMobile: { flexWrap: 'wrap', gap: 6, padding: 8, maxHeight: '40%', overflowY: 'auto' },
   footerText: {
@@ -779,12 +772,12 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
     fontSize: 12,
     fontFamily: font.sans,
-    color: c.textFaint,
+    color: c.textSecondary,
     overflowWrap: 'anywhere',
   },
   reconnectBtn: {
     flexShrink: 0,
-    minHeight: 44,
+    minHeight: 28,
     padding: '4px 12px',
     borderRadius: radius.sm,
     border: 'none',

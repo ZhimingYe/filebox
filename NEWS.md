@@ -4,6 +4,9 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+### Improved
+- **Terminal visual consistency** — session actions and terminal controls now use the same compact, light SVG toolbar style as the file browser. Desktop auxiliary keys stay collapsed until requested; phones use one horizontally scrollable row with compact 28px controls, instead of two stretched rows. Text entry and connection notices use the shared light surfaces.
+
 ## v2.4.0
 
 ### Improved

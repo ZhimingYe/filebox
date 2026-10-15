@@ -34,7 +34,7 @@ async function render(backend = agent) {
   await act(async () => root.render(<TerminalView agent={backend} />));
 }
 async function click(label: string) {
-  const button = [...container.querySelectorAll('button')].find((b) => b.textContent === label);
+  const button = [...container.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === label || b.textContent === label);
   expect(button, label).toBeDefined();
   await act(async () => button!.click());
 }

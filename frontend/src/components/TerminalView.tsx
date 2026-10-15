@@ -4,6 +4,8 @@ import { friendlyMessage } from '../api/client';
 import { PreviewErrorBoundary } from './PreviewErrorBoundary';
 import { c, radius, font } from '../theme';
 import { useTerminalMobile } from '../state/useTerminalLayout';
+import { TerminalAction } from './TerminalAction';
+import { IconChevronRight, IconRefresh, IconClose, IconPlus } from './icons';
 
 // xterm is heavy; it only downloads once the user actually opens a terminal.
 const TerminalPane = lazy(() =>
@@ -212,7 +214,7 @@ function TerminalSessionsPanel({ agent, onResume, onNew }: Props & { onResume: (
   // guaranteed 400 to discover the panel is unsupported. An older agent that
   // omits the flag still gets probed (and hides itself on that 400).
   if (unsupported || agent.capabilities?.terminal_manage === false) {
-    return onNew ? <button type="button" style={styles.primaryBtn} onClick={onNew}>New session</button> : null;
+    return onNew ? <div style={styles.sessHeader}><TerminalAction label="New session" showLabel={!isMobile} onClick={onNew}><IconPlus /></TerminalAction></div> : null;
   }
 
   return (
@@ -221,24 +223,22 @@ function TerminalSessionsPanel({ agent, onResume, onNew }: Props & { onResume: (
         <div style={styles.sessHeader}>
           <button
             type="button"
-            style={{ ...styles.sessToggle, ...(isMobile ? styles.touchButton : null) }}
+            style={{ ...styles.sessToggle, ...(isMobile ? styles.compactButton : null) }}
             onClick={toggle}
             aria-expanded={open}
+            aria-label={`Sessions on ${agent.name}`}
           >
-            <span style={styles.sessCaret}>{open ? '▾' : '▸'}</span>
-            <span style={styles.sessName} title={`Sessions on ${agent.name}`}>Sessions on {agent.name}</span>
+            <IconChevronRight style={{ width: 12, height: 12, flexShrink: 0, transform: open ? 'rotate(90deg)' : undefined }} />
+            <span style={styles.sessName} title={`Sessions on ${agent.name}`}>Sessions</span>
             {sessions !== null && (
               <span style={styles.sessCount}>{sessions.length}</span>
             )}
           </button>
-          <button
-            type="button"
-            style={{ ...styles.sessRefreshBtn, ...(isMobile ? styles.touchButton : null) }}
-            onClick={() => loading ? cancelRefresh() : void refresh()}
-          >
-            {loading ? 'Cancel refresh' : 'Refresh'}
-          </button>
-          {onNew && <button type="button" style={{ ...styles.primaryBtn, ...(isMobile ? styles.touchButton : null) }} onClick={onNew}>New session</button>}
+          <TerminalAction label={loading ? 'Cancel refresh' : 'Refresh'}
+            onClick={() => loading ? cancelRefresh() : void refresh()}>
+            {loading ? <IconClose /> : <IconRefresh />}
+          </TerminalAction>
+          {onNew && <TerminalAction label="New session" showLabel={!isMobile} onClick={onNew}><IconPlus /></TerminalAction>}
         </div>
         {open && (
           <div style={styles.sessBody}>
@@ -273,20 +273,22 @@ function TerminalSessionsPanel({ agent, onResume, onNew }: Props & { onResume: (
                 >
                   idle {formatDurationSecs(s.idle_secs)}
                 </span>
-                <button type="button" style={{ ...styles.sessRefreshBtn, ...(isMobile ? styles.touchButton : null) }} onClick={() => onResume(s.req_id)}>Resume</button>
-                <button
-                  type="button"
-                  style={{
-                    ...styles.sessKillBtn,
-                    ...(isMobile ? styles.touchButton : null),
-                    ...(confirmId === s.req_id ? styles.sessKillConfirm : null),
-                    ...(killing === s.req_id ? styles.primaryBtnDisabled : null),
-                  }}
-                  disabled={killing === s.req_id}
-                  onClick={() => (confirmId === s.req_id ? void kill(s.req_id) : armConfirm(s.req_id))}
-                >
-                  {killing === s.req_id ? 'Ending…' : confirmId === s.req_id ? 'Confirm end?' : 'End'}
-                </button>
+                <span style={styles.sessActions}>
+                  <button type="button" style={{ ...styles.sessRefreshBtn, ...(isMobile ? styles.compactButton : null) }} onClick={() => onResume(s.req_id)}>Resume</button>
+                  <button
+                    type="button"
+                    style={{
+                      ...styles.sessKillBtn,
+                      ...(isMobile ? styles.compactButton : null),
+                      ...(confirmId === s.req_id ? styles.sessKillConfirm : null),
+                      ...(killing === s.req_id ? styles.primaryBtnDisabled : null),
+                    }}
+                    disabled={killing === s.req_id}
+                    onClick={() => (confirmId === s.req_id ? void kill(s.req_id) : armConfirm(s.req_id))}
+                  >
+                    {killing === s.req_id ? 'Ending…' : confirmId === s.req_id ? 'Confirm end?' : 'End'}
+                  </button>
+                </span>
               </div>
             ))}
           </div>
@@ -345,7 +347,7 @@ export function TerminalView({ agent }: Props) {
   };
   const configured = agent.capabilities?.terminal_agent_2fa && agent.capabilities?.terminal_persistent;
   return (
-    <div style={{ ...styles.wrap, ...(isMobile ? { padding: 6, gap: 6 } : null) }}>
+    <div style={{ ...styles.wrap, ...(isMobile ? { padding: '0 8px 8px', gap: 0 } : null) }}>
       <TerminalSessionsPanel agent={agent} onResume={choose} onNew={authorization ? () => choose() : undefined} />
       {authorization ? (
         <>
@@ -380,7 +382,7 @@ export function TerminalView({ agent }: Props) {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  wrap: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, minWidth: 0, gap: 12, padding: 12, boxSizing: 'border-box' },
+  wrap: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, minWidth: 0, gap: 0, padding: '0 12px 12px', boxSizing: 'border-box' },
   steps: { display: 'flex', flexWrap: 'wrap', gap: 6, padding: 0, margin: '0 0 8px', listStyle: 'none', fontFamily: font.sans },
   step: { flex: '1 1 auto', padding: '8px 10px', borderRadius: radius.sm, color: c.textSecondary, background: c.bgSubtle, fontSize: 12 },
   stepLabel: { margin: 0, color: c.accent, fontSize: 12, fontWeight: 600, fontFamily: font.sans },
@@ -537,8 +539,6 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
     minHeight: 0,
     overflow: 'hidden',
-    borderRadius: radius.md,
-    border: `1px solid ${c.border}`,
     background: c.bg,
     boxSizing: 'border-box',
   },
@@ -546,10 +546,10 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexShrink: 0,
     alignItems: 'center',
-    gap: 8,
-    padding: '4px 6px',
+    gap: 4,
+    padding: '4px 0',
   },
-  touchButton: { minHeight: 44, minWidth: 44, padding: '4px 6px' },
+  compactButton: { minHeight: 28, minWidth: 28, padding: '3px 6px' },
   sessName: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   sessToggle: {
     flex: '1 1 auto',
@@ -600,7 +600,11 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: 4,
-    padding: '0 8px 8px',
+    padding: '4px 6px',
+    marginBottom: 6,
+    border: `1px solid ${c.border}`,
+    borderRadius: radius.md,
+    background: c.bgSubtle,
     minHeight: 0,
     overflowY: 'auto',
     overscrollBehavior: 'contain',
@@ -610,11 +614,12 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 8,
   },
+  sessActions: { display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0 },
   sessRow: {
     display: 'flex',
     alignItems: 'center',
-    gap: 10,
-    padding: '3px 4px',
+    gap: 6,
+    padding: '2px 4px',
     borderRadius: radius.sm,
   },
   sessId: {
@@ -634,7 +639,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   sessKillBtn: {
     flexShrink: 0,
-    marginLeft: 'auto',
     // 24px minimum hit target (WCAG 2.5.8). A kill is destructive, so it also
     // stays a comfortable target on touch.
     minHeight: 24,
