@@ -51,8 +51,10 @@ Blocked agents produce an input-needed reminder. Two consecutive unknown
 observations or failed status checks produce an honest cannot-determine/check
 notice; `agent_busy` is ignored. Offline backends are marked unavailable.
 Known questions remain visible through failed checks until a successful list
-resolves them. Later/Hide acknowledges an episode without discarding its pending
-indicator; a resolved-then-blocked agent produces a fresh reminder. View navigates
+resolves them. Later acknowledges one episode and Close acknowledges all current
+unread episodes. Dismissed reminders leave no banner or placeholder; the same
+episode stays quiet across polling and view changes until the page is reloaded.
+A resolved-then-blocked agent produces a fresh reminder. View navigates
 only on a user click and selects the affected coding agent.
 
 Herdr's screen detection can miss new question UI shapes and report idle. These

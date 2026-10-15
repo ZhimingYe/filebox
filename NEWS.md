@@ -5,7 +5,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 ## Unreleased
 
 ### Added
-- **Herdr attention reminders** — while Filebox is open, status checks continue across browsing views and Herdr-capable backends. Questions/approvals, repeatedly unknown states, and unavailable status checks surface in a non-modal strip. Later keeps a pending count without repeating the same reminder; View opens the relevant backend and agent. Unsupported interactions explicitly direct the user to Herdr. Checks only list status, with two requests at most, and reuse the visible Herdr panel's results.
+- **Herdr attention reminders** — while Filebox is open, status checks continue across browsing views and Herdr-capable backends. Questions/approvals, repeatedly unknown states, and unavailable status checks surface in a non-modal strip. Later dismisses one reminder; Close dismisses all current reminders completely, with no persistent banner. The same episode stays quiet across polling and view changes; View opens the relevant backend and agent. Unsupported interactions explicitly direct the user to Herdr. Checks only list status, with two requests at most, and reuse the visible Herdr panel's results.
 - **Herdr sidebar** — when a Filebox Agent finds a local `herdr` CLI (`FILEBOX_AGENT_HERDR` or `PATH`), it advertises `capabilities.herdr` and the UI shows a **Herdr** workspace item. List live coding agents, read latest output, send a prompt, and tap Esc / Enter / Ctrl+C (and other allowlisted keys) for blocked approvals. Relayed as `POST /api/agents/{id}/herdr`; the Agent runs only `agent list` / `read` / `prompt` / `send-keys`. Hidden on backends without Herdr.
 
 ### Fixed

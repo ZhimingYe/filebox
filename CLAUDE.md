@@ -476,8 +476,9 @@ App-level `useHerdrAttention` checks all online Herdr-capable backends even
 outside the Herdr view (15 seconds between rounds, at most two status-only
 requests). The visible Herdr view reports its own results instead of receiving
 competing background checks. Blocked states, repeated unknown states/failures,
-and offline backends surface in `HerdrAttention`; acknowledging keeps a pending
-count until recovery, and only a new episode raises another reminder. Reminders
+and offline backends surface in `HerdrAttention`; Later dismisses one reminder,
+and Close dismisses all currently shown/unread reminders. Once acknowledged,
+they leave no banner or placeholder; only a new episode raises another reminder. Reminders
 never send input, change focus, or navigate automatically. Detection still depends
 on Herdr; an unrecognized question can appear idle. Monitoring requires the page
 to remain open and may be delayed by browser background throttling.
