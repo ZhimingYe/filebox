@@ -45,7 +45,8 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
         | AgentMessage::OfficeConvertResponse { .. }
         | AgentMessage::TempUploadResponse { .. }
         | AgentMessage::TempCleanupResponse { .. }
-        | AgentMessage::TerminalListResponse { .. } => deliver_response(context, value).await,
+        | AgentMessage::TerminalListResponse { .. }
+        | AgentMessage::HerdrResponse { .. } => deliver_response(context, value).await,
         AgentMessage::Progress { req_id, phase, processed, total, message } => {
             let inner = context.state.inner.write().await;
             if !inner.agents.is_current_connection(&context.agent_id, context.connection_id) {

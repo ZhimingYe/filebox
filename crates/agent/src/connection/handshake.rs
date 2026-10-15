@@ -109,6 +109,7 @@ pub(super) async fn connect_and_register(
     // unix-only PTY support as `terminal`.
     capabilities.terminal_manage = cfg!(unix);
     capabilities.terminal_persistent = cfg!(unix);
+    capabilities.herdr = runtime.herdr.is_some();
     let temp_root = temp_store.map(|store| store.root_info());
     let register = AgentMessage::Register {
         agent_id: Some(runtime.stable_agent_id.clone()),

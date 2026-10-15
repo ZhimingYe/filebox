@@ -189,6 +189,14 @@ export function friendlyMessage(error: unknown): string {
     terminal_session_attached: 'This shell is open in another browser. Disconnect it before resuming.',
     terminal_2fa_required: 'This backend requires its own authenticator code.',
     terminal_2fa_invalid: 'Invalid or already-used backend code — codes rotate every 30 seconds; enter the current one.',
+    herdr_unavailable: 'Herdr is installed but the server is not running on this backend. Start it, then refresh.',
+    herdr_timeout: 'The Herdr command timed out. Read the latest output before retrying.',
+    herdr_incompatible: 'Herdr returned an incompatible response. Update its CLI and restart the Herdr server with a matching version.',
+    herdr_blocked: 'That agent is waiting for an approval. Inspect the output, then tap a key.',
+    herdr_agent_missing: 'That Herdr agent is no longer running.',
+    herdr_not_ready: 'The agent did not become ready in time. Read the output before retrying.',
+    herdr_not_idle: 'That agent is busy, so its latest output could not be read. Retry in a moment.',
+    herdr_failed: 'The Herdr command failed. Check the output and retry.',
     terminal_unavailable: 'The terminal is not available on this agent.',
     terminal_overloaded: 'The hub is already running the maximum number of terminal sessions.',
     terminal_open_timeout: 'The backend did not confirm the session in time.',
@@ -399,6 +407,8 @@ export interface AgentCapabilities {
       Gated separately from `terminal`, so probe before showing the panel. */
   terminal_manage?: boolean;
   terminal_persistent?: boolean;
+  /** Agent found a local `herdr` CLI it can drive. */
+  herdr?: boolean;
 }
 
 export interface AgentInfo {
@@ -1100,4 +1110,63 @@ export function terminalWsUrl(agentId: string, cols?: number, rows?: number, ses
     own single-use TOTP code under a namespaced prefix the hub strips off. */
 export function terminalWsProtocols(ticket: string, agentCode?: string): string[] {
   return agentCode ? [ticket, `filebox-agent-code.${agentCode}`] : [ticket];
+}
+
+export type HerdrOp = 'status' | 'read' | 'prompt' | 'send_keys';
+export type HerdrAgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
+
+export interface HerdrAgent {
+  target: string;
+  name?: string | null;
+  kind?: string | null;
+  status: HerdrAgentStatus;
+  completion_seq?: number | null;
+  pane_id: string;
+  workspace_id: string;
+  tab_id: string;
+  cwd?: string | null;
+  title?: string | null;
+  focused: boolean;
+}
+
+export interface HerdrServerStatus {
+  installed: boolean;
+  reachable: boolean;
+  version?: string | null;
+  message?: string | null;
+}
+
+export interface HerdrResponse {
+  req_id: string;
+  error?: string | null;
+  status?: HerdrServerStatus | null;
+  agents?: HerdrAgent[];
+  agent?: HerdrAgent | null;
+  output?: string | null;
+}
+
+export interface HerdrCommandBody {
+  op: HerdrOp;
+  target?: string;
+  text?: string;
+  keys?: string[];
+  lines?: number;
+  wait?: boolean;
+  timeout_ms?: number;
+}
+
+/** Drive the agent's local Herdr CLI. Prompt-with-wait may take up to ~2 minutes. */
+export async function herdrCommand(
+  agentId: string,
+  body: HerdrCommandBody,
+  signal?: AbortSignal,
+  timeoutMs?: number,
+) {
+  const waitBudget = body.wait ? Math.min(130_000, (body.timeout_ms ?? 30_000) + 15_000) : 25_000;
+  return request<HerdrResponse>(
+    `/api/agents/${encodeURIComponent(agentId)}/herdr`,
+    { method: 'POST', body: JSON.stringify(body), signal },
+    false,
+    timeoutMs ?? waitBudget,
+  );
 }

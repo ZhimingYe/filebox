@@ -304,3 +304,14 @@ export function IconTerminal({ style }: SvgProps) {
     </Svg>
   );
 }
+
+/** Coding-agent face with an antenna, distinct from the remote terminal icon. */
+export function IconHerd({ style }: SvgProps) {
+  return (
+    <Svg style={style}>
+      <rect x="3" y="5" width="10" height="8" rx="2" />
+      <path d="M8 2v3M6.5 2h3M1 8v2M15 8v2" />
+      <path d="M5.5 8v1M10.5 8v1M6 11h4" />
+    </Svg>
+  );
+}

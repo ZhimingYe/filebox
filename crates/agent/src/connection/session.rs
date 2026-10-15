@@ -7,6 +7,7 @@ use super::*;
 #[path = "office.rs"] mod office;
 #[path = "uploads.rs"] mod uploads;
 #[path = "terminal.rs"] mod terminal;
+#[path = "herdr.rs"] mod herdr;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum DisconnectReason {
@@ -39,6 +40,7 @@ pub(super) struct ConnectionSession<'a> {
     temp_tx: mpsc::Sender<AgentMessage>,
     dir_tx: mpsc::Sender<AgentMessage>,
     term_tx: mpsc::Sender<AgentMessage>,
+    herdr_tx: mpsc::Sender<AgentMessage>,
     fs_admission: Arc<Semaphore>,
     stats_admission: Arc<Semaphore>,
     dir_list_admission: Arc<Semaphore>,
@@ -60,13 +62,14 @@ impl<'a> ConnectionSession<'a> {
         let (temp_tx, temp_rx) = mpsc::channel(16);
         let (dir_tx, dir_rx) = mpsc::channel(32);
         let (term_tx, term_rx) = mpsc::channel(64);
+        let (herdr_tx, herdr_rx) = mpsc::channel(8);
         let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
         let writer = ConnectionWriter(tokio::spawn(run_connection_writer(
-            write, control_rx, vec![search_rx, office_rx, stats_rx, dir_rx, fs_rx, temp_rx, term_rx],
+            write, control_rx, vec![search_rx, office_rx, stats_rx, dir_rx, fs_rx, temp_rx, term_rx, herdr_rx],
         )));
         Self {
             runtime, assigned_agent_id, writer, control_tx, search_tx, office_tx,
-            stats_tx, fs_tx, temp_tx, dir_tx, term_tx,
+            stats_tx, fs_tx, temp_tx, dir_tx, term_tx, herdr_tx,
             fs_admission: Arc::new(Semaphore::new(FS_MAX_INFLIGHT)),
             stats_admission: Arc::new(Semaphore::new(8)),
             dir_list_admission: Arc::new(Semaphore::new(DIR_LIST_MAX_INFLIGHT)),
@@ -147,6 +150,7 @@ impl<'a> ConnectionSession<'a> {
             HubMessage::TerminalOpen { .. } | HubMessage::TerminalAttach { .. } | HubMessage::TerminalDetach { .. }
             | HubMessage::TerminalInput { .. } | HubMessage::TerminalResize { .. } | HubMessage::TerminalClose { .. }
             | HubMessage::TerminalListRequest { .. } => self.handle_terminal(message),
+            HubMessage::HerdrRequest { .. } => self.handle_herdr(message),
             HubMessage::Ping | HubMessage::Cancel { .. } | HubMessage::SysStatsRequest { .. } | HubMessage::Error { .. } => self.handle_control(message),
             _ => Ok(()),
         }
@@ -162,6 +166,10 @@ impl<'a> ConnectionSession<'a> {
         }
         if let Ok(map) = self.runtime.search_cancels.lock() {
             for flag in map.values() { flag.store(true, Ordering::Relaxed); }
+        }
+        if let Ok(mut map) = self.runtime.herdr_cancels.lock() {
+            // Aborted tasks cannot reach their normal removal below handle().
+            for (_, flag) in map.drain() { flag.store(true, Ordering::Relaxed); }
         }
         if let Some(runtime) = &self.runtime.office_runtime { runtime.cancel_all(); }
         self.temp_writers.clear();

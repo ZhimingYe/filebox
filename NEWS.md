@@ -4,6 +4,15 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+### Added
+- **Herdr attention reminders** — while Filebox is open, status checks continue across browsing views and Herdr-capable backends. Questions/approvals, repeatedly unknown states, and unavailable status checks surface in a non-modal strip. Later dismisses one reminder; Close dismisses all current reminders completely, with no persistent banner. The same episode stays quiet across polling and view changes; View opens the relevant backend and agent. Unsupported interactions explicitly direct the user to Herdr. Checks only list status, with two requests at most, and reuse the visible Herdr panel's results.
+- **Herdr sidebar** — when a Filebox Agent finds a local `herdr` CLI (`FILEBOX_AGENT_HERDR` or `PATH`), it advertises `capabilities.herdr` and the UI shows a **Herdr** workspace item. List live coding agents, read latest output, send a prompt, and tap Esc / Enter / Ctrl+C (and other allowlisted keys) for blocked approvals. Relayed as `POST /api/agents/{id}/herdr`; the Agent runs only `agent list` / `read` / `prompt` / `send-keys`. Hidden on backends without Herdr.
+
+### Fixed
+- **Herdr while an agent is working** — `agent read --lines` returns `agent_not_idle` for full-screen agents; Filebox retries the visible screen within the same deadline so latest output still loads. Prompts use Herdr v0.9.5's positional target/text contract, including leading dashes and multiline Unicode. `herdr --version` is time-bounded, and a timed-out CLI is killed with its process group. The sidebar no longer reports a stopped server for an unrelated error, and a background refresh no longer races Send into `agent_busy`.
+- **Herdr agent switch** — a slow read for the previous agent can no longer paint under the newly selected header. Crossing the phone breakpoint no longer reloads the list. When a working agent becomes idle, the next refresh reads its finished transcript once. Output stays put if you have scrolled up.
+- **Herdr compatibility and controls** — terminal output containing JSON stays intact; protocol mismatches and missing agents get specific errors. Optional `completion_seq` detects short turns between polls. Each agent keeps its own prompt draft; the UI checks the UTF-8 byte limit, shows refresh time, supports wrapping and jumping to latest output, and lets you stop waiting without automatically resending. Blocked agents show approval guidance with arrow and Shift+Tab keys; phone controls have larger tap targets.
+
 ## v2.2.0
 
 ### Fixed

@@ -16,10 +16,13 @@ pub(super) struct AgentRuntime {
     pub(super) search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     pub(super) terminal_manager: Arc<crate::terminal::TerminalManager>,
     pub(super) upload_workers: Arc<Semaphore>,
+    pub(super) herdr: Option<Arc<crate::herdr::HerdrClient>>,
+    pub(super) herdr_inflight: Arc<Semaphore>,
+    pub(super) herdr_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 impl AgentRuntime {
-    pub(super) fn new(config: &AgentConfig) -> Self {
+    pub(super) async fn new(config: &AgentConfig) -> Self {
         let resource_mgr = ResourceManager::new(config.data_dir.clone());
         let stable_agent_id = resource_mgr.agent_id().to_string();
         let stats_cache: Arc<StatsCache> = StatsCache::new(stats_ttl());
@@ -79,12 +82,16 @@ impl AgentRuntime {
             Arc::new(Mutex::new(HashMap::new()));
         // PTYs and anti-replay state live across every transport connection.
         let terminal_manager = Arc::new(crate::terminal::TerminalManager::new(config.terminal_totp_secret.clone()));
+        let herdr = crate::herdr::HerdrClient::probe().await.map(Arc::new);
 
         Self {
             resource_mgr, stable_agent_id, stats_cache, dir_cache, content_cache,
             office_runtime, temp_store, fs_workers, dir_list_workers, search_inflight,
             search_cancels, terminal_manager,
             upload_workers: Arc::new(Semaphore::new(4)),
+            herdr,
+            herdr_inflight: Arc::new(Semaphore::new(2)),
+            herdr_cancels: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -100,6 +107,9 @@ impl AgentRuntime {
             search_inflight: Arc::new(AtomicUsize::new(0)), search_cancels: Arc::new(Mutex::new(HashMap::new())),
             terminal_manager: Arc::new(crate::terminal::TerminalManager::new(None)),
             upload_workers: Arc::new(Semaphore::new(4)),
+            herdr: None,
+            herdr_inflight: Arc::new(Semaphore::new(1)),
+            herdr_cancels: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

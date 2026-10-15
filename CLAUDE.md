@@ -101,6 +101,7 @@ abort-on-reregister), `events.rs` (SSE fanout), `fs_proxy.rs` (proxies
 file ops to agent WS), `search_proxy.rs` (workspace search),
 `temp_proxy.rs` (temp-folder upload relay + cleanup),
 `terminal_proxy.rs` (terminal WS relay + tickets),
+`herdr_proxy.rs` (Herdr CLI relay),
 `health.rs`.
 
 **Agent** (`crates/agent/`): Rust + Tokio + tokio-tungstenite (rustls
@@ -114,6 +115,7 @@ apply, capped), `sysinfo.rs` (TTL-cached stats — see below),
 `temp_store.rs` (the ONLY file write path: dedicated temp-upload folder),
 `terminal.rs` (PTY shell sessions — 2FA-gated, unix-only; see "Remote
 Terminal"),
+`herdr.rs` (optional local Herdr CLI probe + whitelist),
 `config_store.rs` (persists `agent_id`, roots, pins, collections,
 revisions under `data_dir` in `agent_state.json`).
 
@@ -127,7 +129,7 @@ by default; mirrors via `--update-base-url`).
 `Error` / terminal response. File reads stream as `FileChunk { offset,
 data, done }` — agent never slurps whole files. Search types live in
 `search.rs`. `Capabilities` gates real features (`pinned_folders`,
-`collections`, `workspace_search`, `terminal`); vestigial flags (`image_preview`,
+`collections`, `workspace_search`, `terminal`, `herdr`); vestigial flags (`image_preview`,
 `pdf_preview`, `serve_dir`) default `false` and aren't gated on — don't
 read meaning into them.
 
@@ -450,6 +452,39 @@ first with "Load older" paging.
   be attributed after the session is removed (captured before removal).
   Keep it set when touching session lifecycle.
 
+## Herdr (optional local coding-agent control)
+
+When the Agent finds a `herdr` binary (`FILEBOX_AGENT_HERDR` or `PATH`) and
+`--version` succeeds, it advertises `capabilities.herdr`. The sidebar
+**Herdr** item appears only then. The Agent runs a small CLI whitelist
+(`agent list` / `agent read` / `agent prompt` / `agent send-keys`) — never a
+shell, never layout/attach commands. The Hub relays
+`POST /api/agents/{id}/herdr`. The UI lists live agents, shows latest
+output, sends a prompt, and exposes large tap targets for Esc / Enter /
+Ctrl+C (useful on a phone when an agent is `blocked`). Reads try
+`recent-unwrapped` and fall back to `visible` on `agent_not_idle` (full-screen
+agents refuse scrolled history while working). Herdr v0.9.5 requires
+`agent prompt TARGET TEXT [--wait --timeout MS]`: text is positional,
+including leading dashes; do not insert a `--` separator. Reads are plain
+terminal text, not socket JSON. If the CLI is present but the Herdr server is down, the view stays
+visible and says so.
+Installing Herdr later requires restarting the Filebox Agent so it can
+re-probe. `completion_seq`, when available, triggers a final output refresh
+even if an entire turn finishes between polls. Drafts are per coding agent;
+Stop waiting cancels the request, but already submitted input may continue.
+App-level `useHerdrAttention` checks all online Herdr-capable backends even
+outside the Herdr view (15 seconds between rounds, at most two status-only
+requests). The visible Herdr view reports its own results instead of receiving
+competing background checks. Blocked states, repeated unknown states/failures,
+and offline backends surface in `HerdrAttention`; Later dismisses one reminder,
+and Close dismisses all currently shown/unread reminders. Once acknowledged,
+they leave no banner or placeholder; only a new episode raises another reminder. Reminders
+never send input, change focus, or navigate automatically. Detection still depends
+on Herdr; an unrecognized question can appear idle. Monitoring requires the page
+to remain open and may be delayed by browser background throttling.
+See [docs/herdr-compatibility.md](docs/herdr-compatibility.md) for the tested
+CLI contract and verification scope.
+
 ## Preview Behavior
 
 - **Workspace**: multi-tab on desktop (`PreviewWorkspace` +
@@ -517,7 +552,8 @@ filebox/
   crates/
     README.md               # Rust workspace architecture
     protocol/src/           # message.rs, agent.rs, resources.rs (roots/pins/
-                            # collections), search.rs, denylist.rs, temp.rs
+                            # collections), search.rs, denylist.rs, temp.rs,
+                            # herdr.rs
                             # (shared upload-name validation)
     updater/src/            # --init-config, --update
     hub/src/                # … + search_proxy.rs, temp_proxy.rs (upload relay),
@@ -539,6 +575,7 @@ filebox/
       components/
         Login BackendList FileBrowser FileEntryList WorkspaceSearch
         TempTransferView TerminalView TerminalPane (lazy, xterm chunk)
+        HerdrView
         CollectionsView CollectionPicker WorkspaceSplit PreviewWorkspace
         PreviewPane previewShared {Pdf,Text,Markdown,Html,Csv,Image}Preview
         DirectoryTree AddressBar DateFilterControl PinnedFolders
