@@ -1,6 +1,6 @@
 //! Herdr CLI automation relayed through a Filebox agent.
 //!
-//! The agent probes a local `herdr` binary at register time and, when
+//! The agent probes a local `herdr` binary at startup and, when
 //! present, answers a small whitelist of commands (`status`/`list`, `read`,
 //! `prompt`, `send_keys`). The hub and browser never talk to Herdr directly.
 
@@ -60,6 +60,9 @@ pub struct HerdrAgent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     pub status: HerdrAgentStatus,
+    /// Optional on older Herdr versions; detects turns completed between polls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_seq: Option<u64>,
     pub pane_id: String,
     #[serde(default)]
     pub workspace_id: String,
@@ -186,6 +189,15 @@ pub fn clamp_wait_timeout_ms(timeout_ms: Option<u64>) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn older_agent_payload_does_not_require_completion_sequence() {
+        let agent: HerdrAgent = serde_json::from_str(
+            r#"{"target":"reviewer","status":"idle","pane_id":"w1:p2"}"#,
+        ).unwrap();
+        assert_eq!(agent.completion_seq, None);
+        assert!(serde_json::to_value(agent).unwrap().get("completion_seq").is_none());
+    }
 
     #[test]
     fn target_accepts_pane_ids_and_names() {

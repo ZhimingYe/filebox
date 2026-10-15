@@ -246,6 +246,7 @@ fn http_for_herdr_error(error: &str) -> (StatusCode, &'static str) {
     let code = error.split(':').next().unwrap_or(error);
     match code {
         "herdr_unavailable" => (StatusCode::SERVICE_UNAVAILABLE, "herdr_unavailable"),
+        "herdr_incompatible" => (StatusCode::BAD_GATEWAY, "herdr_incompatible"),
         "herdr_timeout" => (StatusCode::GATEWAY_TIMEOUT, "herdr_timeout"),
         "herdr_blocked" => (StatusCode::CONFLICT, "herdr_blocked"),
         "herdr_agent_missing" => (StatusCode::NOT_FOUND, "herdr_agent_missing"),
@@ -261,6 +262,7 @@ fn http_for_herdr_error(error: &str) -> (StatusCode, &'static str) {
 fn human_herdr_error(error: &str) -> &'static str {
     match error.split(':').next().unwrap_or(error) {
         "herdr_unavailable" => "Herdr is installed but the server is not running on this backend",
+        "herdr_incompatible" => "Herdr returned an incompatible response. Update its CLI and restart the Herdr server with a matching version.",
         "herdr_timeout" => "The Herdr command timed out",
         "herdr_blocked" => "That agent is waiting for an approval. Inspect the output, then send a key.",
         "herdr_agent_missing" => "That Herdr agent is no longer running",
@@ -288,6 +290,15 @@ fn error_response(status: StatusCode, error: &str, message: &str, retryable: boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incompatible_cli_is_distinct_from_an_unavailable_server() {
+        assert_eq!(http_for_herdr_error("herdr_incompatible"),
+            (StatusCode::BAD_GATEWAY, "herdr_incompatible"));
+        assert_eq!(http_for_herdr_error("herdr_unavailable"),
+            (StatusCode::SERVICE_UNAVAILABLE, "herdr_unavailable"));
+        assert!(human_herdr_error("herdr_incompatible").contains("matching version"));
+    }
 
     #[test]
     fn status_rejects_target() {

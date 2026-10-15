@@ -17,7 +17,17 @@ const QUICK_KEYS: { label: string; keys: string[] }[] = [
   { label: 'Y', keys: ['y'] },
   { label: 'N', keys: ['n'] },
   { label: 'Up', keys: ['up'] },
+  { label: 'Down', keys: ['down'] },
+  { label: 'Left', keys: ['left'] },
+  { label: 'Right', keys: ['right'] },
+  { label: 'Shift+Tab', keys: ['shift+tab'] },
 ];
+
+const PROMPT_MAX_BYTES = 32 * 1024;
+
+function outputSignature(item: api.HerdrAgent): string {
+  return `${item.target}\0${item.status}\0${item.completion_seq ?? ''}`;
+}
 
 const STATUS_ORDER: Record<api.HerdrAgentStatus, number> = {
   blocked: 0,
@@ -91,14 +101,23 @@ export function HerdrView({ agent }: Props) {
   const [agents, setAgents] = useState<api.HerdrAgent[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [output, setOutput] = useState<string>('');
-  const [prompt, setPrompt] = useState('');
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const prompt = selected ? drafts[selected] ?? '' : '';
+  const promptBytes = new TextEncoder().encode(prompt.trim()).length;
   const [wait, setWait] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [outputError, setOutputError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const [wrapOutput, setWrapOutput] = useState(true);
+  const [elapsed, setElapsed] = useState(0);
+  const [actionTarget, setActionTarget] = useState('');
   const [loadingList, setLoadingList] = useState(true);
   const [loadingOutput, setLoadingOutput] = useState(false);
   const [sending, setSending] = useState(false);
   const genRef = useRef(0);
+  const mountedRef = useRef(true);
   const outputGenRef = useRef(0);
   const abortList = useRef<AbortController | null>(null);
   const abortOutput = useRef<AbortController | null>(null);
@@ -119,8 +138,9 @@ export function HerdrView({ agent }: Props) {
   selectedRef.current = selected;
   agentsRef.current = agents;
 
-  const enqueue = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
-    const run = tailRef.current.then(task, task);
+  const enqueue = useCallback((task: () => Promise<unknown>) => {
+    const guarded = () => mountedRef.current ? task() : undefined;
+    const run = tailRef.current.then(guarded, guarded);
     tailRef.current = run.then(() => undefined, () => undefined);
     return run;
   }, []);
@@ -131,6 +151,7 @@ export function HerdrView({ agent }: Props) {
   );
 
   const loadList = useCallback(async (silent = false) => {
+    if (!mountedRef.current) return;
     const gen = ++genRef.current;
     abortList.current?.abort();
     const controller = new AbortController();
@@ -138,7 +159,7 @@ export function HerdrView({ agent }: Props) {
     if (!silent) setLoadingList(true);
     try {
       const res = await api.herdrCommand(agent.id, { op: 'status' }, controller.signal, 20_000);
-      if (genRef.current !== gen) return;
+      if (!mountedRef.current || controller.signal.aborted || genRef.current !== gen) return;
       const next = sortAgents(res.agents ?? []);
       setStatus(res.status ?? null);
       setAgents(next);
@@ -173,14 +194,13 @@ export function HerdrView({ agent }: Props) {
   }, [agent.id]);
 
   const loadOutput = useCallback(async (target: string, silent = false) => {
+    if (!mountedRef.current || selectedRef.current !== target) return;
     const gen = ++outputGenRef.current;
     abortOutput.current?.abort();
     const controller = new AbortController();
     abortOutput.current = controller;
-    if (!silent) {
-      setLoadingOutput(true);
-      if (selectedRef.current === target) setActionError(null);
-    }
+    setLoadingOutput(true);
+    if (!silent) setOutputError(null);
     try {
       const res = await api.herdrCommand(
         agent.id,
@@ -188,8 +208,10 @@ export function HerdrView({ agent }: Props) {
         controller.signal,
         25_000,
       );
-      if (outputGenRef.current !== gen || selectedRef.current !== target) return;
+      if (!mountedRef.current || controller.signal.aborted || outputGenRef.current !== gen || selectedRef.current !== target) return;
       setOutput(res.output ?? '');
+      setOutputError(null);
+      setUpdatedAt(Date.now());
       if (res.agent) {
         setAgents((prev) => {
           const next = prev.map((a) => (a.target === res.agent!.target || a.pane_id === res.agent!.pane_id ? res.agent! : a));
@@ -202,15 +224,17 @@ export function HerdrView({ agent }: Props) {
       const message = herdrFailureMessage(e);
       if (message === null) return;
       if (silent && (errorCode(e) === 'agent_busy' || errorCode(e) === 'herdr_not_idle')) return;
-      setActionError(message);
+      setOutputError(message);
     } finally {
       if (outputGenRef.current === gen) setLoadingOutput(false);
     }
   }, [agent.id]);
 
   useEffect(() => {
+    mountedRef.current = true;
     void enqueue(() => loadList(false));
     return () => {
+      mountedRef.current = false;
       abortList.current?.abort();
       abortOutput.current?.abort();
       abortSend.current?.abort();
@@ -224,16 +248,27 @@ export function HerdrView({ agent }: Props) {
     outputGenRef.current += 1;
     abortOutput.current?.abort();
     stickToBottomRef.current = true;
+    setUpdatedAt(null);
+    setOutputError(null);
+    setActionNotice(null);
+    setLoadingOutput(false);
     if (!selected) {
       seenPollRef.current = null;
       setOutput('');
       return;
     }
     const item = agentsRef.current.find((a) => a.target === selected);
-    seenPollRef.current = item ? `${item.target}\0${item.status}` : null;
+    seenPollRef.current = null;
     setOutput('');
     setActionError(null);
-    void enqueue(() => loadOutput(selected, false));
+    let current = true;
+    void enqueue(async () => {
+      if (!current) return;
+      if (await loadOutput(selected, false) && current && !sendingRef.current) {
+        seenPollRef.current = item ? outputSignature(item) : null;
+      }
+    });
+    return () => { current = false; };
   }, [selected, loadOutput, enqueue]);
 
   // Live list (and working/blocked output) while this view is open.
@@ -250,7 +285,7 @@ export function HerdrView({ agent }: Props) {
           const target = selectedRef.current;
           const item = agentsRef.current.find((a) => a.target === target);
           if (!item || sendingRef.current) return;
-          const signature = `${item.target}\0${item.status}`;
+          const signature = outputSignature(item);
           const statusChanged = seenPollRef.current !== signature;
           // Keep reading while a turn is in progress, and once more when it
           // finishes, so the idle card does not keep the mid-turn transcript.
@@ -276,6 +311,14 @@ export function HerdrView({ agent }: Props) {
     if (!el || !stickToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
   }, [output]);
+
+  useEffect(() => {
+    if (!sending) return;
+    const started = Date.now();
+    setElapsed(0);
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [sending]);
 
   const selectAgent = (target: string) => {
     setSelected(target);
@@ -305,12 +348,21 @@ export function HerdrView({ agent }: Props) {
     sendingRef.current = true;
     setSending(true);
     setActionError(null);
+    setActionNotice(null);
+    setActionTarget(selectedAgent ? displayName(selectedAgent) : 'agent');
+  };
+
+  const stopWaiting = () => {
+    abortSend.current?.abort();
+    abortOutput.current?.abort();
+    abortList.current?.abort();
+    setActionNotice('Stopped waiting. Already submitted input may still be running; refresh the output before retrying.');
   };
 
   const sendPrompt = () => {
     if (!selectedAgent || sendingRef.current) return;
     const text = prompt.trim();
-    if (!text) return;
+    if (!text || promptBytes > PROMPT_MAX_BYTES || selectedAgent.status === 'blocked') return;
     const target = selectedAgent.target;
     beginUserAction();
     abortSend.current?.abort();
@@ -318,7 +370,7 @@ export function HerdrView({ agent }: Props) {
     abortSend.current = controller;
     void enqueue(async () => {
       try {
-        await runCommand(
+        const res = await runCommand(
           {
             op: 'prompt',
             target,
@@ -329,12 +381,19 @@ export function HerdrView({ agent }: Props) {
           controller.signal,
           wait ? 80_000 : 25_000,
         );
-        setPrompt('');
+        if (controller.signal.aborted || !mountedRef.current) return;
+        setDrafts((prev) => ({ ...prev, [target]: '' }));
+        if (selectedRef.current === target) {
+          setActionNotice(res.agent?.status === 'blocked'
+            ? 'The agent needs your input. Read the output, then use the keys below.'
+            : wait ? 'Finished waiting. Review the latest output below.' : 'Prompt sent. Output refreshes automatically.');
+        }
         await loadOutput(target, true);
-        await loadList(true);
+        if (!controller.signal.aborted) await loadList(true);
       } catch (e) {
+        if (isAbortError(e) || !mountedRef.current) return;
         const message = herdrFailureMessage(e);
-        if (message) setActionError(message);
+        if (message && selectedRef.current === target) setActionError(message);
         await loadOutput(target, true);
       } finally {
         sendingRef.current = false;
@@ -357,11 +416,14 @@ export function HerdrView({ agent }: Props) {
           controller.signal,
           15_000,
         );
+        if (controller.signal.aborted || !mountedRef.current) return;
+        if (selectedRef.current === target) setActionNotice(`Sent ${keys.join(' + ')}.`);
         await loadOutput(target, true);
-        await loadList(true);
+        if (!controller.signal.aborted) await loadList(true);
       } catch (e) {
+        if (isAbortError(e) || !mountedRef.current) return;
         const message = herdrFailureMessage(e);
-        if (message) setActionError(message);
+        if (message && selectedRef.current === target) setActionError(message);
       } finally {
         sendingRef.current = false;
         setSending(false);
@@ -372,6 +434,8 @@ export function HerdrView({ agent }: Props) {
   const reachable = status?.reachable === true;
   const showDetail = !!selectedAgent && (!isMobile || selected !== null);
   const showList = !isMobile || !selectedAgent;
+  const promptDisabled = sending || !reachable || !prompt.trim()
+    || promptBytes > PROMPT_MAX_BYTES || selectedAgent?.status === 'blocked';
 
   return (
     <div style={styles.page}>
@@ -466,6 +530,8 @@ export function HerdrView({ agent }: Props) {
                   <button
                     key={item.target}
                     type="button"
+                    aria-pressed={active}
+                    title={`${displayName(item)}${item.cwd ? ` · ${item.cwd}` : ''}`}
                     onClick={() => selectAgent(item.target)}
                     style={{
                       ...styles.card,
@@ -513,12 +579,36 @@ export function HerdrView({ agent }: Props) {
               </div>
             )}
 
-            {actionError && <div style={styles.actionError}>{actionError}</div>}
+            {actionError && <div role="alert" style={styles.actionError}>{actionError}</div>}
+            {outputError && <div role="alert" style={styles.actionError}>{outputError} Use Refresh to retry.</div>}
+            {actionNotice && <div role="status" style={styles.notice}>{actionNotice}</div>}
+            {selectedAgent.status === 'blocked' && !sending && (
+              <div style={styles.notice}>Needs your input. Read the output and use the keys below to answer.</div>
+            )}
+            {sending && (
+              <div style={styles.outputBar}>
+                <span role="status">{wait ? 'Waiting for' : 'Sending to'} {actionTarget} · {elapsed}s</span>
+                <button type="button" style={styles.keyChip} onClick={stopWaiting}>Stop waiting</button>
+              </div>
+            )}
+            <div style={styles.outputBar}>
+              <span>{loadingOutput ? 'Refreshing output…' : updatedAt
+                ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : 'Latest output'}</span>
+              <div style={styles.keyRow}>
+                <button type="button" style={styles.keyChip} aria-pressed={wrapOutput} onClick={() => setWrapOutput((prev) => !prev)}>Wrap</button>
+                <button type="button" style={styles.keyChip} onClick={() => {
+                  stickToBottomRef.current = true;
+                  const el = outputBoxRef.current;
+                  if (el) el.scrollTop = el.scrollHeight;
+                }}>Jump to latest</button>
+              </div>
+            </div>
 
             <pre
               ref={outputBoxRef}
-              style={styles.output}
-              aria-live="polite"
+              style={{ ...styles.output, whiteSpace: wrapOutput ? 'pre-wrap' : 'pre' }}
+              aria-label={`Output from ${displayName(selectedAgent)}`}
+              tabIndex={0}
               onScroll={(e) => {
                 const el = e.currentTarget;
                 const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -536,7 +626,7 @@ export function HerdrView({ agent }: Props) {
                   <button
                     key={k.label}
                     type="button"
-                    disabled={sending}
+                    disabled={sending || !reachable}
                     onClick={() => void sendKeys(k.keys)}
                     style={styles.keyChip}
                   >
@@ -547,11 +637,15 @@ export function HerdrView({ agent }: Props) {
               <textarea
                 ref={promptRef}
                 value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
+                onChange={(e) => {
+                  if (selected) setDrafts((prev) => ({ ...prev, [selected]: e.target.value }));
+                }}
+                aria-label={`Prompt for ${displayName(selectedAgent)}`}
                 placeholder="Send a prompt to this agent"
                 rows={isMobile ? 3 : 4}
+                maxLength={PROMPT_MAX_BYTES}
                 disabled={sending}
-                style={styles.textarea}
+                style={{ ...styles.textarea, fontSize: isMobile ? 16 : 14 }}
                 onKeyDown={(e) => {
                   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                     e.preventDefault();
@@ -559,23 +653,28 @@ export function HerdrView({ agent }: Props) {
                   }
                 }}
               />
+              <div style={{ ...styles.composerHint, color: promptBytes > PROMPT_MAX_BYTES ? c.danger : c.textMuted }}>
+                {promptBytes > PROMPT_MAX_BYTES
+                  ? 'Prompt exceeds the 32 KiB limit. Shorten it before sending.'
+                  : `${promptBytes.toLocaleString()} / ${PROMPT_MAX_BYTES.toLocaleString()} bytes${isMobile ? '' : ' · Ctrl/Cmd+Enter to send'}`}
+              </div>
               <div style={styles.composerBar}>
-                <label style={styles.waitLabel}>
+                <label style={styles.waitLabel} title="Wait up to 60 seconds for completion or a request for input.">
                   <input
                     type="checkbox"
                     checked={wait}
                     onChange={(e) => setWait(e.target.checked)}
                     disabled={sending}
                   />
-                  Wait until idle
+                  Wait for result
                 </label>
                 <button
                   type="button"
                   onClick={() => void sendPrompt()}
-                  disabled={sending || !prompt.trim()}
+                  disabled={promptDisabled}
                   style={{
                     ...styles.primaryBtn,
-                    ...((sending || !prompt.trim()) ? styles.primaryBtnDisabled : null),
+                    ...(promptDisabled ? styles.primaryBtnDisabled : null),
                   }}
                 >
                   {sending ? (wait ? 'Waiting…' : 'Sending…') : 'Send'}
@@ -726,7 +825,7 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: shadow.xs,
   },
   cardActive: {
-    borderColor: c.accent,
+    border: `1px solid ${c.accent}`,
     background: c.accentBg,
   },
   dot: {
@@ -843,9 +942,28 @@ const styles: Record<string, React.CSSProperties> = {
     color: c.danger,
     fontSize: 12,
   },
+  notice: {
+    padding: '8px 16px',
+    background: c.accentBg,
+    color: c.text,
+    fontSize: 12,
+    lineHeight: 1.5,
+  },
+  outputBar: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    padding: '6px 12px',
+    color: c.textMuted,
+    fontSize: 11,
+    borderBottom: `1px solid ${c.border}`,
+  },
+  composerHint: { fontSize: 11, lineHeight: 1.4 },
   output: {
     flex: 1,
-    minHeight: 120,
+    minHeight: 80,
     margin: 0,
     padding: 16,
     overflow: 'auto',
@@ -872,7 +990,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 6,
   },
   keyChip: {
-    minHeight: 36,
+    minHeight: 44,
     padding: '0 12px',
     borderRadius: radius.md,
     border: `1px solid ${c.border}`,
@@ -886,6 +1004,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100%',
     resize: 'vertical',
     minHeight: 72,
+    maxHeight: 160,
     padding: '10px 12px',
     borderRadius: radius.md,
     border: `1px solid ${c.border}`,

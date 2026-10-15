@@ -121,6 +121,7 @@ impl HerdrClient {
                     "--lines".into(),
                     n.to_string(),
                 ];
+                let started = tokio::time::Instant::now();
                 let first = run_cli(&self.bin, &history, READ_TIMEOUT, cancel).await?;
                 let out = if !first.ok && is_not_idle(&first) {
                     let visible = vec![
@@ -130,7 +131,8 @@ impl HerdrClient {
                         "--source".into(),
                         "visible".into(),
                     ];
-                    run_cli(&self.bin, &visible, READ_TIMEOUT, cancel).await?
+                    let remaining = READ_TIMEOUT.saturating_sub(started.elapsed());
+                    run_cli(&self.bin, &visible, remaining, cancel).await?
                 } else {
                     first
                 };
@@ -149,9 +151,9 @@ impl HerdrClient {
                 let target = required_target(target)?;
                 let text = text.unwrap_or_default();
                 validate_prompt_text(&text).map_err(|e| e.to_string())?;
-                // Flags before `--`; the prompt is positional so a message
-                // that starts with `-` is not parsed as a CLI option.
-                let mut args = vec!["agent".into(), "prompt".into(), target];
+                // Herdr 0.9.5 consumes target and text positionally before
+                // parsing flags. It does not accept a `--` separator here.
+                let mut args = vec!["agent".into(), "prompt".into(), target, text];
                 let timeout = if wait {
                     let ms = clamp_wait_timeout_ms(timeout_ms);
                     args.push("--wait".into());
@@ -161,8 +163,6 @@ impl HerdrClient {
                 } else {
                     PROMPT_TIMEOUT
                 };
-                args.push("--".into());
-                args.push(text);
                 let out = run_cli(&self.bin, &args, timeout, cancel).await?;
                 if !out.ok {
                     return Err(map_cli_error(&out));
@@ -203,7 +203,10 @@ impl HerdrClient {
             Ok(out) if out.ok => {
                 let parsed = parse_json_blob(&out.stdout)
                     .or_else(|| parse_json_blob(&out.stderr))
-                    .unwrap_or(Value::Null);
+                    .ok_or_else(|| "herdr_incompatible".to_string())?;
+                if !result_object(&parsed).get("agents").is_some_and(Value::is_array) {
+                    return Err("herdr_incompatible".to_string());
+                }
                 Ok(OpResult {
                     error: None,
                     status: Some(HerdrServerStatus {
@@ -409,7 +412,7 @@ async fn run_cli(
                 let _ = child.start_kill();
                 return Err("herdr_timeout".to_string());
             }
-            _ = wait_until_cancel(cancel), if status.is_none() => {
+            _ = wait_until_cancel(cancel) => {
                 kill_herdr_group(pid);
                 let _ = child.start_kill();
                 return Err("cancelled".to_string());
@@ -468,15 +471,8 @@ async fn wait_until_cancel(cancel: &AtomicBool) {
 }
 
 fn read_output_text(out: &CliOutput) -> String {
-    if let Some(json) = parse_json_blob(&out.stdout) {
-        if let Some(text) = json
-            .pointer("/result/read/text")
-            .or_else(|| json.pointer("/read/text"))
-            .and_then(|v| v.as_str())
-        {
-            return truncate_output(text);
-        }
-    }
+    // `agent read` prints terminal text, not the socket API JSON envelope.
+    // JSON in this text belongs to the coding agent and must stay intact.
     truncate_output(out.stdout.trim_end())
 }
 
@@ -531,8 +527,10 @@ fn is_not_idle(out: &CliOutput) -> bool {
 
 fn normalize_herdr_code(code: &str) -> String {
     match code {
+        "server_not_running" => "herdr_unavailable".to_string(),
+        "protocol_mismatch" => "herdr_incompatible".to_string(),
         "agent_blocked" => "herdr_blocked".to_string(),
-        "agent_not_found" | "agent_not_running" => "herdr_agent_missing".to_string(),
+        "agent_not_found" | "agent_not_running" | "agent_name_not_found" | "pane_not_found" => "herdr_agent_missing".to_string(),
         "agent_not_ready" | "agent_prompt_stalled" => "herdr_not_ready".to_string(),
         "agent_not_idle" => "herdr_not_idle".to_string(),
         "timeout" => "herdr_timeout".to_string(),
@@ -639,6 +637,7 @@ fn parse_agent(v: &Value) -> Option<HerdrAgent> {
         name,
         kind,
         status,
+        completion_seq: v.get("completion_seq").and_then(Value::as_u64),
         pane_id,
         workspace_id: v
             .get("workspace_id")
@@ -652,14 +651,16 @@ fn parse_agent(v: &Value) -> Option<HerdrAgent> {
             .to_string(),
         cwd: v
             .get("foreground_cwd")
-            .or_else(|| v.get("cwd"))
             .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| v.get("cwd").and_then(Value::as_str))
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty()),
         title: v
             .get("title")
-            .or_else(|| v.get("display_agent"))
             .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| v.get("display_agent").and_then(Value::as_str))
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty()),
         focused: v.get("focused").and_then(|x| x.as_bool()).unwrap_or(false),
@@ -697,13 +698,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_read_text_from_json_or_plain() {
+    fn read_preserves_json_in_terminal_output() {
         let json = CliOutput {
             ok: true,
             stdout: r#"{"result":{"read":{"text":"hello from pane"}}}"#.into(),
             stderr: String::new(),
         };
-        assert_eq!(read_output_text(&json), "hello from pane");
+        assert_eq!(read_output_text(&json), json.stdout);
         let plain = CliOutput {
             ok: true,
             stdout: "plain output\n".into(),
@@ -890,47 +891,75 @@ exit 1
     }
 
     #[tokio::test]
-    async fn prompt_places_text_after_double_dash() {
+    async fn prompt_matches_herdr_positional_text_then_options() {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("herdr");
-        let log = dir.path().join("args");
-        std::fs::write(
-            &bin,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" > {}\nif [ \"$2\" = prompt ]; then echo '{{}}'; exit 0; fi\nexit 1\n",
-                log.display()
-            ),
-        )
-        .unwrap();
+        std::fs::write(&bin, "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$0.args\"\necho '{}'\n").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let client = HerdrClient { bin, version: "1".into() };
-        let cancel = Arc::new(AtomicBool::new(false));
-        let msg = client
-            .handle(
-                "p1".into(),
-                HerdrOp::Prompt,
-                Some("reviewer".into()),
-                Some("--help".into()),
-                Vec::new(),
-                None,
-                false,
-                None,
-                cancel,
-            )
-            .await;
-        match msg {
-            AgentMessage::HerdrResponse { error, .. } => assert!(error.is_none(), "{error:?}"),
-            _ => panic!("unexpected"),
+        let client = HerdrClient { bin, version: "0.9.5".into() };
+        for text in ["--help", "--", "--check the diff\n中文"] {
+            for wait in [false, true] {
+                let msg = client.handle(
+                    "p1".into(), HerdrOp::Prompt, Some("reviewer".into()),
+                    Some(text.into()), Vec::new(), None, wait, Some(60_000),
+                    Arc::new(AtomicBool::new(false)),
+                ).await;
+                match msg {
+                    AgentMessage::HerdrResponse { error, .. } => assert!(error.is_none(), "{error:?}"),
+                    _ => panic!("unexpected response"),
+                }
+                let logged = std::fs::read(dir.path().join("herdr.args")).unwrap();
+                let args: Vec<_> = logged.split(|b| *b == 0).filter(|part| !part.is_empty())
+                    .map(|part| std::str::from_utf8(part).unwrap()).collect();
+                let mut expected = vec!["agent", "prompt", "reviewer", text];
+                if wait { expected.extend(["--wait", "--timeout", "60000"]); }
+                assert_eq!(args, expected);
+            }
         }
-        let logged = std::fs::read_to_string(&log).unwrap();
-        assert!(
-            logged.contains("prompt reviewer -- --help"),
-            "argv was: {logged}"
-        );
+    }
+
+    #[test]
+    fn maps_current_herdr_error_codes() {
+        for (code, expected) in [
+            ("server_not_running", "herdr_unavailable"),
+            ("protocol_mismatch", "herdr_incompatible"),
+            ("agent_name_not_found", "herdr_agent_missing"),
+            ("pane_not_found", "herdr_agent_missing"),
+        ] {
+            let out = CliOutput { ok: false, stdout: String::new(),
+                stderr: serde_json::json!({"id": "cli", "error": {"code": code, "message": "test"}}).to_string() };
+            assert_eq!(map_cli_error(&out), expected);
+        }
+    }
+
+    #[test]
+    fn parses_optional_completion_and_nullable_display_metadata() {
+        let mut v = serde_json::json!({"pane_id": "w1:p2", "agent_status": "done",
+            "completion_seq": 42, "foreground_cwd": null, "cwd": "/repo",
+            "title": null, "display_agent": "Reviewer"});
+        let agent = parse_agent(&v).unwrap();
+        assert_eq!(agent.completion_seq, Some(42));
+        assert_eq!(agent.cwd.as_deref(), Some("/repo"));
+        assert_eq!(agent.title.as_deref(), Some("Reviewer"));
+        v.as_object_mut().unwrap().remove("completion_seq");
+        assert_eq!(parse_agent(&v).unwrap().completion_seq, None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_unrecognized_list_output_instead_of_showing_no_agents() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        std::fs::write(&bin, "#!/bin/sh\necho 'unexpected CLI output'\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let client = HerdrClient { bin, version: "unknown".into() };
+        let result = client.status(&AtomicBool::new(false)).await;
+        assert!(matches!(result, Err(error) if error == "herdr_incompatible"));
     }
 
     #[tokio::test]

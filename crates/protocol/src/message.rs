@@ -1285,6 +1285,7 @@ mod tests {
                 name: Some("reviewer".into()),
                 kind: Some("codex".into()),
                 status: crate::herdr::HerdrAgentStatus::Working,
+                completion_seq: None,
                 pane_id: "w1:p2".into(),
                 workspace_id: "w1".into(),
                 tab_id: "w1:t1".into(),

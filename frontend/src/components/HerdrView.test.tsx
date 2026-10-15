@@ -53,13 +53,121 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.useRealTimers();
+  window.innerWidth = 1024;
 });
 
 async function render() {
   await act(async () => root.render(<HerdrView agent={agent} />));
 }
 
+async function typePrompt(text: string) {
+  const textarea = container.querySelector('textarea')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, text);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+function button(label: string) {
+  return [...container.querySelectorAll('button')].find((b) => b.textContent === label)!;
+}
+
 describe('HerdrView', () => {
+  it('keeps prompt drafts separate when switching agents', async () => {
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
+      ? { ...listed, agents: [listed.agents[0], { ...listed.agents[0], target: 'writer', name: 'writer', pane_id: 'w1:p3' }] }
+      : { req_id: 'r', output: body.target });
+    await render();
+    await typePrompt('review draft');
+    const card = (target: string) => [...container.querySelectorAll<HTMLButtonElement>('aside button')].find((b) => b.textContent?.includes(target))!;
+    await act(async () => card('writer').click());
+    expect(container.querySelector('textarea')!.value).toBe('');
+    await typePrompt('writer draft');
+    await act(async () => card('reviewer').click());
+    expect(container.querySelector('textarea')!.value).toBe('review draft');
+  });
+
+  it('uses completion_seq to refresh a turn completed between idle polls', async () => {
+    vi.useFakeTimers();
+    let seq = 1;
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
+      ? { ...listed, agents: [{ ...listed.agents[0], status: 'idle', completion_seq: seq }] }
+      : { req_id: 'r', output: `answer ${seq}` });
+    await render();
+    seq = 2;
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(container.querySelector('pre')!.textContent).toBe('answer 2');
+  });
+
+  it('stops waiting without resubmitting a prompt or discarding its draft', async () => {
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body, signal) => {
+      if (body.op === 'status') return listed;
+      if (body.op === 'read') return { req_id: 'r', output: 'working' };
+      return new Promise((_resolve, reject) => {
+        signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+    });
+    await render();
+    await typePrompt('long task');
+    await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    await act(async () => button('Send').click());
+    expect(button('Stop waiting')).toBeDefined();
+    await act(async () => button('Stop waiting').click());
+    expect(button('Send').disabled).toBe(false);
+    expect(container.querySelector('textarea')!.value).toBe('long task');
+    expect(container.textContent).toContain('Already submitted input may still be running');
+    expect(vi.mocked(api.herdrCommand).mock.calls.filter(([, body]) => body.op === 'prompt')).toHaveLength(1);
+  });
+
+  it('validates the UTF-8 prompt size before sending', async () => {
+    await render();
+    await typePrompt('中'.repeat(11000));
+    expect(button('Send').disabled).toBe(true);
+    expect(container.textContent).toContain('32 KiB limit');
+    expect(vi.mocked(api.herdrCommand).mock.calls.some(([, body]) => body.op === 'prompt')).toBe(false);
+  });
+
+  it('clears a read error after the next successful refresh', async () => {
+    vi.useFakeTimers();
+    let reads = 0;
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
+      if (body.op === 'status') return { ...listed, agents: [{ ...listed.agents[0], status: 'idle' }] };
+      if (++reads === 1) throw { error: 'herdr_timeout' };
+      return { req_id: 'r', output: 'recovered output' };
+    });
+    await render();
+    expect(container.textContent).toContain('timed out');
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(container.textContent).not.toContain('timed out');
+    expect(container.textContent).toContain('recovered output');
+  });
+
+  it('offers navigation keys for a blocked agent while disabling prompt submission', async () => {
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
+      ? { ...listed, agents: [{ ...listed.agents[0], status: 'blocked' }] }
+      : { req_id: 'r', output: 'Choose an option' });
+    await render();
+    await typePrompt('cannot submit yet');
+    expect(button('Send').disabled).toBe(true);
+    await act(async () => button('Down').click());
+    expect(api.herdrCommand).toHaveBeenCalledWith(agent.id,
+      { op: 'send_keys', target: 'reviewer', keys: ['down'] }, expect.any(AbortSignal), 15_000);
+  });
+
+  it('keeps the mobile list until a tap and preserves output across resize', async () => {
+    window.innerWidth = 390;
+    await render();
+    expect(container.querySelector('textarea')).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('aside button')!.click());
+    expect(container.querySelector('textarea')).not.toBeNull();
+    const calls = vi.mocked(api.herdrCommand).mock.calls.length;
+    await act(async () => {
+      window.innerWidth = 1024;
+      window.dispatchEvent(new Event('resize'));
+    });
+    expect(vi.mocked(api.herdrCommand).mock.calls.length).toBe(calls);
+    expect(container.querySelector('pre')!.textContent).toBe('latest pane output');
+  });
+
   it.each([false, true])('refreshes a short turn after sending (retry final read: %s)', async (failFinalRead) => {
     vi.useFakeTimers();
     let listCalls = 0;

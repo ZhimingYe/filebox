@@ -463,11 +463,17 @@ shell, never layout/attach commands. The Hub relays
 output, sends a prompt, and exposes large tap targets for Esc / Enter /
 Ctrl+C (useful on a phone when an agent is `blocked`). Reads try
 `recent-unwrapped` and fall back to `visible` on `agent_not_idle` (full-screen
-agents refuse scrolled history while working). Prompt text is passed after
-`--`. If the CLI is present but the Herdr server is down, the view stays
+agents refuse scrolled history while working). Herdr v0.9.5 requires
+`agent prompt TARGET TEXT [--wait --timeout MS]`: text is positional,
+including leading dashes; do not insert a `--` separator. Reads are plain
+terminal text, not socket JSON. If the CLI is present but the Herdr server is down, the view stays
 visible and says so.
-Installing Herdr later requires reconnecting the Filebox Agent so it can
-re-probe.
+Installing Herdr later requires restarting the Filebox Agent so it can
+re-probe. `completion_seq`, when available, triggers a final output refresh
+even if an entire turn finishes between polls. Drafts are per coding agent;
+Stop waiting cancels the request, but already submitted input may continue.
+See [docs/herdr-compatibility.md](docs/herdr-compatibility.md) for the tested
+CLI contract and verification scope.
 
 ## Preview Behavior
 
