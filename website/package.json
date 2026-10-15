@@ -2,7 +2,7 @@
   "name": "filebox-docs",
   "private": true,
   "license": "Apache-2.0",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "type": "module",
   "scripts": {
     "dev": "vitepress dev docs",
