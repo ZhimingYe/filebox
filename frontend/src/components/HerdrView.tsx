@@ -18,6 +18,10 @@ interface Props {
 const OUTPUT_REFRESH_MS = 60 * 60 * 1000;
 const PROMPT_MAX_BYTES = 32 * 1024;
 
+function paneIdentity(item: api.HerdrAgent): string {
+  return JSON.stringify([item.target, item.workspace_id, item.pane_id]);
+}
+
 function outputSignature(item: api.HerdrAgent): string {
   return `${item.target}\0${item.status}\0${item.completion_seq ?? ''}`;
 }
@@ -121,7 +125,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const outputBoxRef = useRef<HTMLPreElement | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const queue = useRef(new HerdrQueue());
-  const outputCache = useRef(new Map<string, { output: string; updatedAt: number; signature: string }>());
+  const outputCache = useRef(new Map<string, { identity: string; output: string; updatedAt: number; signature: string }>());
   const [autoRefresh, setAutoRefresh] = useState<Record<string, boolean>>({});
   const autoRefreshRef = useRef(autoRefresh);
   useLayoutEffect(() => { autoRefreshRef.current = autoRefresh; }, [autoRefresh]);
@@ -146,6 +150,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
     () => agents.find((a) => a.target === selected) ?? null,
     [agents, selected],
   );
+  const selectedIdentity = selectedAgent ? paneIdentity(selectedAgent) : null;
 
   const loadList = useCallback(async (silent = false) => {
     if (!mountedRef.current || (silent && abortList.current)) return;
@@ -159,13 +164,20 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
       if (!mountedRef.current || controller.signal.aborted || genRef.current !== gen) return;
       statusCallbacks.current.onStatus?.(agent.id, res);
       const next = sortAgents(res.agents ?? []);
+      const identities = new Map(next.map((a) => [a.target, paneIdentity(a)]));
+      const unchanged = new Set(agentsRef.current.filter((a) => identities.get(a.target) === paneIdentity(a)).map((a) => a.target));
+      const current = agentsRef.current.find((a) => a.target === selectedRef.current);
+      if (current && !unchanged.has(current.target)) {
+        outputGenRef.current++;
+        abortOutput.current?.abort();
+        abortOutput.current = null;
+      }
       setStatus(res.status ?? null);
       setAgents(next);
       agentsRef.current = next;
-      const targets = new Set(next.map((a) => a.target));
-      for (const target of outputCache.current.keys()) if (!targets.has(target)) outputCache.current.delete(target);
-      for (const target of lastReadAttempt.current.keys()) if (!targets.has(target)) lastReadAttempt.current.delete(target);
-      setAutoRefresh((prev) => Object.fromEntries(Object.entries(prev).filter(([target]) => targets.has(target))));
+      for (const [target, cached] of outputCache.current) if (identities.get(target) !== cached.identity) outputCache.current.delete(target);
+      for (const target of lastReadAttempt.current.keys()) if (!unchanged.has(target)) lastReadAttempt.current.delete(target);
+      setAutoRefresh((prev) => Object.fromEntries(Object.entries(prev).filter(([target]) => unchanged.has(target))));
       setListError(res.error ? friendlyMessage({ error: res.error }) : null);
       setSelected((prev) => {
         if (prev && next.some((a) => a.target === prev)) return prev;
@@ -212,6 +224,8 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
     if (!silent) setOutputError(null);
     try {
       const itemAtStart = agentsRef.current.find((a) => a.target === target);
+      if (!itemAtStart) return;
+      const identity = paneIdentity(itemAtStart);
       const res = await command(
         { op: 'read', target, lines: 120, read_source: visible ? 'visible' : 'detection' },
         controller.signal,
@@ -219,10 +233,12 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
         silent ? 0 : 2,
       );
       if (!mountedRef.current || controller.signal.aborted || outputGenRef.current !== gen || selectedRef.current !== target) return;
-      const signature = itemAtStart ? outputSignature(itemAtStart) : '';
+      const current = agentsRef.current.find((a) => a.target === target);
+      if (!current || paneIdentity(current) !== identity) return;
+      const signature = outputSignature(itemAtStart);
       setSeenSignature(signature);
       outputCache.current.delete(target);
-      outputCache.current.set(target, { output: res.output ?? '', updatedAt: Date.now(), signature });
+      outputCache.current.set(target, { identity, output: res.output ?? '', updatedAt: Date.now(), signature });
       // At most eight bounded CLI snapshots; switching many panes cannot grow memory forever.
       if (outputCache.current.size > 8) outputCache.current.delete(outputCache.current.keys().next().value!);
       setOutput(res.output ?? '');
@@ -265,7 +281,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
     }
   }, [focusRequest, agents, loadingList]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     // Invalidate an in-flight read before it can paint the previous agent
     // under this header. The generation bump wins even if the response
     // arrives before the abort is observed.
@@ -282,13 +298,14 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
       setOutput('');
       return;
     }
-    const cached = outputCache.current.get(selected);
+    const snapshot = outputCache.current.get(selected);
+    const cached = snapshot?.identity === selectedIdentity ? snapshot : undefined;
     setSeenSignature(cached?.signature ?? null);
     setOutput(cached?.output ?? '');
     setUpdatedAt(cached?.updatedAt ?? null);
     setActionError(null);
     if (!cached) void loadOutput(selected, false);
-  }, [selected, loadOutput]);
+  }, [selected, selectedIdentity, loadOutput]);
 
   // Status is lightweight and independent of output. Never silently turn a
   // 30-second status tick into a transcript read, even on completion changes.

@@ -72,12 +72,18 @@ Settings → Herdr and the panel's Disable Herdr button share a browser-local,
 persistent switch. Turning it off hides Herdr controls/reminders and aborts checks
 and outstanding panel waits across tabs of this browser. It does not stop Herdr,
 kill coding agents, or revoke input already submitted. Re-enable in Settings.
+If browser storage cannot be written, the switch still takes effect in memory
+for the current page. A later successful write or cross-tab preference change
+resumes using the persisted preference.
 
 Each selected coding window has its own Refresh output button and auto-refresh
 switch (60 minutes by default; manual-only when off). Inactive windows are not
 polled. Switching back restores one of at most eight cached snapshots; settings
 and caches are scoped to the mounted panel. Manual list refresh does not read
-output. Sending input refreshes its target once; completion changes only show a
+output unless the selected target has been replaced by a different pane. Cached
+snapshots and pending reads are bound to the pane identity, so reusing an agent
+name cannot restore an earlier pane's screen. Sending input refreshes its target
+once; completion changes only show a
 hint until the next output refresh. Status keeps running every 30 seconds during
 prompt waits. A bounded priority queue allows two requests, eight waiting entries,
 and a ten-second queue deadline. Manual input wins over queued background work;

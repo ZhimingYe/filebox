@@ -412,3 +412,45 @@ describe('HerdrView', () => {
     expect(container.textContent).not.toContain('Invalid search request');
   });
 });
+
+it('invalidates snapshots when a named target is replaced by another pane', async () => {
+  let pane = 'w1:p2';
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
+    ? { ...listed, agents: [{ ...listed.agents[0], pane_id: pane, status: 'idle' },
+      { ...listed.agents[0], target: 'writer', name: 'writer', pane_id: 'w1:p3', status: 'idle' }] }
+    : { req_id: 'r', output: body.target === 'reviewer' ? `output from ${pane}` : 'writer output' });
+  await render();
+  expect(container.querySelector('pre')!.textContent).toBe('output from w1:p2');
+  const card = (target: string) => [...container.querySelectorAll<HTMLButtonElement>('aside button')].find((b) => b.textContent?.includes(target))!;
+  await act(async () => card('writer').click());
+  pane = 'w1:p99';
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Refresh agent list"]')!.click());
+  await act(async () => card('reviewer').click());
+  expect(container.textContent).toContain('w1:p99');
+  expect(container.querySelector('pre')!.textContent).not.toContain('output from w1:p2');
+  expect(container.querySelector('pre')!.textContent).toBe('output from w1:p99');
+});
+
+it('aborts a replaced pane read and rejects its late result while refreshing the new pane', async () => {
+  let pane = 'w1:p2';
+  let delay = false;
+  let staleSignal: AbortSignal | undefined;
+  let finish: (value: api.HerdrResponse) => void = () => {};
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body, signal) => {
+    if (body.op === 'status') return { ...listed, agents: [{ ...listed.agents[0], pane_id: pane, status: 'idle' }] };
+    if (delay && pane === 'w1:p2') {
+      staleSignal = signal;
+      return new Promise((resolve) => { finish = resolve; });
+    }
+    return { req_id: 'r', output: `output from ${pane}` };
+  });
+  await render();
+  delay = true;
+  await act(async () => button('Refresh output').click());
+  pane = 'w1:p99';
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Refresh agent list"]')!.click());
+  expect(staleSignal?.aborted).toBe(true);
+  expect(container.querySelector('pre')!.textContent).toBe('output from w1:p99');
+  await act(async () => finish({ req_id: 'stale', output: 'obsolete w1:p2 response' }));
+  expect(container.querySelector('pre')!.textContent).toBe('output from w1:p99');
+});
