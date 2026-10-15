@@ -31,9 +31,9 @@ pub struct HerdrClient {
 }
 
 impl HerdrClient {
-    pub fn probe() -> Option<Self> {
+    pub async fn probe() -> Option<Self> {
         let bin = resolve_herdr_path()?;
-        match probe_version(&bin) {
+        match probe_version(&bin).await {
             Ok(version) => {
                 tracing::info!(
                     "herdr enabled (bin={}, version={})",
@@ -314,40 +314,23 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
 
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-fn probe_version(bin: &Path) -> Result<String, String> {
-    probe_version_timeout(bin, VERSION_PROBE_TIMEOUT)
+async fn probe_version(bin: &Path) -> Result<String, String> {
+    probe_version_timeout(bin, VERSION_PROBE_TIMEOUT).await
 }
 
 /// Bounded so a hung `herdr --version` cannot block agent registration.
-fn probe_version_timeout(bin: &Path, timeout: Duration) -> Result<String, String> {
-    let mut child = std::process::Command::new(bin)
-        .arg("--version")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("failed to spawn herdr: {e}"))?;
-    let started = std::time::Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() >= timeout => {
-                kill_herdr_group(child.id());
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("herdr --version timed out".to_string());
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(e) => return Err(format!("herdr --version failed: {e}")),
-        }
-    };
-    let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        use std::io::Read;
-        let _ = pipe.read_to_string(&mut stdout);
-    }
-    let version = sanitize_version(&stdout);
-    if !status.success() && version == "unknown" {
+async fn probe_version_timeout(bin: &Path, timeout: Duration) -> Result<String, String> {
+    // Drain both pipes with bounded buffers under the same deadline as the
+    // child. A wrapper may exit while a helper still holds either pipe open.
+    let out = run_cli(bin, &["--version".into()], timeout, &AtomicBool::new(false))
+        .await
+        .map_err(|error| if error == "herdr_timeout" {
+            "herdr --version timed out".to_string()
+        } else {
+            error
+        })?;
+    let version = sanitize_version(&out.stdout);
+    if !out.ok && version == "unknown" {
         return Err("herdr --version failed".to_string());
     }
     Ok(version)
@@ -804,8 +787,8 @@ exit 1
         assert!(trimmed.is_char_boundary(trimmed.len()));
     }
 
-    #[test]
-    fn version_probe_times_out() {
+    #[tokio::test]
+    async fn version_probe_times_out() {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("herdr");
         std::fs::write(&bin, "#!/bin/sh\nsleep 30\n").unwrap();
@@ -815,9 +798,41 @@ exit 1
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let started = std::time::Instant::now();
-        let err = probe_version_timeout(&bin, Duration::from_millis(400)).unwrap_err();
+        let err = probe_version_timeout(&bin, Duration::from_millis(400)).await.unwrap_err();
         assert!(err.contains("timed out"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn version_probe_deadline_includes_inherited_pipes() {
+        use std::os::unix::fs::PermissionsExt;
+        for redirection in ["2>/dev/null", "1>/dev/null"] {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("herdr");
+            // The wrapper exits successfully, but a helper keeps stdout or
+            // stderr open. Waiting for EOF must still obey the probe deadline.
+            std::fs::write(&bin, format!(
+                "#!/bin/sh\nsleep 3 {redirection} &\necho 'herdr 9.9.9'\nexit 0\n"
+            )).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let started = std::time::Instant::now();
+            let err = probe_version_timeout(&bin, Duration::from_millis(400)).await.unwrap_err();
+            assert!(err.contains("timed out"), "{err}");
+            assert!(started.elapsed() < Duration::from_secs(2));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn version_probe_drains_both_pipes_beyond_buffer_limits() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        std::fs::write(&bin, "#!/bin/sh\necho 'herdr 9.9.9'\ndd if=/dev/zero bs=65536 count=8 2>/dev/null\ndd if=/dev/zero bs=65536 count=8 >&2 2>/dev/null\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let version = probe_version_timeout(&bin, Duration::from_secs(3)).await.unwrap();
+        assert_eq!(version, "9.9.9");
     }
 
     #[tokio::test]

@@ -22,7 +22,7 @@ pub(super) struct AgentRuntime {
 }
 
 impl AgentRuntime {
-    pub(super) fn new(config: &AgentConfig) -> Self {
+    pub(super) async fn new(config: &AgentConfig) -> Self {
         let resource_mgr = ResourceManager::new(config.data_dir.clone());
         let stable_agent_id = resource_mgr.agent_id().to_string();
         let stats_cache: Arc<StatsCache> = StatsCache::new(stats_ttl());
@@ -82,7 +82,7 @@ impl AgentRuntime {
             Arc::new(Mutex::new(HashMap::new()));
         // PTYs and anti-replay state live across every transport connection.
         let terminal_manager = Arc::new(crate::terminal::TerminalManager::new(config.terminal_totp_secret.clone()));
-        let herdr = crate::herdr::HerdrClient::probe().map(Arc::new);
+        let herdr = crate::herdr::HerdrClient::probe().await.map(Arc::new);
 
         Self {
             resource_mgr, stable_agent_id, stats_cache, dir_cache, content_cache,

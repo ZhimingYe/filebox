@@ -112,8 +112,8 @@ export function HerdrView({ agent }: Props) {
   const versionRef = useRef<string | null>(null);
   const agentsRef = useRef(agents);
   const stickToBottomRef = useRef(true);
-  // Last selected target+status the poll already treated as fresh, so an
-  // idle agent is not re-read every tick, but a working → idle transition is.
+  // Last target+status refreshed by the poll. User input invalidates it so
+  // even a turn that finishes between ticks gets a final successful read.
   const seenPollRef = useRef<string | null>(null);
   versionRef.current = status?.version ?? null;
   selectedRef.current = selected;
@@ -196,6 +196,7 @@ export function HerdrView({ agent }: Props) {
           return sortAgents(next);
         });
       }
+      return true;
     } catch (e) {
       if (outputGenRef.current !== gen || selectedRef.current !== target) return;
       const message = herdrFailureMessage(e);
@@ -251,7 +252,6 @@ export function HerdrView({ agent }: Props) {
           if (!item || sendingRef.current) return;
           const signature = `${item.target}\0${item.status}`;
           const statusChanged = seenPollRef.current !== signature;
-          seenPollRef.current = signature;
           // Keep reading while a turn is in progress, and once more when it
           // finishes, so the idle card does not keep the mid-turn transcript.
           if (
@@ -259,7 +259,9 @@ export function HerdrView({ agent }: Props) {
             || item.status === 'working'
             || item.status === 'blocked'
           ) {
-            await loadOutput(item.target, true);
+            if (await loadOutput(item.target, true) && !sendingRef.current) {
+              seenPollRef.current = signature;
+            }
           }
         } finally {
           refreshScheduled.current = false;
@@ -296,6 +298,7 @@ export function HerdrView({ agent }: Props) {
   };
 
   const beginUserAction = () => {
+    seenPollRef.current = null;
     // Drop in-flight list/read so a Send is not rejected as agent_busy.
     abortList.current?.abort();
     abortOutput.current?.abort();

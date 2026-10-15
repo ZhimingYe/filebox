@@ -332,7 +332,7 @@ pub async fn run_connection_loop(config: &AgentConfig) {
         return;
     }
 
-    let mut runtime = AgentRuntime::new(config);
+    let mut runtime = AgentRuntime::new(config).await;
 
     tracing::info!(
         "Agent ID: {}, data dir: {:?}",

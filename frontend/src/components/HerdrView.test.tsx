@@ -52,6 +52,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.useRealTimers();
 });
 
 async function render() {
@@ -59,6 +60,49 @@ async function render() {
 }
 
 describe('HerdrView', () => {
+  it.each([false, true])('refreshes a short turn after sending (retry final read: %s)', async (failFinalRead) => {
+    vi.useFakeTimers();
+    let listCalls = 0;
+    let readCalls = 0;
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
+      if (body.op === 'status') {
+        listCalls += 1;
+        return {
+          ...listed,
+          agents: [{ ...listed.agents[0], status: listCalls === 2 ? 'working' : 'idle' }],
+        };
+      }
+      if (body.op === 'read') {
+        readCalls += 1;
+        if (readCalls === 3 && failFinalRead) throw { error: 'herdr_timeout' };
+        return {
+          req_id: 'r',
+          output: readCalls === 1 ? 'old answer' : readCalls === 2 ? 'partial answer' : 'completed answer',
+        };
+      }
+      return { req_id: 'p' };
+    });
+    await render();
+    const textarea = container.querySelector('textarea')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'quick task');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const send = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Send')!;
+    await act(async () => send.click());
+    expect(container.textContent).toContain('partial answer');
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(listCalls).toBe(3);
+    if (failFinalRead) {
+      expect(container.textContent).toContain('partial answer');
+      await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    }
+    expect(container.textContent).toContain('completed answer');
+    const completedReads = readCalls;
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(readCalls).toBe(completedReads);
+  });
+
   it('lists running agents from the backend Herdr server', async () => {
     await render();
     expect(api.herdrCommand).toHaveBeenCalledWith(
