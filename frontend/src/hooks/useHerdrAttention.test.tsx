@@ -20,7 +20,7 @@ function Probe({ agents = [backend], enabled = true, active = null }: {
 async function render(props: Parameters<typeof Probe>[0] = {}) {
   await act(async () => root.render(<Probe {...props} />));
 }
-async function tick() { await act(async () => { await vi.advanceTimersByTimeAsync(15_000); }); }
+async function tick() { await act(async () => { await vi.advanceTimersByTimeAsync(30_000); }); }
 beforeEach(() => {
   vi.useFakeTimers(); vi.resetAllMocks();
   vi.mocked(api.herdrCommand).mockResolvedValue(response());
@@ -62,7 +62,7 @@ describe('Herdr attention monitoring', () => {
     await render();
     vi.mocked(api.herdrCommand).mockRejectedValue({ error: 'agent_busy' });
     await tick(); expect(current.notices).toHaveLength(1);
-    vi.mocked(api.herdrCommand).mockRejectedValue({ error: 'herdr_unavailable' });
+    vi.mocked(api.herdrCommand).mockRejectedValue({ error: 'request_timeout' });
     await tick(); expect(current.notices).toHaveLength(1);
     await tick(); expect(current.notices.map((n) => n.kind)).toEqual(['blocked', 'unavailable']);
     vi.mocked(api.herdrCommand).mockResolvedValue(response('idle'));
@@ -103,12 +103,38 @@ describe('Herdr attention monitoring', () => {
     await tick(); expect(current.notices).toEqual([]);
   });
 
-  it('reports an offline backend and replaces the warning when it reconnects', async () => {
+  it('stays quiet for unused, stopped, and disabled Herdr backends', async () => {
     await render({ agents: [{ ...backend, status: 'offline' }] });
     expect(api.herdrCommand).not.toHaveBeenCalled();
+    expect(current.notices).toEqual([]);
+    vi.mocked(api.herdrCommand).mockRejectedValue({ error: 'herdr_unavailable' });
+    await render();
+    await tick(); await tick();
+    expect(current.notices).toEqual([]);
+    vi.mocked(api.herdrCommand).mockResolvedValue(response());
+    await tick(); expect(current.notices).toHaveLength(1);
+    vi.mocked(api.herdrCommand).mockRejectedValue({ error: 'herdr_unavailable: not running' });
+    await tick(); expect(current.notices).toEqual([]);
+    await render({ enabled: false });
+    vi.mocked(api.herdrCommand).mockClear();
+    await tick();
+    expect(api.herdrCommand).not.toHaveBeenCalled();
+  });
+
+  it('reports offline only after observing running coding agents', async () => {
+    await render();
+    await render({ agents: [{ ...backend, status: 'offline' }] });
     expect(current.notices[0].name).toBe('Backend offline');
     vi.mocked(api.herdrCommand).mockResolvedValue(response('idle'));
     await render(); expect(current.notices).toEqual([]);
+  });
+
+  it('waits thirty seconds between status rounds', async () => {
+    await render();
+    await act(async () => { await vi.advanceTimersByTimeAsync(29_999); });
+    expect(api.herdrCommand).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(api.herdrCommand).toHaveBeenCalledTimes(2);
   });
 
   it('does not restart checks on unrelated health updates', async () => {

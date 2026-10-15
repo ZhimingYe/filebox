@@ -461,7 +461,7 @@ When the Agent finds a `herdr` binary (`FILEBOX_AGENT_HERDR` or `PATH`) and
 shell, never layout/attach commands. The Hub relays
 `POST /api/agents/{id}/herdr`. The UI lists live agents, shows latest
 output, sends a prompt, and exposes large tap targets for Esc / Enter /
-Ctrl+C (useful on a phone when an agent is `blocked`). Reads try
+Ctrl+C (useful on a phone when an agent is `blocked`). Legacy reads without an explicit source try
 `recent-unwrapped` and fall back to `visible` on `agent_not_idle` (full-screen
 agents refuse scrolled history while working). Herdr v0.9.5 requires
 `agent prompt TARGET TEXT [--wait --timeout MS]`: text is positional,
@@ -469,14 +469,19 @@ including leading dashes; do not insert a `--` separator. Reads are plain
 terminal text, not socket JSON. If the CLI is present but the Herdr server is down, the view stays
 visible and says so.
 Installing Herdr later requires restarting the Filebox Agent so it can
-re-probe. `completion_seq`, when available, triggers a final output refresh
-even if an entire turn finishes between polls. Drafts are per coding agent;
+re-probe. `completion_seq`, when available, shows a refresh hint
+even if an entire turn finishes between polls. Output refreshes hourly or manually,
+with per-window controls and bounded request scheduling. The browser-local Herdr
+switch in Settings disables controls, checks and reminders. Ordinary reads use
+the detection/bottom snapshot; explicit keys read the visible screen afterward.
+See docs/herdr-shortcuts.md for the v0.9.5 navigation-key limitation. Drafts are per coding agent;
 Stop waiting cancels the request, but already submitted input may continue.
 App-level `useHerdrAttention` checks all online Herdr-capable backends even
-outside the Herdr view (15 seconds between rounds, at most two status-only
+outside the Herdr view (30 seconds between rounds, at most two status-only
 requests). The visible Herdr view reports its own results instead of receiving
-competing background checks. Blocked states, repeated unknown states/failures,
-and offline backends surface in `HerdrAttention`; Later dismisses one reminder,
+competing background checks. Blocked states and repeated unknown states surface in
+`HerdrAttention`; failures/offline warnings require previously observed coding agents.
+Stopped or unavailable Herdr clears reminders quietly. Later dismisses one reminder,
 and Close dismisses all currently shown/unread reminders. Once acknowledged,
 they leave no banner or placeholder; only a new episode raises another reminder. Reminders
 never send input, change focus, or navigate automatically. Detection still depends

@@ -20,6 +20,14 @@ pub enum HerdrOp {
     SendKeys,
 }
 
+/// Optional read mode. Omission preserves the legacy history-with-visible-fallback behavior.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HerdrReadSource {
+    Visible,
+    Detection,
+}
+
 /// Lifecycle state as reported by Herdr.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -101,7 +109,12 @@ const ALLOWED_KEYS: &[&str] = &[
     "up", "down", "left", "right",
     "y", "n",
     "ctrl+c", "ctrl+d", "ctrl+z", "ctrl+l",
-    "shift+tab",
+    "shift+tab", "ctrl+end", "ctrl+home", "home", "end", "pageup", "pagedown",
+    "1", "2", "3", "4", "5", "f3",
+    "ctrl+a", "ctrl+e", "ctrl+u", "ctrl+k", "ctrl+w", "ctrl+y", "ctrl+j",
+    "ctrl+g", "ctrl+o", "ctrl+t", "ctrl+b", "ctrl+r", "ctrl+s", "ctrl+p", "ctrl+x",
+    "ctrl+shift+p", "ctrl+shift+f", "alt+b", "alt+f", "alt+p", "alt+t",
+    "alt+enter", "alt+up", "alt+down", "shift+up", "shift+down",
 ];
 
 /// Pane ids (`w1:p2`) or live agent names (`reviewer`).
@@ -214,6 +227,7 @@ mod tests {
     fn keys_are_allowlisted() {
         assert_eq!(validate_keys(&["Esc".into(), "ENTER".into()]).unwrap(), ["esc", "enter"]);
         assert!(validate_keys(&["ctrl+c".into()]).is_ok());
+        assert_eq!(validate_keys(&["Ctrl+End".into()]).unwrap(), ["ctrl+end"]);
         assert!(validate_keys(&["rm -rf".into()]).is_err());
         assert!(validate_keys(&[]).is_err());
     }

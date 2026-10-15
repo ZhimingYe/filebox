@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use filebox_protocol::herdr::{
     clamp_lines, clamp_wait_timeout_ms, validate_keys, validate_prompt_text, validate_target,
-    HerdrAgent, HerdrAgentStatus, HerdrOp, HerdrServerStatus, HERDR_OUTPUT_MAX_BYTES,
+    HerdrAgent, HerdrAgentStatus, HerdrOp, HerdrReadSource, HerdrServerStatus, HERDR_OUTPUT_MAX_BYTES,
 };
 use filebox_protocol::message::AgentMessage;
 use serde_json::Value;
@@ -61,12 +61,13 @@ impl HerdrClient {
         text: Option<String>,
         keys: Vec<String>,
         lines: Option<u32>,
+        read_source: Option<HerdrReadSource>,
         wait: bool,
         timeout_ms: Option<u64>,
         cancel: Arc<AtomicBool>,
     ) -> AgentMessage {
         match self
-            .run_op(op, target, text, keys, lines, wait, timeout_ms, &cancel)
+            .run_op(op, target, text, keys, lines, read_source, wait, timeout_ms, &cancel)
             .await
         {
             Ok(msg) => AgentMessage::HerdrResponse {
@@ -100,6 +101,7 @@ impl HerdrClient {
         text: Option<String>,
         keys: Vec<String>,
         lines: Option<u32>,
+        read_source: Option<HerdrReadSource>,
         wait: bool,
         timeout_ms: Option<u64>,
         cancel: &AtomicBool,
@@ -112,7 +114,10 @@ impl HerdrClient {
                 // Full-screen agents refuse scrolled history (`agent_not_idle`)
                 // while working, blocked, or unknown. Fall back to the visible
                 // screen so "latest output" still works during a turn.
-                let history = vec![
+                let history = if let Some(source) = read_source {
+                    let source = match source { HerdrReadSource::Visible => "visible", HerdrReadSource::Detection => "detection" };
+                    vec!["agent".into(), "read".into(), target.clone(), "--source".into(), source.into(), "--lines".into(), n.to_string()]
+                } else { vec![
                     "agent".into(),
                     "read".into(),
                     target.clone(),
@@ -120,10 +125,10 @@ impl HerdrClient {
                     "recent-unwrapped".into(),
                     "--lines".into(),
                     n.to_string(),
-                ];
+                ] };
                 let started = tokio::time::Instant::now();
                 let first = run_cli(&self.bin, &history, READ_TIMEOUT, cancel).await?;
-                let out = if !first.ok && is_not_idle(&first) {
+                let out = if read_source.is_none() && !first.ok && is_not_idle(&first) {
                     let visible = vec![
                         "agent".into(),
                         "read".into(),
@@ -536,6 +541,7 @@ fn is_not_idle(out: &CliOutput) -> bool {
 fn normalize_herdr_code(code: &str) -> String {
     match code {
         "server_not_running" => "herdr_unavailable".to_string(),
+        "invalid_key" => "herdr_key_unsupported".to_string(),
         "protocol_mismatch" => "herdr_incompatible".to_string(),
         "agent_blocked" => "herdr_blocked".to_string(),
         "agent_not_found" | "agent_not_running" | "agent_name_not_found" | "pane_not_found" => "herdr_agent_missing".to_string(),
@@ -845,6 +851,33 @@ exit 1
     }
 
     #[tokio::test]
+    async fn visible_read_does_not_scroll_history_and_keys_remain_literal_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        std::fs::write(&bin, "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$0.args\"\necho '{}'\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let client = HerdrClient { bin: bin.clone(), version: "0.9.5".into() };
+        let cancel = AtomicBool::new(false);
+        let result = client.run_op(HerdrOp::Read, Some("reviewer".into()), None,
+            vec![], Some(120), Some(HerdrReadSource::Visible), false, None, &cancel).await;
+        assert!(result.is_ok());
+        assert_eq!(std::fs::read(dir.path().join("herdr.args")).unwrap(),
+            b"agent\0read\0reviewer\0--source\0visible\0--lines\0120\0");
+        let result = client.run_op(HerdrOp::SendKeys, Some("reviewer".into()), None,
+            vec!["Ctrl+End".into(), "Ctrl+Shift+P".into()], None, None, false, None, &cancel).await;
+        assert!(result.is_ok());
+        assert_eq!(std::fs::read(dir.path().join("herdr.args")).unwrap(),
+            b"agent\0send-keys\0reviewer\0ctrl+end\0ctrl+shift+p\0");
+        assert_eq!(map_cli_error(&CliOutput { ok: false, stdout: String::new(),
+            stderr: r#"{"error":{"code":"invalid_key","message":"unsupported key ctrl+end"}}"#.into() }),
+            "herdr_key_unsupported");
+    }
+
+    #[tokio::test]
     async fn read_falls_back_when_history_requires_idle() {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("herdr");
@@ -884,6 +917,7 @@ exit 1
                 None,
                 Vec::new(),
                 Some(40),
+                None,
                 false,
                 None,
                 Arc::new(cancel),
@@ -913,7 +947,7 @@ exit 1
             for wait in [false, true] {
                 let msg = client.handle(
                     "p1".into(), HerdrOp::Prompt, Some("reviewer".into()),
-                    Some(text.into()), Vec::new(), None, wait, Some(60_000),
+                    Some(text.into()), Vec::new(), None, None, wait, Some(60_000),
                     Arc::new(AtomicBool::new(false)),
                 ).await;
                 match msg {

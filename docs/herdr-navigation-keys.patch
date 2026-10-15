@@ -1,0 +1,32 @@
+--- a/src/config/keybinds.rs
++++ b/src/config/keybinds.rs
+@@ -1319,6 +1319,11 @@
+         }
+         "tab" => KeyCode::Tab,
+         "backspace" | "bs" => KeyCode::Backspace,
++        "delete" | "del" => KeyCode::Delete,
++        "home" => KeyCode::Home,
++        "end" => KeyCode::End,
++        "pageup" | "page-up" => KeyCode::PageUp,
++        "pagedown" | "page-down" => KeyCode::PageDown,
+         "left" => KeyCode::Left,
+         "right" => KeyCode::Right,
+         "up" => KeyCode::Up,
+@@ -1582,4 +1587,17 @@
+             .iter()
+             .map(|binding| binding.trigger)
+             .collect()
++    }
++
++    #[test]
++    fn parse_navigation_keys_for_api_clients() {
++        for (name, code) in [
++            ("home", KeyCode::Home), ("end", KeyCode::End),
++            ("pageup", KeyCode::PageUp), ("pagedown", KeyCode::PageDown),
++            ("delete", KeyCode::Delete),
++        ] {
++            assert_eq!(parse_key_combo(name), Some((code, KeyModifiers::empty())));
++            assert_eq!(parse_key_combo(&format!("ctrl+{name}")),
++                Some((code, KeyModifiers::CONTROL)));
++        }
+     }

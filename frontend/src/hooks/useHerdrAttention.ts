@@ -14,6 +14,7 @@ export interface HerdrAttention {
 interface BackendState {
   notices: HerdrAttention[];
   failures: number;
+  observedAgents: boolean;
   unknown: Record<string, number>;
 }
 interface State { nextId: number; backends: Record<string, BackendState> }
@@ -22,10 +23,11 @@ type Action =
   | { type: 'sync'; backends: { id: string; name: string; status: string }[] }
   | { type: 'status'; id: string; agents: api.HerdrAgent[] }
   | { type: 'failure'; id: string; message: string }
+  | { type: 'inactive'; id: string }
   | { type: 'ack'; ids: number[] }
   | { type: 'reset' };
 
-const emptyBackend = (): BackendState => ({ notices: [], failures: 0, unknown: {} });
+const emptyBackend = (): BackendState => ({ notices: [], failures: 0, unknown: {}, observedAgents: false });
 
 function reconcile(state: State, id: string, backend: BackendState, issues: Issue[]): State {
   let nextId = state.nextId;
@@ -48,7 +50,7 @@ function reducer(state: State, action: Action): State {
     let next = { ...state, backends: Object.fromEntries(Object.entries(state.backends).filter(([id]) => ids.has(id))) };
     for (const b of action.backends) {
       const old = next.backends[b.id] ?? emptyBackend();
-      if (b.status !== 'online') next = reconcile(next, b.id, old, [{
+      if (b.status === 'offline' && old.observedAgents) next = reconcile(next, b.id, old, [{
         kind: 'unavailable', name: 'Backend offline',
         message: 'Cannot check Herdr while this backend is offline. Checks resume after it reconnects.',
       }]);
@@ -58,7 +60,9 @@ function reducer(state: State, action: Action): State {
   }
   const backend = state.backends[action.id];
   if (!backend) return state; // Ignore a late response after removal/logout.
+  if (action.type === 'inactive') return { ...state, backends: { ...state.backends, [action.id]: emptyBackend() } };
   if (action.type === 'failure') {
+    if (!backend.observedAgents) return state;
     const next = { ...backend, failures: backend.failures + 1 };
     if (next.failures < 2) return { ...state, backends: { ...state.backends, [action.id]: next } };
     // Retain known questions until a successful list proves they are resolved.
@@ -79,7 +83,7 @@ function reducer(state: State, action: Action): State {
         message: 'Herdr cannot determine this agent’s state. Check its screen for a question or an error.' });
     }
   }
-  return reconcile(state, action.id, { ...backend, failures: 0, unknown }, issues);
+  return reconcile(state, action.id, { ...backend, failures: 0, unknown, observedAgents: action.agents.length > 0 }, issues);
 }
 
 /** Status-only monitoring: no terminal reads, input, focus changes, or OS notifications. */
@@ -94,7 +98,12 @@ export function useHerdrAttention(agents: api.AgentInfo[], enabled: boolean, act
   const reportFailure = useCallback((id: string, error: unknown) => {
     if (!enabledRef.current) return;
     const e = error as { name?: string; error?: string } | null;
-    if (e?.name === 'AbortError' || e?.error === 'agent_busy' || e?.error === 'cancelled') return;
+    const code = e?.error?.split(':')[0];
+    if (e?.name === 'AbortError' || code === 'agent_busy' || code === 'cancelled') return;
+    if (code === 'herdr_unavailable' || code === 'unsupported' || code === 'unsupported_feature') {
+      dispatch({ type: 'inactive', id });
+      return;
+    }
     dispatch({ type: 'failure', id, message: api.friendlyMessage(error) });
   }, []);
   const reportStatus = useCallback((id: string, response: api.HerdrResponse) => {
@@ -112,7 +121,7 @@ export function useHerdrAttention(agents: api.AgentInfo[], enabled: boolean, act
     const controllers = new Set<AbortController>();
     const poll = async () => {
       // The visible Herdr view reports its own results, avoiding competing commands.
-      const queue = backends.filter((b) => b.status === 'online' && b.id !== activeBackendId);
+      const queue = backends.filter((b) => b.status !== 'offline' && b.id !== activeBackendId);
       let index = 0;
       const worker = async () => {
         while (!stopped && index < queue.length) {
@@ -127,7 +136,7 @@ export function useHerdrAttention(agents: api.AgentInfo[], enabled: boolean, act
         }
       };
       await Promise.all([worker(), worker()]);
-      if (!stopped) timer = setTimeout(() => { void poll(); }, 15_000);
+      if (!stopped) timer = setTimeout(() => { void poll(); }, 30_000);
     };
     void poll();
     return () => { stopped = true; clearTimeout(timer); controllers.forEach((c) => c.abort()); };
@@ -135,5 +144,5 @@ export function useHerdrAttention(agents: api.AgentInfo[], enabled: boolean, act
 
   const notices = Object.values(state.backends).flatMap((b) => b.notices);
   const acknowledge = useCallback((ids: number[]) => dispatch({ type: 'ack', ids }), []);
-  return { notices, acknowledge, reportStatus, reportFailure };
+  return { notices: enabled ? notices : [], acknowledge, reportStatus, reportFailure };
 }

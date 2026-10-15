@@ -10,6 +10,7 @@ impl ConnectionSession<'_> {
             text,
             keys,
             lines,
+            read_source,
             wait,
             timeout_ms,
         } = message
@@ -61,7 +62,7 @@ impl ConnectionSession<'_> {
         self.tasks.spawn(async move {
             let _permit = permit;
             let response = client
-                .handle(req_id.clone(), op, target, text, keys, lines, wait, timeout_ms, cancel)
+                .handle(req_id.clone(), op, target, text, keys, lines, read_source, wait, timeout_ms, cancel)
                 .await;
             if let Ok(mut map) = cancels.lock() {
                 map.remove(&req_id);
