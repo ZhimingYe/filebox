@@ -60,6 +60,12 @@ async function render() {
   await act(async () => root.render(<HerdrView agent={agent} />));
 }
 
+async function toggleSetting(label: string) {
+  await act(async () => button('Herdr settings').click());
+  await act(async () => [...container.querySelectorAll('label')].find((item) => item.textContent?.includes(label))!.querySelector('input')!.click());
+  await act(async () => button('Herdr settings').click());
+}
+
 async function typePrompt(text: string) {
   const textarea = container.querySelector('textarea')!;
   await act(async () => {
@@ -68,7 +74,7 @@ async function typePrompt(text: string) {
   });
 }
 function button(label: string) {
-  return [...container.querySelectorAll('button')].find((b) => b.textContent === label)!;
+  return [...container.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') ?? b.textContent) === label)!;
 }
 
 describe('HerdrView', () => {
@@ -110,7 +116,7 @@ describe('HerdrView', () => {
     seq = 2;
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(container.querySelector('pre')!.textContent).toBe('answer 1');
-    expect(container.textContent).toContain('Agent status changed');
+    expect(container.textContent).toContain('Status changed');
     await act(async () => button('Refresh output').click());
     expect(container.querySelector('pre')!.textContent).toBe('answer 2');
   });
@@ -125,7 +131,7 @@ describe('HerdrView', () => {
     });
     await render();
     await typePrompt('long task');
-    await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    await toggleSetting('Wait for result');
     await act(async () => button('Send').click());
     expect(button('Stop waiting')).toBeDefined();
     await act(async () => button('Stop waiting').click());
@@ -185,17 +191,17 @@ describe('HerdrView', () => {
     expect(container.querySelector('pre')!.textContent).toBe('latest pane output');
   });
 
-  it('refreshes output hourly while status continues every thirty seconds', async () => {
+  it('refreshes output every minute while status continues every thirty seconds', async () => {
     vi.useFakeTimers();
     await render();
     const reads = () => vi.mocked(api.herdrCommand).mock.calls.filter(([, body]) => body.op === 'read').length;
-    await act(async () => { await vi.advanceTimersByTimeAsync(3_599_999); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(59_999); });
     expect(reads()).toBe(1);
-    expect(vi.mocked(api.herdrCommand).mock.calls.filter(([, body]) => body.op === 'status')).toHaveLength(120);
+    expect(vi.mocked(api.herdrCommand).mock.calls.filter(([, body]) => body.op === 'status')).toHaveLength(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(reads()).toBe(2);
-    await act(async () => button('Auto refresh: 60 min').click());
-    await act(async () => { await vi.advanceTimersByTimeAsync(3_600_000); });
+    await toggleSetting('Auto-refresh every minute');
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     expect(reads()).toBe(2);
     await act(async () => button('Refresh output').click());
     expect(reads()).toBe(3);
@@ -206,29 +212,36 @@ describe('HerdrView', () => {
       ? { ...listed, agents: [listed.agents[0], { ...listed.agents[0], target: 'writer', name: 'writer', pane_id: 'w1:p3' }] }
       : { req_id: 'r', output: body.target });
     await render();
-    await act(async () => button('Auto refresh: 60 min').click());
+    await toggleSetting('Auto-refresh every minute');
     const card = (target: string) => [...container.querySelectorAll<HTMLButtonElement>('aside button')].find((b) => b.textContent?.includes(target))!;
     await act(async () => card('writer').click());
-    expect(button('Auto refresh: 60 min')).toBeDefined();
+    await act(async () => button('Herdr settings').click());
+    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+    await act(async () => button('Herdr settings').click());
     vi.mocked(api.herdrCommand).mockClear();
     await act(async () => button('Refresh output').click());
     expect(vi.mocked(api.herdrCommand).mock.calls.map(([, body]) => body)).toEqual([{ op: 'read', target: 'writer', lines: 120, read_source: 'detection' }]);
     await act(async () => card('reviewer').click());
-    expect(button('Auto refresh: off')).toBeDefined();
+    await act(async () => button('Herdr settings').click());
+    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false);
+    await act(async () => button('Herdr settings').click());
     expect(container.querySelector('pre')!.textContent).toBe('reviewer');
     expect(api.herdrCommand).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['codex', 'claude'])('sends remote Ctrl+End before reading %s output', async (kind) => {
+  it.each(['codex', 'claude'])('refreshes %s without sending remote scrolling keys', async (kind) => {
     vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
       ? { ...listed, agents: [{ ...listed.agents[0], kind }] }
       : { req_id: 'r', output: '4 new messages (ctrl+End) ↓' });
     await render();
     vi.mocked(api.herdrCommand).mockClear();
-    await act(async () => button('Scroll remote to bottom').click());
-    expect(vi.mocked(api.herdrCommand).mock.calls.slice(0, 2).map(([, body]) => body)).toEqual([
-      { op: 'send_keys', target: 'reviewer', keys: ['ctrl+end'] },
-      { op: 'read', target: 'reviewer', lines: 120, read_source: 'visible' },
+    expect(button('Scroll remote to bottom')).toBeUndefined();
+    const output = container.querySelector('pre')!;
+    Object.defineProperty(output, 'scrollHeight', { value: 1000 });
+    await act(async () => button('Refresh output').click());
+    expect(output.scrollTop).toBe(1000);
+    expect(vi.mocked(api.herdrCommand).mock.calls.map(([, body]) => body)).toEqual([
+      { op: 'read', target: 'reviewer', lines: 120, read_source: 'detection' },
     ]);
   });
 
@@ -240,7 +253,7 @@ describe('HerdrView', () => {
       return new Promise((_resolve, reject) => signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
     });
     await render(); await typePrompt('wait for me');
-    await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    await toggleSetting('Wait for result');
     await act(async () => button('Send').click());
     await act(async () => [...container.querySelectorAll<HTMLButtonElement>('aside button')].find((b) => b.textContent?.includes('writer'))!.click());
     expect(container.querySelector('pre')!.textContent).toBe('writer');
@@ -258,7 +271,7 @@ describe('HerdrView', () => {
     vi.mocked(api.herdrCommand).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     await act(async () => button('Refresh output').click());
     await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
-    expect(container.textContent).toContain('Output is slow');
+    expect(container.textContent).toContain('Taking longer than usual');
     await act(async () => button('Cancel refresh').click());
     expect(button('Refresh output').disabled).toBe(false);
     await act(async () => finish({ req_id: 'late', output: 'obsolete snapshot' }));
@@ -276,7 +289,9 @@ describe('HerdrView', () => {
     );
     expect(container.textContent).toContain('reviewer');
     expect(container.textContent).toContain('Working');
+    await act(async () => button('Herdr settings').click());
     expect(container.textContent).toContain('Herdr 1.4.0');
+    await act(async () => button('Herdr settings').click());
     // Desktop auto-selects the first agent and loads latest output.
     expect(api.herdrCommand).toHaveBeenCalledWith(
       agent.id,

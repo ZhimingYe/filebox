@@ -14,15 +14,15 @@ describe('Herdr shortcut profiles', () => {
     const send = vi.fn();
     try {
       await act(async () => root.render(<HerdrShortcuts kind={kind} disabled={false} onSend={send} />));
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="More shortcuts"]')!.click());
       expect(container.querySelector<HTMLSelectElement>('[aria-label="Shortcut profile"]')!.value).toBe(profile);
-      const select = container.querySelector<HTMLSelectElement>('[aria-label="Remote shortcut"]')!;
-      await act(async () => { select.value = choice; select.dispatchEvent(new Event('change', { bubbles: true })); });
       expect(send).not.toHaveBeenCalled();
-      expect(container.querySelector('p')!.textContent).toContain(description);
-      await act(async () => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Send shortcut')!.click());
+      await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="${choice}: ${description}"]`)!.click());
       expect(send).toHaveBeenCalledWith([choice.toLowerCase()]);
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
       await act(async () => root.render(<HerdrShortcuts kind={kind} disabled onSend={send} />));
-      expect([...container.querySelectorAll('button')].every((b) => b.disabled)).toBe(true);
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="More shortcuts"]')!.click());
+      expect([...container.querySelectorAll('button')].filter((b) => b.getAttribute('aria-label') !== 'More shortcuts').every((b) => b.disabled)).toBe(true);
     } finally { act(() => root.unmount()); }
   });
 
@@ -33,5 +33,27 @@ describe('Herdr shortcut profiles', () => {
       expect(shortcut.keys.length).toBeLessThanOrEqual(8);
       for (const key of shortcut.keys) expect(allowed, shortcut.label).toContain(key);
     }
+  });
+
+  it('opens and dismisses the keyboard without sending input or exposing unsupported navigation keys', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const send = vi.fn();
+    try {
+      await act(async () => root.render(<HerdrShortcuts kind="claude" disabled={false} onSend={send} />));
+      const trigger = container.querySelector<HTMLButtonElement>('[aria-label="More shortcuts"]')!;
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      await act(async () => trigger.click());
+      expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+      expect(container.textContent).not.toMatch(/Ctrl\+End|PageUp|PageDown|Delete/);
+      await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+      await act(async () => trigger.click());
+      await act(async () => document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })));
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      expect(send).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); container.remove(); }
   });
 });

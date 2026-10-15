@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState } from 'react';
 import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
-import { c, font, radius, shadow } from '../theme';
+import { c, font, radius } from '../theme';
 import { HerdrShortcuts } from './HerdrShortcuts';
+import { HerdrButton, HerdrPopover } from './HerdrControls';
 import { HerdrQueue } from '../lib/herdrQueue';
 import { setHerdrEnabled } from '../hooks/useHerdrEnabled';
 import { useIsMobile } from '../state/useIsMobile';
-import { IconChevronLeft, IconRefresh } from './icons';
+import { IconChevronLeft, IconRefresh, IconSettings, IconClose } from './icons';
 
 interface Props {
   agent: api.AgentInfo;
@@ -15,7 +16,7 @@ interface Props {
   focusRequest?: { target: string; nonce: number } | null;
 }
 
-const OUTPUT_REFRESH_MS = 60 * 60 * 1000;
+const OUTPUT_REFRESH_MS = 60 * 1000;
 const PROMPT_MAX_BYTES = 32 * 1024;
 
 function paneIdentity(item: api.HerdrAgent): string {
@@ -336,7 +337,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
     const el = outputBoxRef.current;
     if (!el || !stickToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [output]);
+  }, [output, updatedAt]);
 
   useEffect(() => {
     if (!sending) return;
@@ -345,6 +346,12 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
     const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
     return () => window.clearInterval(timer);
   }, [sending]);
+
+  useEffect(() => {
+    if (!actionNotice?.startsWith('Sent ') && !actionNotice?.startsWith('Prompt sent.')) return;
+    const timer = window.setTimeout(() => setActionNotice(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [actionNotice]);
 
   const selectAgent = (target: string) => {
     setSelected(target);
@@ -463,57 +470,58 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const promptDisabled = sending || !reachable || !prompt.trim()
     || promptBytes > PROMPT_MAX_BYTES || selectedAgent?.status === 'blocked';
 
+  const cancelList = () => {
+    genRef.current++;
+    abortList.current?.abort();
+    abortList.current = null;
+    setLoadingList(false);
+    setListError('Status refresh cancelled.');
+  };
+  const listControl = <HerdrButton touch={isMobile}
+    aria-label={loadingList ? 'Cancel status refresh' : 'Refresh agent list'}
+    title={loadingList ? 'Cancel status refresh' : 'Refresh agent list'}
+    onClick={() => loadingList ? cancelList() : void loadList(false)}>
+    {loadingList ? <IconClose /> : <IconRefresh />}
+  </HerdrButton>;
+
+  const settingsControl = (
+    <HerdrPopover key={selectedIdentity ?? 'list'} label="Herdr settings" trigger={<IconSettings />} touch={isMobile}>
+      <div style={styles.menuTitle}>Workspace settings</div>
+      {selectedAgent && <>
+        <label style={styles.settingRow}>
+          <span>Auto-refresh every minute</span>
+          <input type="checkbox" checked={autoRefresh[selectedAgent.target] !== false}
+            onChange={(event) => setAutoRefresh((prev) => ({ ...prev, [selectedAgent.target]: event.target.checked }))} />
+        </label>
+        <label style={styles.settingRow}><span>Wrap output</span>
+          <input type="checkbox" checked={wrapOutput} onChange={(event) => setWrapOutput(event.target.checked)} />
+        </label>
+        <label style={styles.settingRow} title="Wait up to 60 seconds for completion or a request for input.">
+          <span>Wait for result after sending</span>
+          <input type="checkbox" checked={wait} disabled={sending} onChange={(event) => setWait(event.target.checked)} />
+        </label>
+      </>}
+      <p style={styles.menuNote}>{updatedAt ? `Output updated ${new Date(updatedAt).toLocaleTimeString()}. ` : ''}Status checks every 30 seconds.{status?.version ? ` Herdr ${status.version}.` : ''}</p>
+      <div style={{ borderTop: `1px solid ${c.border}`, paddingTop: 8 }}>
+        <HerdrButton touch={isMobile} onClick={() => setHerdrEnabled(false)} style={{ width: '100%', justifyContent: 'flex-start' }}>Disable Herdr</HerdrButton>
+        <p style={styles.menuNote}>Stops monitoring in this browser. Enable again in Settings.</p>
+      </div>
+    </HerdrPopover>
+  );
+
   return (
     <div style={styles.page}>
-      <header style={styles.header}>
-        <div style={styles.headerText}>
-          <div style={styles.titleRow}>
-            {isMobile && selectedAgent && (
-              <button
-                type="button"
-                onClick={() => setSelected(null)}
-                style={styles.backBtn}
-                aria-label="Back to agent list"
-              >
-                <IconChevronLeft />
-              </button>
-            )}
-            <h1 style={styles.title}>
-              {isMobile && selectedAgent ? displayName(selectedAgent) : 'Herdr'}
-            </h1>
-            {!selectedAgent && (
-              <span style={styles.countChip}>{agents.length}</span>
-            )}
-          </div>
-          <p style={styles.subtitle}>
-            {status?.reachable
-              ? (status.version ? `Herdr ${status.version} on this backend` : 'Herdr is running on this backend')
-              : status?.installed
-                ? 'Herdr is installed, but the server is not running'
-                : loadingList
-                  ? 'Checking Herdr on this backend…'
-                  : 'Could not reach Herdr on this backend'}
-          </p>
+      {!showDetail && <header style={styles.header}>
+        <div style={styles.titleRow}>
+          <h1 style={styles.title}>Herdr</h1>
+          <span style={styles.countChip}>{agents.length}</span>
+          {!isMobile && <span style={styles.subtitle}>Agent workspace</span>}
         </div>
-        <button
-          type="button"
-          onClick={() => { void loadList(false); }}
-          style={styles.iconBtn}
-          title="Refresh agent list (status checks every 30 seconds)"
-          aria-label="Refresh agent list"
-          disabled={loadingList}
-        >
-          <IconRefresh />
-        </button>
-        {loadingList && <button type="button" style={styles.keyChip} onClick={() => {
-          genRef.current++;
-          abortList.current?.abort();
-          abortList.current = null;
-          setLoadingList(false);
-          setListError('Status refresh cancelled.');
-        }}>Cancel status refresh</button>}
-        <button type="button" style={styles.keyChip} onClick={() => setHerdrEnabled(false)}>Disable Herdr</button>
-      </header>
+        <div style={styles.keyRow}>
+          {listControl}
+          {settingsControl}
+        </div>
+      </header>}
 
       {listError && reachable && (
         <div style={styles.banner}>{listError}</div>
@@ -522,6 +530,10 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
       <div style={isMobile ? styles.bodyMobile : styles.bodyDesktop}>
         {showList && (
           <aside style={isMobile ? styles.listMobile : styles.listDesktop} aria-label="Herdr agents">
+            {!isMobile && showDetail && <div style={styles.listHeading}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}>Herdr <span style={styles.countChip}>{agents.length}</span></span>
+              {listControl}
+            </div>}
             {loadingList && agents.length === 0 && !listError ? (
               <div style={styles.empty}>Looking for agents…</div>
             ) : !reachable && listError && !status?.installed ? (
@@ -586,77 +598,53 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
 
         {showDetail && selectedAgent && (
           <section style={styles.detail}>
-            {!isMobile && (
-              <div style={styles.detailHead}>
-                <div>
+            <div style={{ ...styles.detailHead, ...(isMobile ? { gap: 4, padding: '4px 8px' } : null) }}>
+              {isMobile && <HerdrButton touch aria-label="Back to agent list" onClick={() => setSelected(null)}><IconChevronLeft /></HerdrButton>}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={styles.titleRow}>
                   <div style={styles.detailName}>{displayName(selectedAgent)}</div>
-                  <div style={styles.detailMeta}>
-                    {selectedAgent.kind || 'agent'} · {selectedAgent.pane_id}
-                    {selectedAgent.cwd ? ` · ${selectedAgent.cwd}` : ''}
-                  </div>
+                  <span style={{ ...styles.badge, color: statusMeta(selectedAgent.status).color, background: statusMeta(selectedAgent.status).bg }}>
+                    {statusMeta(selectedAgent.status).label}
+                  </span>
                 </div>
-                <span
-                  style={{
-                    ...styles.badge,
-                    color: statusMeta(selectedAgent.status).color,
-                    background: statusMeta(selectedAgent.status).bg,
-                  }}
-                >
-                  {statusMeta(selectedAgent.status).label}
-                </span>
+                <div style={styles.detailMeta} title={selectedAgent.cwd ?? undefined}>
+                  {selectedAgent.kind || 'agent'}{selectedAgent.cwd ? ` · ${selectedAgent.cwd}` : ''}
+                </div>
               </div>
-            )}
-
-            {actionError && <div role="alert" style={styles.actionError}>{actionError}</div>}
-            {outputError && <div role="alert" style={styles.actionError}>{outputError} Use Refresh to retry.</div>}
-            {actionNotice && <div role="status" style={styles.notice}>{actionNotice}</div>}
-            {selectedAgent.status === 'blocked' && !sending && (
-              <div style={styles.notice}>Needs your input. Read the output and use the keys below. If a text reply or another interaction is needed, continue in Herdr on this backend.</div>
-            )}
-            {selectedAgent.status === 'unknown' && !sending && (
-              <div style={styles.notice}>Herdr cannot determine this agent’s state. Check the screen for a question or error; continue in Herdr if needed.</div>
-            )}
-            {sending && (
-              <div style={styles.outputBar}>
-                <span role="status">{wait ? 'Waiting for' : 'Sending to'} {actionTarget} · {elapsed}s</span>
-                <button type="button" style={styles.keyChip} onClick={stopWaiting}>Stop waiting</button>
-              </div>
-            )}
-            <div style={styles.outputBar}>
-              <span>{loadingOutput ? (outputElapsed >= 8 ? `Output is slow (${outputElapsed}s). You can cancel and retry.` : 'Refreshing output…') : updatedAt
-                ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : 'Latest output'}</span>
-              <div style={styles.keyRow}>
-                <button type="button" style={styles.keyChip} disabled={loadingOutput || !reachable}
-                  title="Read the latest bottom-buffer screen without moving the remote viewport"
-                  onClick={() => { if (selected) void loadOutput(selected, false); }}>Refresh output</button>
-                {loadingOutput && <button type="button" style={styles.keyChip} onClick={() => {
-                  outputGenRef.current++;
-                  abortOutput.current?.abort();
-                  abortOutput.current = null;
-                  setLoadingOutput(false);
-                  setOutputError('Output refresh cancelled.');
-                }}>Cancel refresh</button>}
-                <button type="button" style={styles.keyChip} aria-pressed={selected ? autoRefresh[selected] !== false : true}
-                  onClick={() => { if (selected) setAutoRefresh((prev) => ({ ...prev, [selected]: prev[selected] === false })); }}>
-                  {selected && autoRefresh[selected] === false ? 'Auto refresh: off' : 'Auto refresh: 60 min'}
-                </button>
-                <button type="button" style={styles.keyChip} aria-pressed={wrapOutput} onClick={() => setWrapOutput((prev) => !prev)}>Wrap</button>
-                <button type="button" style={styles.keyChip} disabled={sending || !reachable}
-                  title="Send Ctrl+End to the remote agent; Herdr v0.9.5 requires a navigation-key patch" onClick={() => {
+              <HerdrButton touch={isMobile} aria-label={loadingOutput ? 'Cancel refresh' : 'Refresh output'}
+                title={loadingOutput ? 'Reading output · click to cancel' : updatedAt ? `Refresh output · updated ${new Date(updatedAt).toLocaleTimeString()}` : 'Refresh output'}
+                disabled={!reachable} style={{ borderColor: c.border, minWidth: isMobile ? 44 : 84 }}
+                onClick={() => {
+                  if (loadingOutput) {
+                    outputGenRef.current++; abortOutput.current?.abort(); abortOutput.current = null;
+                    setLoadingOutput(false); setOutputError(null); setActionNotice('Output refresh cancelled.');
+                    return;
+                  }
+                  setActionNotice(null);
                   stickToBottomRef.current = true;
-                  const el = outputBoxRef.current;
-                  if (el) el.scrollTop = el.scrollHeight;
-                  sendKeys(['ctrl+end']);
-                }}>Scroll remote to bottom</button>
-              </div>
+                  if (outputBoxRef.current) outputBoxRef.current.scrollTop = outputBoxRef.current.scrollHeight;
+                  if (selected) void loadOutput(selected, false);
+                }}>{loadingOutput ? <IconClose /> : <IconRefresh />}{!isMobile && (loadingOutput ? 'Reading…' : 'Refresh')}</HerdrButton>
+              {settingsControl}
             </div>
 
-            {selectedAgent && seenSignature !== null && seenSignature !== outputSignature(selectedAgent) && (
-              <div style={styles.notice}>Agent status changed. Refresh this window for the latest output.</div>
-            )}
-            {/ctrl\s*\+\s*end/i.test(output) && /new messages?|jump to bottom/i.test(output) && (
-              <div style={styles.notice}>The remote app is showing older messages. Use Scroll remote to bottom to ask it to follow new output.</div>
-            )}
+            {actionError && <div role="alert" style={styles.actionError}><span style={{ flex: 1 }}>{actionError}</span>
+              <HerdrButton aria-label="Dismiss error" onClick={() => setActionError(null)}><IconClose /></HerdrButton>
+            </div>}
+            {outputError && <div role="alert" style={styles.actionError}>{outputError} Use Refresh to retry.</div>}
+            {selectedAgent.status === 'blocked' && !sending && <div style={styles.notice}>Needs your input. Use the remote keys below to respond.</div>}
+            {selectedAgent.status === 'unknown' && !sending && <div style={styles.notice}>Status unavailable. Check the output before continuing.</div>}
+            {(sending || (loadingOutput && outputElapsed >= 8) || actionNotice) && <div style={styles.outputBar}>
+              <span role="status" style={{ minWidth: 0, overflow: 'auto', maxHeight: 64 }}>
+                {sending ? `${wait ? 'Waiting for' : 'Sending to'} ${actionTarget} · ${elapsed}s`
+                  : loadingOutput ? (outputElapsed >= 8 ? `Taking longer than usual · ${outputElapsed}s` : 'Refreshing…')
+                  : actionNotice || (seenSignature !== null && seenSignature !== outputSignature(selectedAgent)
+                    ? 'Status changed · refresh to see the latest output'
+                    : updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : 'Latest output')}
+              </span>
+              {sending ? <HerdrButton onClick={stopWaiting}>Stop waiting</HerdrButton>
+                : actionNotice && <HerdrButton aria-label="Dismiss notice" onClick={() => setActionNotice(null)}><IconClose /></HerdrButton>}
+            </div>}
             <pre
               ref={outputBoxRef}
               style={{ ...styles.output, whiteSpace: wrapOutput ? 'pre-wrap' : 'pre' }}
@@ -676,51 +664,45 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
             <div style={styles.composer}>
               <HerdrShortcuts key={selectedAgent.target} kind={selectedAgent.kind}
                 disabled={sending || !reachable} onSend={sendKeys} />
-              <textarea
-                ref={promptRef}
-                value={prompt}
-                onChange={(e) => {
-                  if (selected) setDrafts((prev) => ({ ...prev, [selected]: e.target.value }));
-                }}
-                aria-label={`Prompt for ${displayName(selectedAgent)}`}
-                placeholder="Send a prompt to this agent"
-                rows={isMobile ? 3 : 4}
-                maxLength={PROMPT_MAX_BYTES}
-                disabled={sending}
-                style={{ ...styles.textarea, fontSize: isMobile ? 16 : 14 }}
-                onKeyDown={(e) => {
-                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                    e.preventDefault();
-                    void sendPrompt();
-                  }
-                }}
-              />
-              <div style={{ ...styles.composerHint, color: promptBytes > PROMPT_MAX_BYTES ? c.danger : c.textMuted }}>
-                {promptBytes > PROMPT_MAX_BYTES
-                  ? 'Prompt exceeds the 32 KiB limit. Shorten it before sending.'
-                  : `${promptBytes.toLocaleString()} / ${PROMPT_MAX_BYTES.toLocaleString()} bytes${isMobile ? '' : ' · Ctrl/Cmd+Enter to send'}`}
-              </div>
-              <div style={styles.composerBar}>
-                <label style={styles.waitLabel} title="Wait up to 60 seconds for completion or a request for input.">
-                  <input
-                    type="checkbox"
-                    checked={wait}
-                    onChange={(e) => setWait(e.target.checked)}
-                    disabled={sending}
-                  />
-                  Wait for result
-                </label>
-                <button
-                  type="button"
-                  onClick={() => void sendPrompt()}
-                  disabled={promptDisabled}
-                  style={{
-                    ...styles.primaryBtn,
-                    ...(promptDisabled ? styles.primaryBtnDisabled : null),
+              <div style={styles.inputCard}>
+                <textarea
+                  ref={promptRef}
+                  value={prompt}
+                  onChange={(e) => {
+                    if (selected) setDrafts((prev) => ({ ...prev, [selected]: e.target.value }));
                   }}
-                >
-                  {sending ? (wait ? 'Waiting…' : 'Sending…') : 'Send'}
-                </button>
+                  aria-label={`Prompt for ${displayName(selectedAgent)}`}
+                  placeholder={`Message ${selectedAgent.kind || 'agent'}…`}
+                  rows={2}
+                  maxLength={PROMPT_MAX_BYTES}
+                  disabled={sending}
+                  style={{ ...styles.textarea, fontSize: isMobile ? 16 : 14 }}
+                  onKeyDown={(e) => {
+                    if (!e.nativeEvent.isComposing && (e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                      e.preventDefault();
+                      void sendPrompt();
+                    }
+                  }}
+                />
+                <div style={styles.composerBar}>
+                  <span style={{ ...styles.composerHint, color: promptBytes > PROMPT_MAX_BYTES ? c.danger : c.textMuted }}>
+                    {promptBytes > PROMPT_MAX_BYTES ? 'Prompt exceeds the 32 KiB limit. Shorten it before sending.'
+                      : seenSignature !== null && seenSignature !== outputSignature(selectedAgent) ? 'Status changed · refresh for latest output'
+                      : wait ? 'Wait for result is on' : isMobile ? 'Enter for new line' : 'Ctrl / ⌘ + Enter to send'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void sendPrompt()}
+                    disabled={promptDisabled}
+                    style={{
+                      ...styles.primaryBtn,
+                      ...(isMobile ? { minHeight: 44 } : null),
+                      ...(promptDisabled ? styles.primaryBtnDisabled : null),
+                    }}
+                  >
+                    {sending ? (wait ? 'Waiting…' : 'Sending…') : 'Send'}
+                  </button>
+                </div>
               </div>
             </div>
           </section>
@@ -740,6 +722,11 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  menuTitle: { fontSize: 13, fontWeight: 600, marginBottom: 8 },
+  menuNote: { fontSize: 11, lineHeight: 1.5, color: c.textSecondary, margin: '8px 0' },
+  settingRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 40, cursor: 'pointer' },
+  listHeading: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 4px 8px', fontSize: 11, fontWeight: 500, color: c.textSecondary },
+  inputCard: { border: `1px solid ${c.border}`, borderRadius: radius.lg, background: c.bgSubtle },
   page: {
     flex: 1,
     minHeight: 0,
@@ -747,17 +734,18 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     background: c.bg,
+    fontFamily: font.sans,
   },
   header: {
     display: 'flex',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
-    padding: '16px 20px 12px',
+    padding: '8px 16px',
+    flexShrink: 0,
     borderBottom: `1px solid ${c.border}`,
-    background: c.bgSubtle,
+    background: c.bg,
   },
-  headerText: { minWidth: 0, flex: 1 },
   titleRow: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
   title: {
     margin: 0,
@@ -783,34 +771,12 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
   },
   subtitle: {
-    margin: '4px 0 0',
+    margin: 0,
     fontSize: 12,
     color: c.textMuted,
     fontFamily: font.sans,
   },
-  backBtn: {
-    border: 'none',
-    background: 'transparent',
-    color: c.textSecondary,
-    padding: 4,
-    marginLeft: -4,
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-  },
-  iconBtn: {
-    border: `1px solid ${c.border}`,
-    background: c.surface,
-    color: c.textSecondary,
-    width: 32,
-    height: 32,
-    borderRadius: radius.md,
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
+
   banner: {
     margin: '12px 20px 0',
     padding: '10px 12px',
@@ -832,14 +798,14 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
   },
   listDesktop: {
-    width: 280,
+    width: 224,
     flexShrink: 0,
     overflow: 'auto',
     borderRight: `1px solid ${c.border}`,
-    padding: 12,
+    padding: 8,
     display: 'flex',
     flexDirection: 'column',
-    gap: 8,
+    gap: 4,
     background: c.bgSubtle,
   },
   listMobile: {
@@ -857,17 +823,16 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 10,
     textAlign: 'left',
     width: '100%',
-    padding: '12px 12px',
+    padding: '11px 10px',
     minHeight: 52,
     borderRadius: radius.md,
-    border: `1px solid ${c.border}`,
-    background: c.surface,
+    borderWidth: 1, borderStyle: 'solid', borderColor: 'transparent',
+    background: 'transparent',
     cursor: 'pointer',
     fontFamily: font.sans,
-    boxShadow: shadow.xs,
   },
   cardActive: {
-    border: `1px solid ${c.accent}`,
+    borderColor: c.accentBg,
     background: c.accentBg,
   },
   dot: {
@@ -901,11 +866,10 @@ const styles: Record<string, React.CSSProperties> = {
   badge: {
     flexShrink: 0,
     fontSize: 10,
-    fontWeight: 600,
+    fontWeight: 500,
     letterSpacing: 0.02,
     padding: '3px 7px',
     borderRadius: radius.pill,
-    textTransform: 'uppercase',
   },
   empty: {
     padding: 24,
@@ -962,10 +926,12 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
-    padding: '12px 16px',
+    padding: '8px 12px',
+    flexShrink: 0,
     borderBottom: `1px solid ${c.border}`,
   },
   detailName: {
+    minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
     fontSize: 14,
     fontWeight: 600,
     color: c.text,
@@ -973,10 +939,13 @@ const styles: Record<string, React.CSSProperties> = {
   detailMeta: {
     marginTop: 2,
     fontSize: 11,
-    color: c.textMuted,
-    fontFamily: font.mono,
+    color: c.textSecondary,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
   },
   actionError: {
+    display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
     margin: '8px 16px 0',
     padding: '8px 10px',
     borderRadius: radius.md,
@@ -986,19 +955,22 @@ const styles: Record<string, React.CSSProperties> = {
   },
   notice: {
     padding: '8px 16px',
-    background: c.accentBg,
+    flexShrink: 0,
+    background: c.warningBg,
     color: c.text,
     fontSize: 12,
     lineHeight: 1.5,
   },
   outputBar: {
     display: 'flex',
-    flexWrap: 'wrap',
+    flexShrink: 0,
+    minHeight: 32,
+    boxSizing: 'border-box',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
-    padding: '6px 12px',
-    color: c.textMuted,
+    padding: '0 16px',
+    color: c.textSecondary,
     fontSize: 11,
     borderBottom: `1px solid ${c.border}`,
   },
@@ -1006,51 +978,42 @@ const styles: Record<string, React.CSSProperties> = {
   output: {
     flex: 1,
     minHeight: 80,
+    overscrollBehavior: 'contain',
     margin: 0,
-    padding: 16,
+    padding: '16px 20px',
     overflow: 'auto',
-    background: c.bgSubtle,
+    background: c.bg,
     color: c.text,
     fontFamily: font.mono,
     fontSize: 12,
-    lineHeight: 1.55,
+    lineHeight: 1.7,
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
     borderBottom: `1px solid ${c.border}`,
   },
   composer: {
-    padding: 12,
+    padding: '4px 16px 12px',
+    flexShrink: 0,
     display: 'flex',
     flexDirection: 'column',
     gap: 8,
     background: c.surface,
-    borderTop: `1px solid ${c.border}`,
   },
   keyRow: {
     display: 'flex',
     flexWrap: 'wrap',
     gap: 6,
   },
-  keyChip: {
-    minHeight: 44,
-    padding: '0 12px',
-    borderRadius: radius.md,
-    border: `1px solid ${c.border}`,
-    background: c.bgMuted,
-    color: c.text,
-    fontSize: 12,
-    fontFamily: font.mono,
-    cursor: 'pointer',
-  },
+
   textarea: {
     width: '100%',
     resize: 'vertical',
-    minHeight: 72,
+    minHeight: 56,
     maxHeight: 160,
     padding: '10px 12px',
     borderRadius: radius.md,
-    border: `1px solid ${c.border}`,
-    background: c.bg,
+    border: 'none',
+    background: 'transparent',
     color: c.text,
     fontFamily: font.sans,
     fontSize: 14,
@@ -1058,22 +1021,14 @@ const styles: Record<string, React.CSSProperties> = {
     boxSizing: 'border-box',
   },
   composerBar: {
+    padding: '0 8px 8px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
   },
-  waitLabel: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    fontSize: 12,
-    color: c.textSecondary,
-    fontFamily: font.sans,
-    minHeight: 36,
-  },
   primaryBtn: {
-    minHeight: 40,
+    minHeight: 32,
     padding: '0 16px',
     borderRadius: radius.md,
     border: 'none',
@@ -1085,7 +1040,8 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
   },
   primaryBtnDisabled: {
-    opacity: 0.55,
+    background: c.bgMuted,
+    color: c.textMuted,
     cursor: 'default',
   },
 };

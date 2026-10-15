@@ -1,0 +1,62 @@
+import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { c, font, radius, shadow } from '../theme';
+
+/** Quiet controls shared by the Herdr toolbar and remote keyboard. */
+export function HerdrButton({ children, style, touch, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { touch?: boolean }) {
+  const [hovered, setHovered] = useState(false);
+  return <button {...props} type={props.type ?? 'button'}
+    onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+    style={{
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+      minHeight: touch ? 44 : 32, minWidth: touch ? 44 : undefined, padding: '0 9px', flexShrink: 0,
+      borderWidth: 1, borderStyle: 'solid', borderColor: 'transparent', borderRadius: radius.sm,
+      background: hovered && !props.disabled ? c.bgMuted : 'transparent',
+      color: c.textSecondary, fontFamily: font.sans, fontSize: 12, lineHeight: 1.4,
+      cursor: props.disabled ? 'default' : 'pointer', opacity: props.disabled ? 0.45 : 1,
+      ...style,
+    }}>{children}</button>;
+}
+
+/** Non-modal disclosure: pointer dismissal, Escape, and keyboard focus return. */
+export function HerdrPopover({ label, trigger, children, above = false, touch = false, closeOnAction = false }: {
+  label: string; trigger: ReactNode; children: ReactNode; above?: boolean; touch?: boolean; closeOnAction?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const root = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    panel.current?.querySelector<HTMLElement>('button, input, select')?.focus();
+    const dismiss = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [open]);
+  return <div ref={root} style={{ position: 'relative', flexShrink: 0 }}
+    onBlur={(event) => {
+      if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) setOpen(false);
+    }}
+    onKeyDown={(event) => {
+      if (event.key === 'Escape' && open) {
+        event.preventDefault(); event.stopPropagation(); setOpen(false);
+        root.current?.querySelector<HTMLButtonElement>('button')?.focus();
+      }
+    }}>
+    <HerdrButton touch={touch} aria-label={label} title={label} aria-expanded={open}
+      aria-controls={open ? id : undefined} onClick={() => setOpen((value) => !value)}>{trigger}</HerdrButton>
+    {open && <div id={id} ref={panel} role="dialog" aria-label={label} onClick={(event) => {
+      if (closeOnAction && (event.target as Element).closest('button')) {
+        setOpen(false);
+        root.current?.querySelector<HTMLButtonElement>('button')?.focus();
+      }
+    }} style={{
+      position: 'absolute', right: 0, ...(above ? { bottom: 'calc(100% + 8px)' } : { top: 'calc(100% + 8px)' }),
+      zIndex: 20, width: 300, maxWidth: 'calc(100vw - 48px)', maxHeight: 'min(420px, 55dvh)', overflow: 'auto',
+      padding: 12, boxSizing: 'border-box', border: `1px solid ${c.border}`,
+      borderRadius: radius.lg, background: c.surface, boxShadow: shadow.lg,
+      color: c.text, fontFamily: font.sans, fontSize: 12,
+    }}>{children}</div>}
+  </div>;
+}
