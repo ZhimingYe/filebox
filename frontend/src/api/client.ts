@@ -191,7 +191,7 @@ export function friendlyMessage(error: unknown): string {
     terminal_2fa_invalid: 'Invalid or already-used backend code — codes rotate every 30 seconds; enter the current one.',
     herdr_unavailable: 'Herdr is installed but the server is not running on this backend. Start it, then refresh.',
     herdr_timeout: 'The Herdr command timed out. Read the latest output before retrying.',
-    herdr_key_unsupported: 'This Herdr server does not support that key. Herdr v0.9.5 needs a navigation-key patch for Home, End, PageUp, PageDown and Delete.',
+    herdr_key_unsupported: 'This shortcut is unavailable on this backend. Use the remote terminal instead.',
     herdr_incompatible: 'Herdr returned an incompatible response. Update its CLI and restart the Herdr server with a matching version.',
     herdr_blocked: 'That agent is waiting for an approval. Inspect the output, then tap a key.',
     herdr_agent_missing: 'That Herdr agent is no longer running.',

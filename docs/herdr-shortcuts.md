@@ -26,9 +26,10 @@ See [Herdr's reading API](https://herdr.ink/docs/socket-api#reading-panes) and
 A Claude banner such as `4 new messages (ctrl+End)` means **the application's
 own transcript** is scrolled up. A bottom-buffer read cannot reveal messages
 that application has not rendered. Modern fullscreen Codex and pi also use
-Ctrl+End for following their transcript. Filebox's **Scroll remote to bottom**
-sends that logical key, then reads the visible screen. It does not claim that
-an accepted key proves the application reached the bottom.
+Ctrl+End for following their transcript. Filebox does not expose a remote-scroll
+button or the unsupported Home/End/PageUp/PageDown/Delete presets. Refresh reads
+the latest snapshot and moves only Filebox's output view to its end; it never
+sends a remote scrolling key.
 
 Herdr v0.9.5 has no public `pane.scroll_to_bottom`/`agent.scroll_to_bottom` API.
 Its `agent send-keys` uses a shared parser which omits Home, End, PageUp,
@@ -61,10 +62,10 @@ Sources: [pi keybindings](https://github.com/badlogic/pi-mono/blob/main/packages
 [Codex default keymap](https://github.com/openai/codex/blob/main/codex-rs/tui/src/keymap.rs),
 [Codex fullscreen announcement](https://github.com/openai/codex/discussions/49129).
 
-Filebox keeps basic approval/navigation buttons visible and groups additional
-shortcuts under **More shortcuts**. Detection selects a profile; the user can
-correct it. Selecting a shortcut sends nothing until **Send shortcut** is
-clicked. Numbered choices, editing keys, navigation, and multi-key sequences
+Filebox keeps Enter, Esc and Up/Down visible and groups additional
+shortcuts under **Keys**. Detection selects a profile; the user can
+correct it. Each labeled shortcut sends only when clicked; opening the keyboard
+or changing its profile sends nothing. Numbered choices, editing keys, navigation, and multi-key sequences
 all pass the same bounded Hub/Agent allowlist. Keys affect the remote input,
 not Filebox's unsent local draft. Ctrl+C/Ctrl+D may exit; Ctrl+Z suspends on Unix.
 Clipboard, voice, and arbitrary raw key/text injection are not added.
