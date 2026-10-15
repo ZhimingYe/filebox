@@ -111,7 +111,7 @@ WantedBy=multi-user.target
 
 ```bash
 curl -s http://127.0.0.1:3000/api/health
-# {"hub":{"status":"ok","uptime_sec":…,"version":"2.4.0"}}
+# {"hub":{"status":"ok","uptime_sec":…,"version":"2.5.0"}}
 ```
 
 浏览器打开 Hub URL，应看到登录页：

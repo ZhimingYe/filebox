@@ -59,4 +59,4 @@ Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ l
 4. [How to use](/features/browse) — feature guides with real UI screenshots  
 5. [Ops](/ops/hub) — HTTPS, updates, Office, FAQ  
 
-Docs align with **v2.4.0** (Hub + Agent). Screenshots on this site were captured from a live Hub + Agent session — the same product you get after deploying.
+Docs align with **v2.5.0** (Hub + Agent). Screenshots on this site were captured from a live Hub + Agent session — the same product you get after deploying.
