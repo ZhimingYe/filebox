@@ -3,9 +3,10 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import * as api from '../api/client';
-import { useIsMobile } from '../state/useIsMobile';
+import { useTerminalMobile, useTerminalViewport } from '../state/useTerminalLayout';
 import { c, radius, font } from '../theme';
 import { TerminalInputQueue } from '../lib/terminalInput';
+import { installTerminalTouchScroll } from '../lib/terminalTouch';
 
 interface Props {
   ticket: string;
@@ -92,6 +93,8 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
   const cancelOutputRef = useRef<(() => void) | null>(null);
   const sendFrameRef = useRef<((frame: object) => boolean) | null>(null);
   const resizeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const touchScrollRef = useRef<ReturnType<typeof installTerminalTouchScroll> | null>(null);
+  const lastResizeRef = useRef('');
   // Sticky modifier keys (aux toolbar): armed state lives in refs so the
   // onData closure always sees the current value; useState mirrors it for
   // the button highlight.
@@ -99,7 +102,13 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
   const altRef = useRef(false);
   const [ctrlArmed, setCtrlArmed] = useState(false);
   const [altArmed, setAltArmed] = useState(false);
-  const isMobile = useIsMobile();
+  const isMobile = useTerminalMobile();
+  const [focused, setFocused] = useState(false);
+  const viewport = useTerminalViewport(true);
+  const [textInput, setTextInput] = useState(false);
+  const [draft, setDraft] = useState('');
+  const composingRef = useRef(false);
+  const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const [status, setStatus] = useState<ConnStatus>('connecting');
   const [notice, setNotice] = useState<string | null>(null);
   const [pendingInputBytes, setPendingInputBytes] = useState(0);
@@ -109,10 +118,44 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
   const mobileRef = useRef(isMobile);
   useEffect(() => { mobileRef.current = isMobile; }, [isMobile]);
 
-  const sendInput = (s: string) => {
-    if (confirmedRef.current && inputRef.current && !inputRef.current.enqueue(s)) {
+  const sendInput = (s: string): boolean => {
+    if (!confirmedRef.current || !inputRef.current) return false;
+    if (!inputRef.current.enqueue(s)) {
       setNotice('Input queue is full (2 MiB). This input was not sent; wait for the current input to finish and retry a smaller paste.');
+      return false;
     }
+    return confirmedRef.current;
+  };
+
+  const sendResize = () => {
+    const term = termRef.current;
+    if (!term || !confirmedRef.current) return;
+    const size = `${term.cols}x${term.rows}`;
+    if (lastResizeRef.current !== size && sendFrameRef.current?.({ type: 'resize', cols: term.cols, rows: term.rows })) {
+      lastResizeRef.current = size;
+    }
+  };
+
+  const clearModifiers = () => {
+    ctrlRef.current = false; altRef.current = false;
+    setCtrlArmed(false); setAltArmed(false);
+  };
+
+  const sendUserInput = (text: string) => {
+    touchScrollRef.current?.stop();
+    if (!sendInput(text)) return false;
+    termRef.current?.scrollToBottom();
+    return true;
+  };
+
+  const insertDraft = () => {
+    touchScrollRef.current?.stop();
+    if (composingRef.current || !draft || !termRef.current) return;
+    // Same newline/bracketed-paste rules as xterm.paste, but keep the draft
+    // if our bounded queue rejects it. Never apply sticky keys to pasted text.
+    const text = draft.replace(/\r?\n/g, '\r');
+    const data = termRef.current.modes.bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text;
+    if (sendUserInput(data)) { clearModifiers(); setDraft(''); }
   };
 
   /** Apply armed Ctrl/Alt modifiers to one input chunk, then disarm. */
@@ -121,6 +164,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
       const ch = d.toLowerCase();
       const code = ch.charCodeAt(0);
       if (code >= 97 && code <= 122) d = String.fromCharCode(code - 96); // a-z → ^A-^Z
+      else if (ch === ' ' || ch === '@') d = '\x00';
       else if (ch === '[') d = '\x1b';
       else if (ch === '\\') d = '\x1c';
       else if (ch === ']') d = '\x1d';
@@ -140,8 +184,11 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     const term = termRef.current;
     if (!term) return;
     const letter = { up: 'A', down: 'B', right: 'C', left: 'D' }[dir];
+    const modifier = 1 + (altRef.current ? 2 : 0) + (ctrlRef.current ? 4 : 0);
+    clearModifiers();
     // Respect application-cursor-keys mode (vim, less, …).
-    sendInput(term.modes.applicationCursorKeysMode ? `\x1bO${letter}` : `\x1b[${letter}`);
+    sendUserInput(modifier > 1 ? `\x1b[1;${modifier}${letter}`
+      : term.modes.applicationCursorKeysMode ? `\x1bO${letter}` : `\x1b[${letter}`);
   };
 
   // Terminal lifecycle: created once per (agent, ticket), disposed on unmount.
@@ -183,9 +230,21 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     // remote shell push text onto the user's clipboard.
     term.parser.registerOscHandler(52, () => true);
     term.open(el);
+    if (term.textarea) {
+      // xterm renders small glyphs, but its native input must stay >=16px to
+      // avoid iOS focus zoom. Do not disable page zoom for accessibility.
+      term.textarea.style.fontSize = '16px';
+      term.textarea.setAttribute('autocapitalize', 'off');
+      term.textarea.setAttribute('autocorrect', 'off');
+      term.textarea.spellcheck = false;
+      term.textarea.setAttribute('aria-label', 'Terminal input');
+    }
     termRef.current = term;
     fitRef.current = fit;
+    const touchScroll = installTerminalTouchScroll(el, term);
+    touchScrollRef.current = touchScroll;
     const safeFit = () => {
+      if (el.clientWidth <= 0 || el.clientHeight <= 0) return;
       try { fit.fit(); } catch { /* hidden container — next resize refits */ }
     };
     safeFit();
@@ -193,12 +252,6 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     // the user asked for it. They tap the terminal to type.
     if (!mobileRef.current) term.focus();
 
-    const sendResize = () => {
-      const ws = wsRef.current;
-      if (confirmedRef.current && ws && ws.readyState === WebSocket.OPEN) {
-        sendFrameRef.current?.({ type: 'resize', cols: term.cols, rows: term.rows });
-      }
-    };
     const debouncedRefit = () => {
       if (resizeTimer.current) clearTimeout(resizeTimer.current);
       resizeTimer.current = setTimeout(() => {
@@ -212,6 +265,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     // changing the container right away — refit on visualViewport changes too.
     const vv = window.visualViewport;
     vv?.addEventListener('resize', debouncedRefit);
+    window.addEventListener('resize', debouncedRefit);
 
     const dataSub = term.onData((d) => {
       if (confirmedRef.current) sendInput(applyStickyModifiers(d));
@@ -219,7 +273,10 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
 
     return () => {
       observer.disconnect();
+      touchScroll.dispose();
+      touchScrollRef.current = null;
       vv?.removeEventListener('resize', debouncedRefit);
+      window.removeEventListener('resize', debouncedRefit);
       dataSub.dispose();
       if (resizeTimer.current) clearTimeout(resizeTimer.current);
       term.dispose();
@@ -231,6 +288,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
   useEffect(() => {
     if (termRef.current) termRef.current.options.fontSize = isMobile ? 12 : 13;
     try { fitRef.current?.fit(); } catch { /* ResizeObserver refits later. */ }
+    sendResize();
   }, [isMobile]);
 
   // Defer the handshake one tick so StrictMode cleanup cannot spend a ticket.
@@ -238,10 +296,12 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     const term = termRef.current;
     if (!term) return;
     confirmedRef.current = false;
+    lastResizeRef.current = '';
     setStatus('connecting');
     setNotice(null);
     setPendingInputBytes(0);
     setOutputSlow(false);
+    clearModifiers();
     let cleanupSocket = () => {};
     const startTimer = window.setTimeout(() => {
     const ws = new WebSocket(
@@ -271,14 +331,20 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
         ws.close();
       }
     }, 35_000);
-    const livenessTimer = window.setInterval(() => {
+    const checkLiveness = () => {
       if (!ended && confirmedRef.current && Date.now() - lastReceived >= 60_000) {
         stopConnection();
         setNotice('Connection lost. Enter a fresh code to resume the shell.');
         setStatus('closed');
         ws.close();
       }
-    }, 5000);
+    };
+    const onReturn = () => { if (document.visibilityState === 'visible') checkLiveness(); };
+    const livenessTimer = window.setInterval(checkLiveness, 5000);
+    // Mobile browsers can suspend timers while switching apps / locking.
+    document.addEventListener('visibilitychange', onReturn);
+    window.addEventListener('pageshow', onReturn);
+    window.addEventListener('focus', onReturn);
     const clearConnectTimers = () => {
       window.clearTimeout(slowTimer);
       window.clearTimeout(deadline);
@@ -295,6 +361,10 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
       clearConnectTimers();
       clearOutputTimers();
       window.clearInterval(livenessTimer);
+      document.removeEventListener('visibilitychange', onReturn);
+      window.removeEventListener('pageshow', onReturn);
+      window.removeEventListener('focus', onReturn);
+      clearModifiers();
       input.dispose();
       if (inputRef.current === input) inputRef.current = null;
       cancelInputRef.current = null;
@@ -364,7 +434,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
       setStatus('open');
       setNotice(null);
       clearConnectTimers();
-      sendFrame({ type: 'resize', cols: term.cols, rows: term.rows });
+      sendResize();
     };
     ws.onmessage = (ev) => {
       if (ended || wsRef.current !== ws) return;
@@ -479,13 +549,46 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
   });
 
   return (
-    <div style={styles.wrap}>
+    <div data-terminal-pane style={{ ...styles.wrap, ...(focused ? { ...styles.focused, ...viewport } : null) }}>
+      <div onPointerDownCapture={() => touchScrollRef.current?.stop()}
+        style={{ ...styles.controls, ...(isMobile ? styles.controlsMobile : null) }}>
+        <span style={styles.agentName} title={agent.name}>{agent.name}</span>
+        <button type="button" style={keyBtnStyle()} aria-pressed={textInput} onClick={() => {
+          clearModifiers(); composingRef.current = false; setTextInput(value => !value);
+        }}>Text input</button>
+        <button type="button" style={keyBtnStyle()} disabled={status !== 'open'} onClick={() => {
+          if (textInput) draftRef.current?.focus(); else termRef.current?.focus();
+        }}>Keyboard</button>
+        <button type="button" style={keyBtnStyle()} onClick={() => {
+          touchScrollRef.current?.stop(); termRef.current?.scrollToBottom();
+        }}>Latest</button>
+        <button type="button" style={keyBtnStyle()} aria-pressed={focused} onClick={() => setFocused(value => !value)}>
+          {focused ? 'Exit focus' : 'Focus'}
+        </button>
+      </div>
       <div ref={containerRef} style={{ ...styles.termHost, visibility: status === 'connecting' ? 'hidden' : 'visible', ...(isMobile ? styles.termHostMobile : null) }} />
+      {textInput && (
+        <div style={styles.composer}>
+          <textarea ref={draftRef} aria-label="Terminal text to insert" placeholder="Type or paste text, then Insert"
+            rows={1} maxLength={65536} value={draft} style={styles.draft}
+            autoCapitalize="off" autoCorrect="off" spellCheck={false}
+            onCompositionStart={() => { composingRef.current = true; }}
+            onCompositionEnd={() => { composingRef.current = false; }}
+            onChange={event => setDraft(event.target.value)} />
+          <button type="button" style={keyBtnStyle()} disabled={status !== 'open' || !draft}
+            onPointerDown={event => event.preventDefault()} onClick={insertDraft}>Insert</button>
+          <span style={styles.composerHint}>Insert adds no Enter. Pasted line breaks may run commands.</span>
+        </div>
+      )}
       {/* Aux keys for keyboards without Esc/Tab/Ctrl/arrows (mobile), and a
           convenience row on desktop. Ctrl/Alt are sticky one-shot modifiers. */}
-      <div style={{ ...styles.toolbar, ...(isMobile ? styles.toolbarMobile : null) }}>
-        <KeyButton label="Esc" style={keyBtnStyle()} onPress={() => sendInput('\x1b')} />
-        <KeyButton label="Tab" style={keyBtnStyle()} onPress={() => sendInput('\t')} />
+      <fieldset disabled={status !== 'open'} aria-label="Terminal keys"
+        onPointerDownCapture={() => touchScrollRef.current?.stop()} onKeyDownCapture={() => touchScrollRef.current?.stop()}
+        style={{ ...styles.toolbar,
+        ...(isMobile ? styles.toolbarMobile : null),
+        ...(isMobile && viewport.width >= 600 ? { gridTemplateColumns: 'repeat(12, minmax(0, 1fr))' } : null) }}>
+        <KeyButton label="Esc" style={keyBtnStyle()} onPress={() => sendUserInput(applyStickyModifiers('\x1b'))} />
+        <KeyButton label="Tab" style={keyBtnStyle()} onPress={() => sendUserInput(applyStickyModifiers('\t'))} />
         <KeyButton
           label="Ctrl"
           ariaPressed={ctrlArmed}
@@ -504,14 +607,19 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
             setAltArmed(altRef.current);
           }}
         />
-        <span style={styles.toolbarGap} />
-        <KeyButton label="←" style={keyBtnStyle()} onPress={() => sendArrow('left')} />
-        <KeyButton label="↑" style={keyBtnStyle()} onPress={() => sendArrow('up')} />
-        <KeyButton label="↓" style={keyBtnStyle()} onPress={() => sendArrow('down')} />
-        <KeyButton label="→" style={keyBtnStyle()} onPress={() => sendArrow('right')} />
-      </div>
+        <KeyButton label="Ctrl+C" style={keyBtnStyle()} onPress={() => { clearModifiers(); sendUserInput('\x03'); }} />
+        <KeyButton label="⌫" ariaLabel="Backspace" style={keyBtnStyle()} onPress={() => sendUserInput(applyStickyModifiers('\x7f'))} />
+        <KeyButton label="Enter" style={keyBtnStyle()} onPress={() => sendUserInput(applyStickyModifiers('\r'))} />
+        <KeyButton label="Hide" ariaLabel="Hide keyboard" style={keyBtnStyle()} onPress={() => {
+          termRef.current?.blur(); draftRef.current?.blur();
+        }} />
+        <KeyButton label="←" ariaLabel="Arrow left" style={keyBtnStyle()} onPress={() => sendArrow('left')} />
+        <KeyButton label="↑" ariaLabel="Arrow up" style={keyBtnStyle()} onPress={() => sendArrow('up')} />
+        <KeyButton label="↓" ariaLabel="Arrow down" style={keyBtnStyle()} onPress={() => sendArrow('down')} />
+        <KeyButton label="→" ariaLabel="Arrow right" style={keyBtnStyle()} onPress={() => sendArrow('right')} />
+      </fieldset>
       {(status !== 'open' || notice || pendingInputBytes > 0 || outputSlow) && (
-        <div style={styles.footer}>
+        <div style={{ ...styles.footer, ...(isMobile ? styles.footerMobile : null) }}>
           <span role="status" style={styles.footerText}>
             {notice ?? (outputSlow ? 'Terminal output is taking longer to display…' : pendingInputBytes > 0 ? `Sending input… ${pendingInputBytes.toLocaleString()} bytes remaining.` : status === 'connecting' ? 'Connecting…' : 'Disconnected.')}
           </span>
@@ -540,17 +648,20 @@ function KeyButton({
   style,
   onPress,
   ariaPressed,
+  ariaLabel,
 }: {
   label: string;
   style: React.CSSProperties;
   onPress: () => void;
   ariaPressed?: boolean;
+  ariaLabel?: string;
 }) {
   return (
     <button
       type="button"
       style={style}
       aria-pressed={ariaPressed}
+      aria-label={ariaLabel}
       onPointerDown={(e) => e.preventDefault()}
       onClick={onPress}
     >
@@ -560,6 +671,17 @@ function KeyButton({
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  focused: {
+    position: 'fixed', zIndex: 300, borderRadius: 0,
+    padding: 'env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)',
+  },
+  controls: { display: 'flex', flexShrink: 0, gap: 6, padding: '4px 8px', alignItems: 'center' },
+  controlsMobile: { gap: 4, padding: '2px 4px' },
+  agentName: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: c.bgSubtle, fontSize: 12 },
+  composer: { display: 'flex', flexWrap: 'wrap', flexShrink: 0, gap: 4, padding: '4px 6px', alignItems: 'center' },
+  draft: { flex: 1, minWidth: 0, resize: 'none', maxHeight: 80, padding: 8, fontSize: 16, fontFamily: font.mono,
+    border: `1px solid ${c.border}`, borderRadius: radius.sm, background: c.bg, color: c.text },
+  composerHint: { flexBasis: '100%', color: c.bgSubtle, fontSize: 11, lineHeight: 1.3 },
   wrap: {
     display: 'flex',
     flexDirection: 'column',
@@ -574,6 +696,7 @@ const styles: Record<string, React.CSSProperties> = {
   termHost: {
     flex: '1 1 auto',
     minHeight: 0,
+    overflow: 'hidden',
     padding: '8px 4px 4px 10px',
     boxSizing: 'border-box',
   },
@@ -582,6 +705,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   toolbar: {
     display: 'flex',
+    flexShrink: 0,
+    minWidth: 0,
+    margin: 0,
+    border: 'none',
     alignItems: 'center',
     gap: 6,
     padding: '4px 10px',
@@ -593,11 +720,10 @@ const styles: Record<string, React.CSSProperties> = {
     overflowX: 'auto',
   },
   toolbarMobile: {
-    padding: '6px 8px',
-    gap: 8,
-  },
-  toolbarGap: {
-    flex: '1 1 auto',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
+    padding: '4px',
+    gap: 4,
   },
   keyBtn: {
     flexShrink: 0,
@@ -620,30 +746,32 @@ const styles: Record<string, React.CSSProperties> = {
     color: c.onAccent,
   },
   keyBtnMobile: {
-    minWidth: 40,
-    minHeight: 36,
-    fontSize: 13,
+    minWidth: 44,
+    minHeight: 44,
+    padding: '2px 3px',
+    fontSize: 12,
   },
   footer: {
     display: 'flex',
+    flexShrink: 0,
     alignItems: 'center',
     gap: 10,
     padding: '6px 12px',
     borderTop: `1px solid ${c.border}40`,
     background: c.text,
   },
+  footerMobile: { flexWrap: 'wrap', gap: 6, padding: 8, maxHeight: '40%', overflowY: 'auto' },
   footerText: {
     flex: '1 1 auto',
     minWidth: 0,
     fontSize: 12,
     fontFamily: font.sans,
     color: c.textFaint,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
+    overflowWrap: 'anywhere',
   },
   reconnectBtn: {
     flexShrink: 0,
+    minHeight: 44,
     padding: '4px 12px',
     borderRadius: radius.sm,
     border: 'none',

@@ -400,6 +400,29 @@ never stop an unrelated Hub or Agent during a smoke test.
 
 ---
 
+### Mobile terminal verification
+
+Use an isolated Hub/Agent and real PTY. Test 320px/390px portrait, a coarse-pointer
+landscape viewport, and a reduced visible height representing the soft keyboard.
+Opening Focus, rotating, opening Text input, and returning to the normal layout
+must retain the same socket/session. Check `stty size` after resizing settles.
+
+Generate bounded output (`printf 'SCROLL-%s\n' {1..300}` in bash/zsh), then swipe
+down to older history and up toward newer output. Repeat while a bounded loop
+prints new lines: the history view must stay back until Latest or keyboard input.
+Check less or another alternate-screen application separately: swipes delegate
+to xterm's wheel semantics and must not keep sending after release. Test reduced
+motion, pinch zoom, a new touch stopping inertia, and leaving the view mid-swipe.
+
+Check native IME composition and multiline paste, queue rejection, touch keys
+retaining keyboard focus, and readable reconnect errors after an app switch.
+Browser device emulation covers layout and synthetic touch events, not a real
+iOS/Android keyboard, OS suspension, or low-end phone performance; those need
+physical-device checks. During performance sampling, observe frame gaps/long
+tasks while scrolling and receiving output, rather than an idle screen alone.
+
+Regression coverage: `npm --prefix frontend test -- TerminalPane.test.tsx TerminalView.test.tsx terminalTouch.test.ts`.
+
 ## 3. Adding roots and collections via API
 
 Roots and collections are normally managed from the UI. For automation:
