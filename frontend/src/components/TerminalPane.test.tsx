@@ -368,7 +368,7 @@ it.each(['resize', 'pong'] as const)('reports a %s send failure without an uncau
 });
 
 async function press(label: string) {
-  const button = [...container.querySelectorAll('button')].find(b => b.textContent === label)!;
+  const button = [...container.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === label || b.textContent === label)!;
   expect(button, label).toBeDefined();
   await act(async () => button.click());
 }
@@ -423,7 +423,7 @@ it('keeps touch controls on wide coarse-pointer screens', async () => {
   const query = Object.assign(new EventTarget(), { matches: true });
   vi.stubGlobal('matchMedia', () => query);
   await resume();
-  expect(container.querySelector<HTMLElement>('fieldset')!.style.display).toBe('grid');
+  expect(container.querySelector<HTMLElement>('fieldset')!.style.display).toBe('flex');
   expect(mocks.focus).not.toHaveBeenCalled();
 });
 it.each([false, true])('inserts native IME text once with bracketed paste mode %s, without appending Enter', async (bracketed) => {
@@ -481,6 +481,7 @@ it('keeps a healthy socket when returning from a short app switch', async () => 
 });
 
 it('consumes Ctrl/Alt once for modified arrows and supports Ctrl+Space', async () => {
+  mocks.mobile = true;
   const socket = await resume();
   await press('Ctrl'); await press('Alt'); await press('→');
   expect(inputs(socket).map(f => atob(f.data))).toEqual(['\x1b[1;7C']);
@@ -521,6 +522,7 @@ it('can reopen the text field after an interrupted composition', async () => {
   expect(inputs(socket)).toHaveLength(1);
 });
 it('returns to the prompt on explicit input, but never pulls history for output or terminal replies', async () => {
+  mocks.mobile = true;
   const socket = await resume();
   await output(socket, 'continuing output');
   await act(async () => mocks.data?.('\x1b[1;1R'));
@@ -528,4 +530,31 @@ it('returns to the prompt on explicit input, but never pulls history for output 
   await press('Enter'); expect(mocks.bottom).toHaveBeenCalledTimes(1);
   await press('Text input'); await draft('printf hello'); await press('Insert');
   expect(mocks.bottom).toHaveBeenCalledTimes(2);
+});
+
+it('toggles desktop auxiliary keys without remounting or reauthorizing the terminal', async () => {
+  const socket = await resume();
+  const creations = mocks.created.mock.calls.length;
+  expect(container.querySelector('fieldset')).toBeNull();
+  await press('Terminal keys');
+  expect(container.querySelector('fieldset')).not.toBeNull();
+  await press('Ctrl');
+  await press('Terminal keys');
+  expect(container.querySelector('fieldset')).toBeNull();
+  await act(async () => mocks.data?.('a'));
+  expect(atob(inputs(socket).at(-1)!.data)).toBe('a');
+  expect(mocks.created).toHaveBeenCalledTimes(creations);
+  expect(Socket.sockets).toHaveLength(1);
+});
+
+it('clears mobile sticky modifiers when resizing hides the auxiliary keys', async () => {
+  mocks.mobile = true;
+  const socket = await resume();
+  await press('Ctrl'); await press('Alt');
+  mocks.mobile = false;
+  await act(async () => root.render(pane('shell')));
+  expect(container.querySelector('fieldset')).toBeNull();
+  await act(async () => mocks.data?.('c'));
+  expect(atob(inputs(socket).at(-1)!.data)).toBe('c');
+  expect(Socket.sockets).toHaveLength(1);
 });

@@ -36,11 +36,13 @@ export FILEBOX_AGENT_TERMINAL_TOTP_SECRET="BASE32SECRET……"  # ≥16 bytes af
 
 ## Phones and tablets
 
+The light toolbar uses icons with accessible names and desktop hover labels: text entry, keyboard, latest output, and focus. On desktop, **Terminal keys** toggles the optional auxiliary row. **New session** uses a plus icon on phones.
+
 - **Focus** expands the existing terminal into the visible screen, including above the software keyboard. **Exit focus** restores navigation without reconnecting. Touch controls remain available in landscape and on tablets.
 - **Keyboard** focuses the terminal (or the text field); **Hide** dismisses the keyboard. **Latest** returns to the newest output without sending input.
 - Swipe the terminal to scroll history. New output does not pull a scrolled-back view to the bottom. History scrolling has bounded momentum (disabled with reduced motion); a new touch or keyboard action stops it. Full-screen terminal apps receive xterm's wheel behavior without momentum after release. Pinch zoom remains available.
 - **Text input** opens a native field for Chinese/other IMEs and paste. **Insert** sends the completed text, without adding Enter. Press the separate **Enter** key to submit a command. Existing pasted line breaks can execute commands when the shell does not support bracketed paste. Drafts remain in this pane if sending is rejected; copy them before leaving the view or reauthorizing.
-- Esc, Tab, Ctrl, Alt, Ctrl+C, Backspace, Enter and arrows have touch targets. Ctrl/Alt apply once; arrows respect application cursor mode used by terminal programs.
+- Esc, Tab, Ctrl, Alt, Ctrl+C, Backspace, Enter and arrows sit in a compact single row. Swipe the key strip horizontally to reach the remaining keys. Controls use the same compact 28px size as the rest of the app; there is no extra invisible touch padding. Ctrl/Alt apply once; arrows respect application cursor mode used by terminal programs.
 - Session lists scroll independently. When a connection is lost after an app switch or screen lock, Filebox shows the reason and requires a fresh Agent code to resume; it never automatically resends input.
 
 ## Session lifecycle

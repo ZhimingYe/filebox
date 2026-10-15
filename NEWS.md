@@ -5,6 +5,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 ## Unreleased
 
 ### Improved
+- **Terminal visual consistency** — session actions and terminal controls now use the same compact, light SVG toolbar style as the file browser. Desktop auxiliary keys stay collapsed until requested; phones use one horizontally scrollable row with compact 28px controls, instead of two stretched rows. Text entry and connection notices use the shared light surfaces.
 - **Herdr workspace layout** — one compact window header, a quiet window list, and an integrated message composer match the existing Filebox controls. Secondary display options and disable controls live in Settings; additional remote keys use a dismissible keyboard panel. Removed the remote-scroll button and unsupported navigation presets.
 - **Herdr refresh cadence** — output refreshes every minute, independently per window, while status checks stay at 30 seconds. Manual refresh reads the latest snapshot and moves only the local output view to its end.
 

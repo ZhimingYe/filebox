@@ -36,6 +36,30 @@ export function IconChevronRight({ style }: SvgProps) {
   return <Svg style={style}><polyline points="6 3 11 8 6 13" /></Svg>;
 }
 
+export function IconPlus({ style }: SvgProps) {
+  return <Svg style={style}><path d="M8 3v10M3 8h10" /></Svg>;
+}
+
+export function IconKeyboard({ style }: SvgProps) {
+  return <Svg style={style}><rect x="1.5" y="3.5" width="13" height="9" rx="1.5" /><path d="M4 6h.01M6.7 6h.01M9.3 6h.01M12 6h.01M4 8.5h.01M6.7 8.5h.01M9.3 8.5h.01M12 8.5h.01M5 10.5h6" /></Svg>;
+}
+
+export function IconTextInput({ style }: SvgProps) {
+  return <Svg style={style}><path d="M2.5 4.5v-1h7v1M6 3.5v9M4 12.5h4M12 3v10M10.5 3h3M10.5 13h3" /></Svg>;
+}
+
+export function IconScrollBottom({ style }: SvgProps) {
+  return <Svg style={style}><path d="M8 2v8M4.5 7 8 10.5 11.5 7M3 13.5h10" /></Svg>;
+}
+
+export function IconExpand({ style }: SvgProps) {
+  return <Svg style={style}><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" /></Svg>;
+}
+
+export function IconCollapse({ style }: SvgProps) {
+  return <Svg style={style}><path d="M6 2.5V6H2.5M13.5 6H10V2.5M10 13.5V10h3.5M2.5 10H6v3.5" /></Svg>;
+}
+
 export function IconFolder({ style }: SvgProps) {
   return (
     <Svg style={style}>
