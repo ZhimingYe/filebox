@@ -167,8 +167,9 @@ impl<'a> ConnectionSession<'a> {
         if let Ok(map) = self.runtime.search_cancels.lock() {
             for flag in map.values() { flag.store(true, Ordering::Relaxed); }
         }
-        if let Ok(map) = self.runtime.herdr_cancels.lock() {
-            for flag in map.values() { flag.store(true, Ordering::Relaxed); }
+        if let Ok(mut map) = self.runtime.herdr_cancels.lock() {
+            // Aborted tasks cannot reach their normal removal below handle().
+            for (_, flag) in map.drain() { flag.store(true, Ordering::Relaxed); }
         }
         if let Some(runtime) = &self.runtime.office_runtime { runtime.cancel_all(); }
         self.temp_writers.clear();

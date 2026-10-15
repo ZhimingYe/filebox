@@ -383,6 +383,9 @@ async fn run_cli(
         .spawn()
         .map_err(|e| format!("herdr_unavailable: failed to spawn herdr: {e}"))?;
     let pid = child.id().unwrap_or(0);
+    // Connection teardown aborts the entire future, bypassing the select arms.
+    // kill_on_drop only kills the direct child; also reap its helper group.
+    let mut group_guard = HerdrProcessGroup(pid);
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let out_fut = drain_capped(stdout, HERDR_OUTPUT_MAX_BYTES);
@@ -408,13 +411,9 @@ async fn run_cli(
                 stderr_buf = Some(buf);
             }
             _ = &mut deadline, if status.is_none() || stdout_buf.is_none() || stderr_buf.is_none() => {
-                kill_herdr_group(pid);
-                let _ = child.start_kill();
                 return Err("herdr_timeout".to_string());
             }
             _ = wait_until_cancel(cancel) => {
-                kill_herdr_group(pid);
-                let _ = child.start_kill();
                 return Err("cancelled".to_string());
             }
         }
@@ -422,6 +421,7 @@ async fn run_cli(
             break;
         }
     }
+    group_guard.0 = 0;
     let code = status.unwrap();
     Ok(CliOutput {
         ok: code.success(),
@@ -448,6 +448,14 @@ async fn drain_capped(pipe: Option<impl tokio::io::AsyncRead + Unpin>, cap: usiz
         }
     }
     kept
+}
+
+struct HerdrProcessGroup(u32);
+
+impl Drop for HerdrProcessGroup {
+    fn drop(&mut self) {
+        kill_herdr_group(self.0);
+    }
 }
 
 fn kill_herdr_group(pid: u32) {
@@ -984,5 +992,28 @@ exit 1
         .unwrap_err();
         assert_eq!(err, "herdr_timeout");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn aborting_cli_task_stops_wrapper_helpers() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        // The helper outlives its wrapper unless teardown kills the group.
+        std::fs::write(&bin, "#!/bin/sh\n(touch \"$0.ready\"; sleep 1; touch \"$0.leaked\") &\nwait\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let task = tokio::spawn(async move {
+            run_cli(&bin, &[], Duration::from_secs(30), &AtomicBool::new(false)).await
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !dir.path().join("herdr.ready").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+        assert!(!dir.path().join("herdr.leaked").exists(), "helper survived connection teardown");
     }
 }

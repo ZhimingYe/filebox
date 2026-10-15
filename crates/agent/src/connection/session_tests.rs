@@ -84,6 +84,9 @@ async fn aborting_parent_cancels_work_and_closes_all_response_queues() {
     let mut runtime = AgentRuntime::for_tests(temp.path());
     let search_flag = Arc::new(AtomicBool::new(false));
     runtime.search_cancels.lock().unwrap().insert("search".into(), search_flag.clone());
+    let herdr_flag = Arc::new(AtomicBool::new(false));
+    let herdr_cancels = runtime.herdr_cancels.clone();
+    herdr_cancels.lock().unwrap().insert("herdr".into(), herdr_flag.clone());
     let cancellation = FsCancellation::new();
     let cancellation_for_task = cancellation.clone();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
@@ -101,6 +104,8 @@ async fn aborting_parent_cancels_work_and_closes_all_response_queues() {
     assert!(parent.await.unwrap_err().is_cancelled());
     assert!(cancellation.is_cancelled());
     assert!(search_flag.load(Ordering::Relaxed));
+    assert!(herdr_flag.load(Ordering::Relaxed));
+    assert!(herdr_cancels.lock().unwrap().is_empty());
     tokio::time::timeout(Duration::from_secs(1), async {
         term_tx.closed().await; fs_tx.closed().await;
         while stats_admission.available_permits() < 8 { tokio::task::yield_now().await; }

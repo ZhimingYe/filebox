@@ -73,7 +73,7 @@ pub async fn herdr_handler(
         return error_response(
             StatusCode::NOT_IMPLEMENTED,
             "unsupported",
-            "This agent does not have Herdr installed — install herdr on the backend and reconnect",
+            "Herdr is not enabled on this agent — install herdr on the backend and restart the Filebox agent",
             false,
         );
     }
