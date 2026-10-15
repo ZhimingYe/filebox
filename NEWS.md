@@ -4,6 +4,10 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+### Improved
+- **Terminal touch scrolling** — finger swipes now move xterm's custom history viewport. Scroll work is coalesced to one animation-frame update, with bounded local momentum and reduced-motion support; terminal applications use the existing wheel path without remote-input momentum. Viewport updates and unchanged PTY resizes are deduplicated.
+- **Mobile terminal** — compact, scrollable session controls; touch-sized auxiliary keys in portrait and landscape; explicit keyboard show/hide and jump-to-latest controls. Focus mode follows the visible viewport above the soft keyboard without recreating the shell connection. Native text entry supports IME composition and bounded paste, preserving drafts on queue rejection; Insert does not append Enter. Disconnection reasons wrap, and returning from a suspended browser immediately checks for a stale connection before asking for a fresh code to resume.
+
 ## v2.3.0
 
 ### Added
