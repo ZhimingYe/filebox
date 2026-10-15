@@ -32,6 +32,19 @@ pub struct HerdrClient {
 
 impl HerdrClient {
     pub async fn probe() -> Option<Self> {
+        // Operator-owned hard switch. Check before path discovery or --version;
+        // a disabled integration never creates a client or advertises capability.
+        match herdr_enabled(std::env::var_os("FILEBOX_AGENT_HERDR_ENABLED").as_deref()) {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::info!("Herdr integration disabled by FILEBOX_AGENT_HERDR_ENABLED");
+                return None;
+            }
+            Err(()) => {
+                tracing::warn!("Invalid FILEBOX_AGENT_HERDR_ENABLED; Herdr integration disabled (use 0 or 1)");
+                return None;
+            }
+        }
         let bin = resolve_herdr_path()?;
         match probe_version(&bin).await {
             Ok(version) => {
@@ -285,6 +298,15 @@ fn required_target(target: Option<String>) -> Result<String, String> {
     let trimmed = raw.trim().to_string();
     validate_target(&trimmed).map_err(|e| e.to_string())?;
     Ok(trimmed)
+}
+
+fn herdr_enabled(value: Option<&std::ffi::OsStr>) -> Result<bool, ()> {
+    let Some(value) = value else { return Ok(true); };
+    match value.to_str().ok_or(())?.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" | "yes" => Ok(true),
+        "0" | "false" | "off" | "no" => Ok(false),
+        _ => Err(()),
+    }
 }
 
 fn resolve_herdr_path() -> Option<PathBuf> {
@@ -684,6 +706,59 @@ fn parse_agent(v: &Value) -> Option<HerdrAgent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_herdr_switch_accepts_boolean_values_and_rejects_typos() {
+        use std::ffi::OsStr;
+        assert_eq!(herdr_enabled(None), Ok(true));
+        for value in ["0", "false", "OFF", " no "] {
+            assert_eq!(herdr_enabled(Some(OsStr::new(value))), Ok(false));
+        }
+        for value in ["1", "true", "ON", " yes "] {
+            assert_eq!(herdr_enabled(Some(OsStr::new(value))), Ok(true));
+        }
+        for value in ["", "flase", "2"] {
+            assert_eq!(herdr_enabled(Some(OsStr::new(value))), Err(()));
+        }
+    }
+
+    // Run probe in a separate test process so environment overrides cannot race
+    // with other tests. Both explicit binary and PATH discovery are covered.
+    #[cfg(unix)]
+    #[test]
+    fn disabled_probe_never_executes_an_installed_binary() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        let marker = dir.path().join("invoked");
+        std::fs::write(&bin, r#"#!/bin/sh
+printf x >> "$FILEBOX_TEST_HERDR_MARKER"
+echo 'herdr 9.9.9'
+"#).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for explicit in [false, true] {
+            for (value, expect_client) in [("0", false), ("false", false), ("flase", false), ("1", true)] {
+                let _ = std::fs::remove_file(&marker);
+                let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+                child.args(["--exact", "herdr::tests::probe_environment_child"])
+                    .env("FILEBOX_TEST_HERDR_CHILD", if expect_client { "enabled" } else { "disabled" })
+                    .env("FILEBOX_AGENT_HERDR_ENABLED", value)
+                    .env("FILEBOX_TEST_HERDR_MARKER", &marker).env("PATH", dir.path());
+                if explicit { child.env("FILEBOX_AGENT_HERDR", &bin); }
+                else { child.env_remove("FILEBOX_AGENT_HERDR"); }
+                let output = child.output().unwrap();
+                assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+                assert_eq!(marker.exists(), expect_client, "explicit={explicit}, value={value}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn probe_environment_child() {
+        let Ok(expected) = std::env::var("FILEBOX_TEST_HERDR_CHILD") else { return; };
+        assert_eq!(HerdrClient::probe().await.is_some(), expected == "enabled");
+    }
 
     #[test]
     fn parse_agent_list_json() {

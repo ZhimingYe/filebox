@@ -173,7 +173,7 @@ describe('HerdrView', () => {
     expect(button('Send').disabled).toBe(true);
     await act(async () => button('Down').click());
     expect(api.herdrCommand).toHaveBeenCalledWith(agent.id,
-      { op: 'send_keys', target: 'reviewer', keys: ['down'] }, expect.any(AbortSignal), 15_000);
+      { op: 'send_keys', target: 'w1:p2', keys: ['down'] }, expect.any(AbortSignal), 15_000);
   });
 
   it('keeps the mobile list until a tap and preserves output across resize', async () => {
@@ -324,10 +324,26 @@ describe('HerdrView', () => {
     await act(async () => send!.click());
     expect(api.herdrCommand).toHaveBeenCalledWith(
       agent.id,
-      expect.objectContaining({ op: 'prompt', target: 'reviewer', text: 'please continue' }),
+      expect.objectContaining({ op: 'prompt', target: 'w1:p2', text: 'please continue' }),
       expect.any(AbortSignal),
       25_000,
     );
+  });
+
+  it('drops drafts of replaced panes instead of resurrecting them when an id is reused', async () => {
+    let pane = listed.agents[0];
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
+      if (body.op === 'status') return { ...listed, agents: [pane] };
+      return { req_id: 'read', output: 'screen' };
+    });
+    await render();
+    await typePrompt('old pane draft');
+    pane = { ...listed.agents[0], pane_id: 'w1:p9' };
+    await act(async () => button('Refresh agent list').click());
+    expect(container.querySelector('textarea')!.value).toBe('');
+    pane = listed.agents[0];
+    await act(async () => button('Refresh agent list').click());
+    expect(container.querySelector('textarea')!.value).toBe('');
   });
 
   it('sends Esc from a tap target', async () => {
@@ -338,7 +354,7 @@ describe('HerdrView', () => {
     await act(async () => esc!.click());
     expect(api.herdrCommand).toHaveBeenCalledWith(
       agent.id,
-      { op: 'send_keys', target: 'reviewer', keys: ['esc'] },
+      { op: 'send_keys', target: 'w1:p2', keys: ['esc'] },
       expect.any(AbortSignal),
       15_000,
     );
@@ -426,6 +442,91 @@ describe('HerdrView', () => {
     expect(container.textContent).toContain('unsupported key');
     expect(container.textContent).not.toContain('Invalid search request');
   });
+});
+
+it('stopping a prompt wait in A leaves the selected B output request running', async () => {
+  let writerSignal: AbortSignal | undefined;
+  let finishWriter: (response: api.HerdrResponse) => void = () => {};
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body, signal) => {
+    if (body.op === 'status') return { ...listed, agents: [listed.agents[0],
+      { ...listed.agents[0], target: 'writer', name: 'writer', pane_id: 'w1:p3' }] };
+    if (body.op === 'prompt') return new Promise((_resolve, reject) => signal!.addEventListener('abort',
+      () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+    if (body.target === 'writer') {
+      writerSignal = signal;
+      return new Promise((resolve) => { finishWriter = resolve; });
+    }
+    return { req_id: 'r', output: 'reviewer output' };
+  });
+  await render();
+  await typePrompt('long running task');
+  await toggleSetting('Wait for result');
+  await act(async () => button('Send').click());
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>('aside button')]
+    .find((b) => b.textContent?.includes('writer'))!.click());
+  await act(async () => button('Stop waiting').click());
+  expect(writerSignal?.aborted).toBe(false);
+  await act(async () => finishWriter({ req_id: 'b', output: 'writer finished loading' }));
+  expect(container.querySelector('pre')!.textContent).toBe('writer finished loading');
+});
+
+it('a replacement pane does not inherit a draft or a late prompt success from its old name', async () => {
+  vi.useFakeTimers();
+  let pane = 'w1:p2';
+  let finish: (response: api.HerdrResponse) => void = () => {};
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
+    if (body.op === 'status') return { ...listed, agents: [{ ...listed.agents[0], pane_id: pane }] };
+    if (body.op === 'prompt') return new Promise((resolve) => { finish = resolve; });
+    return { req_id: 'r', output: `output ${pane}` };
+  });
+  await render(); await typePrompt('instructions intended for the old pane');
+  await act(async () => button('Send').click());
+  pane = 'w1:p99';
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(container.querySelector('textarea')!.value).toBe('');
+  await act(async () => finish({ req_id: 'late-success' }));
+  expect(container.textContent).not.toContain('Prompt sent.');
+  expect(container.querySelector('pre')!.textContent).toBe('output w1:p99');
+});
+
+it('does not retry busy input after the original pane is replaced', async () => {
+  vi.useFakeTimers();
+  let pane = 'w1:p2';
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
+    if (body.op === 'status') return { ...listed, agents: [{ ...listed.agents[0], pane_id: pane }] };
+    if (body.op === 'prompt') throw { error: 'agent_busy' };
+    return { req_id: 'r', output: `output ${pane}` };
+  });
+  await render();
+  await typePrompt('only for the original pane');
+  await act(async () => button('Send').click());
+  pane = 'w1:p99';
+  await act(async () => button('Refresh agent list').click());
+  await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+  const inputs = vi.mocked(api.herdrCommand).mock.calls.filter(([, body]) => body.op === 'prompt');
+  expect(inputs).toHaveLength(1);
+  expect(inputs[0][1].target).toBe('w1:p2');
+  expect(container.querySelector('textarea')!.disabled).toBe(false);
+  expect(container.textContent).not.toContain('Prompt sent.');
+});
+
+it('preserves an unsent draft through a temporary Herdr outage', async () => {
+  let unavailable = false;
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
+    if (body.op === 'status') {
+      if (unavailable) throw { error: 'herdr_unavailable' };
+      return listed;
+    }
+    return { req_id: 'r', output: 'latest output' };
+  });
+  await render();
+  await typePrompt('unsent work');
+  unavailable = true;
+  await act(async () => button('Refresh agent list').click());
+  expect(container.textContent).toMatch(/not running/i);
+  unavailable = false;
+  await act(async () => button('Refresh agent list').click());
+  expect(container.querySelector('textarea')!.value).toBe('unsent work');
 });
 
 it('invalidates snapshots when a named target is replaced by another pane', async () => {

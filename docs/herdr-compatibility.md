@@ -42,10 +42,11 @@ the released binary as well as the documentation.
 
 ## Attention reminders
 
-The App monitors all online Herdr-capable backends while the page is open,
+The App monitors enabled, online Herdr-capable backends while the page is open,
 including when browsing Files or another view. Background checks only call
-`agent list`, with at most two concurrent requests and 30 seconds between
-completed rounds. The active Herdr panel checks status every 30 seconds and supplies its results;
+`agent list`, with at most two concurrent requests and 30 seconds after each
+backend's completed check. Disabling or selecting one backend does not cancel
+another backend's checks or reset its cadence. The active Herdr panel checks status every 30 seconds and supplies its results;
 it is not polled a second time. Slow backends and browser timer throttling can
 increase notification delay. This is not an OS notification or a closed-page
 monitoring service.
@@ -58,7 +59,7 @@ unsupported Herdr clears reminders quietly. Other failures retain known question
 until a successful list resolves them. Later acknowledges one episode and Close acknowledges all current
 unread episodes. Dismissed reminders leave no banner or placeholder; the same
 episode stays quiet across polling and view changes until the page is reloaded.
-A resolved-then-blocked agent produces a fresh reminder. View navigates
+A resolved-then-blocked agent or a different pane reusing a name produces a fresh reminder. View navigates
 only on a user click and selects the affected coding agent.
 
 Herdr's screen detection can miss new question UI shapes and report idle. These
@@ -68,21 +69,42 @@ panel directs the user there rather than implying the question was answered.
 
 ## Refresh controls and compatibility limits
 
-Settings → Herdr and the panel's Disable Herdr button share a browser-local,
-persistent switch. Turning it off hides Herdr controls/reminders and aborts checks
-and outstanding panel waits across tabs of this browser. It does not stop Herdr,
-kill coding agents, or revoke input already submitted. Re-enable in Settings.
-If browser storage cannot be written, the switch still takes effect in memory
-for the current page. A later successful write or cross-tab preference change
-resumes using the persisted preference.
+The integration is controlled on each **Filebox Agent**, not in browser storage:
+
+```sh
+export FILEBOX_AGENT_HERDR_ENABLED=0
+# Restart the Filebox Agent with this environment.
+```
+
+This hard switch skips both executable discovery and `herdr --version`, creates no
+Herdr client, and advertises `capabilities.herdr=false`. It takes precedence over an
+explicit `FILEBOX_AGENT_HERDR` path and a working Herdr installation on PATH. The Hub
+rejects Herdr commands for that Agent, and even a direct Agent request cannot invoke
+the CLI. Frontend navigation and monitoring follow the reported capability; there
+is no browser setting or remote API that can re-enable it. Other Filebox Agents are
+unaffected. It does not stop independently running coding agents or the Herdr service.
+
+Unset or `1`/`true` preserves auto-detection. `0`/`false` disables it (`off`/`no` and
+`on`/`yes` are also accepted, case-insensitively). An invalid or empty value disables
+integration and logs a startup warning. To enable later, change the Agent environment
+and restart. Settings shows availability and the environment-variable instruction.
+
+Upgrade the Filebox Agent binary to a version supporting this variable; updating
+only the Hub/frontend cannot disable Herdr on an older Agent. The former browser
+preference is no longer read. If you previously disabled it in the browser, update
+and restart the relevant Agents with this environment variable before updating the
+Hub to preserve that opt-out.
 
 Each selected coding window has its own Refresh output button and auto-refresh
 switch in Herdr settings (1 minute by default; manual-only when off). Inactive windows are not
 polled. Switching back restores one of at most eight cached snapshots; settings
 and caches are scoped to the mounted panel. Manual list refresh does not read
 output unless the selected target has been replaced by a different pane. Cached
-snapshots and pending reads are bound to the pane identity, so reusing an agent
-name cannot restore an earlier pane's screen. Sending input refreshes its target
+snapshots, drafts, reminder acknowledgements, and input completion handling are
+bound to pane identity, so reusing an agent name cannot restore an earlier pane's
+state. Input uses the pane id when available and rechecks identity before queued
+dispatch or busy retry. Stopping a prompt wait leaves other windows' reads alone.
+Sending input refreshes its target
 once; completion changes only show a
 hint until the next output refresh. Status keeps running every 30 seconds during
 prompt waits. A bounded priority queue allows two requests, eight waiting entries,
