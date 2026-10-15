@@ -305,13 +305,13 @@ export function IconTerminal({ style }: SvgProps) {
   );
 }
 
-/** Three clustered panes — Herdr nav icon (a herd of coding agents). */
+/** Coding-agent face with an antenna, distinct from the remote terminal icon. */
 export function IconHerd({ style }: SvgProps) {
   return (
     <Svg style={style}>
-      <circle cx="5" cy="10.5" r="2.15" />
-      <circle cx="11" cy="10.5" r="2.15" />
-      <circle cx="8" cy="5.4" r="2.15" />
+      <rect x="3" y="5" width="10" height="8" rx="2" />
+      <path d="M8 2v3M6.5 2h3M1 8v2M15 8v2" />
+      <path d="M5.5 8v1M10.5 8v1M6 11h4" />
     </Svg>
   );
 }
