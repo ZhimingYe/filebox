@@ -35,7 +35,6 @@ import { CollectionPicker } from './components/CollectionPicker';
 import { NoAgentSelected } from './components/NoAgentSelected';
 import { TempTransferView } from './components/TempTransferView';
 import { TerminalView } from './components/TerminalView';
-import { useHerdrEnabled } from './hooks/useHerdrEnabled';
 import { HerdrView } from './components/HerdrView';
 import { HerdrAttention } from './components/HerdrAttention';
 import { useHerdrAttention, type HerdrAttention as HerdrNotice } from './hooks/useHerdrAttention';
@@ -548,9 +547,8 @@ export default function App() {
   const tempCapable = !!selectedAgent?.capabilities?.temp_upload && !!tempRootName;
   // Terminal nav entry is only meaningful on a terminal-capable agent.
   const terminalCapable = !!selectedAgent?.capabilities?.terminal;
-  const herdrEnabled = useHerdrEnabled();
-  const herdrCapable = herdrEnabled && !!selectedAgent?.capabilities?.herdr;
-  const herdrAttention = useHerdrAttention(agents, loggedIn === true && herdrEnabled,
+  const herdrCapable = !!selectedAgent?.capabilities?.herdr;
+  const herdrAttention = useHerdrAttention(agents, loggedIn === true,
     view === 'herdr' && herdrCapable ? selectedAgentId : null);
   const [herdrFocus, setHerdrFocus] = useState<{ backendId: string; target: string; nonce: number } | null>(null);
   const openHerdrNotice = (notice: HerdrNotice) => {
@@ -1401,7 +1399,7 @@ export default function App() {
                   ) : (
                     <div style={styles.transferUnsupported}>
                       <p style={styles.transferUnsupportedText}>
-                        {herdrEnabled ? 'Herdr is not installed on this backend.' : 'Herdr is disabled. Enable it in Settings.'}
+                        Herdr is unavailable on this backend. Check its installation and Agent configuration.
                       </p>
                     </div>
                   )}
@@ -1426,7 +1424,7 @@ export default function App() {
               )}
               {view === 'settings' && (
                 <div style={styles.secondaryView}>
-                  <AgentSettings agent={selectedAgent} onRefresh={refresh} />
+                  <AgentSettings key={selectedAgent.id} agent={selectedAgent} onRefresh={refresh} />
                 </div>
               )}
               {view === 'stats' && (

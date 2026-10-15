@@ -58,6 +58,16 @@ describe('Herdr attention monitoring', () => {
     await tick(); expect(current.notices).toEqual([]);
   });
 
+  it('does not transfer an acknowledgement to a replacement pane with the same name', async () => {
+    await render();
+    const oldId = current.notices[0].id;
+    act(() => current.acknowledge([oldId]));
+    vi.mocked(api.herdrCommand).mockResolvedValue({ ...response(), agents: [{ ...codingAgent, pane_id: 'w1:p99' }] });
+    await tick();
+    expect(current.notices[0].id).not.toBe(oldId);
+    expect(current.notices[0].acknowledged).toBe(false);
+  });
+
   it('retains questions through failures, ignores busy, and recovers after a successful list', async () => {
     await render();
     vi.mocked(api.herdrCommand).mockRejectedValue({ error: 'agent_busy' });
@@ -86,6 +96,20 @@ describe('Herdr attention monitoring', () => {
     await tick(); expect(api.herdrCommand).toHaveBeenCalledTimes(2);
     await act(async () => releases.shift()!());
     expect(api.herdrCommand).toHaveBeenCalledTimes(3);
+  });
+
+  it('switches the active panel without cancelling an unrelated backend check', async () => {
+    const pending: { id: string; signal: AbortSignal; finish: (r: api.HerdrResponse) => void }[] = [];
+    vi.mocked(api.herdrCommand).mockImplementation((id, _body, signal) => new Promise((resolve) => {
+      pending.push({ id, signal: signal!, finish: resolve });
+    }));
+    const agents = [backend, { ...backend, id: 'b2' }];
+    await render({ agents });
+    await render({ agents, active: 'b1' });
+    expect(pending[0].signal.aborted).toBe(true);
+    expect(pending[1].signal.aborted).toBe(false);
+    await act(async () => pending[1].finish(response()));
+    expect(current.notices.map((n) => n.backendId)).toEqual(['b2']);
   });
 
   it('aborts obsolete checks, drops removed backends, and clears on logout', async () => {

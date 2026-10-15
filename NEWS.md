@@ -4,6 +4,12 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+## v2.6.0
+
+### Fixed
+- **Agent-side Herdr kill switch** — `FILEBOX_AGENT_HERDR_ENABLED=0` skips Herdr discovery and version probing, advertises no Herdr capability, and prevents CLI requests on that Agent. It overrides explicit executable paths. Removed the misleading browser enable/disable preference; the UI follows each Agent's reported capability, preserving other backends' requests and reminders.
+- **Herdr window identity and cancellation** — stopping a prompt wait no longer cancels another window's read. Replacement panes do not inherit drafts or dismissed reminders, and late input responses cannot update a replacement pane. Input addresses the original pane when its id is available.
+
 ## v2.5.0
 
 ### Improved

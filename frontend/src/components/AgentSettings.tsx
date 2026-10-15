@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import type { AgentInfo } from '../api/client';
-import { useHerdrEnabled, setHerdrEnabled } from '../hooks/useHerdrEnabled';
 import { RootManager } from './RootManager';
 import {
   readOfficePdfPreviewPref,
@@ -46,7 +45,6 @@ function formatLastSeen(epochSec: number, nowMs: number): string {
  */
 export function AgentSettings({ agent, onRefresh }: Props) {
   const status = statusPresentation(agent.status);
-  const herdrEnabled = useHerdrEnabled();
   const enabledRoots = agent.roots.filter((r) => r.enabled).length;
   const officeCapable = !!agent.capabilities?.office_pdf_preview;
   // Local clock so "Last seen" stays honest while the page is open without a
@@ -179,17 +177,22 @@ export function AgentSettings({ agent, onRefresh }: Props) {
             </div>
           </section>
 
-          <section style={styles.card} aria-label="Herdr settings">
+          <section style={styles.card} aria-labelledby="settings-coding-agents-title">
+            <div style={styles.cardHeader}>
+              <h3 id="settings-coding-agents-title" style={styles.cardTitle}>
+                Coding agents
+              </h3>
+            </div>
             <div style={styles.prefRow}>
               <div style={styles.prefText}>
-                <div style={styles.prefLabel}>Herdr</div>
-                <p style={styles.prefHint}>Enable Herdr controls and status reminders for all backends in this browser. Turning this off stops checks and hides reminders; running coding agents continue.</p>
+                <div style={{ ...styles.prefLabel, display: 'flex', justifyContent: 'space-between', gap: 16 }}>
+                  <span>Herdr</span>
+                  <span style={{ color: agent.capabilities?.herdr ? c.success : c.textMuted, fontSize: 12, fontWeight: 400 }}>
+                    {agent.capabilities?.herdr ? 'Available' : 'Unavailable'}
+                  </span>
+                </div>
+                <p style={{ ...styles.prefHint, overflowWrap: 'anywhere' }}>To disable, set <code>FILEBOX_AGENT_HERDR_ENABLED=0</code> on this agent and restart it.</p>
               </div>
-              <button type="button" role="switch" aria-label="Herdr" aria-checked={herdrEnabled}
-                onClick={() => setHerdrEnabled(!herdrEnabled)}
-                style={{ ...styles.switchTrack, ...(herdrEnabled ? styles.switchTrackOn : null) }}>
-                <span style={{ ...styles.switchThumb, ...(herdrEnabled ? styles.switchThumbOn : null) }} />
-              </button>
             </div>
           </section>
 
@@ -412,8 +415,10 @@ const styles: Record<string, React.CSSProperties> = {
     width: 40,
     height: 22,
     borderRadius: radius.pill,
-    border: `1px solid ${c.border}`,
-    background: c.bgSubtle,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: c.border,
+    background: c.bgMuted,
     cursor: 'pointer',
     flexShrink: 0,
     padding: 0,

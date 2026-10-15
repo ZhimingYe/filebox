@@ -471,13 +471,21 @@ visible and says so.
 Installing Herdr later requires restarting the Filebox Agent so it can
 re-probe. `completion_seq`, when available, shows a refresh hint
 even if an entire turn finishes between polls. Output refreshes every minute or manually,
-with per-window controls and bounded request scheduling. The browser-local Herdr
-switch in Settings disables controls, checks and reminders. Ordinary reads use
+with per-window controls and bounded request scheduling. To completely disable integration
+on a particular Filebox Agent, set `FILEBOX_AGENT_HERDR_ENABLED=0` (or `false`) in that
+Agent's environment and restart it. This is checked **before** path discovery and
+`--version`, even when `FILEBOX_AGENT_HERDR` points to a valid binary. No Herdr client is
+created, no capability is advertised, and incoming commands cannot invoke Herdr.
+Unset defaults to auto-detection; invalid values disable integration with one startup
+warning. There is no browser override or runtime enable API. Settings displays capability
+and explains the Agent-side environment setting. Changing A's capability must preserve
+B's requests and acknowledgements. Ordinary reads use
 the detection/bottom snapshot; explicit keys read the visible screen afterward.
-See docs/herdr-shortcuts.md for the v0.9.5 navigation-key limitation. Drafts are per coding agent;
+See docs/herdr-shortcuts.md for the v0.9.5 navigation-key limitation. Drafts, reminder
+acknowledgements and input responses are bound to pane identity, not just its reusable name;
 Stop waiting cancels the request, but already submitted input may continue.
-App-level `useHerdrAttention` checks all online Herdr-capable backends even
-outside the Herdr view (30 seconds between rounds, at most two status-only
+App-level `useHerdrAttention` checks enabled online Herdr-capable backends even
+outside the Herdr view (30 seconds after each backend's completed check, at most two status-only
 requests). The visible Herdr view reports its own results instead of receiving
 competing background checks. Blocked states and repeated unknown states surface in
 `HerdrAttention`; failures/offline warnings require previously observed coding agents.

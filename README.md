@@ -247,6 +247,8 @@ Most users never need this — see [`docs/`](docs/) for development details.
 | `token` | `FILEBOX_AGENT_TOKEN` | Agent token | required |
 | `name` | `FILEBOX_AGENT_NAME` | Name shown in the sidebar | `default-agent` |
 | `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Where the agent keeps its state | system data dir + `filebox` |
+| — | `FILEBOX_AGENT_HERDR_ENABLED` | Set `0` or `false` to completely disable Herdr integration on this Agent; skips CLI discovery/probing and never advertises Herdr capability. Restart the Agent after changing. Invalid values disable integration. | `1` (auto-detect) |
+| — | `FILEBOX_AGENT_HERDR` | Explicit Herdr executable path; cannot override `FILEBOX_AGENT_HERDR_ENABLED=0` | search `PATH` |
 | — | `FILEBOX_AGENT_SOFFICE` | Path to `soffice` (enables Office preview) | unset |
 | — | `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` | unset |
 | `terminal_totp_secret` | `FILEBOX_AGENT_TERMINAL_TOTP_SECRET` | Required base32 secret for local 2FA per terminal open/resume (min 16 bytes; the env var wins and an unusable value is a startup error, never a silent downgrade) | unset |
