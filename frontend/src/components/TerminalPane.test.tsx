@@ -7,15 +7,21 @@ import type { AgentInfo } from '../api/client';
 const mocks = vi.hoisted(() => ({
   mobile: false, created: vi.fn(), dispose: vi.fn(),
   data: undefined as ((data: string) => void) | undefined,
+  resize: undefined as (() => void) | undefined,
   writes: [] as { data: string | Uint8Array; callback?: () => void }[],
-  writeError: false,
+  writeError: false, focus: vi.fn(), blur: vi.fn(), fit: vi.fn(), bottom: vi.fn(),
+  textarea: undefined as HTMLTextAreaElement | undefined,
+  modes: { applicationCursorKeysMode: false, bracketedPasteMode: false },
 }));
 vi.mock('../state/useIsMobile', () => ({ useIsMobile: () => mocks.mobile }));
 vi.mock('@xterm/xterm', () => ({ Terminal: class {
-  cols = 80; rows = 24; options = {}; modes = {};
+  cols = 80; rows = 24; options = {}; modes = mocks.modes;
+  textarea = document.createElement('textarea');
   parser = { registerOscHandler: vi.fn() };
   constructor() { mocks.created(); }
-  loadAddon() {} open() {} focus() {}
+  loadAddon() {} open(el: HTMLElement) { el.append(this.textarea); mocks.textarea = this.textarea; }
+  scrollToBottom() { mocks.bottom(); }
+  focus() { mocks.focus(); this.textarea.focus(); } blur() { mocks.blur(); this.textarea.blur(); }
   write(data: string | Uint8Array, callback?: () => void) {
     if (mocks.writeError) throw new Error('write data discarded');
     mocks.writes.push({ data, callback });
@@ -23,7 +29,7 @@ vi.mock('@xterm/xterm', () => ({ Terminal: class {
   onData(handler: (data: string) => void) { mocks.data = handler; return { dispose() {} }; }
   dispose() { mocks.dispose(); }
 } }));
-vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }));
+vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() { mocks.fit(); } } }));
 class Socket {
   static OPEN = 1; static CONNECTING = 0; static sockets: Socket[] = [];
   readyState = 0;
@@ -42,8 +48,9 @@ const pane = (sessionId?: string) => <StrictMode><TerminalPane agent={agent} tic
 beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks(); mocks.mobile = false; Socket.sockets = [];
   mocks.data = undefined; mocks.writes = []; mocks.writeError = false;
+  mocks.modes = { applicationCursorKeysMode: false, bracketedPasteMode: false };
   vi.stubGlobal('WebSocket', Socket);
-  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  vi.stubGlobal('ResizeObserver', class { constructor(handler: () => void) { mocks.resize = handler; } observe() {} disconnect() {} });
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -358,4 +365,167 @@ it.each(['resize', 'pong'] as const)('reports a %s send failure without an uncau
     : { type: 'ping', nonce: 'probe' }) }));
   expect(container.textContent).toContain('Connection lost while sending');
   expect(socket.close).toHaveBeenCalledTimes(1);
+});
+
+async function press(label: string) {
+  const button = [...container.querySelectorAll('button')].find(b => b.textContent === label)!;
+  expect(button, label).toBeDefined();
+  await act(async () => button.click());
+}
+async function draft(text: string) {
+  const input = container.querySelector<HTMLTextAreaElement>('[aria-label="Terminal text to insert"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  return input;
+}
+it.each([false, true])('rejects an oversized draft paste atomically, accounting for selected text: %s', async replaceSelection => {
+  const socket = await resume();
+  await press('Text input'); const input = await draft('keep this');
+  input.setSelectionRange(replaceSelection ? 0 : input.value.length, input.value.length);
+  const event = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'clipboardData', { value: { getData: () => 'a'.repeat(65536) } });
+  await act(async () => input.dispatchEvent(event));
+  expect(event.defaultPrevented).toBe(!replaceSelection);
+  expect(container.textContent?.includes('Paste was not inserted')).toBe(!replaceSelection);
+  expect(input.value).toBe('keep this'); expect(inputs(socket)).toEqual([]);
+});
+it('keeps focus/keyboard/rotation changes on the same authenticated socket and terminal', async () => {
+  mocks.mobile = true;
+  const viewport = Object.assign(new EventTarget(), { width: 390, height: 844, offsetTop: 0, offsetLeft: 0, scale: 1 });
+  vi.stubGlobal('visualViewport', viewport);
+  const socket = await resume();
+  const creations = mocks.created.mock.calls.length;
+  expect(mocks.focus).not.toHaveBeenCalled();
+  expect(mocks.textarea?.style.fontSize).toBe('16px');
+  await press('Focus');
+  const wrapper = container.querySelector<HTMLElement>('[data-terminal-pane]')!;
+  expect(wrapper.style.position).toBe('fixed');
+  await act(async () => {
+    Object.assign(viewport, { height: 360, offsetTop: 48 });
+    viewport.dispatchEvent(new Event('resize')); viewport.dispatchEvent(new Event('scroll'));
+  });
+  expect(wrapper.style.height).toBe('360px'); expect(wrapper.style.top).toBe('48px');
+  await act(async () => {
+    Object.assign(viewport, { height: 180, scale: 2 });
+    viewport.dispatchEvent(new Event('resize'));
+  });
+  expect(wrapper.style.height).toBe('360px');
+  await press('Keyboard'); expect(mocks.focus).toHaveBeenCalledTimes(1);
+  await press('Hide'); expect(mocks.blur).toHaveBeenCalledTimes(1);
+  await press('Latest'); expect(mocks.bottom).toHaveBeenCalledTimes(1);
+  await press('Exit focus'); expect(wrapper.style.position).toBe('');
+  expect(mocks.created).toHaveBeenCalledTimes(creations);
+  expect(Socket.sockets).toHaveLength(1); expect(socket.close).not.toHaveBeenCalled();
+});
+it('keeps touch controls on wide coarse-pointer screens', async () => {
+  const query = Object.assign(new EventTarget(), { matches: true });
+  vi.stubGlobal('matchMedia', () => query);
+  await resume();
+  expect(container.querySelector<HTMLElement>('fieldset')!.style.display).toBe('grid');
+  expect(mocks.focus).not.toHaveBeenCalled();
+});
+it.each([false, true])('inserts native IME text once with bracketed paste mode %s, without appending Enter', async (bracketed) => {
+  mocks.mobile = true; mocks.modes.bracketedPasteMode = bracketed;
+  const socket = await resume();
+  await press('Text input');
+  const input = await draft('中文测试\nsecond');
+  await act(async () => input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })));
+  await press('Insert'); expect(inputs(socket)).toEqual([]);
+  await act(async () => input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })));
+  await press('Insert');
+  const text = new TextDecoder().decode(Uint8Array.from(atob(inputs(socket)[0].data), c => c.charCodeAt(0)));
+  expect(text).toBe(bracketed ? '\x1b[200~中文测试\rsecond\x1b[201~' : '中文测试\rsecond');
+  expect(input.value).toBe('');
+  await press('Insert'); expect(inputs(socket)).toHaveLength(1);
+});
+it('retains draft text when the bounded input queue refuses it or the socket closes', async () => {
+  const socket = await resume();
+  await act(async () => mocks.data?.('a'.repeat(2 * 1024 * 1024)));
+  await press('Text input'); const input = await draft('retry me');
+  await press('Insert');
+  expect(input.value).toBe('retry me'); expect(inputs(socket)).toHaveLength(1);
+  await act(async () => socket.onclose?.());
+  await press('Insert'); expect(input.value).toBe('retry me'); expect(inputs(socket)).toHaveLength(1);
+});
+it('sends mobile auxiliary keys with application cursor mode and resets sticky modifiers on disconnect', async () => {
+  mocks.mobile = true; mocks.modes.applicationCursorKeysMode = true;
+  const socket = await resume();
+  for (const label of ['Enter', '⌫', 'Ctrl+C', '↑', '↓', '←', '→']) {
+    await press(label);
+    const frame = inputs(socket).at(-1)!;
+    await act(async () => socket.onmessage?.({ data: JSON.stringify({ type: 'input_ack', seq: frame.seq }) }));
+  }
+  expect(inputs(socket).map(f => atob(f.data))).toEqual(['\r', '\x7f', '\x03', '\x1bOA', '\x1bOB', '\x1bOD', '\x1bOC']);
+  await press('Ctrl'); await press('Alt');
+  await act(async () => socket.onclose?.());
+  expect(container.querySelector('fieldset')?.disabled).toBe(true);
+  expect(container.querySelectorAll('[aria-pressed="true"]')).toHaveLength(0);
+  await press('Enter'); expect(inputs(socket)).toHaveLength(7);
+});
+it.each(['visibilitychange', 'pageshow', 'focus'])('checks a suspended connection immediately on %s without reusing its ticket', async event => {
+  const socket = await resume();
+  // Advance wall time without running the suspended interval callback.
+  vi.setSystemTime(Date.now() + 61000);
+  await act(async () => (event === 'visibilitychange' ? document : window).dispatchEvent(new Event(event)));
+  expect(socket.close).toHaveBeenCalledTimes(1);
+  expect(container.textContent).toContain('Connection lost');
+  expect(Socket.sockets).toHaveLength(1); expect(reconnect).not.toHaveBeenCalled();
+});
+it('keeps a healthy socket when returning from a short app switch', async () => {
+  const socket = await resume();
+  vi.setSystemTime(Date.now() + 15000);
+  await act(async () => window.dispatchEvent(new Event('pageshow')));
+  expect(socket.close).not.toHaveBeenCalled();
+});
+
+it('consumes Ctrl/Alt once for modified arrows and supports Ctrl+Space', async () => {
+  const socket = await resume();
+  await press('Ctrl'); await press('Alt'); await press('→');
+  expect(inputs(socket).map(f => atob(f.data))).toEqual(['\x1b[1;7C']);
+  expect(container.querySelectorAll('[aria-pressed="true"]')).toHaveLength(0);
+  await act(async () => socket.onmessage?.({ data: JSON.stringify({ type: 'input_ack', seq: 1 }) }));
+  await press('Ctrl');
+  await act(async () => mocks.data?.(' '));
+  expect(atob(inputs(socket)[1].data)).toBe('\x00');
+});
+it('keeps the native draft after an immediate transport send failure', async () => {
+  const socket = await resume();
+  await press('Text input'); const input = await draft('do not lose this');
+  socket.send.mockImplementation(() => { throw new Error('offline'); });
+  await press('Insert');
+  expect(input.value).toBe('do not lose this');
+  expect(container.textContent).toContain('Connection lost while sending');
+});
+
+it('coalesces viewport/observer resize bursts and does not send unchanged PTY dimensions', async () => {
+  const viewport = Object.assign(new EventTarget(), { width: 390, height: 844, offsetTop: 0, offsetLeft: 0, scale: 1 });
+  vi.stubGlobal('visualViewport', viewport);
+  const socket = await resume();
+  const host = mocks.textarea!.parentElement!;
+  Object.defineProperties(host, { clientWidth: { value: 390 }, clientHeight: { value: 400 } });
+  mocks.fit.mockClear();
+  await act(async () => {
+    for (let i = 0; i < 100; i++) { mocks.resize?.(); viewport.dispatchEvent(new Event('resize')); }
+    vi.advanceTimersByTime(101);
+  });
+  expect(mocks.fit).toHaveBeenCalledTimes(1);
+  expect(socket.send.mock.calls.map(([f]) => JSON.parse(f)).filter(f => f.type === 'resize')).toHaveLength(1);
+});
+it('can reopen the text field after an interrupted composition', async () => {
+  const socket = await resume();
+  await press('Text input'); const input = await draft('中文');
+  await act(async () => input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })));
+  await press('Text input'); await press('Text input'); await press('Insert');
+  expect(inputs(socket)).toHaveLength(1);
+});
+it('returns to the prompt on explicit input, but never pulls history for output or terminal replies', async () => {
+  const socket = await resume();
+  await output(socket, 'continuing output');
+  await act(async () => mocks.data?.('\x1b[1;1R'));
+  expect(mocks.bottom).not.toHaveBeenCalled();
+  await press('Enter'); expect(mocks.bottom).toHaveBeenCalledTimes(1);
+  await press('Text input'); await draft('printf hello'); await press('Insert');
+  expect(mocks.bottom).toHaveBeenCalledTimes(2);
 });

@@ -3,6 +3,7 @@ import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
 import { PreviewErrorBoundary } from './PreviewErrorBoundary';
 import { c, radius, font } from '../theme';
+import { useTerminalMobile } from '../state/useTerminalLayout';
 
 // xterm is heavy; it only downloads once the user actually opens a terminal.
 const TerminalPane = lazy(() =>
@@ -98,7 +99,8 @@ const KILL_CONFIRM_MS = 3000;
  * ticket) and renders in EVERY phase — including before 2FA is passed.
  * `unsupported_feature` (legacy agent) hides the section permanently.
  */
-function TerminalSessionsPanel({ agent, onResume }: Props & { onResume: (id: string) => void }) {
+function TerminalSessionsPanel({ agent, onResume, onNew }: Props & { onResume: (id: string) => void; onNew?: () => void }) {
+  const isMobile = useTerminalMobile();
   const [open, setOpen] = useState(false);
   const [sessions, setSessions] = useState<api.TerminalSessionInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -206,11 +208,12 @@ function TerminalSessionsPanel({ agent, onResume }: Props & { onResume: (id: str
     if (confirmTimer.current !== null) window.clearTimeout(confirmTimer.current);
   }, []);
 
-  if (unsupported) return null;
   // The capability is authoritative when the agent reports it: no point in a
   // guaranteed 400 to discover the panel is unsupported. An older agent that
   // omits the flag still gets probed (and hides itself on that 400).
-  if (agent.capabilities?.terminal_manage === false) return null;
+  if (unsupported || agent.capabilities?.terminal_manage === false) {
+    return onNew ? <button type="button" style={styles.primaryBtn} onClick={onNew}>New session</button> : null;
+  }
 
   return (
     <div style={styles.sessWrap}>
@@ -218,23 +221,24 @@ function TerminalSessionsPanel({ agent, onResume }: Props & { onResume: (id: str
         <div style={styles.sessHeader}>
           <button
             type="button"
-            style={styles.sessToggle}
+            style={{ ...styles.sessToggle, ...(isMobile ? styles.touchButton : null) }}
             onClick={toggle}
             aria-expanded={open}
           >
             <span style={styles.sessCaret}>{open ? '▾' : '▸'}</span>
-            Sessions on {agent.name}
+            <span style={styles.sessName} title={`Sessions on ${agent.name}`}>Sessions on {agent.name}</span>
             {sessions !== null && (
               <span style={styles.sessCount}>{sessions.length}</span>
             )}
           </button>
           <button
             type="button"
-            style={styles.sessRefreshBtn}
+            style={{ ...styles.sessRefreshBtn, ...(isMobile ? styles.touchButton : null) }}
             onClick={() => loading ? cancelRefresh() : void refresh()}
           >
             {loading ? 'Cancel refresh' : 'Refresh'}
           </button>
+          {onNew && <button type="button" style={{ ...styles.primaryBtn, ...(isMobile ? styles.touchButton : null) }} onClick={onNew}>New session</button>}
         </div>
         {open && (
           <div style={styles.sessBody}>
@@ -257,7 +261,7 @@ function TerminalSessionsPanel({ agent, onResume }: Props & { onResume: (id: str
               <p style={styles.muted}>No active sessions.</p>
             )}
             {sessions?.map((s) => (
-              <div key={s.req_id} style={styles.sessRow}>
+              <div key={s.req_id} style={{ ...styles.sessRow, ...(isMobile ? { flexWrap: 'wrap' } : null) }}>
                 <code style={styles.sessId} title={s.req_id}>{shortReqId(s.req_id)}</code>
                 <span style={styles.sessDim}>{s.cols}×{s.rows}</span>
                 <span style={styles.sessDim}>age {formatDurationSecs(s.age_secs)}</span>
@@ -269,11 +273,12 @@ function TerminalSessionsPanel({ agent, onResume }: Props & { onResume: (id: str
                 >
                   idle {formatDurationSecs(s.idle_secs)}
                 </span>
-                <button type="button" style={styles.sessRefreshBtn} onClick={() => onResume(s.req_id)}>Resume</button>
+                <button type="button" style={{ ...styles.sessRefreshBtn, ...(isMobile ? styles.touchButton : null) }} onClick={() => onResume(s.req_id)}>Resume</button>
                 <button
                   type="button"
                   style={{
                     ...styles.sessKillBtn,
+                    ...(isMobile ? styles.touchButton : null),
                     ...(confirmId === s.req_id ? styles.sessKillConfirm : null),
                     ...(killing === s.req_id ? styles.primaryBtnDisabled : null),
                   }}
@@ -293,6 +298,7 @@ function TerminalSessionsPanel({ agent, onResume }: Props & { onResume: (id: str
 
 /** The Agent owns both the shell and the authenticator. Every mount reauthorizes. */
 export function TerminalView({ agent }: Props) {
+  const isMobile = useTerminalMobile();
   const [authorization, setAuthorization] = useState<{ ticket: string; code: string } | null>(null);
   const [sessionId, setSessionId] = useState<string>();
   const sessionRef = useRef<string | undefined>(undefined);
@@ -339,11 +345,10 @@ export function TerminalView({ agent }: Props) {
   };
   const configured = agent.capabilities?.terminal_agent_2fa && agent.capabilities?.terminal_persistent;
   return (
-    <div style={styles.wrap}>
-      <TerminalSessionsPanel agent={agent} onResume={choose} />
+    <div style={{ ...styles.wrap, ...(isMobile ? { padding: 6, gap: 6 } : null) }}>
+      <TerminalSessionsPanel agent={agent} onResume={choose} onNew={authorization ? () => choose() : undefined} />
       {authorization ? (
         <>
-          <button type="button" style={styles.primaryBtn} onClick={() => choose()}>New session</button>
           <PreviewErrorBoundary label="Terminal">
             <Suspense fallback={<p style={styles.muted}>Loading terminal…</p>}>
               <TerminalPane agent={agent} ticket={authorization.ticket} agentCode={authorization.code}
@@ -403,6 +408,9 @@ const styles: Record<string, React.CSSProperties> = {
     border: `1px solid ${c.border}`,
     background: c.bg,
     boxSizing: 'border-box',
+    minHeight: 0,
+    overflowY: 'auto',
+    overflowWrap: 'anywhere',
   },
   title: {
     margin: 0,
@@ -474,6 +482,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   primaryBtn: {
     flexShrink: 0,
+    minHeight: 44,
     padding: '8px 16px',
     borderRadius: radius.md,
     border: 'none',
@@ -516,12 +525,18 @@ const styles: Record<string, React.CSSProperties> = {
   },
   sessWrap: {
     flexShrink: 0,
-    padding: '12px 12px 0',
+    minHeight: 0,
+    maxHeight: '35%',
+    display: 'flex',
     boxSizing: 'border-box',
   },
   sessCard: {
     display: 'flex',
     flexDirection: 'column',
+    width: '100%',
+    minWidth: 0,
+    minHeight: 0,
+    overflow: 'hidden',
     borderRadius: radius.md,
     border: `1px solid ${c.border}`,
     background: c.bg,
@@ -529,10 +544,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   sessHeader: {
     display: 'flex',
+    flexShrink: 0,
     alignItems: 'center',
     gap: 8,
     padding: '4px 6px',
   },
+  touchButton: { minHeight: 44, minWidth: 44, padding: '4px 6px' },
+  sessName: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   sessToggle: {
     flex: '1 1 auto',
     minWidth: 0,
@@ -583,6 +601,9 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     gap: 4,
     padding: '0 8px 8px',
+    minHeight: 0,
+    overflowY: 'auto',
+    overscrollBehavior: 'contain',
   },
   sessErrorRow: {
     display: 'flex',
