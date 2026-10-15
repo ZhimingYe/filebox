@@ -72,6 +72,20 @@ function button(label: string) {
 }
 
 describe('HerdrView', () => {
+  it('reports status and opens a notified agent without locking later selection', async () => {
+    const report = vi.fn();
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
+      ? { ...listed, agents: [listed.agents[0], { ...listed.agents[0], target: 'writer', name: 'writer', pane_id: 'w1:p3' }] }
+      : { req_id: 'r', output: body.target });
+    await act(async () => root.render(<HerdrView agent={agent} onStatus={report}
+      focusRequest={{ target: 'writer', nonce: 1 }} />));
+    expect(report).toHaveBeenCalledWith(agent.id, expect.objectContaining({ agents: expect.any(Array) }));
+    expect(container.querySelector('textarea')!.getAttribute('aria-label')).toBe('Prompt for writer');
+    const reviewer = [...container.querySelectorAll<HTMLButtonElement>('aside button')].find((b) => b.textContent?.includes('reviewer'))!;
+    await act(async () => reviewer.click());
+    expect(container.querySelector('textarea')!.getAttribute('aria-label')).toBe('Prompt for reviewer');
+  });
+
   it('keeps prompt drafts separate when switching agents', async () => {
     vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
       ? { ...listed, agents: [listed.agents[0], { ...listed.agents[0], target: 'writer', name: 'writer', pane_id: 'w1:p3' }] }

@@ -37,6 +37,29 @@ the released binary as well as the documentation.
 - The CLI is probed once when the Filebox Agent starts. Restart that Agent
   after installing Herdr or changing `FILEBOX_AGENT_HERDR`.
 
+## Attention reminders
+
+The App monitors all online Herdr-capable backends while the page is open,
+including when browsing Files or another view. Background checks only call
+`agent list`, with at most two concurrent requests and 15 seconds between
+completed rounds. The active Herdr panel supplies its existing polling results;
+it is not polled a second time. Slow backends and browser timer throttling can
+increase notification delay. This is not an OS notification or a closed-page
+monitoring service.
+
+Blocked agents produce an input-needed reminder. Two consecutive unknown
+observations or failed status checks produce an honest cannot-determine/check
+notice; `agent_busy` is ignored. Offline backends are marked unavailable.
+Known questions remain visible through failed checks until a successful list
+resolves them. Later/Hide acknowledges an episode without discarding its pending
+indicator; a resolved-then-blocked agent produces a fresh reminder. View navigates
+only on a user click and selects the affected coding agent.
+
+Herdr's screen detection can miss new question UI shapes and report idle. These
+reminders do not guarantee every question is detected. Blocked text replies and
+other unsupported interactions remain available through Herdr itself, and the
+panel directs the user there rather than implying the question was answered.
+
 ## Verification
 
 Run the focused regressions:
@@ -46,6 +69,7 @@ cargo test -p filebox-agent herdr::
 cargo test -p filebox-hub herdr_proxy::
 cargo test -p filebox-protocol herdr
 npm --prefix frontend test -- src/components/HerdrView.test.tsx src/api/client.test.ts
+npm --prefix frontend test -- src/hooks/useHerdrAttention.test.tsx src/components/HerdrAttention.test.tsx
 npm --prefix frontend run build
 ```
 

@@ -472,6 +472,15 @@ Installing Herdr later requires restarting the Filebox Agent so it can
 re-probe. `completion_seq`, when available, triggers a final output refresh
 even if an entire turn finishes between polls. Drafts are per coding agent;
 Stop waiting cancels the request, but already submitted input may continue.
+App-level `useHerdrAttention` checks all online Herdr-capable backends even
+outside the Herdr view (15 seconds between rounds, at most two status-only
+requests). The visible Herdr view reports its own results instead of receiving
+competing background checks. Blocked states, repeated unknown states/failures,
+and offline backends surface in `HerdrAttention`; acknowledging keeps a pending
+count until recovery, and only a new episode raises another reminder. Reminders
+never send input, change focus, or navigate automatically. Detection still depends
+on Herdr; an unrecognized question can appear idle. Monitoring requires the page
+to remain open and may be delayed by browser background throttling.
 See [docs/herdr-compatibility.md](docs/herdr-compatibility.md) for the tested
 CLI contract and verification scope.
 

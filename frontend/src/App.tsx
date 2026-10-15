@@ -36,6 +36,8 @@ import { NoAgentSelected } from './components/NoAgentSelected';
 import { TempTransferView } from './components/TempTransferView';
 import { TerminalView } from './components/TerminalView';
 import { HerdrView } from './components/HerdrView';
+import { HerdrAttention } from './components/HerdrAttention';
+import { useHerdrAttention, type HerdrAttention as HerdrNotice } from './hooks/useHerdrAttention';
 import {
   IconChevronLeft,
   IconFolder,
@@ -546,6 +548,18 @@ export default function App() {
   // Terminal nav entry is only meaningful on a terminal-capable agent.
   const terminalCapable = !!selectedAgent?.capabilities?.terminal;
   const herdrCapable = !!selectedAgent?.capabilities?.herdr;
+  const herdrAttention = useHerdrAttention(agents, loggedIn === true,
+    view === 'herdr' && herdrCapable ? selectedAgentId : null);
+  const [herdrFocus, setHerdrFocus] = useState<{ backendId: string; target: string; nonce: number } | null>(null);
+  const openHerdrNotice = (notice: HerdrNotice) => {
+    // Navigation happens only on this explicit click; keep the current files intact.
+    if (selectedAgentId !== notice.backendId) previewTabs.closeAll();
+    setSelectedAgentId(notice.backendId);
+    setView('herdr');
+    setSearchOpen(false);
+    if (isMobile) setSidebarOpen(false);
+    setHerdrFocus(notice.target ? { backendId: notice.backendId, target: notice.target, nonce: Date.now() } : null);
+  };
   useEffect(() => {
     if (!tempCapable) return;
     const hasFiles = (e: DragEvent) =>
@@ -1151,6 +1165,8 @@ export default function App() {
         )}
 
         {/* Content area */}
+        <HerdrAttention notices={herdrAttention.notices} agents={agents}
+          onAcknowledge={herdrAttention.acknowledge} onOpen={openHerdrNotice} isMobile={isMobile} />
         <div style={styles.contentArea}>
           {!selectedAgent ? (
             view === 'audit' ? (
@@ -1376,7 +1392,10 @@ export default function App() {
               {view === 'herdr' && (
                 <div style={styles.secondaryView}>
                   {herdrCapable ? (
-                    <HerdrView key={selectedAgent.id} agent={selectedAgent} />
+                    <HerdrView key={selectedAgent.id} agent={selectedAgent}
+                      onStatus={herdrAttention.reportStatus}
+                      onStatusError={herdrAttention.reportFailure}
+                      focusRequest={herdrFocus?.backendId === selectedAgent.id ? herdrFocus : null} />
                   ) : (
                     <div style={styles.transferUnsupported}>
                       <p style={styles.transferUnsupportedText}>
@@ -1869,7 +1888,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', gap: 2, fontFamily: font.sans, fontWeight: 500,
   },
   // ── Main content ──
-  main: { flex: 1, display: 'flex', overflow: 'hidden' },
+  main: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 },
   mainMobile: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
   // Row flex: Files shell and Settings/Stats are siblings; only one is visible.
   // Absolute-positioned hidden siblings (filesViewHidden shells) anchor to

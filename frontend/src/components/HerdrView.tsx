@@ -7,6 +7,9 @@ import { IconChevronLeft, IconRefresh } from './icons';
 
 interface Props {
   agent: api.AgentInfo;
+  onStatus?: (agentId: string, response: api.HerdrResponse) => void;
+  onStatusError?: (agentId: string, error: unknown) => void;
+  focusRequest?: { target: string; nonce: number } | null;
 }
 
 const QUICK_KEYS: { label: string; keys: string[] }[] = [
@@ -93,7 +96,7 @@ function herdrFailureMessage(error: unknown): string | null {
  * Filebox agent drives the local `herdr` CLI; this UI is a compact control
  * surface, not a clone of the Herdr TUI.
  */
-export function HerdrView({ agent }: Props) {
+export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Props) {
   const isMobile = useIsMobile();
   const isMobileRef = useRef(isMobile);
   isMobileRef.current = isMobile;
@@ -118,6 +121,9 @@ export function HerdrView({ agent }: Props) {
   const [sending, setSending] = useState(false);
   const genRef = useRef(0);
   const mountedRef = useRef(true);
+  const statusCallbacks = useRef({ onStatus, onStatusError });
+  statusCallbacks.current = { onStatus, onStatusError };
+  const handledFocus = useRef<number | null>(null);
   const outputGenRef = useRef(0);
   const abortList = useRef<AbortController | null>(null);
   const abortOutput = useRef<AbortController | null>(null);
@@ -160,6 +166,7 @@ export function HerdrView({ agent }: Props) {
     try {
       const res = await api.herdrCommand(agent.id, { op: 'status' }, controller.signal, 20_000);
       if (!mountedRef.current || controller.signal.aborted || genRef.current !== gen) return;
+      statusCallbacks.current.onStatus?.(agent.id, res);
       const next = sortAgents(res.agents ?? []);
       setStatus(res.status ?? null);
       setAgents(next);
@@ -174,6 +181,7 @@ export function HerdrView({ agent }: Props) {
       });
     } catch (e) {
       if (genRef.current !== gen) return;
+      if (mountedRef.current && !controller.signal.aborted) statusCallbacks.current.onStatusError?.(agent.id, e);
       const message = herdrFailureMessage(e);
       if (message === null) return;
       if (silent && errorCode(e) === 'agent_busy') return;
@@ -240,6 +248,14 @@ export function HerdrView({ agent }: Props) {
       abortSend.current?.abort();
     };
   }, [agent.id, enqueue, loadList]);
+
+  useEffect(() => {
+    if (!focusRequest || handledFocus.current === focusRequest.nonce || loadingList) return;
+    if (agents.some((a) => a.target === focusRequest.target)) {
+      handledFocus.current = focusRequest.nonce;
+      setSelected(focusRequest.target);
+    }
+  }, [focusRequest, agents, loadingList]);
 
   useEffect(() => {
     // Invalidate an in-flight read before it can paint the previous agent
@@ -583,7 +599,10 @@ export function HerdrView({ agent }: Props) {
             {outputError && <div role="alert" style={styles.actionError}>{outputError} Use Refresh to retry.</div>}
             {actionNotice && <div role="status" style={styles.notice}>{actionNotice}</div>}
             {selectedAgent.status === 'blocked' && !sending && (
-              <div style={styles.notice}>Needs your input. Read the output and use the keys below to answer.</div>
+              <div style={styles.notice}>Needs your input. Read the output and use the keys below. If a text reply or another interaction is needed, continue in Herdr on this backend.</div>
+            )}
+            {selectedAgent.status === 'unknown' && !sending && (
+              <div style={styles.notice}>Herdr cannot determine this agent’s state. Check the screen for a question or error; continue in Herdr if needed.</div>
             )}
             {sending && (
               <div style={styles.outputBar}>
