@@ -380,6 +380,17 @@ async function draft(text: string) {
   });
   return input;
 }
+it.each([false, true])('rejects an oversized draft paste atomically, accounting for selected text: %s', async replaceSelection => {
+  const socket = await resume();
+  await press('Text input'); const input = await draft('keep this');
+  input.setSelectionRange(replaceSelection ? 0 : input.value.length, input.value.length);
+  const event = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'clipboardData', { value: { getData: () => 'a'.repeat(65536) } });
+  await act(async () => input.dispatchEvent(event));
+  expect(event.defaultPrevented).toBe(!replaceSelection);
+  expect(container.textContent?.includes('Paste was not inserted')).toBe(!replaceSelection);
+  expect(input.value).toBe('keep this'); expect(inputs(socket)).toEqual([]);
+});
 it('keeps focus/keyboard/rotation changes on the same authenticated socket and terminal', async () => {
   mocks.mobile = true;
   const viewport = Object.assign(new EventTarget(), { width: 390, height: 844, offsetTop: 0, offsetLeft: 0, scale: 1 });

@@ -18,6 +18,8 @@ export function installTerminalTouchScroll(host: HTMLElement, term: Terminal) {
   let previousFrame = 0;
   let target: HTMLElement = host;
   let local = true;
+  let bufferType: 'normal' | 'alternate' = 'normal';
+  let mouseMode: Terminal['modes']['mouseTrackingMode'] = 'none';
   const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
 
   const stop = () => {
@@ -27,8 +29,8 @@ export function installTerminalTouchScroll(host: HTMLElement, term: Terminal) {
   };
   const flush = (now: number) => {
     frame = null;
-    // Never let momentum from shell history turn into input to a new TUI.
-    if (local && term.buffer.active.type !== 'normal') { stop(); return; }
+    // A pending gesture belongs to the screen/mouse mode where it started.
+    if (term.buffer.active.type !== bufferType || term.modes.mouseTrackingMode !== mouseMode) { stop(); return; }
     if (finger === null && coastUntil > now) {
       const dt = Math.min(32, now - previousFrame);
       pending += velocity * dt;
@@ -65,7 +67,9 @@ export function installTerminalTouchScroll(host: HTMLElement, term: Terminal) {
     lastTime = performance.now();
     target = host.querySelector<HTMLElement>('.xterm-screen') ?? host;
     lineHeight = Math.max(1, target.getBoundingClientRect().height / Math.max(1, term.rows));
-    local = term.buffer.active.type === 'normal' && term.modes.mouseTrackingMode === 'none';
+    bufferType = term.buffer.active.type;
+    mouseMode = term.modes.mouseTrackingMode;
+    local = bufferType === 'normal' && mouseMode === 'none';
   };
   const move = (event: TouchEvent) => {
     if (event.touches.length !== 1) { stop(); return; }
@@ -103,8 +107,10 @@ export function installTerminalTouchScroll(host: HTMLElement, term: Terminal) {
   host.addEventListener('touchmove', move, { passive: false });
   host.addEventListener('touchend', end, { passive: true });
   host.addEventListener('touchcancel', stop, { passive: true });
-  // Explicit keyboard / Latest actions should immediately stop momentum.
-  host.addEventListener('keydown', stop);
+  // Mobile IMEs can insert text without keydown. Capture before xterm handles
+  // or stops these events so typing/paste cannot race a pending history scroll.
+  const inputEvents = ['keydown', 'beforeinput', 'input', 'compositionstart', 'paste'];
+  for (const type of inputEvents) host.addEventListener(type, stop, true);
   window.addEventListener('blur', stop);
   document.addEventListener('visibilitychange', visibility);
   return {
@@ -115,7 +121,7 @@ export function installTerminalTouchScroll(host: HTMLElement, term: Terminal) {
       host.removeEventListener('touchmove', move);
       host.removeEventListener('touchend', end);
       host.removeEventListener('touchcancel', stop);
-      host.removeEventListener('keydown', stop);
+      for (const type of inputEvents) host.removeEventListener(type, stop, true);
       window.removeEventListener('blur', stop);
       document.removeEventListener('visibilitychange', visibility);
     },

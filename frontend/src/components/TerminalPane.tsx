@@ -51,6 +51,7 @@ const SLOW_CONNECT_MS = 8000;
 const MAX_REPLAY_BYTES = 256 * 1024;
 const MAX_PENDING_OUTPUT_BYTES = 1024 * 1024;
 const OUTPUT_PARSE_STALL_MS = 30_000;
+const MAX_DRAFT_LENGTH = 65536;
 
 /**
  * Hub/agent error codes are contractual but not prose. Everything a user can
@@ -107,6 +108,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
   const viewport = useTerminalViewport(true);
   const [textInput, setTextInput] = useState(false);
   const [draft, setDraft] = useState('');
+  const [draftError, setDraftError] = useState<string | null>(null);
   const composingRef = useRef(false);
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const [status, setStatus] = useState<ConnStatus>('connecting');
@@ -155,7 +157,7 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
     // if our bounded queue rejects it. Never apply sticky keys to pasted text.
     const text = draft.replace(/\r?\n/g, '\r');
     const data = termRef.current.modes.bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text;
-    if (sendUserInput(data)) { clearModifiers(); setDraft(''); }
+    if (sendUserInput(data)) { clearModifiers(); setDraft(''); setDraftError(null); }
   };
 
   /** Apply armed Ctrl/Alt modifiers to one input chunk, then disarm. */
@@ -568,16 +570,27 @@ export function TerminalPane({ ticket, agent, agentCode, sessionId, onSessionOpe
       </div>
       <div ref={containerRef} style={{ ...styles.termHost, visibility: status === 'connecting' ? 'hidden' : 'visible', ...(isMobile ? styles.termHostMobile : null) }} />
       {textInput && (
-        <div style={styles.composer}>
+        <div style={styles.composer} onPointerDownCapture={() => touchScrollRef.current?.stop()}>
           <textarea ref={draftRef} aria-label="Terminal text to insert" placeholder="Type or paste text, then Insert"
-            rows={1} maxLength={65536} value={draft} style={styles.draft}
+            rows={1} maxLength={MAX_DRAFT_LENGTH} value={draft} style={styles.draft}
             autoCapitalize="off" autoCorrect="off" spellCheck={false}
-            onCompositionStart={() => { composingRef.current = true; }}
+            onPaste={event => {
+              touchScrollRef.current?.stop();
+              const input = event.currentTarget;
+              const pasted = event.clipboardData.getData('text/plain');
+              if (input.value.length - (input.selectionEnd - input.selectionStart) + pasted.length > MAX_DRAFT_LENGTH) {
+                // Native maxlength would silently truncate a command mid-paste.
+                event.preventDefault();
+                setDraftError('Paste was not inserted: the text field limit is 65,536 characters. Paste a smaller block.');
+              } else setDraftError(null);
+            }}
+            onCompositionStart={() => { touchScrollRef.current?.stop(); composingRef.current = true; }}
             onCompositionEnd={() => { composingRef.current = false; }}
-            onChange={event => setDraft(event.target.value)} />
+            onChange={event => { touchScrollRef.current?.stop(); setDraft(event.target.value); setDraftError(null); }} />
           <button type="button" style={keyBtnStyle()} disabled={status !== 'open' || !draft}
             onPointerDown={event => event.preventDefault()} onClick={insertDraft}>Insert</button>
           <span style={styles.composerHint}>Insert adds no Enter. Pasted line breaks may run commands.</span>
+          {draftError && <span role="status" style={styles.composerHint}>{draftError}</span>}
         </div>
       )}
       {/* Aux keys for keyboards without Esc/Tab/Ctrl/arrows (mobile), and a

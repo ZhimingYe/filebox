@@ -83,3 +83,23 @@ it('stops momentum at history boundaries and after the maximum duration', () => 
   touch('touchstart', 20); touch('touchmove', 60); touch('touchend', 60, 0);
   vi.advanceTimersByTime(1000); expect(scroll.mock.calls.length - count).toBe(1);
 });
+it.each(['keydown', 'beforeinput', 'input', 'compositionstart', 'paste'])('stops momentum on %s even if the input stops bubbling', eventType => {
+  touch('touchstart', 20); touch('touchmove', 60); vi.advanceTimersByTime(17);
+  touch('touchend', 60, 0);
+  const input = document.createElement('textarea'); host.append(input);
+  input.addEventListener(eventType, event => event.stopPropagation());
+  input.dispatchEvent(new Event(eventType, { bubbles: true }));
+  const count = scroll.mock.calls.length;
+  vi.advanceTimersByTime(1000);
+  expect(scroll).toHaveBeenCalledTimes(count);
+});
+it.each(['leave alternate', 'enable mouse', 'disable mouse'] as const)('drops queued movement when modes change: %s', change => {
+  if (change === 'leave alternate') active.type = 'alternate';
+  if (change === 'disable mouse') modes.mouseTrackingMode = 'vt200';
+  touch('touchstart', 20); touch('touchmove', 60);
+  if (change === 'leave alternate') active.type = 'normal';
+  else modes.mouseTrackingMode = change === 'enable mouse' ? 'vt200' : 'none';
+  vi.advanceTimersByTime(17);
+  touch('touchmove', 100); vi.advanceTimersByTime(17);
+  expect(scroll).not.toHaveBeenCalled(); expect(wheel).not.toHaveBeenCalled();
+});
