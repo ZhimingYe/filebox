@@ -77,7 +77,7 @@ for the current page. A later successful write or cross-tab preference change
 resumes using the persisted preference.
 
 Each selected coding window has its own Refresh output button and auto-refresh
-switch (60 minutes by default; manual-only when off). Inactive windows are not
+switch in Herdr settings (1 minute by default; manual-only when off). Inactive windows are not
 polled. Switching back restores one of at most eight cached snapshots; settings
 and caches are scoped to the mounted panel. Manual list refresh does not read
 output unless the selected target has been replaced by a different pane. Cached
@@ -117,7 +117,7 @@ dash-prefixed prompts, wait, eleven UI key shortcuts, and protocol errors.
 Browser checks cover desktop and 390-pixel phone layouts, per-agent drafts,
 blocked input controls, and stopping a pending wait.
 
-The refresh/navigation follow-up adds fake-clock regressions for the 60-minute
+The refresh/navigation follow-up adds fake-clock regressions for the 1-minute
 output/30-second status split, independent snapshots, cancellation and queue
 bounds, plus read-source validation and unsupported-key mapping. A fresh isolated
 Hub/Agent with a controlled CLI fixture verified detection/visible reads and

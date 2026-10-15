@@ -470,7 +470,7 @@ terminal text, not socket JSON. If the CLI is present but the Herdr server is do
 visible and says so.
 Installing Herdr later requires restarting the Filebox Agent so it can
 re-probe. `completion_seq`, when available, shows a refresh hint
-even if an entire turn finishes between polls. Output refreshes hourly or manually,
+even if an entire turn finishes between polls. Output refreshes every minute or manually,
 with per-window controls and bounded request scheduling. The browser-local Herdr
 switch in Settings disables controls, checks and reminders. Ordinary reads use
 the detection/bottom snapshot; explicit keys read the visible screen afterward.
