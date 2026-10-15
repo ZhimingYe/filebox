@@ -462,6 +462,8 @@ pub enum HubMessage {
         keys: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lines: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        read_source: Option<crate::herdr::HerdrReadSource>,
         #[serde(default)]
         wait: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1259,6 +1261,7 @@ mod tests {
             text: None,
             keys: Vec::new(),
             lines: None,
+            read_source: None,
             wait: false,
             timeout_ms: None,
         };

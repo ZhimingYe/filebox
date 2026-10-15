@@ -35,6 +35,7 @@ import { CollectionPicker } from './components/CollectionPicker';
 import { NoAgentSelected } from './components/NoAgentSelected';
 import { TempTransferView } from './components/TempTransferView';
 import { TerminalView } from './components/TerminalView';
+import { useHerdrEnabled } from './hooks/useHerdrEnabled';
 import { HerdrView } from './components/HerdrView';
 import { HerdrAttention } from './components/HerdrAttention';
 import { useHerdrAttention, type HerdrAttention as HerdrNotice } from './hooks/useHerdrAttention';
@@ -547,8 +548,9 @@ export default function App() {
   const tempCapable = !!selectedAgent?.capabilities?.temp_upload && !!tempRootName;
   // Terminal nav entry is only meaningful on a terminal-capable agent.
   const terminalCapable = !!selectedAgent?.capabilities?.terminal;
-  const herdrCapable = !!selectedAgent?.capabilities?.herdr;
-  const herdrAttention = useHerdrAttention(agents, loggedIn === true,
+  const herdrEnabled = useHerdrEnabled();
+  const herdrCapable = herdrEnabled && !!selectedAgent?.capabilities?.herdr;
+  const herdrAttention = useHerdrAttention(agents, loggedIn === true && herdrEnabled,
     view === 'herdr' && herdrCapable ? selectedAgentId : null);
   const [herdrFocus, setHerdrFocus] = useState<{ backendId: string; target: string; nonce: number } | null>(null);
   const openHerdrNotice = (notice: HerdrNotice) => {
@@ -1399,7 +1401,7 @@ export default function App() {
                   ) : (
                     <div style={styles.transferUnsupported}>
                       <p style={styles.transferUnsupportedText}>
-                        Herdr is not installed on this backend.
+                        {herdrEnabled ? 'Herdr is not installed on this backend.' : 'Herdr is disabled. Enable it in Settings.'}
                       </p>
                     </div>
                   )}

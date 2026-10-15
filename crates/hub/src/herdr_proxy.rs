@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use filebox_protocol::herdr::{
     clamp_lines, clamp_wait_timeout_ms, validate_keys, validate_prompt_text, validate_target,
-    HerdrOp,
+    HerdrOp, HerdrReadSource,
 };
 use filebox_protocol::message::HubMessage;
 use serde::Deserialize;
@@ -28,6 +28,8 @@ pub struct HerdrBody {
     pub keys: Vec<String>,
     #[serde(default)]
     pub lines: Option<u32>,
+    #[serde(default)]
+    pub read_source: Option<HerdrReadSource>,
     #[serde(default)]
     pub wait: bool,
     #[serde(default)]
@@ -92,6 +94,7 @@ pub async fn herdr_handler(
         text: validated.text,
         keys: validated.keys,
         lines: validated.lines,
+        read_source: validated.read_source,
         wait: validated.wait,
         timeout_ms: validated.timeout_ms,
     };
@@ -152,7 +155,7 @@ pub async fn herdr_handler(
             if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
                 if !error.is_empty() && error != "null" {
                     let (status, code) = http_for_herdr_error(error);
-                    return error_response(status, code, human_herdr_error(error), status != StatusCode::BAD_REQUEST);
+                    return error_response(status, code, human_herdr_error(error), status != StatusCode::BAD_REQUEST && status != StatusCode::UNPROCESSABLE_ENTITY);
                 }
             }
             Json(value).into_response()
@@ -173,6 +176,7 @@ struct ValidatedBody {
     text: Option<String>,
     keys: Vec<String>,
     lines: Option<u32>,
+    read_source: Option<HerdrReadSource>,
     wait: bool,
     timeout_ms: Option<u64>,
 }
@@ -218,6 +222,9 @@ fn validate_body(body: HerdrBody) -> Result<ValidatedBody, &'static str> {
     if body.op == HerdrOp::Prompt {
         validate_prompt_text(text.as_deref().unwrap_or(""))?;
     }
+    if body.read_source.is_some() && body.op != HerdrOp::Read {
+        return Err("read_source is only valid for read");
+    }
     if body.wait && body.op != HerdrOp::Prompt {
         return Err("wait is only valid for prompt");
     }
@@ -227,6 +234,7 @@ fn validate_body(body: HerdrBody) -> Result<ValidatedBody, &'static str> {
         text,
         keys,
         lines: Some(clamp_lines(body.lines)),
+        read_source: body.read_source,
         wait: body.wait,
         timeout_ms: body.timeout_ms,
     })
@@ -246,6 +254,7 @@ fn http_for_herdr_error(error: &str) -> (StatusCode, &'static str) {
     let code = error.split(':').next().unwrap_or(error);
     match code {
         "herdr_unavailable" => (StatusCode::SERVICE_UNAVAILABLE, "herdr_unavailable"),
+        "herdr_key_unsupported" => (StatusCode::UNPROCESSABLE_ENTITY, "herdr_key_unsupported"),
         "herdr_incompatible" => (StatusCode::BAD_GATEWAY, "herdr_incompatible"),
         "herdr_timeout" => (StatusCode::GATEWAY_TIMEOUT, "herdr_timeout"),
         "herdr_blocked" => (StatusCode::CONFLICT, "herdr_blocked"),
@@ -262,6 +271,7 @@ fn http_for_herdr_error(error: &str) -> (StatusCode, &'static str) {
 fn human_herdr_error(error: &str) -> &'static str {
     match error.split(':').next().unwrap_or(error) {
         "herdr_unavailable" => "Herdr is installed but the server is not running on this backend",
+        "herdr_key_unsupported" => "This Herdr server does not support that key. Herdr v0.9.5 lacks Home, End, PageUp, PageDown and Delete; use a server build with navigation-key support.",
         "herdr_incompatible" => "Herdr returned an incompatible response. Update its CLI and restart the Herdr server with a matching version.",
         "herdr_timeout" => "The Herdr command timed out",
         "herdr_blocked" => "That agent is waiting for an approval. Inspect the output, then send a key.",
@@ -292,6 +302,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn read_source_is_optional_and_read_only() {
+        for source in [None, Some("visible"), Some("detection")] {
+            let mut body = serde_json::json!({"op": "read", "target": "w1:p1"});
+            if let Some(source) = source { body["read_source"] = source.into(); }
+            assert!(validate_body(serde_json::from_value(body).unwrap()).is_ok());
+        }
+        assert!(validate_body(serde_json::from_value(serde_json::json!({
+            "op": "status", "read_source": "detection"
+        })).unwrap()).is_err());
+        assert!(serde_json::from_value::<HerdrBody>(serde_json::json!({
+            "op": "read", "target": "w1:p1", "read_source": "arbitrary"
+        })).is_err());
+        assert_eq!(http_for_herdr_error("herdr_key_unsupported").0,
+            StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
     fn incompatible_cli_is_distinct_from_an_unavailable_server() {
         assert_eq!(http_for_herdr_error("herdr_incompatible"),
             (StatusCode::BAD_GATEWAY, "herdr_incompatible"));
@@ -308,6 +335,7 @@ mod tests {
             text: None,
             keys: Vec::new(),
             lines: None,
+            read_source: None,
             wait: false,
             timeout_ms: None,
         })
@@ -323,6 +351,7 @@ mod tests {
             text: Some("look at this".into()),
             keys: Vec::new(),
             lines: None,
+            read_source: None,
             wait: false,
             timeout_ms: None,
         })
@@ -333,6 +362,7 @@ mod tests {
             text: Some("x".into()),
             keys: Vec::new(),
             lines: None,
+            read_source: None,
             wait: false,
             timeout_ms: None,
         })
@@ -347,6 +377,7 @@ mod tests {
             text: None,
             keys: vec!["esc".into(), "enter".into()],
             lines: None,
+            read_source: None,
             wait: false,
             timeout_ms: None,
         })
@@ -357,6 +388,7 @@ mod tests {
             text: None,
             keys: vec!["rm -rf".into()],
             lines: None,
+            read_source: None,
             wait: false,
             timeout_ms: None,
         })
