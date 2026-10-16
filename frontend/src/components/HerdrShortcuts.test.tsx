@@ -66,6 +66,24 @@ describe('Herdr shortcut profiles', () => {
     } finally { act(() => root.unmount()); }
   });
 
+  it('keeps an above-opening keyboard within a short viewport as the toolbar moves', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    let top = 251;
+    try {
+      vi.stubGlobal('innerHeight', 500);
+      await act(async () => root.render(<HerdrShortcuts kind="codex" disabled={false} onSend={vi.fn()} />));
+      const trigger = container.querySelector<HTMLButtonElement>('[aria-label="More shortcuts"]')!;
+      Object.defineProperty(trigger.parentElement!, 'getBoundingClientRect', { value: () => ({ top }) });
+      await act(async () => trigger.click());
+      const panel = container.querySelector<HTMLElement>('[role="dialog"]')!;
+      expect(panel.style.maxHeight).toBe('195px');
+      top = 210;
+      await act(async () => window.dispatchEvent(new Event('scroll')));
+      expect(panel.style.maxHeight).toBe('154px');
+    } finally { act(() => root.unmount()); vi.unstubAllGlobals(); }
+  });
+
   it('opens and dismisses the keyboard without sending input or exposing unsupported navigation keys', async () => {
     const container = document.createElement('div');
     document.body.append(container);

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { c, font, radius, shadow } from '../theme';
 
 /** Quiet controls shared by the Herdr toolbar and remote keyboard. */
@@ -25,6 +25,25 @@ export function HerdrPopover({ label, trigger, children, above = false, touch = 
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!open || !above) return;
+    const fitAbove = () => {
+      const triggerTop = root.current?.getBoundingClientRect().top ?? 0;
+      if (!triggerTop || !panel.current) return;
+      const viewport = window.visualViewport;
+      const availableHeight = triggerTop - Math.max(48, viewport?.offsetTop ?? 0) - 8;
+      panel.current.style.maxHeight = `${Math.max(0, Math.min(420, (viewport?.height ?? window.innerHeight) * 0.55, availableHeight))}px`;
+    };
+    fitAbove();
+    window.addEventListener('resize', fitAbove);
+    window.addEventListener('scroll', fitAbove, true);
+    window.visualViewport?.addEventListener('resize', fitAbove);
+    return () => {
+      window.removeEventListener('resize', fitAbove);
+      window.removeEventListener('scroll', fitAbove, true);
+      window.visualViewport?.removeEventListener('resize', fitAbove);
+    };
+  }, [open, above]);
   useEffect(() => {
     if (!open) return;
     panel.current?.querySelector<HTMLElement>('button, input, select')?.focus();
