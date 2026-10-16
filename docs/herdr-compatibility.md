@@ -102,8 +102,12 @@ and caches are scoped to the mounted panel. Manual list refresh does not read
 output unless the selected target has been replaced by a different pane. Cached
 snapshots, drafts, reminder acknowledgements, and input completion handling are
 bound to pane identity, so reusing an agent name cannot restore an earlier pane's
-state. Input uses the pane id when available and rechecks identity before queued
-dispatch or busy retry. Stopping a prompt wait leaves other windows' reads alone.
+state. Reads and input use the pane id when available and recheck identity before
+queued dispatch; input also rechecks before a busy retry. Shortcut profiles reset
+when the pane identity or detected agent kind changes; ordinary status refreshes
+preserve a manually selected profile. Stop waiting releases the composer immediately
+and cancels only that input operation and its follow-up output/status requests,
+leaving independent reads and status checks alone. Submitted input may still run.
 Sending input refreshes its target
 once; completion changes only show a
 hint until the next output refresh. Status keeps running every 30 seconds during
@@ -111,6 +115,9 @@ prompt waits. A bounded priority queue allows two requests, eight waiting entrie
 and a ten-second queue deadline. Manual input wins over queued background work;
 HTTP and CLI deadlines still bound running operations. Slow reads have cancellation
 and an eight-second notice, and superseded replies cannot paint another window.
+Output snapshots retain at most 256 KiB of terminal text plus an explicit
+`… truncated` marker on overflow. The marker is preserved even when the discarded
+tail is whitespace; UTF-8 characters are not split at the boundary.
 
 See [remote navigation and shortcut research](herdr-shortcuts.md) for the
 bottom-screen read strategy, per-agent profiles, the Herdr v0.9.5 navigation-key

@@ -155,12 +155,21 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const prompt = selectedIdentity ? drafts[selectedIdentity] ?? '' : '';
   const promptBytes = new TextEncoder().encode(prompt.trim()).length;
 
-  const loadList = useCallback(async (silent = false) => {
-    if (!mountedRef.current || (silent && abortList.current)) return;
+  const loadList = useCallback(async (silent = false, parentSignal?: AbortSignal) => {
+    if (!mountedRef.current || parentSignal?.aborted || (silent && abortList.current)) return;
     const gen = ++genRef.current;
     abortList.current?.abort();
     const controller = new AbortController();
     abortList.current = controller;
+    const abort = () => {
+      controller.abort();
+      if (genRef.current === gen) {
+        genRef.current++;
+        abortList.current = null;
+        if (mountedRef.current) setLoadingList(false);
+      }
+    };
+    parentSignal?.addEventListener('abort', abort, { once: true });
     if (!silent) setLoadingList(true);
     try {
       const res = await command({ op: 'status' }, controller.signal, 20_000, silent ? 1 : 2);
@@ -216,16 +225,26 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
         lastReadAttempt.current.clear();
       }
     } finally {
+      parentSignal?.removeEventListener('abort', abort);
       if (genRef.current === gen) { abortList.current = null; if (mountedRef.current) setLoadingList(false); }
     }
   }, [agent.id, command]);
 
-  const loadOutput = useCallback(async (target: string, silent = false, visible = false) => {
-    if (!mountedRef.current || selectedRef.current !== target || (silent && abortOutput.current)) return;
+  const loadOutput = useCallback(async (target: string, silent = false, visible = false, parentSignal?: AbortSignal) => {
+    if (!mountedRef.current || parentSignal?.aborted || selectedRef.current !== target || (silent && abortOutput.current)) return;
     const gen = ++outputGenRef.current;
     abortOutput.current?.abort();
     const controller = new AbortController();
     abortOutput.current = controller;
+    const abort = () => {
+      controller.abort();
+      if (outputGenRef.current === gen) {
+        outputGenRef.current++;
+        abortOutput.current = null;
+        if (mountedRef.current) setLoadingOutput(false);
+      }
+    };
+    parentSignal?.addEventListener('abort', abort, { once: true });
     setLoadingOutput(true);
     setOutputElapsed(0);
     lastReadAttempt.current.set(target, Date.now());
@@ -235,10 +254,11 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
       if (!itemAtStart) return;
       const identity = paneIdentity(itemAtStart);
       const res = await command(
-        { op: 'read', target, lines: 120, read_source: visible ? 'visible' : 'detection' },
+        { op: 'read', target: itemAtStart.pane_id || target, lines: 120, read_source: visible ? 'visible' : 'detection' },
         controller.signal,
         25_000,
         silent ? 0 : 2,
+        () => agentsRef.current.some((a) => a.target === target && paneIdentity(a) === identity),
       );
       if (!mountedRef.current || controller.signal.aborted || outputGenRef.current !== gen || selectedRef.current !== target) return;
       const current = agentsRef.current.find((a) => a.target === target);
@@ -266,6 +286,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
       if (silent && (errorCode(e) === 'agent_busy' || errorCode(e) === 'herdr_not_idle')) return;
       setOutputError(message);
     } finally {
+      parentSignal?.removeEventListener('abort', abort);
       if (outputGenRef.current === gen) { abortOutput.current = null; if (mountedRef.current) setLoadingOutput(false); }
     }
   }, [command]);
@@ -395,6 +416,9 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
 
   const stopWaiting = () => {
     abortSend.current?.abort();
+    abortSend.current = null;
+    sendingRef.current = false;
+    setSending(false);
     setActionNotice(`Stopped waiting for ${actionTarget}. Already submitted input may still be running; refresh the output before retrying.`);
   };
 
@@ -430,16 +454,19 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
             ? 'The agent needs your input. Read the output, then use the keys below.'
             : wait ? 'Finished waiting. Review the latest output below.' : 'Prompt sent. Refresh this window to see further output.');
         }
-        await loadOutput(target, true);
-        if (!controller.signal.aborted) await loadList(true);
+        await loadOutput(target, true, false, controller.signal);
+        if (!controller.signal.aborted) await loadList(true, controller.signal);
       } catch (e) {
         if (controller.signal.aborted || isAbortError(e) || !mountedRef.current || !valid()) return;
         const message = herdrFailureMessage(e);
         if (message && selectedRef.current === target) setActionError(message);
-        await loadOutput(target, true);
+        await loadOutput(target, true, false, controller.signal);
       } finally {
-        sendingRef.current = false;
-        if (mountedRef.current) setSending(false);
+        if (abortSend.current === controller) {
+          abortSend.current = null;
+          sendingRef.current = false;
+          if (mountedRef.current) setSending(false);
+        }
       }
     })();
   };
@@ -463,15 +490,18 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
         );
         if (controller.signal.aborted || !mountedRef.current || !valid()) return;
         if (selectedRef.current === target) setActionNotice(`Sent ${keys.join(' + ')}.`);
-        await loadOutput(target, false, true);
-        if (!controller.signal.aborted) await loadList(true);
+        await loadOutput(target, false, true, controller.signal);
+        if (!controller.signal.aborted) await loadList(true, controller.signal);
       } catch (e) {
         if (controller.signal.aborted || isAbortError(e) || !mountedRef.current || !valid()) return;
         const message = herdrFailureMessage(e);
         if (message && selectedRef.current === target) setActionError(message);
       } finally {
-        sendingRef.current = false;
-        if (mountedRef.current) setSending(false);
+        if (abortSend.current === controller) {
+          abortSend.current = null;
+          sendingRef.current = false;
+          if (mountedRef.current) setSending(false);
+        }
       }
     })();
   };
@@ -670,7 +700,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
             </pre>
 
             <div style={styles.composer}>
-              <HerdrShortcuts key={selectedAgent.target} kind={selectedAgent.kind}
+              <HerdrShortcuts key={JSON.stringify([selectedIdentity, selectedAgent.kind])} kind={selectedAgent.kind}
                 disabled={sending || !reachable} onSend={sendKeys} />
               <div style={styles.inputCard}>
                 <textarea

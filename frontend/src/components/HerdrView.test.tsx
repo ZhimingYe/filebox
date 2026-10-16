@@ -220,12 +220,12 @@ describe('HerdrView', () => {
     await act(async () => button('Herdr settings').click());
     vi.mocked(api.herdrCommand).mockClear();
     await act(async () => button('Refresh output').click());
-    expect(vi.mocked(api.herdrCommand).mock.calls.map(([, body]) => body)).toEqual([{ op: 'read', target: 'writer', lines: 120, read_source: 'detection' }]);
+    expect(vi.mocked(api.herdrCommand).mock.calls.map(([, body]) => body)).toEqual([{ op: 'read', target: 'w1:p3', lines: 120, read_source: 'detection' }]);
     await act(async () => card('reviewer').click());
     await act(async () => button('Herdr settings').click());
     expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false);
     await act(async () => button('Herdr settings').click());
-    expect(container.querySelector('pre')!.textContent).toBe('reviewer');
+    expect(container.querySelector('pre')!.textContent).toBe('w1:p2');
     expect(api.herdrCommand).toHaveBeenCalledTimes(1);
   });
 
@@ -241,7 +241,7 @@ describe('HerdrView', () => {
     await act(async () => button('Refresh output').click());
     expect(output.scrollTop).toBe(1000);
     expect(vi.mocked(api.herdrCommand).mock.calls.map(([, body]) => body)).toEqual([
-      { op: 'read', target: 'reviewer', lines: 120, read_source: 'detection' },
+      { op: 'read', target: 'w1:p2', lines: 120, read_source: 'detection' },
     ]);
   });
 
@@ -256,7 +256,7 @@ describe('HerdrView', () => {
     await toggleSetting('Wait for result');
     await act(async () => button('Send').click());
     await act(async () => [...container.querySelectorAll<HTMLButtonElement>('aside button')].find((b) => b.textContent?.includes('writer'))!.click());
-    expect(container.querySelector('pre')!.textContent).toBe('writer');
+    expect(container.querySelector('pre')!.textContent).toBe('w1:p3');
     await act(async () => button('Refresh output').click());
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(vi.mocked(api.herdrCommand).mock.calls.filter(([, body]) => body.op === 'status')).toHaveLength(2);
@@ -295,7 +295,7 @@ describe('HerdrView', () => {
     // Desktop auto-selects the first agent and loads latest output.
     expect(api.herdrCommand).toHaveBeenCalledWith(
       agent.id,
-      { op: 'read', target: 'reviewer', lines: 120, read_source: 'detection' },
+      { op: 'read', target: 'w1:p2', lines: 120, read_source: 'detection' },
       expect.any(AbortSignal),
       25_000,
     );
@@ -309,7 +309,7 @@ describe('HerdrView', () => {
     await act(async () => card!.click());
     expect(api.herdrCommand).toHaveBeenCalledWith(
       agent.id,
-      { op: 'read', target: 'reviewer', lines: 120, read_source: 'detection' },
+      { op: 'read', target: 'w1:p2', lines: 120, read_source: 'detection' },
       expect.any(AbortSignal),
       25_000,
     );
@@ -399,12 +399,12 @@ describe('HerdrView', () => {
           ],
         };
       }
-      if (body.op === 'read' && body.target === 'reviewer') {
+      if (body.op === 'read' && body.target === 'w1:p2') {
         reviewerReads += 1;
         if (reviewerReads === 1) return { req_id: 'r1', output: 'reviewer transcript' };
         return stale;
       }
-      if (body.op === 'read' && body.target === 'explore') {
+      if (body.op === 'read' && body.target === 'w1:p1') {
         return { req_id: 'r2', output: 'explore transcript' };
       }
       return { req_id: 'x' };
@@ -452,7 +452,7 @@ it('stopping a prompt wait in A leaves the selected B output request running', a
       { ...listed.agents[0], target: 'writer', name: 'writer', pane_id: 'w1:p3' }] };
     if (body.op === 'prompt') return new Promise((_resolve, reject) => signal!.addEventListener('abort',
       () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
-    if (body.target === 'writer') {
+    if (body.target === 'w1:p3') {
       writerSignal = signal;
       return new Promise((resolve) => { finishWriter = resolve; });
     }
@@ -534,7 +534,7 @@ it('invalidates snapshots when a named target is replaced by another pane', asyn
   vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
     ? { ...listed, agents: [{ ...listed.agents[0], pane_id: pane, status: 'idle' },
       { ...listed.agents[0], target: 'writer', name: 'writer', pane_id: 'w1:p3', status: 'idle' }] }
-    : { req_id: 'r', output: body.target === 'reviewer' ? `output from ${pane}` : 'writer output' });
+    : { req_id: 'r', output: body.target === pane ? `output from ${pane}` : 'writer output' });
   await render();
   expect(container.querySelector('pre')!.textContent).toBe('output from w1:p2');
   const card = (target: string) => [...container.querySelectorAll<HTMLButtonElement>('aside button')].find((b) => b.textContent?.includes(target))!;
@@ -569,4 +569,187 @@ it('aborts a replaced pane read and rejects its late result while refreshing the
   expect(container.querySelector('pre')!.textContent).toBe('output from w1:p99');
   await act(async () => finish({ req_id: 'stale', output: 'obsolete w1:p2 response' }));
   expect(container.querySelector('pre')!.textContent).toBe('output from w1:p99');
+});
+
+it('keeps reads and input on the same pane when an agent name is reassigned between list refreshes', async () => {
+  let nameOwner = 'w1:p2';
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
+    if (body.op === 'status') return listed;
+    if (body.op === 'read') return { req_id: 'r', output: `Screen from ${body.target === 'reviewer' ? nameOwner : body.target}` };
+    return { req_id: 'r' };
+  });
+  await render();
+  nameOwner = 'w1:p99';
+  await act(async () => button('Refresh output').click());
+  expect(vi.mocked(api.herdrCommand).mock.calls.filter(([, body]) => body.op === 'status')).toHaveLength(1);
+  expect(container.querySelector('pre')!.textContent).toBe('Screen from w1:p2');
+  await act(async () => button('Enter').click());
+  const inputs = vi.mocked(api.herdrCommand).mock.calls.filter(([, body]) => body.op === 'send_keys');
+  expect(inputs[0][1].target).toBe('w1:p2');
+  expect(container.querySelector('pre')!.textContent).toBe('Screen from w1:p2');
+});
+
+it('falls back to the target name when no pane id is available', async () => {
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
+    ? { ...listed, agents: [{ ...listed.agents[0], pane_id: '' }] }
+    : { req_id: 'r', output: body.target });
+  await render();
+  expect(container.querySelector('pre')!.textContent).toBe('reviewer');
+  expect(api.herdrCommand).toHaveBeenCalledWith(agent.id,
+    { op: 'read', target: 'reviewer', lines: 120, read_source: 'detection' }, expect.any(AbortSignal), 25_000);
+});
+
+it.each(['w1:p2', 'w1:p99'])('resets shortcut defaults when the agent type changes in %s', async (paneId) => {
+  let item = listed.agents[0];
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
+    ? { ...listed, agents: [item] } : { req_id: 'r', output: 'screen' });
+  await render();
+  await act(async () => button('More shortcuts').click());
+  expect(container.querySelector('select')!.value).toBe('codex');
+  await act(async () => {
+    const select = container.querySelector('select')!;
+    select.value = 'pi'; select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await act(async () => button('Refresh agent list').click());
+  expect(container.querySelector('select')!.value).toBe('pi');
+  item = { ...item, pane_id: paneId, kind: 'claude' };
+  await act(async () => button('Refresh agent list').click());
+  await act(async () => button('More shortcuts').click());
+  expect(container.querySelector('select')!.value).toBe('claude');
+  expect(button('Ctrl+T: Show task checklist')).toBeDefined();
+  expect(button('Ctrl+T: Open transcript pager')).toBeUndefined();
+});
+
+it('resets a custom shortcut profile when a same-kind pane replaces the old pane', async () => {
+  let paneId = 'w1:p2';
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
+    ? { ...listed, agents: [{ ...listed.agents[0], pane_id: paneId }] } : { req_id: 'r', output: 'screen' });
+  await render();
+  await act(async () => button('More shortcuts').click());
+  await act(async () => {
+    const select = container.querySelector('select')!;
+    select.value = 'pi'; select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  paneId = 'w1:p99';
+  await act(async () => button('Refresh agent list').click());
+  await act(async () => button('More shortcuts').click());
+  expect(container.querySelector('select')!.value).toBe('codex');
+});
+
+it.each(['prompt', 'send_keys', 'prompt_error'])('stops %s during its follow-up read and ignores the late output', async (action) => {
+  let reads = 0;
+  let signal: AbortSignal | undefined;
+  let finish: (value: api.HerdrResponse) => void = () => {};
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body, s) => {
+    if (body.op === 'status') return listed;
+    if (body.op === 'read') {
+      if (++reads === 1) return { req_id: 'r', output: 'original screen' };
+      signal = s;
+      return new Promise((resolve) => { finish = resolve; });
+    }
+    if (action === 'prompt_error') throw { error: 'herdr_timeout' };
+    return { req_id: 'sent' };
+  });
+  await render();
+  await typePrompt('continue');
+  await act(async () => button(action === 'send_keys' ? 'Enter' : 'Send').click());
+  expect(reads).toBe(2);
+  expect(signal!.aborted).toBe(false);
+  await act(async () => button('Stop waiting').click());
+  expect(signal!.aborted).toBe(true);
+  expect(container.querySelector('textarea')!.disabled).toBe(false);
+  expect(button('Refresh output')).toBeDefined();
+  expect(button('Stop waiting')).toBeUndefined();
+  expect(container.textContent).toContain('Already submitted input may still be running');
+  expect(container.querySelector('textarea')!.value).toBe(action === 'prompt' ? '' : 'continue');
+  await act(async () => finish({ req_id: 'late', output: 'cancelled screen' }));
+  expect(container.querySelector('pre')!.textContent).toBe('original screen');
+  expect(vi.mocked(api.herdrCommand).mock.calls.filter(([, body]) => body.op === 'status')).toHaveLength(1);
+});
+
+it.each(['prompt', 'read'])('a cancelled %s cannot finish a newer input operation', async (slowOp) => {
+  let prompts = 0;
+  let reads = 0;
+  let finishOld: (value: api.HerdrResponse) => void = () => {};
+  let finishNew: (value: api.HerdrResponse) => void = () => {};
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
+    if (body.op === 'status') return listed;
+    if (body.op === 'prompt') {
+      if (++prompts === 2) return new Promise((resolve) => { finishNew = resolve; });
+      if (slowOp === 'prompt') return new Promise((resolve) => { finishOld = resolve; });
+      return { req_id: 'sent' };
+    }
+    if (++reads === 2 && slowOp === 'read') return new Promise((resolve) => { finishOld = resolve; });
+    return { req_id: 'r', output: 'current screen' };
+  });
+  await render(); await typePrompt('old task');
+  await act(async () => button('Send').click());
+  await act(async () => button('Stop waiting').click());
+  expect(container.querySelector('textarea')!.disabled).toBe(false);
+  await typePrompt('new task');
+  await act(async () => button('Send').click());
+  expect(prompts).toBe(2);
+  await act(async () => finishOld({ req_id: 'old', output: 'old screen' }));
+  expect(container.querySelector('textarea')!.disabled).toBe(true);
+  expect(container.querySelector('textarea')!.value).toBe('new task');
+  expect(button('Stop waiting')).toBeDefined();
+  await act(async () => finishNew({ req_id: 'new' }));
+  expect(container.querySelector('textarea')!.disabled).toBe(false);
+  expect(container.querySelector('textarea')!.value).toBe('');
+  expect(container.querySelector('pre')!.textContent).toBe('current screen');
+});
+
+it.each(['prompt', 'send_keys'])('stops %s during its follow-up status check and ignores a late list', async (action) => {
+  let checks = 0;
+  let signal: AbortSignal | undefined;
+  let finish: (value: api.HerdrResponse) => void = () => {};
+  const report = vi.fn();
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body, s) => {
+    if (body.op === 'status') {
+      if (++checks === 1) return listed;
+      signal = s;
+      return new Promise((resolve) => { finish = resolve; });
+    }
+    return { req_id: 'r', output: 'current screen' };
+  });
+  await act(async () => root.render(<HerdrView agent={agent} onStatus={report} />));
+  await typePrompt('continue');
+  await act(async () => button(action === 'prompt' ? 'Send' : 'Enter').click());
+  expect(checks).toBe(2);
+  await act(async () => button('Stop waiting').click());
+  expect(signal!.aborted).toBe(true);
+  expect(container.querySelector('textarea')!.disabled).toBe(false);
+  await act(async () => finish({ ...listed, agents: [] }));
+  expect(report).toHaveBeenCalledTimes(1);
+  expect(container.querySelector('textarea')).not.toBeNull();
+});
+
+it('stopping an action follow-up read in A does not cancel a new read in B', async () => {
+  let reads = 0;
+  let writerSignal: AbortSignal | undefined;
+  let finishWriter: (value: api.HerdrResponse) => void = () => {};
+  let finishReviewer: (value: api.HerdrResponse) => void = () => {};
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body, signal) => {
+    if (body.op === 'status') return { ...listed, agents: [listed.agents[0],
+      { ...listed.agents[0], target: 'writer', name: 'writer', pane_id: 'w1:p3' }] };
+    if (body.op === 'prompt') return { req_id: 'sent' };
+    if (body.target === 'w1:p3') {
+      writerSignal = signal;
+      return new Promise((resolve) => { finishWriter = resolve; });
+    }
+    if (++reads > 1) return new Promise((resolve) => { finishReviewer = resolve; });
+    return { req_id: 'r', output: 'reviewer screen' };
+  });
+  await render(); await typePrompt('continue');
+  await act(async () => button('Send').click());
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>('aside button')]
+    .find((b) => b.textContent?.includes('writer'))!.click());
+  await act(async () => button('Stop waiting').click());
+  expect(writerSignal!.aborted).toBe(false);
+  expect(container.querySelector('textarea')!.disabled).toBe(false);
+  expect(button('Cancel refresh')).toBeDefined();
+  await act(async () => finishReviewer({ req_id: 'old', output: 'obsolete reviewer screen' }));
+  expect(button('Cancel refresh')).toBeDefined();
+  await act(async () => finishWriter({ req_id: 'b', output: 'writer screen' }));
+  expect(container.querySelector('pre')!.textContent).toBe('writer screen');
 });

@@ -415,7 +415,8 @@ async fn run_cli(
     let mut group_guard = HerdrProcessGroup(pid);
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_fut = drain_capped(stdout, HERDR_OUTPUT_MAX_BYTES);
+    // One overflow byte distinguishes truncated output from an exact fit.
+    let out_fut = drain_capped(stdout, HERDR_OUTPUT_MAX_BYTES + 1);
     let err_fut = drain_capped(stderr, 16 * 1024);
     tokio::pin!(out_fut);
     tokio::pin!(err_fut);
@@ -508,18 +509,18 @@ async fn wait_until_cancel(cancel: &AtomicBool) {
 fn read_output_text(out: &CliOutput) -> String {
     // `agent read` prints terminal text, not the socket API JSON envelope.
     // JSON in this text belongs to the coding agent and must stay intact.
-    truncate_output(out.stdout.trim_end())
+    truncate_output(&out.stdout)
 }
 
 fn truncate_output(text: &str) -> String {
     if text.len() <= HERDR_OUTPUT_MAX_BYTES {
-        return text.to_string();
+        return text.trim_end().to_string();
     }
     let mut end = HERDR_OUTPUT_MAX_BYTES;
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
-    let mut s = text[..end].to_string();
+    let mut s = text[..end].trim_end().to_string();
     s.push_str("\n… truncated");
     s
 }
@@ -950,6 +951,45 @@ exit 1
         assert_eq!(map_cli_error(&CliOutput { ok: false, stdout: String::new(),
             stderr: r#"{"error":{"code":"invalid_key","message":"unsupported key ctrl+end"}}"#.into() }),
             "herdr_key_unsupported");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn herdr_reads_mark_cli_output_overflow_without_breaking_utf8() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("herdr");
+        std::fs::write(&bin, "#!/bin/sh\ncat \"$0.output\"\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let client = HerdrClient { bin, version: "0.9.5".into() };
+        let cap = HERDR_OUTPUT_MAX_BYTES;
+        for (input, expected) in [
+            ("small output\n\n".to_string(), "small output".to_string()),
+            ("x".repeat(cap), "x".repeat(cap)),
+            (format!("{}LATEST QUESTION", "x".repeat(cap)), format!("{}\n… truncated", "x".repeat(cap))),
+            (format!("{}\n", "x".repeat(cap)), format!("{}\n… truncated", "x".repeat(cap))),
+            ("中".repeat(cap / 3 + 10), format!("{}\n… truncated", "中".repeat(cap / 3))),
+            ("😀".repeat(cap / 4 + 10), format!("{}\n… truncated", "😀".repeat(cap / 4))),
+            (format!("x{}", "中".repeat((cap - 1) / 3)), format!("x{}", "中".repeat((cap - 1) / 3))),
+            (format!("{}😀tail", "x".repeat(cap - 2)), format!("{}\n… truncated", "x".repeat(cap - 2))),
+        ] {
+            std::fs::write(dir.path().join("herdr.output"), input).unwrap();
+            let result = client.run_op(HerdrOp::Read, Some("w1:p2".into()), None,
+                Vec::new(), Some(120), Some(HerdrReadSource::Detection), false, None,
+                &AtomicBool::new(false)).await.unwrap();
+            let output = result.output.unwrap();
+            assert!(output == expected, "length={}, expected={}, marker={}",
+                output.len(), expected.len(), output.ends_with("… truncated"));
+            assert!(!output.contains('\u{fffd}'));
+        }
+    }
+
+    #[tokio::test]
+    async fn herdr_capped_drain_consumes_the_entire_stream() {
+        let mut reader = std::io::Cursor::new(vec![b'x'; 100_000]);
+        let kept = drain_capped(Some(&mut reader), 1024).await;
+        assert_eq!(kept.len(), 1024);
+        assert_eq!(reader.position(), 100_000);
     }
 
     #[tokio::test]
