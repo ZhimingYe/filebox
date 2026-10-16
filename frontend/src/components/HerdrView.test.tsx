@@ -837,10 +837,25 @@ it('shows snapshot mode and offers an explicit refresh for changed status', asyn
   seq = 2;
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
   expect(button('Refresh changed output')).toBeDefined();
+  const snapshotDetails = container.querySelector('[aria-label="Output snapshot details"]')!;
+  expect(snapshotDetails.textContent).toContain('Snapshot ·');
+  expect(snapshotDetails.textContent).toContain('Manual');
+  expect(snapshotDetails.contains(button('Refresh changed output'))).toBe(true);
   expect(container.querySelector('pre')!.textContent).toBe('screen 1');
   await act(async () => button('Refresh changed output').click());
   expect(container.querySelector('pre')!.textContent).toBe('screen 2');
   expect(button('Refresh changed output')).toBeUndefined();
+});
+
+it.each([390, 320])('gives settings checkbox labels 44px touch targets at %spx wide', async (width) => {
+  window.innerWidth = width;
+  await render();
+  await act(async () => container.querySelector<HTMLButtonElement>('aside button[aria-pressed]')!.click());
+  await act(async () => button('Herdr settings').click());
+  const labels = [...container.querySelectorAll<HTMLInputElement>('[role="dialog"] input[type="checkbox"]')]
+    .map((input) => input.closest('label')!);
+  expect(labels).toHaveLength(3);
+  for (const label of labels) expect(Number.parseInt(label.style.minHeight)).toBeGreaterThanOrEqual(44);
 });
 
 it('preserves reading position on automatic refresh and jumps locally without sending any remote command', async () => {

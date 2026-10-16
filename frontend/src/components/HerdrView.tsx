@@ -750,12 +750,14 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                 : actionNotice && <HerdrButton touch={isMobile} aria-label="Dismiss notice" onClick={() => setActionNotice(null)}><IconClose /></HerdrButton>}
             </div>}
             <div style={{ ...styles.snapshotBar, padding: isMobile ? '0 8px' : '0 12px' }}>
-              {outputChanged ? <HerdrButton touch={isMobile} aria-label="Refresh changed output" disabled={loadingOutput || !reachable}
-                onClick={refreshOutput} style={{ color: c.accent, padding: '0 4px' }}>Status changed · Refresh</HerdrButton>
-                : <span style={styles.snapshotMeta} title="A snapshot, not a live terminal stream. Only the selected window is refreshed.">
-                  {loadingOutput ? 'Reading output…' : updatedAt ? `Snapshot · ${new Date(updatedAt).toLocaleTimeString()}` : 'No snapshot yet'}
+              <div role="group" aria-label="Output snapshot details" style={{ display: 'flex', flex: 1, minWidth: 0, alignItems: 'center', flexWrap: 'wrap', gap: '0 8px' }}>
+                <span style={styles.snapshotMeta} title="A snapshot, not a live terminal stream. Only the selected window is refreshed.">
+                  {updatedAt ? `Snapshot · ${new Date(updatedAt).toLocaleTimeString()}` : loadingOutput ? 'Reading output…' : 'No snapshot yet'}
                   <span style={{ color: c.textMuted }}>{autoRefresh[selectedAgent.target] === false ? 'Manual' : 'Auto · 1m'}</span>
-                </span>}
+                </span>
+                {outputChanged && <HerdrButton touch={isMobile} aria-label="Refresh changed output" disabled={loadingOutput || !reachable}
+                  onClick={refreshOutput} style={{ color: c.accent, padding: '0 4px' }}>Status changed · Refresh</HerdrButton>}
+              </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                 {!followingOutput && <HerdrButton touch={isMobile} aria-label="Jump to latest output"
                   title="Scroll to the bottom of this snapshot without sending remote input" onClick={jumpToLatest}>Latest ↓</HerdrButton>}
@@ -860,7 +862,7 @@ const styles: Record<string, React.CSSProperties> = {
   srOnly: { position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clipPath: 'inset(50%)', whiteSpace: 'nowrap', border: 0 },
   menuTitle: { fontSize: 13, fontWeight: 600, marginBottom: 8 },
   menuNote: { fontSize: 11, lineHeight: 1.5, color: c.textSecondary, margin: '8px 0' },
-  settingRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 40, cursor: 'pointer' },
+  settingRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 44, cursor: 'pointer' },
   listHeading: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 4px 8px', fontSize: 11, fontWeight: 500, color: c.textSecondary },
   inputCard: { border: `1px solid ${c.border}`, borderRadius: radius.lg, background: c.bgSubtle },
   page: {
