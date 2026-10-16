@@ -13,7 +13,7 @@ export function HerdrShortcuts({ kind, disabled, onSend }: {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const shortcuts = [...PROFILE_KEYS[profile], ...COMMON_KEYS]
     .filter((item) => `${item.label} ${item.description}`.toLocaleLowerCase().includes(normalizedQuery));
-  return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
+  return <div style={{ display: 'flex', flexShrink: 0, alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
     <div role="group" aria-label="Remote input keys" style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
       {QUICK_KEYS.map((item) => <HerdrButton key={item.label} disabled={disabled} touch={isMobile}
         aria-label={item.label} aria-description={item.description} title={item.description} onClick={() => onSend(item.keys)}>

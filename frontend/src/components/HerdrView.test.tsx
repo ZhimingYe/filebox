@@ -933,6 +933,9 @@ it('grows and shrinks the composer within desktop and mobile height limits', asy
   expect(textarea.style.height).toBe('160px');
   await act(async () => { window.innerWidth = 390; window.dispatchEvent(new Event('resize')); });
   expect(textarea.style.height).toBe('120px');
+  const inputCard = textarea.parentElement!;
+  expect(inputCard.style.overflowY).toBe('auto');
+  expect(inputCard.parentElement!.style.flexShrink).toBe('1');
   Object.defineProperty(textarea, 'scrollHeight', { value: 20 });
   await typePrompt('');
   expect(textarea.style.height).toBe('56px');
