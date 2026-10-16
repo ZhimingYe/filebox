@@ -65,7 +65,8 @@ Sources: [pi keybindings](https://github.com/badlogic/pi-mono/blob/main/packages
 Filebox keeps Enter, Esc and Up/Down visible and groups additional
 shortcuts under **Keys**. Detection selects a profile; the user can
 correct it. Each labeled shortcut sends only when clicked; opening the keyboard
-or changing its profile sends nothing. Numbered choices, editing keys, navigation, and multi-key sequences
+or changing its profile sends nothing. Search filters the selected profile's keys
+by key name or action; changing profiles clears that search. Numbered choices, editing keys, navigation, and multi-key sequences
 all pass the same bounded Hub/Agent allowlist. Keys affect the remote input,
 not Filebox's unsent local draft. Ctrl+C/Ctrl+D may exit; Ctrl+Z suspends on Unix.
 Clipboard, voice, and arbitrary raw key/text injection are not added.

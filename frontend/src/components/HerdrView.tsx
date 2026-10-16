@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useLayoutEffect, useRef, useState } from 'react';
 import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
 import { c, font, radius } from '../theme';
@@ -6,7 +6,8 @@ import { HerdrShortcuts } from './HerdrShortcuts';
 import { HerdrButton, HerdrPopover } from './HerdrControls';
 import { HerdrQueue } from '../lib/herdrQueue';
 import { useIsMobile } from '../state/useIsMobile';
-import { IconChevronLeft, IconRefresh, IconSettings, IconClose } from './icons';
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
+import { IconChevronLeft, IconRefresh, IconSettings, IconClose, IconSearch, IconClipboard, IconCheck } from './icons';
 
 interface Props {
   agent: api.AgentInfo;
@@ -96,6 +97,8 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   isMobileRef.current = isMobile;
   const [status, setStatus] = useState<api.HerdrServerStatus | null>(null);
   const [agents, setAgents] = useState<api.HerdrAgent[]>([]);
+  const [agentQuery, setAgentQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<api.HerdrAgentStatus | 'all'>('all');
   const [selected, setSelected] = useState<string | null>(null);
   const [output, setOutput] = useState<string>('');
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -111,6 +114,11 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const [loadingList, setLoadingList] = useState(true);
   const [loadingOutput, setLoadingOutput] = useState(false);
   const [sending, setSending] = useState(false);
+  const [followingOutput, setFollowingOutput] = useState(true);
+  const [copying, setCopying] = useState(false);
+  const [copyFailedFor, setCopyFailedFor] = useState<string | null>(null);
+  const { copiedPath, copyToClipboard } = useCopyToClipboard();
+  const promptHintId = useId();
   const genRef = useRef(0);
   const mountedRef = useRef(true);
   const statusCallbacks = useRef({ onStatus, onStatusError });
@@ -154,6 +162,11 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const selectedIdentity = selectedAgent ? paneIdentity(selectedAgent) : null;
   const prompt = selectedIdentity ? drafts[selectedIdentity] ?? '' : '';
   const promptBytes = new TextEncoder().encode(prompt.trim()).length;
+  const filteredAgents = useMemo(() => {
+    const query = agentQuery.trim().toLocaleLowerCase();
+    return agents.filter((item) => (statusFilter === 'all' || item.status === statusFilter)
+      && [displayName(item), item.kind, item.cwd, item.pane_id, item.target].join(' ').toLocaleLowerCase().includes(query));
+  }, [agents, agentQuery, statusFilter]);
 
   const loadList = useCallback(async (silent = false, parentSignal?: AbortSignal) => {
     if (!mountedRef.current || parentSignal?.aborted || (silent && abortList.current)) return;
@@ -318,6 +331,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
     abortOutput.current?.abort();
     abortOutput.current = null;
     stickToBottomRef.current = true;
+    setFollowingOutput(true);
     setUpdatedAt(null);
     setOutputError(null);
     setActionNotice(null);
@@ -366,6 +380,13 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
     if (!el || !stickToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
   }, [output, updatedAt]);
+
+  useLayoutEffect(() => {
+    const el = promptRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(isMobile ? 120 : 160, Math.max(56, el.scrollHeight))}px`;
+  }, [prompt, selectedIdentity, isMobile]);
 
   useEffect(() => {
     if (!sending) return;
@@ -511,6 +532,40 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const showList = !isMobile || !selectedAgent;
   const promptDisabled = sending || !reachable || !prompt.trim()
     || promptBytes > PROMPT_MAX_BYTES || selectedAgent?.status === 'blocked';
+  const outputChanged = selectedAgent && seenSignature !== null && seenSignature !== outputSignature(selectedAgent);
+  const copyLabel = JSON.stringify([selectedIdentity, updatedAt]);
+  const copied = copiedPath === copyLabel;
+  const promptHint = promptBytes > PROMPT_MAX_BYTES ? 'Prompt exceeds the 32 KiB limit. Shorten it before sending.'
+    : sending ? 'Input submitted. Stop waiting only stops Filebox from waiting.'
+    : !reachable ? 'Herdr is unavailable. Your draft is kept here.'
+    : selectedAgent?.status === 'blocked' ? 'Waiting for approval. Use the remote keys before sending a message.'
+    : wait ? 'Wait for result is on · up to 60 seconds'
+    : isMobile ? 'Enter for new line' : 'Ctrl / ⌘ + Enter to send · Enter for new line';
+
+  const jumpToLatest = () => {
+    stickToBottomRef.current = true;
+    setFollowingOutput(true);
+    if (outputBoxRef.current) outputBoxRef.current.scrollTop = outputBoxRef.current.scrollHeight;
+  };
+  const refreshOutput = () => {
+    if (loadingOutput) {
+      outputGenRef.current++; abortOutput.current?.abort(); abortOutput.current = null;
+      setLoadingOutput(false); setOutputError(null); setActionNotice('Output refresh cancelled.');
+      return;
+    }
+    setActionNotice(null);
+    jumpToLatest();
+    if (selected) void loadOutput(selected, false);
+  };
+  const copyOutput = async () => {
+    if (copying || !output) return;
+    setCopying(true);
+    setCopyFailedFor(null);
+    const success = await copyToClipboard(output, copyLabel);
+    if (!mountedRef.current) return;
+    setCopying(false);
+    if (!success) setCopyFailedFor(copyLabel);
+  };
 
   const cancelList = () => {
     genRef.current++;
@@ -572,6 +627,22 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
               <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}>Herdr <span style={styles.countChip}>{agents.length}</span></span>
               {listControl}
             </div>}
+            {reachable && (agents.length > 1 || agentQuery || statusFilter !== 'all') && <div style={styles.listTools}>
+              <label style={styles.searchBox}>
+                <IconSearch style={{ width: 14, height: 14, flexShrink: 0 }} />
+                <input type="search" aria-label="Search agents" placeholder="Search agents…" value={agentQuery}
+                  onChange={(event) => setAgentQuery(event.target.value)}
+                  style={{ ...styles.searchInput, fontSize: isMobile ? 16 : 12, minHeight: isMobile ? 44 : 32 }} />
+              </label>
+              <select aria-label="Filter agents by status" value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
+                style={{ ...styles.filterSelect, fontSize: isMobile ? 16 : 12, minHeight: isMobile ? 44 : 32 }}>
+                <option value="all">All agents · {agents.length}</option>
+                {(['blocked', 'working', 'done', 'idle', 'unknown'] as const).map((value) => <option key={value} value={value}>
+                  {value === 'blocked' ? 'Needs input' : statusMeta(value).label} · {agents.filter((item) => item.status === value).length}
+                </option>)}
+              </select>
+            </div>}
             {loadingList && agents.length === 0 && !listError ? (
               <div style={styles.empty}>Looking for agents…</div>
             ) : !reachable && listError && !status?.installed ? (
@@ -601,7 +672,11 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                 </p>
               </div>
             ) : (
-              agents.map((item) => {
+              filteredAgents.length === 0 ? <div style={styles.emptyCard}>
+                <div style={styles.emptyTitle}>No matching agents</div>
+                <p style={styles.emptyText}>Try another name, folder, or status.</p>
+                <HerdrButton onClick={() => { setAgentQuery(''); setStatusFilter('all'); }} touch={isMobile}>Clear filters</HerdrButton>
+              </div> : filteredAgents.map((item) => {
                 const meta = statusMeta(item.status);
                 const active = item.target === selected;
                 return (
@@ -623,6 +698,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                         {item.kind || 'agent'}
                         {item.cwd ? ` · ${item.cwd}` : item.pane_id ? ` · ${item.pane_id}` : ''}
                       </span>
+                      {drafts[paneIdentity(item)]?.trim() && <span style={styles.draftBadge}>Draft</span>}
                     </span>
                     <span style={{ ...styles.badge, color: meta.color, background: meta.bg }}>
                       {meta.label}
@@ -652,17 +728,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
               <HerdrButton touch={isMobile} aria-label={loadingOutput ? 'Cancel refresh' : 'Refresh output'}
                 title={loadingOutput ? 'Reading output · click to cancel' : updatedAt ? `Refresh output · updated ${new Date(updatedAt).toLocaleTimeString()}` : 'Refresh output'}
                 disabled={!reachable} style={{ borderColor: c.border, minWidth: isMobile ? 44 : 84 }}
-                onClick={() => {
-                  if (loadingOutput) {
-                    outputGenRef.current++; abortOutput.current?.abort(); abortOutput.current = null;
-                    setLoadingOutput(false); setOutputError(null); setActionNotice('Output refresh cancelled.');
-                    return;
-                  }
-                  setActionNotice(null);
-                  stickToBottomRef.current = true;
-                  if (outputBoxRef.current) outputBoxRef.current.scrollTop = outputBoxRef.current.scrollHeight;
-                  if (selected) void loadOutput(selected, false);
-                }}>{loadingOutput ? <IconClose /> : <IconRefresh />}{!isMobile && (loadingOutput ? 'Reading…' : 'Refresh')}</HerdrButton>
+                onClick={refreshOutput}>{loadingOutput ? <IconClose /> : <IconRefresh />}{!isMobile && (loadingOutput ? 'Reading…' : 'Refresh')}</HerdrButton>
               {settingsControl}
             </div>
 
@@ -680,9 +746,28 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                     ? 'Status changed · refresh to see the latest output'
                     : updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : 'Latest output')}
               </span>
-              {sending ? <HerdrButton onClick={stopWaiting}>Stop waiting</HerdrButton>
-                : actionNotice && <HerdrButton aria-label="Dismiss notice" onClick={() => setActionNotice(null)}><IconClose /></HerdrButton>}
+              {sending ? <HerdrButton touch={isMobile} onClick={stopWaiting}>Stop waiting</HerdrButton>
+                : actionNotice && <HerdrButton touch={isMobile} aria-label="Dismiss notice" onClick={() => setActionNotice(null)}><IconClose /></HerdrButton>}
             </div>}
+            <div style={{ ...styles.snapshotBar, padding: isMobile ? '0 8px' : '0 12px' }}>
+              {outputChanged ? <HerdrButton touch={isMobile} aria-label="Refresh changed output" disabled={loadingOutput || !reachable}
+                onClick={refreshOutput} style={{ color: c.accent, padding: '0 4px' }}>Status changed · Refresh</HerdrButton>
+                : <span style={styles.snapshotMeta} title="A snapshot, not a live terminal stream. Only the selected window is refreshed.">
+                  {loadingOutput ? 'Reading output…' : updatedAt ? `Snapshot · ${new Date(updatedAt).toLocaleTimeString()}` : 'No snapshot yet'}
+                  <span style={{ color: c.textMuted }}>{autoRefresh[selectedAgent.target] === false ? 'Manual' : 'Auto · 1m'}</span>
+                </span>}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                {!followingOutput && <HerdrButton touch={isMobile} aria-label="Jump to latest output"
+                  title="Scroll to the bottom of this snapshot without sending remote input" onClick={jumpToLatest}>Latest ↓</HerdrButton>}
+                <HerdrButton touch={isMobile} aria-label="Copy output" title={copied ? 'Copied!' : 'Copy this output snapshot'}
+                  disabled={!output || copying} onClick={() => void copyOutput()}>
+                  {copied ? <IconCheck style={{ color: c.success }} /> : <IconClipboard />}
+                  {!isMobile && (copied ? 'Copied' : copying ? 'Copying…' : 'Copy')}
+                </HerdrButton>
+                <span role="status" style={styles.srOnly}>{copied ? 'Output copied to clipboard.' : ''}</span>
+              </div>
+            </div>
+            {copyFailedFor === copyLabel && <div role="alert" style={styles.notice}>Could not copy. Select the output text and copy it manually.</div>}
             <pre
               ref={outputBoxRef}
               style={{ ...styles.output, whiteSpace: wrapOutput ? 'pre-wrap' : 'pre' }}
@@ -692,6 +777,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                 const el = e.currentTarget;
                 const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
                 stickToBottomRef.current = distance < 48;
+                setFollowingOutput(distance < 48);
               }}
             >
               {loadingOutput && !output
@@ -699,10 +785,13 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                 : output || 'No output yet. Send a prompt or wait for the agent to write.'}
             </pre>
 
-            <div style={styles.composer}>
+            <div style={{ ...styles.composer, ...(isMobile ? { padding: '4px 8px max(8px, env(safe-area-inset-bottom))' } : null) }}>
               <HerdrShortcuts key={JSON.stringify([selectedIdentity, selectedAgent.kind])} kind={selectedAgent.kind}
                 disabled={sending || !reachable} onSend={sendKeys} />
               <div style={styles.inputCard}>
+                <div style={styles.composerLabel}>Message to <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName(selectedAgent)}</strong>
+                  {promptBytes >= PROMPT_MAX_BYTES * 0.75 && <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}>{(promptBytes / 1024).toFixed(1)} / 32 KiB</span>}
+                </div>
                 <textarea
                   ref={promptRef}
                   value={prompt}
@@ -710,6 +799,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                     if (selectedIdentity) setDrafts((prev) => ({ ...prev, [selectedIdentity]: e.target.value }));
                   }}
                   aria-label={`Prompt for ${displayName(selectedAgent)}`}
+                  aria-describedby={promptHintId}
                   placeholder={`Message ${selectedAgent.kind || 'agent'}…`}
                   rows={2}
                   maxLength={PROMPT_MAX_BYTES}
@@ -723,15 +813,14 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                   }}
                 />
                 <div style={styles.composerBar}>
-                  <span style={{ ...styles.composerHint, color: promptBytes > PROMPT_MAX_BYTES ? c.danger : c.textMuted }}>
-                    {promptBytes > PROMPT_MAX_BYTES ? 'Prompt exceeds the 32 KiB limit. Shorten it before sending.'
-                      : seenSignature !== null && seenSignature !== outputSignature(selectedAgent) ? 'Status changed · refresh for latest output'
-                      : wait ? 'Wait for result is on' : isMobile ? 'Enter for new line' : 'Ctrl / ⌘ + Enter to send'}
+                  <span id={promptHintId} style={{ ...styles.composerHint, color: promptBytes > PROMPT_MAX_BYTES ? c.danger : c.textSecondary }}>
+                    {promptHint}
                   </span>
                   <button
                     type="button"
                     onClick={() => void sendPrompt()}
                     disabled={promptDisabled}
+                    title={promptDisabled ? promptHint : `Send to ${displayName(selectedAgent)}`}
                     style={{
                       ...styles.primaryBtn,
                       ...(isMobile ? { minHeight: 44 } : null),
@@ -760,6 +849,15 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
 }
 
 const styles: Record<string, React.CSSProperties> = {
+  listTools: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 4, flexShrink: 0 },
+  searchBox: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px', border: `1px solid ${c.border}`, borderRadius: radius.sm, background: c.surface, color: c.textSecondary },
+  searchInput: { width: '100%', minWidth: 0, border: 'none', background: 'transparent', color: c.text, fontFamily: font.sans },
+  filterSelect: { width: '100%', border: `1px solid ${c.border}`, borderRadius: radius.sm, background: c.surface, color: c.textSecondary, fontFamily: font.sans, fontSize: 12, padding: '0 8px' },
+  draftBadge: { alignSelf: 'flex-start', fontSize: 10, color: c.accent, fontWeight: 500 },
+  snapshotBar: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4, flexShrink: 0, flexWrap: 'wrap', borderBottom: `1px solid ${c.borderSubtle}`, background: c.bgSubtle, minHeight: 32 },
+  snapshotMeta: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0 8px', fontSize: 11, color: c.textSecondary, padding: '4px 0' },
+  composerLabel: { display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, padding: '8px 12px 0', fontSize: 11, color: c.textSecondary },
+  srOnly: { position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clipPath: 'inset(50%)', whiteSpace: 'nowrap', border: 0 },
   menuTitle: { fontSize: 13, fontWeight: 600, marginBottom: 8 },
   menuNote: { fontSize: 11, lineHeight: 1.5, color: c.textSecondary, margin: '8px 0' },
   settingRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 40, cursor: 'pointer' },

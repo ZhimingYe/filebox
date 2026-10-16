@@ -53,6 +53,7 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   window.innerWidth = 1024;
 });
 
@@ -171,6 +172,8 @@ describe('HerdrView', () => {
     await render();
     await typePrompt('cannot submit yet');
     expect(button('Send').disabled).toBe(true);
+    const hintId = container.querySelector('textarea')!.getAttribute('aria-describedby')!;
+    expect(document.getElementById(hintId)!.textContent).toContain('Waiting for approval');
     await act(async () => button('Down').click());
     expect(api.herdrCommand).toHaveBeenCalledWith(agent.id,
       { op: 'send_keys', target: 'w1:p2', keys: ['down'] }, expect.any(AbortSignal), 15_000);
@@ -752,4 +755,183 @@ it('stopping an action follow-up read in A does not cancel a new read in B', asy
   expect(button('Cancel refresh')).toBeDefined();
   await act(async () => finishWriter({ req_id: 'b', output: 'writer screen' }));
   expect(container.querySelector('pre')!.textContent).toBe('writer screen');
+});
+
+function mockMultipleAgents() {
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
+    ? { ...listed, agents: [listed.agents[0], { ...listed.agents[0], target: 'writer', name: 'writer',
+      pane_id: 'w1:p3', kind: 'claude', cwd: '/other/project', status: 'idle' }] }
+    : { req_id: 'r', output: `screen from ${body.target}` });
+}
+
+async function searchAgents(value: string) {
+  await act(async () => {
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Search agents"]')!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+async function filterAgents(value: string) {
+  await act(async () => {
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Filter agents by status"]')!;
+    select.value = value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+it.each([' WRITER ', 'CLAUDE', '/other', 'w1:p3'])('searches agent metadata for %s without changing the selected pane or requesting output', async (query) => {
+  mockMultipleAgents(); await render();
+  vi.mocked(api.herdrCommand).mockClear();
+  await searchAgents(query);
+  const cards = container.querySelectorAll('aside button[aria-pressed]');
+  expect(cards).toHaveLength(1);
+  expect(cards[0].textContent).toContain('writer');
+  expect(container.querySelector('textarea')!.getAttribute('aria-label')).toBe('Prompt for reviewer');
+  expect(container.querySelector('pre')!.textContent).toBe('screen from w1:p2');
+  expect(api.herdrCommand).not.toHaveBeenCalled();
+});
+
+it('combines search and status filters and clears a no-results state without losing the draft', async () => {
+  mockMultipleAgents(); await render(); await typePrompt('keep this draft');
+  expect(container.querySelector('aside button[aria-pressed="true"]')!.textContent).toContain('Draft');
+  await searchAgents('writer');
+  await filterAgents('working');
+  expect(container.textContent).toContain('No matching agents');
+  expect(container.querySelectorAll('aside button[aria-pressed]')).toHaveLength(0);
+  await act(async () => button('Clear filters').click());
+  expect(container.querySelectorAll('aside button[aria-pressed]')).toHaveLength(2);
+  expect(container.querySelector('textarea')!.value).toBe('keep this draft');
+  expect(container.querySelector('aside select')!.textContent).toContain('Working · 1');
+  await filterAgents('idle');
+  expect(container.querySelector('aside button[aria-pressed]')!.textContent).toContain('writer');
+  expect(container.querySelector('aside button[aria-pressed]')!.textContent).not.toContain('Draft');
+});
+
+it('supports searching on mobile before selecting a window and keeps filters on return', async () => {
+  window.innerWidth = 390;
+  mockMultipleAgents(); await render(); await searchAgents('writer');
+  expect(container.querySelector('textarea')).toBeNull();
+  const search = container.querySelector<HTMLInputElement>('[aria-label="Search agents"]')!;
+  expect(search.style.fontSize).toBe('16px');
+  expect(search.style.minHeight).toBe('44px');
+  await act(async () => container.querySelector<HTMLButtonElement>('aside button[aria-pressed]')!.click());
+  expect(container.querySelector('textarea')!.getAttribute('aria-label')).toBe('Prompt for writer');
+  await typePrompt('mobile draft');
+  await act(async () => button('Back to agent list').click());
+  expect(container.querySelector<HTMLInputElement>('[aria-label="Search agents"]')!.value).toBe('writer');
+  expect(container.querySelector('aside button[aria-pressed]')!.textContent).toContain('Draft');
+});
+
+it('shows snapshot mode and offers an explicit refresh for changed status', async () => {
+  vi.useFakeTimers();
+  let seq = 1;
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
+    ? { ...listed, agents: [{ ...listed.agents[0], completion_seq: seq }] }
+    : { req_id: 'r', output: `screen ${seq}` });
+  await render();
+  expect(container.textContent).toContain('Snapshot ·');
+  expect(container.textContent).toContain('Auto · 1m');
+  await toggleSetting('Auto-refresh every minute');
+  expect(container.textContent).toContain('Manual');
+  seq = 2;
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(button('Refresh changed output')).toBeDefined();
+  expect(container.querySelector('pre')!.textContent).toBe('screen 1');
+  await act(async () => button('Refresh changed output').click());
+  expect(container.querySelector('pre')!.textContent).toBe('screen 2');
+  expect(button('Refresh changed output')).toBeUndefined();
+});
+
+it('preserves reading position on automatic refresh and jumps locally without sending any remote command', async () => {
+  vi.useFakeTimers();
+  let screen = 0;
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status' ? listed
+    : { req_id: 'r', output: `output ${++screen}` });
+  await render();
+  const pre = container.querySelector('pre')!;
+  Object.defineProperties(pre, { scrollHeight: { value: 1000 }, clientHeight: { value: 200 } });
+  await act(async () => { pre.scrollTop = 100; pre.dispatchEvent(new Event('scroll', { bubbles: true })); });
+  expect(button('Jump to latest output')).toBeDefined();
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(pre.textContent).toBe('output 2');
+  expect(pre.scrollTop).toBe(100);
+  vi.mocked(api.herdrCommand).mockClear();
+  await act(async () => button('Jump to latest output').click());
+  expect(pre.scrollTop).toBe(1000);
+  expect(button('Jump to latest output')).toBeUndefined();
+  expect(api.herdrCommand).not.toHaveBeenCalled();
+});
+
+it('copies only the selected snapshot and scopes copied feedback to that pane', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal('navigator', { clipboard: { writeText } });
+  mockMultipleAgents(); await render(); await typePrompt('do not copy this');
+  vi.mocked(api.herdrCommand).mockClear();
+  await act(async () => button('Copy output').click());
+  expect(writeText).toHaveBeenLastCalledWith('screen from w1:p2');
+  expect(container.textContent).toContain('Output copied to clipboard.');
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>('aside button')]
+    .find((b) => b.textContent?.includes('writer'))!.click());
+  expect(container.textContent).not.toContain('Output copied to clipboard.');
+  await act(async () => button('Copy output').click());
+  expect(writeText).toHaveBeenLastCalledWith('screen from w1:p3');
+  expect(vi.mocked(api.herdrCommand).mock.calls.every(([, body]) => body.op === 'read')).toBe(true);
+});
+
+it('reports clipboard failures without losing output or the draft and allows retry', async () => {
+  vi.stubGlobal('navigator', {});
+  await render(); await typePrompt('keep my message');
+  vi.mocked(api.herdrCommand).mockClear();
+  await act(async () => button('Copy output').click());
+  expect(container.textContent).toContain('Could not copy. Select the output text');
+  expect(container.querySelector('textarea')!.value).toBe('keep my message');
+  expect(container.querySelector('pre')!.textContent).toBe('latest pane output');
+  expect(button('Copy output').disabled).toBe(false);
+  expect(api.herdrCommand).not.toHaveBeenCalled();
+});
+
+it('does not show a late clipboard failure under a different pane', async () => {
+  let fail: (reason: Error) => void = () => {};
+  vi.stubGlobal('navigator', { clipboard: { writeText: () => new Promise((_resolve, reject) => { fail = reject; }) } });
+  mockMultipleAgents(); await render();
+  await act(async () => button('Copy output').click());
+  expect(button('Copy output').disabled).toBe(true);
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>('aside button')]
+    .find((b) => b.textContent?.includes('writer'))!.click());
+  await act(async () => fail(new Error('denied')));
+  expect(container.textContent).not.toContain('Could not copy');
+  expect(button('Copy output').disabled).toBe(false);
+});
+
+it('does not copy placeholder text when there is no output', async () => {
+  vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status' ? listed : { req_id: 'r', output: '' });
+  await render();
+  expect(button('Copy output').disabled).toBe(true);
+});
+
+it('grows and shrinks the composer within desktop and mobile height limits', async () => {
+  await render();
+  const textarea = container.querySelector('textarea')!;
+  Object.defineProperty(textarea, 'scrollHeight', { value: 500, configurable: true });
+  await typePrompt('many\nlines\nof\ntext');
+  expect(textarea.style.height).toBe('160px');
+  await act(async () => { window.innerWidth = 390; window.dispatchEvent(new Event('resize')); });
+  expect(textarea.style.height).toBe('120px');
+  Object.defineProperty(textarea, 'scrollHeight', { value: 20 });
+  await typePrompt('');
+  expect(textarea.style.height).toBe('56px');
+});
+
+it('keeps Enter and IME composition local and sends only explicit Ctrl+Enter', async () => {
+  await render(); await typePrompt('draft');
+  vi.mocked(api.herdrCommand).mockClear();
+  const textarea = container.querySelector('textarea')!;
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, isComposing: true, bubbles: true }));
+  });
+  expect(api.herdrCommand).not.toHaveBeenCalled();
+  await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true })));
+  expect(vi.mocked(api.herdrCommand).mock.calls.filter(([, body]) => body.op === 'prompt')).toHaveLength(1);
 });

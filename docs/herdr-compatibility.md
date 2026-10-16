@@ -119,6 +119,15 @@ Output snapshots retain at most 256 KiB of terminal text plus an explicit
 `… truncated` marker on overflow. The marker is preserved even when the discarded
 tail is whitespace; UTF-8 characters are not split at the boundary.
 
+For multiple windows, the list supports local name/kind/folder/pane search and
+status filtering without changing the selected window or fetching output. A Draft
+label identifies unsent messages. The output toolbar shows snapshot time and
+automatic/manual refresh mode; status changes offer an explicit refresh action.
+Copy copies only the displayed snapshot, not the draft or remote input. Latest
+scrolls only Filebox's snapshot without requesting output or sending keys; automatic
+refresh preserves the reading position when scrolled up. Message fields grow to a
+bounded height and explain blocked submission, with larger touch controls on mobile.
+
 See [remote navigation and shortcut research](herdr-shortcuts.md) for the
 bottom-screen read strategy, per-agent profiles, the Herdr v0.9.5 navigation-key
 limitation, and an optional upstream source patch. New key allowlisting and read
