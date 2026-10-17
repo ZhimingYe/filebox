@@ -35,6 +35,55 @@ describe('Herdr shortcut profiles', () => {
     }
   });
 
+  it('filters keys by label and action, clears search when changing profile, and never sends on search', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const send = vi.fn();
+    try {
+      await act(async () => root.render(<HerdrShortcuts kind="codex" disabled={false} onSend={send} />));
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="More shortcuts"]')!.click());
+      const search = container.querySelector<HTMLInputElement>('[aria-label="Search shortcuts"]')!;
+      const input = async (value: string) => act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, value);
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await input(' TRANSCRIPT ');
+      expect(container.querySelector('[aria-label="Ctrl+T: Open transcript pager"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="Tab: Complete or select remote input"]')).toBeNull();
+      await input('ctrl+c');
+      expect(container.querySelector('[aria-label="Ctrl+C: Interrupt or clear input; repeated presses may exit"]')).not.toBeNull();
+      await input('no such action');
+      expect(container.textContent).toContain('No matching shortcuts');
+      await act(async () => {
+        const profile = container.querySelector<HTMLSelectElement>('select')!;
+        profile.value = 'claude'; profile.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      expect(search.value).toBe('');
+      expect(container.querySelector('[aria-label="Ctrl+T: Show task checklist"]')).not.toBeNull();
+      expect(send).not.toHaveBeenCalled();
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Ctrl+T: Show task checklist"]')!.click());
+      expect(send).toHaveBeenCalledExactlyOnceWith(['ctrl+t']);
+    } finally { act(() => root.unmount()); }
+  });
+
+  it('keeps an above-opening keyboard within a short viewport as the toolbar moves', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    let top = 251;
+    try {
+      vi.stubGlobal('innerHeight', 500);
+      await act(async () => root.render(<HerdrShortcuts kind="codex" disabled={false} onSend={vi.fn()} />));
+      const trigger = container.querySelector<HTMLButtonElement>('[aria-label="More shortcuts"]')!;
+      Object.defineProperty(trigger.parentElement!, 'getBoundingClientRect', { value: () => ({ top }) });
+      await act(async () => trigger.click());
+      const panel = container.querySelector<HTMLElement>('[role="dialog"]')!;
+      expect(panel.style.maxHeight).toBe('195px');
+      top = 210;
+      await act(async () => window.dispatchEvent(new Event('scroll')));
+      expect(panel.style.maxHeight).toBe('154px');
+    } finally { act(() => root.unmount()); vi.unstubAllGlobals(); }
+  });
+
   it('opens and dismisses the keyboard without sending input or exposing unsupported navigation keys', async () => {
     const container = document.createElement('div');
     document.body.append(container);
