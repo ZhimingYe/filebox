@@ -4,6 +4,18 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+## v2.7.0
+
+### Fixed
+- **Herdr pane targeting** — output reads and input use the same pane id; queued operations and late responses cannot cross into a replacement window with a reused name. Shortcut profiles reset when the pane or agent kind changes.
+- **Herdr cancellation** — Stop waiting also cancels follow-up output and status requests, immediately releases the composer, and leaves newer operations and other windows unaffected.
+- **Herdr large output** — bounded CLI capture detects overflow and shows an explicit truncation marker without splitting UTF-8 characters.
+
+### Improved
+- **Herdr window discovery** — search names, agent kinds, directories and pane ids, filter by status, and identify windows with unsent drafts.
+- **Herdr output reading** — keep snapshot time and refresh mode visible alongside status-change hints; copy the displayed snapshot or jump to its latest line locally, while automatic refresh preserves a scrolled-up reading position.
+- **Herdr desktop and mobile controls** — bounded auto-growing prompts, recipient and disabled-send explanations, UTF-8 size-budget feedback, searchable shortcut profiles, 44px mobile settings rows, and short-viewport layouts with reachable Send controls and in-bounds shortcut panels.
+
 ## v2.6.0
 
 ### Fixed
