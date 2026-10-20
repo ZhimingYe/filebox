@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -67,6 +67,8 @@ const COMMAND_MAX_CHARS: usize = 1024;
 /// clone of the snapshot, so reading never blocks on the producer.
 pub struct StatsCache {
     inner: Mutex<Inner>,
+    snapshot: RwLock<Option<(Arc<SysStats>, Instant)>>,
+    cold_refresh: Mutex<()>,
     refreshing: AtomicBool,
     ttl: Duration,
 }
@@ -74,8 +76,6 @@ pub struct StatsCache {
 struct Inner {
     sys: System,
     users: Users,
-    cached: Option<Arc<SysStats>>,
-    last_refresh: Option<Instant>,
     /// When the user table (uid→name) was last rebuilt. Re-reading it on every
     /// sweep would reparse /etc/passwd (or the platform equivalent) far more
     /// often than user accounts ever change, so we throttle it independently.
@@ -92,10 +92,10 @@ impl StatsCache {
             inner: Mutex::new(Inner {
                 sys: System::new(),
                 users: Users::new(),
-                cached: None,
-                last_refresh: None,
                 last_users_refresh: None,
             }),
+            snapshot: RwLock::new(None),
+            cold_refresh: Mutex::new(()),
             refreshing: AtomicBool::new(false),
             ttl,
         })
@@ -105,19 +105,18 @@ impl StatsCache {
     /// (with a background refresh kicked off), or blocks on a synchronous
     /// refresh for the very first call.
     pub async fn get(self: &Arc<Self>) -> Arc<SysStats> {
-        // Fast path: fresh cache.
-        {
-            let inner = self.inner.lock().await;
-            if let Some(s) = &inner.cached {
-                if self.is_fresh(inner.last_refresh) {
-                    return s.clone();
-                }
-                // Stale — hand back stale copy and schedule background refresh.
-                let stale = s.clone();
-                drop(inner);
+        // The snapshot lock is never held during a process sweep.
+        if let Some((stats, refreshed)) = self.snapshot() {
+            if !self.is_fresh(refreshed) {
                 self.schedule_refresh();
-                return stale;
             }
+            return stats;
+        }
+
+        // Coalesce cold callers without filling the blocking pool with waiters.
+        let _cold_refresh = self.cold_refresh.lock().await;
+        if let Some((stats, _)) = self.snapshot() {
+            return stats;
         }
 
         // Cold cache — refresh synchronously on the blocking pool so the
@@ -132,11 +131,12 @@ impl StatsCache {
         }
     }
 
-    fn is_fresh(&self, last: Option<Instant>) -> bool {
-        match last {
-            Some(t) => t.elapsed() < self.ttl,
-            None => false,
-        }
+    fn snapshot(&self) -> Option<(Arc<SysStats>, Instant)> {
+        self.snapshot.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn is_fresh(&self, last: Instant) -> bool {
+        last.elapsed() < self.ttl
     }
 
     fn schedule_refresh(self: &Arc<Self>) {
@@ -146,35 +146,34 @@ impl StatsCache {
         }
         let this = self.clone();
         tokio::task::spawn_blocking(move || {
-            this.refresh_in_background();
+            let _reset = RefreshReset(&this.refreshing);
+            this.refresh_sync();
         });
-    }
-
-    fn refresh_in_background(&self) {
-        let mut guard = self.inner.blocking_lock();
-        // Re-check staleness: another refresh may have just completed while
-        // we were waiting on the lock.
-        if self.is_fresh(guard.last_refresh) {
-            self.refreshing.store(false, Ordering::SeqCst);
-            return;
-        }
-        refresh_inner(&mut guard);
-        self.refreshing.store(false, Ordering::SeqCst);
     }
 
     fn refresh_sync(&self) -> Arc<SysStats> {
         let mut guard = self.inner.blocking_lock();
-        if let Some(s) = &guard.cached {
-            if self.is_fresh(guard.last_refresh) {
-                return s.clone();
+        if let Some((stats, refreshed)) = self.snapshot() {
+            if self.is_fresh(refreshed) {
+                return stats;
             }
         }
-        refresh_inner(&mut guard);
-        guard.cached.clone().unwrap_or_else(|| Arc::new(stub_stats()))
+        let stats = Arc::new(refresh_inner(&mut guard));
+        *self.snapshot.write().unwrap_or_else(|e| e.into_inner()) =
+            Some((stats.clone(), Instant::now()));
+        stats
     }
 }
 
-fn refresh_inner(inner: &mut Inner) {
+struct RefreshReset<'a>(&'a AtomicBool);
+
+impl Drop for RefreshReset<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+fn refresh_inner(inner: &mut Inner) -> SysStats {
     // ── Host-level refresh (cheap) ──
     // refresh_cpu_usage() reads /proc/stat only; refresh_cpu_all() would also
     // hit /sys for per-core frequency, which we don't show.
@@ -186,8 +185,7 @@ fn refresh_inner(inner: &mut Inner) {
     //   without_tasks       — never recurse into /proc/<pid>/task/*
     //   with_user(OnlyIf..) — read /proc/<pid>/status once per PID lifetime
     //   with_cmd(OnlyIf..)  — read /proc/<pid>/cmdline once per PID lifetime
-    // The `multithread` feature (Cargo.toml) parallelizes the /proc scan with
-    // rayon, turning a serial multi-second sweep on 10k+ PIDs into ~subsecond.
+    // Scan serially on the blocking worker, not an all-core Rayon pool.
     let kind = ProcessRefreshKind::nothing()
         .with_cpu()
         .with_memory()
@@ -302,7 +300,7 @@ fn refresh_inner(inner: &mut Inner) {
     });
     users.truncate(TOP_USERS);
 
-    inner.cached = Some(Arc::new(SysStats {
+    SysStats {
         cpu_usage_percent: cpu_usage,
         mem_used_bytes: mem_used,
         mem_total_bytes: mem_total,
@@ -320,8 +318,7 @@ fn refresh_inner(inner: &mut Inner) {
             total_mem_bytes: mem_used,
             total_processes,
         },
-    }));
-    inner.last_refresh = Some(Instant::now());
+    }
 }
 
 /// Mutable accumulator used while walking the process map. Finalized into the
@@ -607,6 +604,45 @@ fn stub_stats() -> SysStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stale_snapshot_is_readable_while_collector_is_blocked() {
+        let cache = StatsCache::new(Duration::ZERO);
+        let snapshot = Arc::new(stub_stats());
+        *cache.snapshot.write().unwrap() = Some((snapshot.clone(), Instant::now()));
+        let collector = cache.inner.lock().await;
+        for _ in 0..16 {
+            let stats = tokio::time::timeout(Duration::from_secs(1), cache.get())
+                .await.expect("cached reads must not wait for the collector");
+            assert!(Arc::ptr_eq(&stats, &snapshot));
+        }
+        assert!(cache.refreshing.load(Ordering::SeqCst));
+        drop(collector);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while cache.refreshing.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        assert!(!Arc::ptr_eq(&cache.snapshot().unwrap().0, &snapshot));
+    }
+
+    #[tokio::test]
+    async fn concurrent_cold_requests_share_one_snapshot() {
+        let cache = StatsCache::new(Duration::from_secs(60));
+        let results = futures_util::future::join_all((0..16).map(|_| cache.get())).await;
+        assert!(results.iter().all(|stats| Arc::ptr_eq(stats, &results[0])));
+    }
+
+    #[test]
+    fn refresh_flag_resets_on_panic() {
+        let refreshing = AtomicBool::new(true);
+        let result = std::panic::catch_unwind(|| {
+            let _reset = RefreshReset(&refreshing);
+            panic!("simulated collector failure");
+        });
+        assert!(result.is_err());
+        assert!(!refreshing.load(Ordering::SeqCst));
+    }
 
     #[tokio::test]
     async fn get_returns_valid_stats() {

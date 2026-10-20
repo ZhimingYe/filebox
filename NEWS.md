@@ -4,6 +4,12 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+## v2.7.1
+
+### Fixed
+- **Agent contention on shared many-core hosts** — use two Tokio async workers and disable sysinfo's all-core Rayon scans. Monitoring runs serially off the async workers; file I/O retains its separate blocking pool so slow files do not occupy the communication workers. This is a parallelism limit, not a process-wide CPU quota or CPU affinity policy.
+- **Stats responsiveness during refresh** — keep the published snapshot separate from the process collector lock so stale stats return immediately during slow refreshes. Coalesce cold requests and reset the background-refresh flag even if the collector panics.
+
 ## v2.7.0
 
 ### Fixed
