@@ -367,6 +367,19 @@ Ignore lists and depth limits are set in the UI and applied per request.
 Open Stats to see CPU, memory, and load; the Users tab breaks usage down per
 account; the Processes tab lists running processes with details.
 
+On shared many-core hosts, the Agent uses two Tokio async workers rather
+than one per CPU. System monitoring scans processes serially on a blocking
+worker, without an all-core Rayon pool. Cached stats remain available while
+a refresh runs; concurrent cold requests share the first snapshot. Refreshes
+are demand-driven (default TTL 60 seconds, `FILEBOX_AGENT_STATS_TTL_SECS`).
+
+This bounds scheduler and monitoring parallelism, not the whole process's CPU
+quota: file I/O, terminal threads and child programs have separate concurrency.
+The Agent does not pin CPUs or alter child-process priorities. Keeping blocking
+I/O separate lets heartbeats and cancellation run during slow work; a fully
+saturated host can still delay them. For strict CPU isolation, configure a
+cpuset/cgroup through your host administrator or job scheduler.
+
 ### Sensitive file protection
 
 The following kinds of files are denied by default (abbreviated):

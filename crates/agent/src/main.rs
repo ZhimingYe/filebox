@@ -14,8 +14,18 @@ mod sysinfo;
 mod temp_store;
 mod terminal;
 
-#[tokio::main]
-async fn main() {
+fn agent_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+}
+
+fn main() {
+    agent_runtime().expect("failed to create agent runtime").block_on(run());
+}
+
+async fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -80,4 +90,41 @@ async fn main() {
     tracing::info!("Agent starting, connecting to {}", config.hub_url);
 
     connection::run_connection_loop(&config).await;
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn bounded_runtime_keeps_async_tasks_live_during_blocking_work() {
+        let runtime = agent_runtime().unwrap();
+        assert_eq!(runtime.metrics().num_workers(), 2);
+        runtime.block_on(async {
+            let mut workers = Vec::new();
+            let mut releases = Vec::new();
+            for _ in 0..4 {
+                let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+                let (release_tx, release_rx) = std::sync::mpsc::channel();
+                releases.push(release_tx);
+                workers.push(tokio::task::spawn_blocking(move || {
+                    let _ = started_tx.send(());
+                    let _ = release_rx.recv_timeout(Duration::from_secs(5));
+                }));
+                tokio::time::timeout(Duration::from_secs(2), started_rx).await.unwrap().unwrap();
+            }
+            let heartbeat = tokio::spawn(async {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            });
+            let result = tokio::time::timeout(Duration::from_secs(1), heartbeat).await;
+            for release in releases {
+                let _ = release.send(());
+            }
+            for worker in workers {
+                worker.await.unwrap();
+            }
+            result.unwrap().unwrap();
+        });
+    }
 }
