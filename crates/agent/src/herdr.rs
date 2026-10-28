@@ -45,13 +45,6 @@ impl HerdrClient {
                 return None;
             }
         }
-        Self::probe_enabled(true).await
-    }
-
-    pub async fn probe_enabled(enabled: bool) -> Option<Self> {
-        if !enabled {
-            return None;
-        }
         let bin = resolve_herdr_path()?;
         match probe_version(&bin).await {
             Ok(version) => {
@@ -307,7 +300,7 @@ fn required_target(target: Option<String>) -> Result<String, String> {
     Ok(trimmed)
 }
 
-pub(crate) fn herdr_enabled(value: Option<&std::ffi::OsStr>) -> Result<bool, ()> {
+fn herdr_enabled(value: Option<&std::ffi::OsStr>) -> Result<bool, ()> {
     let Some(value) = value else { return Ok(true); };
     match value.to_str().ok_or(())?.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "on" | "yes" => Ok(true),

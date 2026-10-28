@@ -67,34 +67,33 @@ reminders do not guarantee every question is detected. Blocked text replies and
 other unsupported interactions remain available through Herdr itself, and the
 panel directs the user there rather than implying the question was answered.
 
-## Settings and compatibility limits
+## Refresh controls and compatibility limits
 
-Herdr enablement is stored per **Filebox Agent** in `agent.toml`:
+The integration is controlled on each **Filebox Agent**, not in browser storage:
 
 ```sh
-herdr_enabled = true
+export FILEBOX_AGENT_HERDR_ENABLED=0
+# Restart the Filebox Agent with this environment.
 ```
 
-The Agent Settings page can change this value on a live Agent. The setting is saved
-atomically to the Agent's configured file (`FILEBOX_AGENT_CONFIG`, default
-`./agent.toml`) and takes effect immediately. Editing `agent.toml` manually takes
-effect at the next Agent start. This does not stop independently running coding
-agents or the Herdr service.
+This hard switch skips both executable discovery and `herdr --version`, creates no
+Herdr client, and advertises `capabilities.herdr=false`. It takes precedence over an
+explicit `FILEBOX_AGENT_HERDR` path and a working Herdr installation on PATH. The Hub
+rejects Herdr commands for that Agent, and even a direct Agent request cannot invoke
+the CLI. Frontend navigation and monitoring follow the reported capability; there
+is no browser setting or remote API that can re-enable it. Other Filebox Agents are
+unaffected. It does not stop independently running coding agents or the Herdr service.
 
-`FILEBOX_AGENT_HERDR_ENABLED`, when present, overrides TOML and locks the web setting.
-Unset it to use the Agent Settings toggle. `1`/`true`/`on`/`yes` enable Herdr;
-`0`/`false`/`off`/`no` disable it, case-insensitively. An invalid or empty value fails
-closed (disabled) and logs a startup warning. When disabled by the effective setting,
-the Agent skips executable discovery and `herdr --version`; `capabilities.herdr` is
-false and commands are rejected. The settings capability remains available to newer
-Agents even when Herdr is disabled or no CLI is installed, so it can be enabled
-without a restart. Enabling re-probes the CLI; if none is found, Herdr remains enabled
-but unavailable until it is installed and enabled again. Other Filebox Agents are
-unaffected.
+Unset or `1`/`true` preserves auto-detection. `0`/`false` disables it (`off`/`no` and
+`on`/`yes` are also accepted, case-insensitively). An invalid or empty value disables
+integration and logs a startup warning. To enable later, change the Agent environment
+and restart. Settings shows availability and the environment-variable instruction.
 
-Upgrade the Filebox Agent binary to a version supporting live Herdr settings;
-updating only the Hub/frontend cannot change Herdr on an older Agent. The former
-browser preference is no longer read.
+Upgrade the Filebox Agent binary to a version supporting this variable; updating
+only the Hub/frontend cannot disable Herdr on an older Agent. The former browser
+preference is no longer read. If you previously disabled it in the browser, update
+and restart the relevant Agents with this environment variable before updating the
+Hub to preserve that opt-out.
 
 Each selected coding window has its own Refresh output button and auto-refresh
 switch in Herdr settings (1 minute by default; manual-only when off). Inactive windows are not

@@ -410,11 +410,6 @@ export interface AgentCapabilities {
   terminal_persistent?: boolean;
   /** Agent found a local `herdr` CLI it can drive. */
   herdr?: boolean;
-  /** Agent supports persistent, live Herdr settings. */
-  herdr_settings?: boolean;
-  herdr_enabled?: boolean;
-  /** An environment override prevents changes from the web UI. */
-  herdr_locked?: boolean;
 }
 
 export interface AgentInfo {
@@ -1160,15 +1155,6 @@ export interface HerdrCommandBody {
   read_source?: 'visible' | 'detection';
   wait?: boolean;
   timeout_ms?: number;
-}
-
-export function setHerdrEnabled(agentId: string, enabled: boolean) {
-  return request<{ enabled: boolean; available: boolean; locked: boolean }>(
-    `/api/agents/${encodeURIComponent(agentId)}/herdr/settings`,
-    { method: 'POST', body: JSON.stringify({ enabled }) },
-    false,
-    25_000,
-  );
 }
 
 /** Drive the agent's local Herdr CLI. Prompt-with-wait may take up to ~2 minutes. */

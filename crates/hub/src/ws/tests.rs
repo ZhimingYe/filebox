@@ -119,7 +119,7 @@ fn register_message() -> AgentMessage {
     AgentMessage::Register {
         agent_id: Some("agent".into()), name: "test agent".into(), resource_revision: 0,
         roots: vec![root("docs", "/home/test/docs", &[])], collections_revision: 0,
-        collections: vec![], capabilities: Capabilities { collections: true, pinned_folders: true, herdr_settings: true, ..Capabilities::default() },
+        collections: vec![], capabilities: Capabilities { collections: true, pinned_folders: true, ..Capabilities::default() },
         temp_root: None,
     }
 }
@@ -129,29 +129,6 @@ async fn install(state: &AppState) -> (AgentContext, mpsc::Receiver<HubMessage>)
     let context = registration::Registration::from_message(register_message(), "temporary".into())
         .unwrap().install(state.clone(), sender, Arc::new(Notify::new())).await;
     (context, receiver)
-}
-
-#[tokio::test]
-async fn herdr_settings_response_updates_only_current_connection_without_waiter() {
-    let state = test_state();
-    let (context, _outbound) = install(&state).await;
-    let stale = AgentContext {
-        state: state.clone(),
-        agent_id: context.agent_id.clone(),
-        connection_id: context.connection_id.wrapping_add(1),
-    };
-    updates::herdr_settings_response(&stale, "late".into(), true, true, false, None).await;
-    assert!(!state.inner.read().await.agents.get("agent").unwrap().capabilities.herdr_enabled);
-
-    updates::herdr_settings_response(&context, "timed-out-browser".into(), true, true, false, None).await;
-    let inner = state.inner.read().await;
-    let agent = inner.agents.get("agent").unwrap();
-    assert!(agent.capabilities.herdr_settings);
-    assert!(agent.capabilities.herdr_enabled);
-    assert!(agent.capabilities.herdr);
-    assert!(!agent.capabilities.herdr_locked);
-    assert_eq!(inner.sse_history.read().await.back().unwrap().event, "agent_updated");
-    assert!(agent.to_info().capabilities.herdr_enabled);
 }
 
 async fn pending(

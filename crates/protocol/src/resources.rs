@@ -175,16 +175,6 @@ pub struct Capabilities {
     /// `false` for rolling-upgrade safety and when `herdr` is not on PATH.
     #[serde(default)]
     pub herdr: bool,
-    /// Whether this agent supports persistent live Herdr setting changes.
-    /// Defaults to `false` for legacy-agent detection.
-    #[serde(default)]
-    pub herdr_settings: bool,
-    /// Whether Herdr is configured on for this agent.
-    #[serde(default)]
-    pub herdr_enabled: bool,
-    /// Whether an environment override locks Herdr settings.
-    #[serde(default)]
-    pub herdr_locked: bool,
 }
 
 impl Default for Capabilities {
@@ -211,9 +201,6 @@ impl Default for Capabilities {
             terminal_manage: false,
             terminal_persistent: false,
             herdr: false,
-            herdr_settings: false,
-            herdr_enabled: false,
-            herdr_locked: false,
         }
     }
 }

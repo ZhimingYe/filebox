@@ -1,5 +1,4 @@
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use filebox_updater::{
     ensure_output_available, prompt_line, prompt_nonempty_secret, prompt_yes_no, write_private_file,
@@ -23,7 +22,6 @@ struct TomlConfig {
     /// Base32 TOTP secret for agent-side secondary 2FA on terminal opens.
     /// Env `FILEBOX_AGENT_TERMINAL_TOTP_SECRET` wins over this value.
     terminal_totp_secret: Option<String>,
-    herdr_enabled: Option<bool>,
 }
 
 pub struct AgentConfig {
@@ -34,9 +32,6 @@ pub struct AgentConfig {
     pub temp_dir: Option<String>,
     pub temp_upload_name: Option<String>,
     pub terminal_totp_secret: Option<String>,
-    pub herdr_enabled: bool,
-    pub herdr_locked: bool,
-    pub config_path: PathBuf,
 }
 
 impl AgentConfig {
@@ -64,7 +59,6 @@ impl AgentConfig {
                 temp_dir: None,
                 temp_upload_name: None,
                 terminal_totp_secret: None,
-                herdr_enabled: None,
             }
         };
 
@@ -129,15 +123,6 @@ impl AgentConfig {
                 }
             });
 
-        let herdr_override = std::env::var_os("FILEBOX_AGENT_HERDR_ENABLED");
-        let (herdr_enabled, herdr_locked) =
-            configured_herdr_enabled(toml_config.herdr_enabled, herdr_override.as_deref());
-        if herdr_locked
-            && crate::herdr::herdr_enabled(herdr_override.as_deref()) == Err(())
-        {
-            tracing::warn!("Invalid FILEBOX_AGENT_HERDR_ENABLED; Herdr integration disabled");
-        }
-
         enforce_secure_hub_url(&hub_url);
 
         Self {
@@ -148,9 +133,6 @@ impl AgentConfig {
             temp_dir: toml_config.temp_dir,
             temp_upload_name: toml_config.temp_upload_name,
             terminal_totp_secret,
-            herdr_enabled,
-            herdr_locked,
-            config_path: path,
         }
     }
 }
@@ -203,7 +185,6 @@ pub fn init_interactive(request: filebox_updater::ConfigInitRequest) -> Result<(
         temp_dir: None,
         temp_upload_name: None,
         terminal_totp_secret: None,
-        herdr_enabled: Some(true),
     };
     let mut contents = toml::to_string_pretty(&config)
         .map_err(|error| format!("failed to serialize agent config: {error}"))?;
@@ -221,58 +202,6 @@ pub fn init_interactive(request: filebox_updater::ConfigInitRequest) -> Result<(
         eprintln!("Plaintext URL selected; start with FILEBOX_ALLOW_INSECURE_HUB=1.");
     }
     Ok(())
-}
-
-pub(crate) fn persist_herdr_enabled(path: &Path, enabled: bool) -> Result<(), ()> {
-    persist_herdr_enabled_with(path, enabled, atomic_write_private)
-}
-
-fn configured_herdr_enabled(configured: Option<bool>, env: Option<&std::ffi::OsStr>) -> (bool, bool) {
-    match env {
-        None => (configured.unwrap_or(true), false),
-        Some(value) => (crate::herdr::herdr_enabled(Some(value)).unwrap_or(false), true),
-    }
-}
-
-fn persist_herdr_enabled_with(
-    path: &Path,
-    enabled: bool,
-    write_file: impl FnOnce(&Path, &[u8]) -> Result<(), ()>,
-) -> Result<(), ()> {
-    let mut document = if path.exists() {
-        std::fs::read_to_string(path)
-            .map_err(|_| ())?
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|_| ())?
-    } else {
-        toml_edit::DocumentMut::new()
-    };
-    document["herdr_enabled"] = enabled.into();
-    write_file(path, document.to_string().as_bytes())
-}
-
-fn atomic_write_private(path: &Path, contents: &[u8]) -> Result<(), ()> {
-    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let temporary = parent.join(format!(".filebox-agent-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temporary).map_err(|_| ())?;
-        file.write_all(contents).map_err(|_| ())?;
-        file.sync_all().map_err(|_| ())?;
-        drop(file);
-        std::fs::rename(&temporary, path).map_err(|_| ())?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
 }
 
 fn expand_home(value: &str) -> PathBuf {
@@ -320,9 +249,7 @@ fn allow_insecure_hub() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        configured_herdr_enabled, is_secure_hub_url, persist_herdr_enabled_with, TomlConfig,
-    };
+    use super::{is_secure_hub_url, TomlConfig};
 
     #[test]
     fn secure_hub_url_accepts_https_and_wss() {
@@ -348,7 +275,6 @@ mod tests {
             temp_dir: Some("/var/tmp/filebox".to_string()),
             temp_upload_name: Some("dropbox".to_string()),
             terminal_totp_secret: Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".to_string()),
-            herdr_enabled: Some(false),
         };
         let contents = toml::to_string_pretty(&config).unwrap();
         let reparsed: TomlConfig = toml::from_str(&contents).unwrap();
@@ -361,54 +287,6 @@ mod tests {
         assert_eq!(
             reparsed.terminal_totp_secret.as_deref(),
             Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
-        );
-        assert_eq!(reparsed.herdr_enabled, Some(false));
-    }
-
-    #[test]
-    fn herdr_config_defaults_enabled_and_respects_toml_false() {
-        let defaults: TomlConfig = toml::from_str("hub = 'https://hub.example.com'\ntoken = 'x'").unwrap();
-        let disabled: TomlConfig = toml::from_str(
-            "hub = 'https://hub.example.com'\ntoken = 'x'\nherdr_enabled = false",
-        ).unwrap();
-        assert_eq!(defaults.herdr_enabled.unwrap_or(true), true);
-        assert_eq!(disabled.herdr_enabled, Some(false));
-    }
-
-    #[test]
-    fn failed_herdr_write_keeps_existing_config_intact() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("agent.toml");
-        let original = "# keep this comment\nhub = 'https://hub.example.com'\nherdr_enabled = true\n";
-        std::fs::write(&path, original).unwrap();
-        let result = persist_herdr_enabled_with(&path, false, |_, _| Err(()));
-        assert!(result.is_err());
-        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
-    }
-
-    #[test]
-    fn herdr_persistence_preserves_comments_and_unknown_fields() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("agent.toml");
-        let original = "# retained\nhub = 'https://hub.example.com'\ncustom = 7\nherdr_enabled = true\n";
-        std::fs::write(&path, original).unwrap();
-        super::persist_herdr_enabled(&path, false).unwrap();
-        let updated = std::fs::read_to_string(path).unwrap();
-        assert!(updated.contains("# retained"));
-        assert!(updated.contains("custom = 7"));
-        assert!(updated.contains("herdr_enabled = false"));
-    }
-
-    #[test]
-    fn herdr_env_override_wins_and_presence_locks_even_when_invalid() {
-        assert_eq!(configured_herdr_enabled(Some(false), None), (false, false));
-        assert_eq!(
-            configured_herdr_enabled(Some(false), Some(std::ffi::OsStr::new("yes"))),
-            (true, true),
-        );
-        assert_eq!(
-            configured_herdr_enabled(Some(true), Some(std::ffi::OsStr::new("invalid"))),
-            (false, true),
         );
     }
 }

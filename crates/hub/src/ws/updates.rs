@@ -127,44 +127,6 @@ pub(super) async fn dispatch(context: &AgentContext, message: AgentMessage) {
     }
 }
 
-pub(super) async fn herdr_settings_response(
-    context: &AgentContext,
-    req_id: String,
-    enabled: bool,
-    available: bool,
-    locked: bool,
-    error: Option<String>,
-) {
-    let mut inner = context.state.inner.write().await;
-    if !inner.agents.is_current_connection(&context.agent_id, context.connection_id) {
-        return;
-    }
-    if error.is_none() {
-        inner.agents.update_herdr_settings_for_connection(
-            &context.agent_id, context.connection_id, enabled, available, locked,
-        );
-        AppState::emit_sse_locked(&inner, "agent_updated", serde_json::json!({
-            "agent_id": context.agent_id,
-            "capabilities": {
-                "herdr": enabled && available,
-                "herdr_settings": true,
-                "herdr_enabled": enabled,
-                "herdr_locked": locked,
-            },
-        })).await;
-    }
-    if let Some(pending) = responses::take_pending_locked(&inner, context, &req_id).await {
-        pending.deliver(serde_json::json!({
-            "type": "herdr_settings_response",
-            "req_id": req_id,
-            "enabled": enabled,
-            "available": available,
-            "locked": locked,
-            "error": error,
-        }));
-    }
-}
-
 async fn reject(
     inner: &mut crate::state::AppStateInner, context: &AgentContext, req_id: &str,
     error: String, message: String, collections: bool,

@@ -229,14 +229,6 @@ pub enum AgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<String>,
     },
-    HerdrSettingsResponse {
-        req_id: String,
-        enabled: bool,
-        available: bool,
-        locked: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
-    },
 }
 
 mod base64_bytes {
@@ -476,10 +468,6 @@ pub enum HubMessage {
         wait: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
-    },
-    HerdrSettingsSet {
-        req_id: String,
-        enabled: bool,
     },
 }
 
@@ -1337,43 +1325,6 @@ mod tests {
     }
 
     #[test]
-    fn herdr_settings_messages_round_trip() {
-        let request = HubMessage::HerdrSettingsSet {
-            req_id: "herdr-settings-1".into(),
-            enabled: false,
-        };
-        assert_eq!(serde_json::to_value(&request).unwrap()["type"], "herdr_settings_set");
-        match round_trip_hub(&request) {
-            HubMessage::HerdrSettingsSet { req_id, enabled } => {
-                assert_eq!(req_id, "herdr-settings-1");
-                assert!(!enabled);
-            }
-            _ => panic!("wrong variant"),
-        }
-
-        let response = AgentMessage::HerdrSettingsResponse {
-            req_id: "herdr-settings-1".into(),
-            enabled: true,
-            available: false,
-            locked: false,
-            error: None,
-        };
-        assert_eq!(serde_json::to_value(&response).unwrap()["type"], "herdr_settings_response");
-        match round_trip_agent(&response) {
-            AgentMessage::HerdrSettingsResponse {
-                req_id, enabled, available, locked, error,
-            } => {
-                assert_eq!(req_id, "herdr-settings-1");
-                assert!(enabled);
-                assert!(!available);
-                assert!(!locked);
-                assert!(error.is_none());
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
     fn capabilities_default_has_terminal_false_and_legacy_agents_omit_it() {
         assert!(!Capabilities::default().terminal);
         assert!(!Capabilities::default().herdr);
@@ -1389,19 +1340,6 @@ mod tests {
         });
         let caps: Capabilities = serde_json::from_value(legacy).unwrap();
         assert!(!caps.terminal);
-    }
-
-    #[test]
-    fn herdr_settings_capabilities_default_false_for_legacy_agents() {
-        let mut legacy = serde_json::to_value(Capabilities::default()).unwrap();
-        let object = legacy.as_object_mut().unwrap();
-        object.remove("herdr_settings");
-        object.remove("herdr_enabled");
-        object.remove("herdr_locked");
-        let caps: Capabilities = serde_json::from_value(legacy).unwrap();
-        assert!(!caps.herdr_settings);
-        assert!(!caps.herdr_enabled);
-        assert!(!caps.herdr_locked);
     }
 
     /// Frozen wire tags. A renamed variant parses as an unknown `type` on the
