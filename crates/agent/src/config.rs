@@ -421,6 +421,8 @@ pub fn setup_terminal_2fa(path: &std::path::Path) -> Result<(), String> {
     if std::env::var_os("FILEBOX_AGENT_TERMINAL_TOTP_SECRET").is_some() {
         return Err("Unset FILEBOX_AGENT_TERMINAL_TOTP_SECRET before configuring the file; it overrides the saved secret".into());
     }
+    protect_config(path)
+        .map_err(|_| "Failed to protect the terminal authenticator configuration".to_string())?;
     let original = std::fs::read_to_string(path).map_err(|e| format!("Read {}: {e}. Run agent --init-config first", path.display()))?;
     let mut value: toml::Value = toml::from_str(&original).map_err(|e| format!("Invalid config: {e}"))?;
     if value.get("terminal_totp_secret").is_some() && !prompt_yes_no("Replace existing terminal authenticator", false)? { return Ok(()); }
@@ -441,9 +443,8 @@ pub fn setup_terminal_2fa(path: &std::path::Path) -> Result<(), String> {
     value.as_table_mut().ok_or("Config must be a TOML table")?.insert("terminal_totp_secret".into(), toml::Value::String(secret));
     let contents = toml::to_string_pretty(&value).map_err(|e| e.to_string())?;
     if std::fs::read_to_string(path).map_err(|e| e.to_string())? != original { return Err("Config changed during setup; retry".into()); }
-    let temporary = path.with_file_name(format!(".filebox-2fa-{}.tmp", uuid::Uuid::new_v4()));
-    write_private_file(&temporary, contents.as_bytes(), false)?;
-    if let Err(e) = std::fs::rename(&temporary, path) { let _ = std::fs::remove_file(&temporary); return Err(e.to_string()); }
+    atomic_write_private(path, contents.as_bytes())
+        .map_err(|_| "Failed to save the terminal authenticator configuration".to_string())?;
     eprintln!("Terminal 2FA saved locally to {} (0600). Restart the Agent to apply it. Agent restart ends existing shells.", path.display());
     Ok(())
 }
@@ -579,7 +580,7 @@ pub fn is_private_config(path: &std::path::Path) -> bool {
 pub fn private_config_matches(path: &std::path::Path, metadata: Option<&std::fs::Metadata>) -> bool {
     let Ok(config) = private_config_registry().lock() else { return true; };
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    if config.paths.contains(&path) {
+    if config.paths.iter().any(|private_path| *private_path == path) {
         return true;
     }
     #[cfg(unix)]
@@ -595,8 +596,6 @@ mod private_config_tests {
     use super::*;
     #[test]
     fn custom_config_and_hardlink_are_not_readable() {
-        use std::os::unix::fs::MetadataExt;
-
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("custom-settings.toml");
         let initial_alias = dir.path().join("innocent-initial.txt");
@@ -606,19 +605,13 @@ mod private_config_tests {
         )
         .unwrap();
         std::fs::hard_link(&config, &initial_alias).unwrap();
-        let original_metadata = std::fs::metadata(&config).unwrap();
         protect_config(&config).unwrap();
         let startup_pin = private_config_registry()
             .lock()
             .unwrap()
             .inodes
             .files
-            .iter()
-            .find(|file| {
-                let metadata = file.metadata().unwrap();
-                (metadata.dev(), metadata.ino())
-                    == (original_metadata.dev(), original_metadata.ino())
-            })
+            .last()
             .unwrap()
             .try_clone()
             .unwrap();
@@ -658,6 +651,7 @@ mod private_config_tests {
         std::fs::remove_file(&first_alias).unwrap();
         std::fs::remove_file(&second_alias).unwrap();
         // Even with no links left, the protected inode must stay allocated.
+        use std::os::unix::fs::MetadataExt;
         let pinned = startup_pin.metadata().unwrap();
         assert_eq!(pinned.nlink(), 0);
         let fresh = std::fs::metadata(&unrelated).unwrap();

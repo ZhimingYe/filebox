@@ -481,9 +481,8 @@ on a particular Filebox Agent, set `FILEBOX_AGENT_HERDR_ENABLED=0` (or `false`) 
 Agent's environment and restart it. This is checked **before** path discovery and
 `--version`, even when `FILEBOX_AGENT_HERDR` points to a valid binary. No Herdr client is
 created, no capability is advertised, and incoming commands cannot invoke Herdr.
-With no environment override, the TOML `herdr_enabled` value is used (default
-true). An explicitly present environment value takes precedence; invalid values
-disable integration with one startup warning. The web settings may persist only the boolean `herdr_enabled` to the
+Unset defaults to auto-detection; invalid values disable integration with one startup
+warning. The web settings may persist only the boolean `herdr_enabled` to the
 operator-selected Agent config path; callers cannot supply a path or arbitrary
 content. This setting applies live after a successful save, while manual
 on-disk edits take effect at the next Agent start. An explicitly present
