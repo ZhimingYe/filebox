@@ -197,6 +197,73 @@ async fn herdr_setting_completion_reconciles_reconnected_session() {
     drop(old_replies);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn herdr_settings_wait_for_forwarder_ack_before_accepting_next_update() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = AgentRuntime::for_tests(temp.path());
+    let mut revisions = runtime.herdr_settings_updates.subscribe();
+    let (sink, mut replies) = capture();
+    let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
+    session.tasks.abort_all();
+
+    session.dispatch(HubMessage::HerdrSettingsSet {
+        req_id: "first".into(),
+        enabled: false,
+    }).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if revisions.borrow().revision >= 1 {
+                break;
+            }
+            revisions.changed().await.unwrap();
+        }
+    }).await.unwrap();
+    assert!(session.runtime.herdr_settings_busy.load(Ordering::Acquire));
+
+    session.dispatch(HubMessage::HerdrSettingsSet {
+        req_id: "second".into(),
+        enabled: true,
+    }).unwrap();
+    match settings_response(&mut replies, "second").await {
+        AgentMessage::HerdrSettingsResponse { error, .. } => {
+            assert_eq!(error.as_deref(), Some("herdr_settings_busy"));
+        }
+        other => panic!("unexpected reply: {other:?}"),
+    }
+
+    let forwarder = tokio::spawn(super::super::runtime::forward_herdr_settings(
+        session.runtime.herdr_settings_updates.subscribe(),
+        session.runtime.herdr_settings_acks.clone(),
+        session.herdr_tx.clone(),
+    ));
+    match settings_response(&mut replies, "first").await {
+        AgentMessage::HerdrSettingsResponse { enabled, error, .. } => {
+            assert!(!enabled);
+            assert!(error.is_none());
+        }
+        other => panic!("unexpected reply: {other:?}"),
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while session.runtime.herdr_settings_busy.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+
+    session.dispatch(HubMessage::HerdrSettingsSet {
+        req_id: "second-retry".into(),
+        enabled: false,
+    }).unwrap();
+    match settings_response(&mut replies, "second-retry").await {
+        AgentMessage::HerdrSettingsResponse { enabled, error, .. } => {
+            assert!(!enabled);
+            assert!(error.is_none());
+        }
+        other => panic!("unexpected reply: {other:?}"),
+    }
+    forwarder.abort();
+    session.shutdown().await;
+}
+
 #[tokio::test]
 async fn aborting_parent_cancels_work_and_closes_all_response_queues() {
     let temp = tempfile::tempdir().unwrap();

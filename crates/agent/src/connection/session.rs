@@ -68,6 +68,7 @@ impl<'a> ConnectionSession<'a> {
         let mut tasks = JoinSet::new();
         tasks.spawn(super::runtime::forward_herdr_settings(
             runtime.herdr_settings_updates.subscribe(),
+            runtime.herdr_settings_acks.clone(),
             herdr_tx.clone(),
         ));
         let writer = ConnectionWriter(tokio::spawn(run_connection_writer(

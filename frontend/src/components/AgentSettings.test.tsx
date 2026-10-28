@@ -9,11 +9,13 @@ vi.mock('./RootManager', () => ({ RootManager: () => null }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
 let container: HTMLDivElement;
-const agent = {
+const agent: api.AgentInfo = {
   id: 'lab', name: 'Lab box', status: 'online', roots: [], last_seen: 0,
   rtt_ms: null, resource_revision: 0, inflight: 0,
+  pending_resource_update: false, last_config_error: null,
+  collections_revision: 0, pending_collections_update: false, collections: [],
   capabilities: { herdr: false, herdr_settings: true, herdr_enabled: true, herdr_locked: false },
-} as api.AgentInfo;
+};
 const toggle = () => container.querySelector<HTMLButtonElement>('[aria-label="Herdr integration"]')!;
 beforeEach(() => {
   vi.resetAllMocks();

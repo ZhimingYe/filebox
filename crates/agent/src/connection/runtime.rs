@@ -43,6 +43,7 @@ pub(super) struct AgentRuntime {
     pub(super) config_path: std::path::PathBuf,
     pub(super) herdr_settings: Arc<std::sync::RwLock<HerdrSettingsState>>,
     pub(super) herdr_settings_updates: watch::Sender<HerdrSettingsSnapshot>,
+    pub(super) herdr_settings_acks: watch::Sender<u64>,
     pub(super) herdr_admission_gate: Arc<Mutex<()>>,
     pub(super) herdr_settings_tx: mpsc::Sender<HerdrSettingsJob>,
     herdr_settings_rx: Option<mpsc::Receiver<HerdrSettingsJob>>,
@@ -120,6 +121,7 @@ impl AgentRuntime {
         }));
         let settings_snapshot = snapshot_settings(&herdr_settings, None, None, 0);
         let (herdr_settings_updates, _) = watch::channel(settings_snapshot);
+        let (herdr_settings_acks, _) = watch::channel(0);
         let (herdr_settings_tx, herdr_settings_rx) = mpsc::channel(1);
 
         Self {
@@ -130,6 +132,7 @@ impl AgentRuntime {
             config_path: config.config_path.clone(),
             herdr_settings,
             herdr_settings_updates,
+            herdr_settings_acks,
             herdr_admission_gate: Arc::new(Mutex::new(())),
             herdr_settings_tx,
             herdr_settings_rx: Some(herdr_settings_rx),
@@ -148,6 +151,7 @@ impl AgentRuntime {
         }));
         let (herdr_settings_updates, _) =
             watch::channel(snapshot_settings(&herdr_settings, None, None, 0));
+        let (herdr_settings_acks, _) = watch::channel(0);
         Self {
             stable_agent_id: resource_mgr.agent_id().to_string(), resource_mgr,
             stats_cache: StatsCache::new(Duration::from_secs(60)), dir_cache: DirCache::new(),
@@ -160,6 +164,7 @@ impl AgentRuntime {
             config_path: path.join("agent.toml"),
             herdr_settings,
             herdr_settings_updates,
+            herdr_settings_acks,
             herdr_admission_gate: Arc::new(Mutex::new(())),
             herdr_settings_tx,
             herdr_settings_rx: Some(herdr_settings_rx),
@@ -177,6 +182,7 @@ impl AgentRuntime {
             self.herdr_settings_busy.clone(),
             self.config_path.clone(),
             self.herdr_settings_updates.clone(),
+            self.herdr_settings_acks.subscribe(),
             self.herdr_admission_gate.clone(),
             self.herdr_cancels.clone(),
         ));
@@ -216,6 +222,7 @@ async fn run_herdr_settings_worker(
     busy: Arc<AtomicBool>,
     config_path: std::path::PathBuf,
     updates: watch::Sender<HerdrSettingsSnapshot>,
+    mut acknowledgements: watch::Receiver<u64>,
     admission_gate: Arc<Mutex<()>>,
     cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 ) {
@@ -245,14 +252,20 @@ async fn run_herdr_settings_worker(
                 }
             }
         }
-        let revision = updates.borrow().revision.wrapping_add(1);
+        let revision = updates.borrow().revision.saturating_add(1);
         updates.send_replace(snapshot_settings(&state, Some(job.req_id), error, revision));
+        while *acknowledgements.borrow_and_update() < revision {
+            if acknowledgements.changed().await.is_err() {
+                break;
+            }
+        }
         busy.store(false, Ordering::Release);
     }
 }
 
 pub(super) async fn forward_herdr_settings(
     mut updates: watch::Receiver<HerdrSettingsSnapshot>,
+    acknowledgements: watch::Sender<u64>,
     tx: mpsc::Sender<AgentMessage>,
 ) {
     let initial = updates.borrow().clone();
@@ -277,11 +290,14 @@ pub(super) async fn forward_herdr_settings(
                 continue;
             }
             permit.send(AgentMessage::HerdrSettingsResponse {
-                req_id: latest.req_id.unwrap_or_default(),
+                req_id: latest.req_id.clone().unwrap_or_default(),
                 enabled: latest.enabled,
                 available: latest.available,
                 locked: latest.locked,
-                error: latest.error,
+                error: latest.error.clone(),
+            });
+            acknowledgements.send_modify(|acknowledged| {
+                *acknowledged = (*acknowledged).max(latest.revision);
             });
             sent_revision = Some(snapshot.revision);
         }
