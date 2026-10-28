@@ -47,6 +47,11 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
         | AgentMessage::TempCleanupResponse { .. }
         | AgentMessage::TerminalListResponse { .. }
         | AgentMessage::HerdrResponse { .. } => deliver_response(context, value).await,
+        AgentMessage::HerdrSettingsResponse {
+            req_id, enabled, available, locked, error,
+        } => {
+            updates::herdr_settings_response(context, req_id, enabled, available, locked, error).await;
+        }
         AgentMessage::Progress { req_id, phase, processed, total, message } => {
             let inner = context.state.inner.write().await;
             if !inner.agents.is_current_connection(&context.agent_id, context.connection_id) {

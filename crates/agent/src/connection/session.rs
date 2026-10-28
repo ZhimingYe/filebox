@@ -55,6 +55,7 @@ impl<'a> ConnectionSession<'a> {
     where
         W: SinkExt<Message> + Unpin + Send + 'static,
     {
+        runtime.start_herdr_settings_worker();
         let (search_tx, search_rx) = mpsc::channel(32);
         let (office_tx, office_rx) = mpsc::channel(32);
         let (stats_tx, stats_rx) = mpsc::channel(8);
@@ -64,6 +65,12 @@ impl<'a> ConnectionSession<'a> {
         let (term_tx, term_rx) = mpsc::channel(64);
         let (herdr_tx, herdr_rx) = mpsc::channel(8);
         let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
+        let mut tasks = JoinSet::new();
+        tasks.spawn(super::runtime::forward_herdr_settings(
+            runtime.herdr_settings_updates.subscribe(),
+            runtime.herdr_settings_acks.clone(),
+            herdr_tx.clone(),
+        ));
         let writer = ConnectionWriter(tokio::spawn(run_connection_writer(
             write, control_rx, vec![search_rx, office_rx, stats_rx, dir_rx, fs_rx, temp_rx, term_rx, herdr_rx],
         )));
@@ -74,7 +81,7 @@ impl<'a> ConnectionSession<'a> {
             stats_admission: Arc::new(Semaphore::new(8)),
             dir_list_admission: Arc::new(Semaphore::new(DIR_LIST_MAX_INFLIGHT)),
             fs_cancellations: Arc::new(Mutex::new(HashMap::new())),
-            tasks: JoinSet::new(), temp_writers: HashMap::new(), cancelled: false,
+            tasks, temp_writers: HashMap::new(), cancelled: false,
         }
     }
 
@@ -151,6 +158,7 @@ impl<'a> ConnectionSession<'a> {
             | HubMessage::TerminalInput { .. } | HubMessage::TerminalResize { .. } | HubMessage::TerminalClose { .. }
             | HubMessage::TerminalListRequest { .. } => self.handle_terminal(message),
             HubMessage::HerdrRequest { .. } => self.handle_herdr(message),
+            HubMessage::HerdrSettingsSet { .. } => self.handle_herdr_settings(message),
             HubMessage::Ping | HubMessage::Cancel { .. } | HubMessage::SysStatsRequest { .. } | HubMessage::Error { .. } => self.handle_control(message),
             _ => Ok(()),
         }

@@ -122,6 +122,7 @@ async fn start_test_connection() -> (
         hub_url: format!("ws://{address}"), token: "test-token".into(),
         agent_name: "test-agent".into(), data_dir: temp.path().to_path_buf(),
         temp_dir: None, temp_upload_name: None, terminal_totp_secret: None,
+        herdr_enabled: true, herdr_locked: false, config_path: temp.path().join("agent.toml"),
     };
     let mut runtime = AgentRuntime::for_tests(temp.path());
     let agent = tokio::spawn(async move {

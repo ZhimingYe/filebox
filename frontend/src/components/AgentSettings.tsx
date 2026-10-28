@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AgentInfo } from '../api/client';
+import { setHerdrEnabled } from '../api/client';
 import { RootManager } from './RootManager';
 import {
   readOfficePdfPreviewPref,
@@ -47,6 +48,11 @@ export function AgentSettings({ agent, onRefresh }: Props) {
   const status = statusPresentation(agent.status);
   const enabledRoots = agent.roots.filter((r) => r.enabled).length;
   const officeCapable = !!agent.capabilities?.office_pdf_preview;
+  const herdrConfigurable = !!agent.capabilities?.herdr_settings;
+  const herdrEnabled = herdrConfigurable ? !!agent.capabilities?.herdr_enabled : !!agent.capabilities?.herdr;
+  const herdrLocked = !!agent.capabilities?.herdr_locked;
+  const [savingHerdr, setSavingHerdr] = useState(false);
+  const [herdrError, setHerdrError] = useState<string | null>(null);
   // Local clock so "Last seen" stays honest while the page is open without a
   // hub refresh. 30s is enough for "just now" / "Xm ago" granularity.
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -62,6 +68,20 @@ export function AgentSettings({ agent, onRefresh }: Props) {
     const next = !officePdfPreview;
     writeOfficePdfPreviewPref(next);
     setOfficePdfPreview(next);
+  }
+
+  async function toggleHerdr() {
+    if (savingHerdr || herdrLocked || agent.status === 'offline') return;
+    setSavingHerdr(true);
+    setHerdrError(null);
+    try {
+      await setHerdrEnabled(agent.id, !herdrEnabled);
+      await onRefresh();
+    } catch (error) {
+      setHerdrError(error instanceof Error ? error.message : 'Could not save Herdr settings. Please retry.');
+    } finally {
+      setSavingHerdr(false);
+    }
   }
 
   return (
@@ -188,11 +208,31 @@ export function AgentSettings({ agent, onRefresh }: Props) {
                 <div style={{ ...styles.prefLabel, display: 'flex', justifyContent: 'space-between', gap: 16 }}>
                   <span>Herdr</span>
                   <span style={{ color: agent.capabilities?.herdr ? c.success : c.textMuted, fontSize: 12, fontWeight: 400 }}>
-                    {agent.capabilities?.herdr ? 'Available' : 'Unavailable'}
+                    {herdrConfigurable && !herdrEnabled ? 'Disabled' : agent.capabilities?.herdr ? 'Available' : 'Not available'}
                   </span>
                 </div>
-                <p style={{ ...styles.prefHint, overflowWrap: 'anywhere' }}>To disable, set <code>FILEBOX_AGENT_HERDR_ENABLED=0</code> on this agent and restart it.</p>
+                <p style={styles.prefHint}>View coding agents, read their output, and send prompts through Herdr on this backend.</p>
+                <p style={{ ...styles.prefHint, overflowWrap: 'anywhere' }}>
+                  {herdrConfigurable
+                    ? herdrLocked
+                      ? <>Controlled by <code>FILEBOX_AGENT_HERDR_ENABLED</code>. Remove that override and restart the Filebox Agent to use this switch.</>
+                      : <>Saved as <code>herdr_enabled</code> in the Agent’s <code>agent.toml</code>. Applies immediately to all browsers. Turning it off stops Filebox monitoring and controls, not your running coding agents.</>
+                    : <>Update the Filebox Agent to use this switch. For older Agents, set <code>FILEBOX_AGENT_HERDR_ENABLED=0</code> and restart to disable Herdr.</>}
+                </p>
+                {herdrConfigurable && !herdrLocked && !agent.capabilities?.herdr && herdrEnabled && (
+                  <p style={styles.prefHint}>Herdr is not detected. Open Herdr in the sidebar for an introduction and setup instructions.</p>
+                )}
+                {agent.status === 'offline' && <p style={styles.prefHint}>Reconnect this backend to change its settings.</p>}
+                {savingHerdr && <p style={styles.prefHint} role="status">Saving Herdr settings…</p>}
+                {herdrError && <p style={{ ...styles.prefHint, color: c.danger }} role="alert">{herdrError}</p>}
               </div>
+              <button type="button" role="switch" aria-label="Herdr integration" aria-checked={herdrEnabled}
+                disabled={!herdrConfigurable || herdrLocked || savingHerdr || agent.status === 'offline'}
+                onClick={toggleHerdr}
+                style={{ ...styles.switchTrack, ...(herdrEnabled ? styles.switchTrackOn : null),
+                  ...(!herdrConfigurable || herdrLocked || savingHerdr || agent.status === 'offline' ? { opacity: 0.5, cursor: 'default' } : null) }}>
+                <span style={{ ...styles.switchThumb, ...(herdrEnabled ? styles.switchThumbOn : null) }} />
+              </button>
             </div>
           </section>
 
