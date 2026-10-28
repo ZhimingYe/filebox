@@ -36,6 +36,137 @@ pub struct HerdrBody {
     pub timeout_ms: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct HerdrSettingsBody {
+    pub enabled: bool,
+}
+
+pub async fn herdr_settings_handler(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<HerdrSettingsBody>,
+) -> Response {
+    let inner = state.inner.read().await;
+    let agent = match inner.agents.get(&agent_id) {
+        Some(agent) => agent,
+        None => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "backend_offline",
+                &format!("Agent {agent_id} is offline"),
+                true,
+            );
+        }
+    };
+    if agent.status == crate::agent_registry::AgentStatus::Offline {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "backend_offline",
+            &format!("Agent {agent_id} is offline"),
+            true,
+        );
+    }
+    let Some(settings) = agent.capabilities.herdr_settings.as_ref() else {
+        return error_response(
+            StatusCode::NOT_IMPLEMENTED,
+            "unsupported",
+            "Herdr settings are not supported by this Agent",
+            false,
+        );
+    };
+    if settings.environment_override.is_some() {
+        return error_response(
+            StatusCode::CONFLICT,
+            "herdr_environment_override",
+            "FILEBOX_AGENT_HERDR_ENABLED overrides the web setting; remove the environment variable to change it here",
+            false,
+        );
+    }
+
+    let req_id = format!("herdr_settings_{}", Uuid::new_v4());
+    let connection_id = agent.connection_id;
+    let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
+    let send_ok = {
+        let mut pending = inner.pending_responses.write().await;
+        if pending.len() >= MAX_PENDING_RESPONSES {
+            false
+        } else {
+            pending.insert(
+                req_id.clone(),
+                PendingResponse {
+                    tx: resp_tx,
+                    agent_id: agent_id.clone(),
+                    connection_id,
+                    session_id: Some(session.principal_id.clone()),
+                    desired_roots: None,
+                    desired_collections: None,
+                },
+            );
+            inner.agents.send_to_agent(
+                &agent_id,
+                HubMessage::HerdrSettingsSet {
+                    req_id: req_id.clone(),
+                    enabled: body.enabled,
+                },
+            )
+        }
+    };
+    drop(inner);
+    if !send_ok {
+        cleanup_pending(&state, &req_id).await;
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "backend_offline",
+            "Failed to send settings update to Agent",
+            true,
+        );
+    }
+
+    let guard = PendingResponseCleanup::new(
+        state.clone(),
+        req_id.clone(),
+        Some(agent_id),
+        response_owner,
+    );
+    let response = tokio::time::timeout(Duration::from_secs(8), resp_rx.recv()).await;
+    guard
+        .finish(!matches!(response, Ok(Some(_))))
+        .await;
+    match response {
+        Ok(Some(value)) => {
+            if let Some(error) = value.get("error").and_then(|value| value.as_str()) {
+                let (status, code, message) = if error == "herdr_environment_override" {
+                    (
+                        StatusCode::CONFLICT,
+                        "herdr_environment_override",
+                        "FILEBOX_AGENT_HERDR_ENABLED overrides the web setting; remove the environment variable to change it here",
+                    )
+                } else {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "herdr_settings_save_failed",
+                        "Agent failed to persist the Herdr setting",
+                    )
+                };
+                return error_response(status, code, message, false);
+            }
+            Json(serde_json::json!({
+                "enabled": value["settings"]["enabled"],
+                "environment_override": value["settings"]["environment_override"],
+                "available": value["available"],
+            }))
+            .into_response()
+        }
+        _ => error_response(
+            StatusCode::GATEWAY_TIMEOUT,
+            "request_timeout",
+            "Agent did not apply the Herdr setting in time",
+            true,
+        ),
+    }
+}
+
 pub async fn herdr_handler(
     State(state): State<AppState>,
     Extension(session): Extension<AuthenticatedSession>,

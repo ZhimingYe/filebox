@@ -30,6 +30,20 @@ impl ResourceManager {
         &self.config.roots
     }
 
+    pub fn herdr_enabled(&self) -> bool {
+        self.config.herdr_enabled
+    }
+
+    pub fn set_herdr_enabled(&mut self, enabled: bool) -> std::io::Result<()> {
+        let previous = self.config.herdr_enabled;
+        self.config.herdr_enabled = enabled;
+        if let Err(error) = self.config.save_fallible(&self.data_dir) {
+            self.config.herdr_enabled = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Validate and atomically apply a desired resource state.
     /// Returns Ok(new_revision) on success, Err(message) on validation failure.
     /// On failure, the previous good state is preserved.
@@ -945,6 +959,54 @@ mod tests {
         }];
         mgr.apply_desired(1, roots).unwrap();
         assert_eq!(mgr.roots()[0].pinned_folders.len(), 2);
+    }
+
+    #[test]
+    fn herdr_setting_round_trips_with_resource_and_collection_updates() {
+        let dir = tempdir().unwrap();
+        let data_path = dir.path().to_path_buf();
+        let real_root = tempdir().unwrap();
+        let mut mgr = ResourceManager::new(data_path.clone());
+        mgr.set_herdr_enabled(false).unwrap();
+        mgr.apply_desired(
+            5,
+            vec![RootConfig {
+                name: "data".to_string(),
+                path: real_root.path().to_str().unwrap().to_string(),
+                enabled: true,
+                pinned_folders: vec!["/reports".to_string()],
+            }],
+        )
+        .unwrap();
+        mgr.apply_collections_desired(
+            3,
+            vec![CollectionConfig {
+                name: "reports".to_string(),
+                items: vec![CollectionItem {
+                    root: "data".to_string(),
+                    path: "/reports".to_string(),
+                    label: None,
+                }],
+            }],
+        )
+        .unwrap();
+
+        let reloaded = ResourceManager::new(data_path);
+        assert!(!reloaded.herdr_enabled());
+        assert_eq!(reloaded.resource_revision(), 5);
+        assert_eq!(reloaded.roots()[0].pinned_folders, vec!["/reports"]);
+        assert_eq!(reloaded.collections_revision(), 3);
+        assert_eq!(reloaded.collections().len(), 1);
+    }
+
+    #[test]
+    fn failed_herdr_setting_save_does_not_change_memory() {
+        let dir = tempdir().unwrap();
+        let data_path = dir.path().join("missing");
+        let mut mgr = ResourceManager::new(data_path);
+        assert!(mgr.herdr_enabled());
+        assert!(mgr.set_herdr_enabled(false).is_err());
+        assert!(mgr.herdr_enabled());
     }
 
     #[test]

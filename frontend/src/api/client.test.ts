@@ -48,6 +48,16 @@ const mutations = [
   { name: 'delete collection', fallback: 'collection_rejected', run: () => api.deleteCollection('a1', 'work') },
 ];
 
+it('sends the per-Agent Herdr preference through the authenticated API', async () => {
+  const settings = { enabled: false, environment_override: null };
+  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(settings)));
+  vi.stubGlobal('fetch', fetchMock);
+  await expect(api.setHerdrEnabled('agent/a', false)).resolves.toEqual(settings);
+  expect(fetchMock).toHaveBeenCalledWith('/api/agents/agent%2Fa/herdr-settings', expect.objectContaining({
+    method: 'POST', body: JSON.stringify({ enabled: false }), credentials: 'include',
+  }));
+});
+
 describe.each(mutations)('$name acknowledgement', ({ run, fallback }) => {
   it.each([
     { ok: false, state: 'rejected', error: 'permission_denied', message: 'Denied by agent' },

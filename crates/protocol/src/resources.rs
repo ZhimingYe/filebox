@@ -175,6 +175,18 @@ pub struct Capabilities {
     /// `false` for rolling-upgrade safety and when `herdr` is not on PATH.
     #[serde(default)]
     pub herdr: bool,
+    /// Persisted web-control setting plus any Agent environment override.
+    /// Absent on legacy agents so the Hub can distinguish unsupported settings.
+    #[serde(default)]
+    pub herdr_settings: Option<HerdrSettings>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HerdrSettings {
+    /// Effective setting after applying the environment override.
+    pub enabled: bool,
+    /// `Some` when FILEBOX_AGENT_HERDR_ENABLED is set or invalid.
+    pub environment_override: Option<bool>,
 }
 
 impl Default for Capabilities {
@@ -201,6 +213,7 @@ impl Default for Capabilities {
             terminal_manage: false,
             terminal_persistent: false,
             herdr: false,
+            herdr_settings: None,
         }
     }
 }
@@ -441,6 +454,7 @@ mod tests {
             !caps.herdr,
             "herdr must default to false (legacy-detection sentinel)"
         );
+        assert!(caps.herdr_settings.is_none());
     }
 
     #[test]
@@ -461,6 +475,7 @@ mod tests {
         let caps: Capabilities = serde_json::from_str(legacy_json).unwrap();
         assert!(!caps.pinned_folders);
         assert!(!caps.office_pdf_preview);
+        assert!(caps.herdr_settings.is_none());
         assert!(caps.fs_list);
     }
 

@@ -14,6 +14,12 @@ pub struct PersistedConfig {
     pub collections_revision: u64,
     #[serde(default)]
     pub collections: Vec<CollectionConfig>,
+    #[serde(default = "default_herdr_enabled")]
+    pub herdr_enabled: bool,
+}
+
+fn default_herdr_enabled() -> bool {
+    true
 }
 
 impl PersistedConfig {
@@ -24,6 +30,7 @@ impl PersistedConfig {
             roots: vec![],
             collections_revision: 0,
             collections: vec![],
+            herdr_enabled: true,
         }
     }
 
@@ -63,27 +70,27 @@ impl PersistedConfig {
     }
 
     pub fn save(&self, data_dir: &PathBuf) {
-        let path = data_dir.join("agent_state.json");
-        match serde_json::to_string_pretty(self) {
-            Ok(text) => {
-                if let Err(e) = std::fs::write(&path, text) {
-                    tracing::error!("Failed to persist config: {}", e);
-                } else {
-                    // Restrict to owner read/write. No secrets today, but cheap defense.
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(
-                            &path,
-                            std::fs::Permissions::from_mode(0o600),
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!("Failed to serialize config: {}", e);
-            }
+        if let Err(error) = self.save_fallible(data_dir) {
+            tracing::error!("Failed to persist config: {}", error);
         }
+    }
+
+    pub fn save_fallible(&self, data_dir: &PathBuf) -> std::io::Result<()> {
+        let path = data_dir.join("agent_state.json");
+        let text = serde_json::to_string_pretty(self).map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::Other, error)
+        })?;
+        std::fs::write(&path, text)?;
+        // Restrict to owner read/write. No secrets today, but cheap defense.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &path,
+                std::fs::Permissions::from_mode(0o600),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -98,6 +105,7 @@ mod tests {
         assert_eq!(cfg.agent_id, "agent-abc");
         assert_eq!(cfg.resource_revision, 0);
         assert!(cfg.roots.is_empty());
+        assert!(cfg.herdr_enabled);
     }
 
     #[test]
@@ -173,6 +181,35 @@ mod tests {
     }
 
     #[test]
+    fn old_config_without_herdr_setting_defaults_to_enabled() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::fs::write(
+            path.join("agent_state.json"),
+            r#"{"agent_id":"stable-old-id","resource_revision":4,"roots":[]}"#,
+        )
+        .unwrap();
+
+        let cfg = PersistedConfig::load_or_create(&path);
+        assert_eq!(cfg.agent_id, "stable-old-id");
+        assert!(cfg.herdr_enabled);
+    }
+
+    #[test]
+    fn herdr_setting_round_trips_and_save_errors_are_returned() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let mut cfg = PersistedConfig::load_or_create(&path);
+        cfg.herdr_enabled = false;
+        cfg.save_fallible(&path).unwrap();
+
+        let reloaded = PersistedConfig::load_or_create(&path);
+        assert!(!reloaded.herdr_enabled);
+        let missing_parent = path.join("missing");
+        assert!(reloaded.save_fallible(&missing_parent).is_err());
+    }
+
+    #[test]
     fn save_persists_multiple_roots() {
         let dir = tempdir().unwrap();
         let path = dir.path().to_path_buf();
@@ -196,6 +233,7 @@ mod tests {
             ],
             collections_revision: 0,
             collections: vec![],
+            herdr_enabled: true,
         };
         cfg.save(&path);
 

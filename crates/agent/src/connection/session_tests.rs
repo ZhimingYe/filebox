@@ -131,7 +131,7 @@ async fn session_drop_detaches_its_pty_and_preserves_shell_for_resume() {
     let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
     session.dispatch(HubMessage::TerminalOpen {
         req_id: "shell".into(), cols: 80, rows: 24, agent_totp_code: Some(code(0)),
-    }).unwrap();
+    }).await.unwrap();
     loop {
         if let AgentMessage::TerminalOpened { error, .. } = response(&mut replies).await { assert!(error.is_none()); break; }
     }
@@ -194,7 +194,7 @@ fn upload_congestion_keeps_ping_cancel_and_reconnect_admission_working() {
         assert_eq!(runtime.upload_workers.available_permits(), 0);
         let (sink, mut new_replies) = capture();
         let mut replacement = ConnectionSession::new(&mut runtime, sink, "agent".into());
-        replacement.dispatch(HubMessage::TempUploadBegin { req_id: "new".into(), name: "new.txt".into(), total_size: 1 }).unwrap();
+        replacement.dispatch(HubMessage::TempUploadBegin { req_id: "new".into(), name: "new.txt".into(), total_size: 1 }).await.unwrap();
         match response(&mut new_replies).await {
             AgentMessage::TempUploadResponse { error, .. } => assert!(error.unwrap().starts_with("agent_overloaded")),
             other => panic!("unexpected overload reply: {other:?}"),
@@ -209,8 +209,8 @@ fn upload_congestion_keeps_ping_cancel_and_reconnect_admission_working() {
         // Cancellation neither leaks quota nor poisons future uploads.
         let (sink, mut final_replies) = capture();
         let mut recovered = ConnectionSession::new(&mut runtime, sink, "agent".into());
-        recovered.dispatch(HubMessage::TempUploadBegin { req_id: "ok".into(), name: "ok.txt".into(), total_size: 1 }).unwrap();
-        recovered.dispatch(HubMessage::TempUploadChunk { req_id: "ok".into(), offset: 0, data: vec![b'y'], done: true }).unwrap();
+        recovered.dispatch(HubMessage::TempUploadBegin { req_id: "ok".into(), name: "ok.txt".into(), total_size: 1 }).await.unwrap();
+        recovered.dispatch(HubMessage::TempUploadChunk { req_id: "ok".into(), offset: 0, data: vec![b'y'], done: true }).await.unwrap();
         match response(&mut final_replies).await {
             AgentMessage::TempUploadResponse { error, size, .. } => { assert!(error.is_none()); assert_eq!(size, Some(1)); }
             other => panic!("unexpected upload reply: {other:?}"),
@@ -239,10 +239,10 @@ fn cancel_and_drop_cover_uploads_with_the_final_chunk_already_queued() {
         started_rx.await.unwrap();
         let mut session = ConnectionSession::new(&mut runtime, futures_util::sink::drain(), "agent".into());
         for id in ["cancel", "drop"] {
-            session.dispatch(HubMessage::TempUploadBegin { req_id: id.into(), name: format!("{id}.txt"), total_size: 1 }).unwrap();
-            session.dispatch(HubMessage::TempUploadChunk { req_id: id.into(), offset: 0, data: vec![b'x'], done: true }).unwrap();
+            session.dispatch(HubMessage::TempUploadBegin { req_id: id.into(), name: format!("{id}.txt"), total_size: 1 }).await.unwrap();
+            session.dispatch(HubMessage::TempUploadChunk { req_id: id.into(), offset: 0, data: vec![b'x'], done: true }).await.unwrap();
         }
-        session.dispatch(HubMessage::Cancel { req_id: "cancel".into() }).unwrap();
+        session.dispatch(HubMessage::Cancel { req_id: "cancel".into() }).await.unwrap();
         drop(session);
         drop(gate);
         blocker.await.unwrap();
@@ -267,15 +267,15 @@ async fn partial_upload_cancel_and_drop_reap_staging_and_release_reserved_quota(
         }).unwrap());
         runtime.temp_store = Some(store.clone());
         let mut session = ConnectionSession::new(&mut runtime, futures_util::sink::drain(), "agent".into());
-        session.dispatch(HubMessage::TempUploadBegin { req_id: "partial".into(), name: "partial.txt".into(), total_size: 512 }).unwrap();
-        session.dispatch(HubMessage::TempUploadChunk { req_id: "partial".into(), offset: 0, data: vec![b'x'], done: false }).unwrap();
+        session.dispatch(HubMessage::TempUploadBegin { req_id: "partial".into(), name: "partial.txt".into(), total_size: 512 }).await.unwrap();
+        session.dispatch(HubMessage::TempUploadChunk { req_id: "partial".into(), offset: 0, data: vec![b'x'], done: false }).await.unwrap();
         let staging = base.join(".staging/partial");
         tokio::time::timeout(Duration::from_secs(2), async {
             while std::fs::metadata(&staging).map(|file| file.len()).unwrap_or(0) != 1 {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
         }).await.unwrap();
-        if explicit_cancel { session.dispatch(HubMessage::Cancel { req_id: "partial".into() }).unwrap(); }
+        if explicit_cancel { session.dispatch(HubMessage::Cancel { req_id: "partial".into() }).await.unwrap(); }
         drop(session);
         tokio::time::timeout(Duration::from_secs(2), async {
             while runtime.upload_workers.available_permits() < 4 { tokio::task::yield_now().await; }
@@ -285,8 +285,8 @@ async fn partial_upload_cancel_and_drop_reap_staging_and_release_reserved_quota(
         let (sink, mut replies) = capture();
         let mut recovered = ConnectionSession::new(&mut runtime, sink, "agent".into());
         // Consumes the entire quota: an unreleased partial reservation fails.
-        recovered.dispatch(HubMessage::TempUploadBegin { req_id: "full".into(), name: "full.txt".into(), total_size: 1024 }).unwrap();
-        recovered.dispatch(HubMessage::TempUploadChunk { req_id: "full".into(), offset: 0, data: vec![b'y'; 1024], done: true }).unwrap();
+        recovered.dispatch(HubMessage::TempUploadBegin { req_id: "full".into(), name: "full.txt".into(), total_size: 1024 }).await.unwrap();
+        recovered.dispatch(HubMessage::TempUploadChunk { req_id: "full".into(), offset: 0, data: vec![b'y'; 1024], done: true }).await.unwrap();
         match response(&mut replies).await {
             AgentMessage::TempUploadResponse { error, size, .. } => { assert!(error.is_none()); assert_eq!(size, Some(1024)); }
             other => panic!("unexpected quota recovery reply: {other:?}"),
@@ -308,20 +308,98 @@ async fn protocol_sized_upload_chunks_and_empty_final_frames_publish_exact_bytes
         let (sink, mut replies) = capture();
         let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
         let data: Vec<_> = (0..total).map(|offset| (offset % 251) as u8).collect();
-        session.dispatch(HubMessage::TempUploadBegin { req_id: "upload".into(), name: "file.bin".into(), total_size: total as u64 }).unwrap();
+        session.dispatch(HubMessage::TempUploadBegin { req_id: "upload".into(), name: "file.bin".into(), total_size: total as u64 }).await.unwrap();
         let full = total / cap * cap;
         for (index, chunk) in data[..full].chunks(cap).enumerate() {
             session.dispatch(HubMessage::TempUploadChunk {
                 req_id: "upload".into(), offset: (index * cap) as u64, data: chunk.to_vec(), done: false,
-            }).unwrap();
+            }).await.unwrap();
         }
         session.dispatch(HubMessage::TempUploadChunk {
             req_id: "upload".into(), offset: full as u64, data: data[full..].to_vec(), done: true,
-        }).unwrap();
+        }).await.unwrap();
         match response(&mut replies).await {
             AgentMessage::TempUploadResponse { error, size, .. } => { assert!(error.is_none()); assert_eq!(size, Some(total as u64)); }
             other => panic!("unexpected upload reply: {other:?}"),
         }
         assert_eq!(std::fs::read(base.join("scratch/file.bin")).unwrap(), data);
+    }
+}
+
+#[tokio::test]
+async fn herdr_setting_update_persists_and_cancels_running_requests() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = AgentRuntime::for_tests(temp.path());
+    runtime.herdr_environment_override = None;
+    let active = Arc::new(AtomicBool::new(false));
+    runtime
+        .herdr_cancels
+        .lock()
+        .unwrap()
+        .insert("active".into(), active.clone());
+    let herdr_cancels = runtime.herdr_cancels.clone();
+    let (sink, mut replies) = capture();
+    let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
+    session
+        .dispatch(HubMessage::HerdrSettingsSet {
+            req_id: "settings".into(),
+            enabled: false,
+        })
+        .await
+        .unwrap();
+
+    match response(&mut replies).await {
+        AgentMessage::HerdrSettingsApplied {
+            req_id,
+            settings,
+            available,
+            error,
+        } => {
+            assert_eq!(req_id, "settings");
+            assert!(!settings.enabled);
+            assert!(settings.environment_override.is_none());
+            assert!(!available);
+            assert!(error.is_none());
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+    assert!(active.load(Ordering::Relaxed));
+    assert!(herdr_cancels.lock().unwrap().is_empty());
+    assert!(!crate::config_store::PersistedConfig::load_or_create(&temp.path().to_path_buf()).herdr_enabled);
+}
+
+#[tokio::test]
+async fn herdr_direct_request_is_rejected_when_disabled_even_with_cached_client() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = AgentRuntime::for_tests(temp.path());
+    runtime.herdr_environment_override = None;
+    runtime.resource_mgr.set_herdr_enabled(false).unwrap();
+    runtime.herdr = Some(Arc::new(crate::herdr::HerdrClient {
+        bin: temp.path().join("should-not-run"),
+        version: "test".into(),
+    }));
+    let (sink, mut replies) = capture();
+    let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
+    session
+        .dispatch(HubMessage::HerdrRequest {
+            req_id: "direct".into(),
+            op: filebox_protocol::herdr::HerdrOp::Status,
+            target: None,
+            text: None,
+            keys: vec![],
+            lines: None,
+            read_source: None,
+            wait: false,
+            timeout_ms: None,
+        })
+        .await
+        .unwrap();
+
+    match response(&mut replies).await {
+        AgentMessage::HerdrResponse { req_id, error, .. } => {
+            assert_eq!(req_id, "direct");
+            assert_eq!(error.as_deref(), Some("herdr_disabled"));
+        }
+        other => panic!("unexpected response: {other:?}"),
     }
 }

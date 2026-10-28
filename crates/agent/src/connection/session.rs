@@ -117,7 +117,7 @@ impl<'a> ConnectionSession<'a> {
                             return DisconnectReason::ReadFailed;
                         }
                         Some(Ok(Message::Text(text))) => match serde_json::from_str::<HubMessage>(&text) {
-                            Ok(message) => if let Err(reason) = self.dispatch(message) { return reason; },
+                            Ok(message) => if let Err(reason) = self.dispatch(message).await { return reason; },
                             Err(error) => tracing::debug!("Failed to parse hub message: {}", error),
                         },
                         Some(Ok(Message::Ping(data))) => {
@@ -139,7 +139,7 @@ impl<'a> ConnectionSession<'a> {
         }
     }
 
-    fn dispatch(&mut self, message: HubMessage) -> Result<(), DisconnectReason> {
+    async fn dispatch(&mut self, message: HubMessage) -> Result<(), DisconnectReason> {
         self.temp_writers.retain(|_, writer| writer.is_active());
         match message {
             HubMessage::ResourcesSetDesired { .. } | HubMessage::CollectionsSetDesired { .. } => self.handle_resources(message),
@@ -151,6 +151,7 @@ impl<'a> ConnectionSession<'a> {
             | HubMessage::TerminalInput { .. } | HubMessage::TerminalResize { .. } | HubMessage::TerminalClose { .. }
             | HubMessage::TerminalListRequest { .. } => self.handle_terminal(message),
             HubMessage::HerdrRequest { .. } => self.handle_herdr(message),
+            HubMessage::HerdrSettingsSet { .. } => self.handle_herdr_settings(message).await,
             HubMessage::Ping | HubMessage::Cancel { .. } | HubMessage::SysStatsRequest { .. } | HubMessage::Error { .. } => self.handle_control(message),
             _ => Ok(()),
         }

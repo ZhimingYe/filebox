@@ -392,3 +392,133 @@ async fn old_collection_ack_and_rejection_keep_a_newer_queued_edit() {
     assert_eq!(agent.pending_collections_update.as_ref().unwrap().collections, latest);
     assert!(agent.collections.is_empty(), "an unsent edit must not become the applied mirror");
 }
+
+#[tokio::test]
+async fn herdr_settings_updates_mirror_current_state_and_emit_sse_without_waiter() {
+    let state = test_state();
+    let (context, _) = install(&state).await;
+    let settings = filebox_protocol::resources::HerdrSettings {
+        enabled: true,
+        environment_override: None,
+    };
+    updates::dispatch(
+        &context,
+        AgentMessage::HerdrSettingsApplied {
+            req_id: "disconnected-caller".into(),
+            settings: settings.clone(),
+            available: false,
+            error: None,
+        },
+    )
+    .await;
+
+    let inner = state.inner.read().await;
+    let agent = inner.agents.get("agent").unwrap();
+    assert!(agent.capabilities.herdr_settings.as_ref().unwrap().enabled);
+    assert!(!agent.capabilities.herdr);
+    assert_eq!(
+        agent.to_info().capabilities.herdr_settings,
+        Some(settings)
+    );
+    let history = inner.sse_history.read().await;
+    let event = history.back().unwrap();
+    assert_eq!(event.event, "herdr_settings_updated");
+    assert_eq!(event.data["agent_id"], "agent");
+}
+
+#[tokio::test]
+async fn stale_generation_herdr_settings_cannot_update_mirror_or_emit_sse() {
+    let state = test_state();
+    let (old, _) = install(&state).await;
+    let (current, _) = install(&state).await;
+    let events_before = state.inner.read().await.sse_history.read().await.len();
+    updates::dispatch(
+        &old,
+        AgentMessage::HerdrSettingsApplied {
+            req_id: "stale".into(),
+            settings: filebox_protocol::resources::HerdrSettings {
+                enabled: false,
+                environment_override: Some(false),
+            },
+            available: false,
+            error: None,
+        },
+    )
+    .await;
+    {
+        let inner = state.inner.read().await;
+        assert!(inner.agents.get("agent").unwrap().capabilities.herdr_settings.is_none());
+        assert_eq!(inner.sse_history.read().await.len(), events_before);
+    }
+
+    updates::dispatch(
+        &current,
+        AgentMessage::HerdrSettingsApplied {
+            req_id: "current".into(),
+            settings: filebox_protocol::resources::HerdrSettings {
+                enabled: false,
+                environment_override: Some(false),
+            },
+            available: false,
+            error: None,
+        },
+    )
+    .await;
+    let inner = state.inner.read().await;
+    assert_eq!(
+        inner.agents.get("agent").unwrap().capabilities.herdr_settings,
+        Some(filebox_protocol::resources::HerdrSettings {
+            enabled: false,
+            environment_override: Some(false),
+        })
+    );
+    assert_eq!(
+        inner.sse_history.read().await.back().unwrap().event,
+        "herdr_settings_updated"
+    );
+}
+
+#[tokio::test]
+async fn herdr_settings_pending_reply_is_generation_owned() {
+    let state = test_state();
+    let (old, _) = install(&state).await;
+    let mut old_reply = pending(&old, "settings-request", None).await;
+    let (current, _) = install(&state).await;
+    assert_eq!(old_reply.recv().await.unwrap()["error"], "backend_offline");
+    let mut current_reply = pending(&current, "settings-request", None).await;
+    let settings = filebox_protocol::resources::HerdrSettings {
+        enabled: false,
+        environment_override: Some(false),
+    };
+
+    updates::dispatch(
+        &old,
+        AgentMessage::HerdrSettingsApplied {
+            req_id: "settings-request".into(),
+            settings: settings.clone(),
+            available: false,
+            error: None,
+        },
+    )
+    .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), current_reply.recv())
+            .await
+            .is_err()
+    );
+
+    updates::dispatch(
+        &current,
+        AgentMessage::HerdrSettingsApplied {
+            req_id: "settings-request".into(),
+            settings,
+            available: false,
+            error: None,
+        },
+    )
+    .await;
+    assert_eq!(
+        current_reply.recv().await.unwrap()["settings"]["enabled"],
+        false
+    );
+}

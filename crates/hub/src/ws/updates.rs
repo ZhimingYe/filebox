@@ -1,4 +1,5 @@
 use super::*;
+use crate::ws::responses::take_pending_locked;
 
 /// After a successful apply, prefer hub `desired` for the root set (names,
 /// enabled, pins — the hub may retain pins a legacy agent stripped on the
@@ -123,7 +124,25 @@ pub(super) async fn dispatch(context: &AgentContext, message: AgentMessage) {
                 "agent_id": id, "collections_revision": collections_revision, "state": "applied",
             })).await;
         }
-        _ => unreachable!("only resource and collection messages are dispatched here"),
+        AgentMessage::HerdrSettingsApplied { req_id, settings, available, error } => {
+            inner.agents.update_herdr_settings_for_connection(
+                id,
+                context.connection_id,
+                settings.clone(),
+                available,
+            );
+            if let Some(pending) = take_pending_locked(&inner, context, &req_id).await {
+                pending.deliver(serde_json::json!({
+                    "settings": settings,
+                    "available": available,
+                    "error": error,
+                }));
+            }
+            AppState::emit_sse_locked(&inner, "herdr_settings_updated", serde_json::json!({
+                "agent_id": id,
+            })).await;
+        }
+        _ => unreachable!("only resource, collection, and Herdr settings updates are dispatched here"),
     }
 }
 
