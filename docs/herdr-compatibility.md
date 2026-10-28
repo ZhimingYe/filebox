@@ -39,8 +39,9 @@ the released binary as well as the documentation.
   count UTF-8 bytes (32 KiB), matching the Agent and Hub validation.
 - The CLI is probed at Agent startup when Herdr is effectively enabled.
   Enabling Herdr from Agent settings probes again if no client is cached;
-  installing Herdr or changing `FILEBOX_AGENT_HERDR` still requires an Agent
-  restart.
+  installing the CLI on the running Agent's PATH can be detected with
+  **Check installation**. Changing the Agent process's PATH or
+  `FILEBOX_AGENT_HERDR` requires an Agent restart.
 
 ## Attention reminders
 

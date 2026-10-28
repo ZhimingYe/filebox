@@ -136,20 +136,27 @@ pub async fn herdr_settings_handler(
     match response {
         Ok(Some(value)) => {
             if let Some(error) = value.get("error").and_then(|value| value.as_str()) {
-                let (status, code, message) = if error == "herdr_environment_override" {
-                    (
+                let (status, code, message, retryable) = match error {
+                    "herdr_environment_override" => (
                         StatusCode::CONFLICT,
                         "herdr_environment_override",
                         "FILEBOX_AGENT_HERDR_ENABLED overrides the web setting; remove the environment variable to change it here",
-                    )
-                } else {
-                    (
+                        false,
+                    ),
+                    "backend_offline" => (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "backend_offline",
+                        "Agent disconnected before applying the Herdr setting; retry after it reconnects",
+                        true,
+                    ),
+                    _ => (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "herdr_settings_save_failed",
                         "Agent failed to persist the Herdr setting",
-                    )
+                        false,
+                    ),
                 };
-                return error_response(status, code, message, false);
+                return error_response(status, code, message, retryable);
             }
             Json(serde_json::json!({
                 "enabled": value["settings"]["enabled"],
@@ -431,6 +438,70 @@ fn error_response(status: StatusCode, error: &str, message: &str, retryable: boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn herdr_settings_disconnect_returns_retryable_backend_offline() {
+        use filebox_protocol::resources::{Capabilities, HerdrSettings};
+        use tokio::sync::mpsc;
+
+        let config = crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            agent_token_hash: "fake-hash".to_string(),
+            users: vec![],
+        };
+        let state = AppState::new(&config, false);
+        let (sender, mut receiver) = mpsc::channel(8);
+        let mut capabilities = Capabilities::default();
+        capabilities.herdr_settings = Some(HerdrSettings {
+            enabled: true,
+            environment_override: None,
+        });
+        let connection_id = {
+            let mut inner = state.inner.write().await;
+            inner.agents.register(
+                "a".to_string(),
+                "agent".to_string(),
+                sender,
+                std::sync::Arc::new(tokio::sync::Notify::new()),
+                0,
+                vec![],
+                0,
+                vec![],
+                capabilities,
+                None,
+            );
+            inner.agents.get("a").unwrap().connection_id
+        };
+
+        let request_state = state.clone();
+        let request = tokio::spawn(async move {
+            herdr_settings_handler(
+                State(request_state),
+                Extension(AuthenticatedSession {
+                    id: "session".to_string(),
+                    principal_id: "principal".to_string(),
+                }),
+                Path("a".to_string()),
+                Json(HerdrSettingsBody { enabled: false }),
+            )
+            .await
+        });
+
+        assert!(matches!(
+            receiver.recv().await,
+            Some(HubMessage::HerdrSettingsSet { .. })
+        ));
+        assert_eq!(state.fail_pending_for_connection("a", connection_id).await, 1);
+
+        let response = request.await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "backend_offline");
+        assert_eq!(body["retryable"], true);
+    }
 
     #[test]
     fn read_source_is_optional_and_read_only() {
