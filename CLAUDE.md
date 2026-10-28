@@ -23,13 +23,11 @@ machines need no public IP, inbound port, or port mapping.
 
 ## Out of Scope (do not resurrect without explicit sign-off)
 
-- Write / edit / delete / rename files — **three narrowly scoped exceptions only**:
+- Write / edit / delete / rename files — **two sanctioned exceptions only**:
   the per-agent temp-upload folder (see "Temp Upload Folder" below; the agent
-  writes ONLY inside `<temp base>/<upload folder>` and nothing else, ever), the
-  explicit-sign-off **remote terminal** (see "Remote Terminal" below; its
-  shell is NOT sandboxed and can write anywhere the shell user can), and the
-  Herdr settings write described in "Herdr" below (only the boolean
-  `herdr_enabled` at the operator-selected Agent config path).
+  writes ONLY inside `<temp base>/<upload folder>` and nothing else, ever) and
+  the explicit-sign-off **remote terminal** (see "Remote Terminal" below; its
+  shell is NOT sandboxed and can write anywhere the shell user can).
 - Remote desktop
 - Arbitrary TCP proxying, LAN scanning, **port forwarding** (an earlier
   draft planned a port-tunnel feature; it was dropped)
@@ -48,11 +46,9 @@ machines need no public IP, inbound port, or port mapping.
   entire file.
 - **Frontend is the control surface.** Roots, pins, and collections are
   managed from the UI. CLI is bootstrap / automation / recovery only.
-- **Read-only files.** Never add file writes or arbitrary proxying. The only
-  general file write path is the temp-upload folder (browser drag-drop → hub
-  relay → agent writes into its dedicated folder). The narrowly scoped Herdr
-  settings exception may update only `herdr_enabled` in the operator-selected
-  Agent config path; callers cannot supply a path or arbitrary content.
+- **Read-only files.** Never add file writes or arbitrary proxying. The ONLY
+  file write path is the temp-upload folder (browser drag-drop → hub relay →
+  agent writes into its dedicated folder). Nothing else writes files.
   **Sanctioned exception with explicit sign-off: the 2FA-gated remote
   terminal** (see "Remote Terminal" below) — a PTY shell on the agent,
   guarded by per-browser-session TOTP. It is NOT a file write path and must
@@ -116,8 +112,7 @@ bad updates never destroy last good state), `fs.rs` (read-only ops + path
 safety + denylist), `search.rs` (in-process fd/rg-like workspace search),
 `dir_cache.rs` (mtime-keyed directory listing cache, cleared on root
 apply, capped), `sysinfo.rs` (TTL-cached stats — see below),
-`temp_store.rs` (the only general file write path: dedicated temp-upload
-folder),
+`temp_store.rs` (the ONLY file write path: dedicated temp-upload folder),
 `terminal.rs` (PTY shell sessions — 2FA-gated, unix-only; see "Remote
 Terminal"),
 `herdr.rs` (optional local Herdr CLI probe + whitelist),
@@ -279,7 +274,7 @@ mid-probe doesn't burn the check), and a removed backend is simply not
 re-selected. The Search view stays mounted when hidden so long scans
 survive navigation.
 
-## Temp Upload Folder (the only general file write path)
+## Temp Upload Folder (the ONLY write path)
 
 The agent maintains a dedicated scratch folder and writes ONLY there:
 `<temp base>/<upload folder>` (defaults `<data_dir>/temp` /
@@ -482,12 +477,7 @@ Agent's environment and restart it. This is checked **before** path discovery an
 `--version`, even when `FILEBOX_AGENT_HERDR` points to a valid binary. No Herdr client is
 created, no capability is advertised, and incoming commands cannot invoke Herdr.
 Unset defaults to auto-detection; invalid values disable integration with one startup
-warning. The web settings may persist only the boolean `herdr_enabled` to the
-operator-selected Agent config path; callers cannot supply a path or arbitrary
-content. This setting applies live after a successful save, while manual
-on-disk edits take effect at the next Agent start. An explicitly present
-`FILEBOX_AGENT_HERDR_ENABLED` remains authoritative and locks the web setting.
-There is no arbitrary browser file-write API. Settings displays capability
+warning. There is no browser override or runtime enable API. Settings displays capability
 and explains the Agent-side environment setting. Changing A's capability must preserve
 B's requests and acknowledgements. Ordinary reads use
 the detection/bottom snapshot; explicit keys read the visible screen afterward.

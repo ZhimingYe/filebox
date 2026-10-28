@@ -45,8 +45,7 @@ impl AgentConfig {
             .unwrap_or_else(|_| "./agent.toml".to_string());
 
         let path = PathBuf::from(&config_path);
-        protect_config(&path)
-            .unwrap_or_else(|_| panic!("Failed to protect agent config '{}'", config_path));
+        protect_config(&path);
         let toml_config = if path.exists() {
             let contents = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("Failed to read agent config '{}': {}", config_path, e));
@@ -264,7 +263,6 @@ fn atomic_write_private(path: &Path, contents: &[u8]) -> Result<(), ()> {
             options.mode(0o600);
         }
         let mut file = options.open(&temporary).map_err(|_| ())?;
-        register_private_config_file(path, &file)?;
         file.write_all(contents).map_err(|_| ())?;
         file.sync_all().map_err(|_| ())?;
         drop(file);
@@ -421,8 +419,6 @@ pub fn setup_terminal_2fa(path: &std::path::Path) -> Result<(), String> {
     if std::env::var_os("FILEBOX_AGENT_TERMINAL_TOTP_SECRET").is_some() {
         return Err("Unset FILEBOX_AGENT_TERMINAL_TOTP_SECRET before configuring the file; it overrides the saved secret".into());
     }
-    protect_config(path)
-        .map_err(|_| "Failed to protect the terminal authenticator configuration".to_string())?;
     let original = std::fs::read_to_string(path).map_err(|e| format!("Read {}: {e}. Run agent --init-config first", path.display()))?;
     let mut value: toml::Value = toml::from_str(&original).map_err(|e| format!("Invalid config: {e}"))?;
     if value.get("terminal_totp_secret").is_some() && !prompt_yes_no("Replace existing terminal authenticator", false)? { return Ok(()); }
@@ -443,149 +439,39 @@ pub fn setup_terminal_2fa(path: &std::path::Path) -> Result<(), String> {
     value.as_table_mut().ok_or("Config must be a TOML table")?.insert("terminal_totp_secret".into(), toml::Value::String(secret));
     let contents = toml::to_string_pretty(&value).map_err(|e| e.to_string())?;
     if std::fs::read_to_string(path).map_err(|e| e.to_string())? != original { return Err("Config changed during setup; retry".into()); }
-    atomic_write_private(path, contents.as_bytes())
-        .map_err(|_| "Failed to save the terminal authenticator configuration".to_string())?;
+    let temporary = path.with_file_name(format!(".filebox-2fa-{}.tmp", uuid::Uuid::new_v4()));
+    write_private_file(&temporary, contents.as_bytes(), false)?;
+    if let Err(e) = std::fs::rename(&temporary, path) { let _ = std::fs::remove_file(&temporary); return Err(e.to_string()); }
     eprintln!("Terminal 2FA saved locally to {} (0600). Restart the Agent to apply it. Agent restart ends existing shells.", path.display());
     Ok(())
 }
 
-#[cfg(unix)]
-const PRIVATE_CONFIG_CAPACITY: usize = 128;
-
-#[cfg(unix)]
-struct ProtectedConfigInodes {
-    files: Vec<std::fs::File>,
-    capacity: usize,
-}
-
-#[cfg(unix)]
-impl ProtectedConfigInodes {
-    fn with_capacity(capacity: usize) -> Self {
-        Self { files: Vec::new(), capacity }
-    }
-
-    fn prune(&mut self) -> Result<(), ()> {
-        use std::os::unix::fs::MetadataExt;
-        let mut retained = Vec::with_capacity(self.files.len());
-        for file in &self.files {
-            let metadata = file.metadata().map_err(|_| ())?;
-            if metadata.nlink() != 0 {
-                retained.push(file.try_clone().map_err(|_| ())?);
-            }
-        }
-        self.files = retained;
-        Ok(())
-    }
-
-    fn register(&mut self, file: &std::fs::File) -> Result<(), ()> {
-        use std::os::unix::fs::MetadataExt;
-        self.prune()?;
-        let metadata = file.metadata().map_err(|_| ())?;
-        for protected in &self.files {
-            let candidate = protected.metadata().map_err(|_| ())?;
-            if (candidate.dev(), candidate.ino()) == (metadata.dev(), metadata.ino()) {
-                return Ok(());
-            }
-        }
-        if self.files.len() >= self.capacity {
-            return Err(());
-        }
-        let clone = file.try_clone().map_err(|_| ())?;
-        clone.metadata().map_err(|_| ())?;
-        self.files.push(clone);
-        Ok(())
-    }
-
-    fn matches(&self, metadata: &std::fs::Metadata) -> Result<bool, ()> {
-        use std::os::unix::fs::MetadataExt;
-        let mut found = false;
-        for file in &self.files {
-            let protected = file.metadata().map_err(|_| ())?;
-            if (protected.dev(), protected.ino()) == (metadata.dev(), metadata.ino()) {
-                found = true;
-            }
-        }
-        Ok(found)
-    }
-}
-
-#[cfg(unix)]
-impl Default for ProtectedConfigInodes {
-    fn default() -> Self {
-        Self::with_capacity(PRIVATE_CONFIG_CAPACITY)
-    }
-}
-
 struct PrivateConfig {
-    paths: Vec<PathBuf>,
+    path: PathBuf,
     #[cfg(unix)]
-    inodes: ProtectedConfigInodes,
+    file: Option<std::fs::File>,
 }
-
-impl PrivateConfig {
-    fn new() -> Self {
-        Self {
-            paths: Vec::new(),
-            #[cfg(unix)]
-            inodes: ProtectedConfigInodes::default(),
-        }
-    }
-}
-
-static PRIVATE_CONFIG: std::sync::OnceLock<std::sync::Mutex<PrivateConfig>> =
-    std::sync::OnceLock::new();
-
-fn private_config_registry() -> &'static std::sync::Mutex<PrivateConfig> {
-    PRIVATE_CONFIG.get_or_init(|| std::sync::Mutex::new(PrivateConfig::new()))
-}
-
-fn canonical_config_path(path: &Path) -> PathBuf {
-    path.canonicalize()
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(path))
-}
-
-fn protect_config(path: &std::path::Path) -> Result<(), ()> {
-    let path = canonical_config_path(path);
-    let mut config = private_config_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !config.paths.contains(&path) {
-        config.paths.push(path.clone());
-    }
+static PRIVATE_CONFIG: std::sync::OnceLock<PrivateConfig> = std::sync::OnceLock::new();
+fn protect_config(path: &std::path::Path) {
+    let path = path.canonicalize().unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(path));
     #[cfg(unix)]
-    {
-        // Pin the inode for the lifetime of its protection. Remembering just
-        // its number would deny unrelated files after unlink + inode reuse.
-        if path.exists() {
-            let file = std::fs::File::open(&path).map_err(|_| ())?;
-            config.inodes.register(&file)?;
-        }
-    }
-    Ok(())
-}
-
-fn register_private_config_file(path: &Path, file: &std::fs::File) -> Result<(), ()> {
-    let path = canonical_config_path(path);
-    let mut config = private_config_registry().lock().map_err(|_| ())?;
-    if !config.paths.contains(&path) {
-        config.paths.push(path);
-    }
-    #[cfg(unix)]
-    config.inodes.register(file)?;
-    Ok(())
+    // Pin the inode for the lifetime of its protection. Remembering just its
+    // number would deny unrelated files after unlink + inode reuse on Linux.
+    let file = std::fs::File::open(&path).ok();
+    let _ = PRIVATE_CONFIG.set(PrivateConfig { path, #[cfg(unix)] file });
 }
 pub fn is_private_config(path: &std::path::Path) -> bool {
     private_config_matches(path, std::fs::metadata(path).ok().as_ref())
 }
 pub fn private_config_matches(path: &std::path::Path, metadata: Option<&std::fs::Metadata>) -> bool {
-    let Ok(config) = private_config_registry().lock() else { return true; };
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    if config.paths.iter().any(|private_path| *private_path == path) {
-        return true;
-    }
+    let Some(config) = PRIVATE_CONFIG.get() else { return false; };
+    if path.canonicalize().unwrap_or_else(|_| path.to_path_buf()) == config.path { return true; }
     #[cfg(unix)]
-    if let Some(metadata) = metadata {
-        return config.inodes.matches(metadata).unwrap_or(true);
+    if let Some(m) = metadata {
+        use std::os::unix::fs::MetadataExt;
+        if let Some(original) = config.file.as_ref().and_then(|file| file.metadata().ok()) {
+            if (original.dev(), original.ino()) == (m.dev(), m.ino()) { return true; }
+        }
     }
     false
 }
@@ -598,87 +484,26 @@ mod private_config_tests {
     fn custom_config_and_hardlink_are_not_readable() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("custom-settings.toml");
-        let initial_alias = dir.path().join("innocent-initial.txt");
-        std::fs::write(
-            &config,
-            "# synthetic secret\nhub = 'https://hub.example.com'\nherdr_enabled = true\n",
-        )
-        .unwrap();
-        std::fs::hard_link(&config, &initial_alias).unwrap();
-        protect_config(&config).unwrap();
-        let startup_pin = private_config_registry()
-            .lock()
-            .unwrap()
-            .inodes
-            .files
-            .last()
-            .unwrap()
-            .try_clone()
-            .unwrap();
+        let alias = dir.path().join("innocent.txt");
+        std::fs::write(&config, "synthetic secret").unwrap();
+        std::fs::hard_link(&config, &alias).unwrap();
+        protect_config(&config);
         assert!(is_private_config(&config));
-        assert!(is_private_config(&initial_alias));
+        assert!(is_private_config(&alias));
         let root = dir.path().canonicalize().unwrap();
-        assert!(crate::fs::open_resolved_leaf(
-            &root,
-            std::path::Path::new("innocent-initial.txt"),
-            &initial_alias
-        )
-        .is_err());
+        assert!(crate::fs::open_resolved_leaf(&root, std::path::Path::new("innocent.txt"), &alias).is_err());
         assert!(!is_private_config(&dir.path().join("unrelated.txt")));
-
-        persist_herdr_enabled(&config, false).unwrap();
-        let first_alias = dir.path().join("innocent-first.txt");
-        std::fs::hard_link(&config, &first_alias).unwrap();
-        persist_herdr_enabled(&config, true).unwrap();
-        let second_alias = dir.path().join("innocent-second.txt");
-        std::fs::hard_link(&config, &second_alias).unwrap();
-        for (name, path) in [
-            ("custom-settings.toml", &config),
-            ("innocent-initial.txt", &initial_alias),
-            ("innocent-first.txt", &first_alias),
-            ("innocent-second.txt", &second_alias),
-        ] {
-            assert!(private_config_matches(path, std::fs::metadata(path).ok().as_ref()));
-            assert!(crate::fs::open_resolved_leaf(&root, Path::new(name), path).is_err());
-        }
-        let unrelated = dir.path().join("unrelated.txt");
-        std::fs::write(&unrelated, "public").unwrap();
-        assert_eq!(std::fs::read_to_string(&unrelated).unwrap(), "public");
-        assert!(!is_private_config(&unrelated));
-
         std::fs::remove_file(&config).unwrap();
-        std::fs::remove_file(&initial_alias).unwrap();
-        std::fs::remove_file(&first_alias).unwrap();
-        std::fs::remove_file(&second_alias).unwrap();
+        assert!(is_private_config(&alias));
+        std::fs::remove_file(&alias).unwrap();
         // Even with no links left, the protected inode must stay allocated.
         use std::os::unix::fs::MetadataExt;
-        let pinned = startup_pin.metadata().unwrap();
+        let pinned = PRIVATE_CONFIG.get().unwrap().file.as_ref().unwrap().metadata().unwrap();
         assert_eq!(pinned.nlink(), 0);
+        let unrelated = dir.path().join("unrelated.txt");
+        std::fs::write(&unrelated, "public").unwrap();
         let fresh = std::fs::metadata(&unrelated).unwrap();
         assert_ne!((pinned.dev(), pinned.ino()), (fresh.dev(), fresh.ino()));
-    }
-
-    #[test]
-    fn private_config_registry_is_bounded_and_prunes_unlinked_inodes() {
-        use std::os::unix::fs::MetadataExt;
-
-        let dir = tempfile::tempdir().unwrap();
-        let first_path = dir.path().join("first");
-        let second_path = dir.path().join("second");
-        std::fs::write(&first_path, "synthetic secret one").unwrap();
-        std::fs::write(&second_path, "synthetic secret two").unwrap();
-        let first = std::fs::File::open(&first_path).unwrap();
-        let second = std::fs::File::open(&second_path).unwrap();
-        let mut registry = ProtectedConfigInodes::with_capacity(1);
-        registry.register(&first).unwrap();
-        assert!(registry.register(&second).is_err());
-        std::fs::remove_file(&first_path).unwrap();
-        assert_eq!(first.metadata().unwrap().nlink(), 0);
-        registry.register(&second).unwrap();
-        assert_eq!(registry.files.len(), 1);
-        assert_eq!(
-            registry.files[0].metadata().unwrap().ino(),
-            second.metadata().unwrap().ino()
-        );
+        assert!(!is_private_config(&unrelated));
     }
 }
