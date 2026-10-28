@@ -36,6 +36,88 @@ pub struct HerdrBody {
     pub timeout_ms: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct HerdrSettingsBody {
+    pub enabled: bool,
+}
+
+pub async fn herdr_settings_handler(
+    State(state): State<AppState>,
+    Extension(session): Extension<AuthenticatedSession>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<HerdrSettingsBody>,
+) -> Response {
+    let inner = state.inner.read().await;
+    let agent = match inner.agents.get(&agent_id) {
+        Some(agent) => agent,
+        None => return error_response(StatusCode::NOT_FOUND, "backend_offline",
+            &format!("Agent {agent_id} not found or offline"), true),
+    };
+    if agent.status == crate::agent_registry::AgentStatus::Offline {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "backend_offline",
+            &format!("Agent {agent_id} is offline"), true);
+    }
+    if !agent.capabilities.herdr_settings {
+        return error_response(StatusCode::NOT_IMPLEMENTED, "unsupported",
+            "This Agent does not support live Herdr settings. Update the Filebox Agent.", false);
+    }
+    if agent.capabilities.herdr_locked {
+        return error_response(StatusCode::CONFLICT, "herdr_settings_locked",
+            "Herdr settings are locked by FILEBOX_AGENT_HERDR_ENABLED. Unset the environment variable to use the web setting.", false);
+    }
+
+    let req_id = format!("herdr_settings_{}", Uuid::new_v4());
+    let message = HubMessage::HerdrSettingsSet { req_id: req_id.clone(), enabled: body.enabled };
+    let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
+    let send_ok = {
+        let mut pending = inner.pending_responses.write().await;
+        if pending.len() >= MAX_PENDING_RESPONSES {
+            false
+        } else {
+            pending.insert(req_id.clone(), PendingResponse {
+                tx: resp_tx,
+                agent_id: agent_id.clone(),
+                connection_id: agent.connection_id,
+                session_id: Some(session.principal_id.clone()),
+                desired_roots: None,
+                desired_collections: None,
+            });
+            inner.agents.send_to_agent(&agent_id, message)
+        }
+    };
+    drop(inner);
+    if !send_ok {
+        cleanup_pending(&state, &req_id).await;
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "backend_offline",
+            "Failed to send settings request to Agent", true);
+    }
+    // A caller timeout only drops its waiter. The Agent still applies the
+    // setting and its response reconciles the current connection's registry.
+    let guard = PendingResponseCleanup::new(state, req_id.clone(), None, response_owner);
+    let response = tokio::time::timeout(Duration::from_secs(25), resp_rx.recv()).await;
+    guard.finish(!matches!(response, Ok(Some(_)))).await;
+    match response {
+        Ok(Some(value)) => {
+            if let Some(error) = value.get("error").and_then(|value| value.as_str()) {
+                let (status, code, message) = match error {
+                    "herdr_settings_locked" => (StatusCode::CONFLICT, "herdr_settings_locked",
+                        "Herdr settings are locked by FILEBOX_AGENT_HERDR_ENABLED. Unset the environment variable to use the web setting."),
+                    "herdr_settings_write_failed" => (StatusCode::INTERNAL_SERVER_ERROR, "herdr_settings_write_failed",
+                        "Could not save the Herdr setting to the Agent config. Check file permissions and try again."),
+                    "herdr_settings_busy" => (StatusCode::TOO_MANY_REQUESTS, "agent_busy",
+                        "Another Herdr settings update is still in progress. Retry shortly."),
+                    _ => (StatusCode::BAD_GATEWAY, "herdr_settings_failed",
+                        "The Agent could not apply the Herdr setting."),
+                };
+                return error_response(status, code, message, status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS);
+            }
+            Json(value).into_response()
+        }
+        _ => error_response(StatusCode::GATEWAY_TIMEOUT, "request_timeout",
+            "Agent did not respond in time", true),
+    }
+}
+
 pub async fn herdr_handler(
     State(state): State<AppState>,
     Extension(session): Extension<AuthenticatedSession>,
@@ -300,6 +382,91 @@ fn error_response(status: StatusCode, error: &str, message: &str, retryable: boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_state() -> AppState {
+        AppState::new(&crate::config::HubConfig {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            agent_token_hash: "unused".into(),
+            users: Vec::new(),
+        }, false)
+    }
+
+    async fn route_status(state: AppState, agent_id: &str) -> StatusCode {
+        let session = AuthenticatedSession { id: "session".into(), principal_id: "principal".into() };
+        herdr_settings_handler(
+            State(state), Extension(session), Path(agent_id.into()), Json(HerdrSettingsBody { enabled: false }),
+        ).await.status()
+    }
+
+    #[tokio::test]
+    async fn settings_route_rejects_legacy_and_offline_agents() {
+        let state = test_state();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(4);
+        state.inner.write().await.agents.register(
+            "legacy".into(), "legacy".into(), sender.clone(), std::sync::Arc::new(tokio::sync::Notify::new()),
+            0, Vec::new(), 0, Vec::new(), filebox_protocol::resources::Capabilities::default(), None,
+        );
+        assert_eq!(route_status(state.clone(), "legacy").await, StatusCode::NOT_IMPLEMENTED);
+        state.inner.write().await.agents.unregister("legacy", &sender);
+        assert_eq!(route_status(state, "legacy").await, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn settings_route_returns_locked_error_without_exposing_agent_config() {
+        let state = test_state();
+        let (sender, _receiver) = tokio::sync::mpsc::channel(4);
+        let mut capabilities = filebox_protocol::resources::Capabilities::default();
+        capabilities.herdr_settings = true;
+        capabilities.herdr_locked = true;
+        state.inner.write().await.agents.register(
+            "locked".into(), "locked".into(), sender, std::sync::Arc::new(tokio::sync::Notify::new()),
+            0, Vec::new(), 0, Vec::new(), capabilities, None,
+        );
+        let session = AuthenticatedSession { id: "session".into(), principal_id: "principal".into() };
+        let response = herdr_settings_handler(
+            State(state), Extension(session), Path("locked".into()),
+            Json(HerdrSettingsBody { enabled: false }),
+        ).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn settings_route_forwards_and_returns_agent_response() {
+        let state = test_state();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        let mut capabilities = filebox_protocol::resources::Capabilities::default();
+        capabilities.herdr_settings = true;
+        capabilities.herdr_enabled = true;
+        state.inner.write().await.agents.register(
+            "online".into(), "online".into(), sender, std::sync::Arc::new(tokio::sync::Notify::new()),
+            0, Vec::new(), 0, Vec::new(), capabilities, None,
+        );
+        let request_state = state.clone();
+        let request = tokio::spawn(async move {
+            let session = AuthenticatedSession { id: "session".into(), principal_id: "principal".into() };
+            herdr_settings_handler(
+                State(request_state), Extension(session), Path("online".into()),
+                Json(HerdrSettingsBody { enabled: false }),
+            ).await
+        });
+        let (req_id, enabled) = match receiver.recv().await.unwrap() {
+            HubMessage::HerdrSettingsSet { req_id, enabled } => (req_id, enabled),
+            message => panic!("unexpected request: {message:?}"),
+        };
+        assert!(!enabled);
+        let response_tx = state.inner.read().await.pending_responses.read().await
+            .get(&req_id).unwrap().tx.clone();
+        response_tx.send(serde_json::json!({
+            "type": "herdr_settings_response",
+            "req_id": req_id,
+            "enabled": false,
+            "available": false,
+            "locked": false,
+            "error": null,
+        })).await.unwrap();
+        let response = request.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 
     #[test]
     fn read_source_is_optional_and_read_only() {

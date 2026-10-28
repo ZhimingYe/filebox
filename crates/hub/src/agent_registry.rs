@@ -140,6 +140,9 @@ impl AgentConnection {
                 terminal_manage: self.capabilities.terminal_manage,
                 terminal_persistent: self.capabilities.terminal_persistent,
                 herdr: self.capabilities.herdr,
+                herdr_settings: self.capabilities.herdr_settings,
+                herdr_enabled: self.capabilities.herdr_enabled,
+                herdr_locked: self.capabilities.herdr_locked,
             },
         }
     }
@@ -189,6 +192,9 @@ pub struct AgentCapabilitiesInfo {
     pub terminal_manage: bool,
     pub terminal_persistent: bool,
     pub herdr: bool,
+    pub herdr_settings: bool,
+    pub herdr_enabled: bool,
+    pub herdr_locked: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -451,6 +457,24 @@ impl AgentRegistry {
             return false;
         }
         self.update_collections(agent_id, revision, collections);
+        true
+    }
+
+    pub fn update_herdr_settings_for_connection(
+        &mut self,
+        agent_id: &str,
+        connection_id: u64,
+        enabled: bool,
+        available: bool,
+        locked: bool,
+    ) -> bool {
+        if !self.is_current_connection(agent_id, connection_id) {
+            return false;
+        }
+        let Some(agent) = self.agents.get_mut(agent_id) else { return false; };
+        agent.capabilities.herdr_enabled = enabled;
+        agent.capabilities.herdr_locked = locked;
+        agent.capabilities.herdr = enabled && available;
         true
     }
 

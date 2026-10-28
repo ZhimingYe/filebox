@@ -36,6 +36,7 @@ import { NoAgentSelected } from './components/NoAgentSelected';
 import { TempTransferView } from './components/TempTransferView';
 import { TerminalView } from './components/TerminalView';
 import { HerdrView } from './components/HerdrView';
+import { HerdrIntro } from './components/HerdrIntro';
 import { HerdrAttention } from './components/HerdrAttention';
 import { useHerdrAttention, type HerdrAttention as HerdrNotice } from './hooks/useHerdrAttention';
 import {
@@ -826,7 +827,7 @@ export default function App() {
     { v: 'transfer' as const, label: 'Transfer', Icon: IconUpload },
     // Terminal is only meaningful on a terminal-capable agent.
     { v: 'terminal' as const, label: 'Terminal', Icon: IconTerminal },
-    // Herdr is only shown when the agent probed a local `herdr` CLI.
+    // Keep onboarding discoverable until this backend explicitly disables Herdr.
     { v: 'herdr' as const, label: 'Herdr', Icon: IconHerd },
     { v: 'search' as const, label: 'Search', Icon: IconSearch },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
@@ -913,7 +914,7 @@ export default function App() {
                 {navItems.filter((n) =>
                   (n.v !== 'transfer' || tempCapable)
                   && (n.v !== 'terminal' || terminalCapable)
-                  && (n.v !== 'herdr' || herdrCapable),
+                  && (n.v !== 'herdr' || !selectedAgent.capabilities?.herdr_settings || selectedAgent.capabilities.herdr_enabled),
                 ).map(({ v, label, Icon }) => (
                   <SidebarNavButton
                     key={v}
@@ -1397,11 +1398,7 @@ export default function App() {
                       onStatusError={herdrAttention.reportFailure}
                       focusRequest={herdrFocus?.backendId === selectedAgent.id ? herdrFocus : null} />
                   ) : (
-                    <div style={styles.transferUnsupported}>
-                      <p style={styles.transferUnsupportedText}>
-                        Herdr is unavailable on this backend. Check its installation and Agent configuration.
-                      </p>
-                    </div>
+                    <HerdrIntro agent={selectedAgent} onOpenSettings={() => setView('settings')} />
                   )}
                 </div>
               )}

@@ -107,6 +107,10 @@ pub fn create_router(state: AppState) -> Router {
             "/api/agents/{agent_id}/herdr",
             post(crate::herdr_proxy::herdr_handler),
         )
+        .route(
+            "/api/agents/{agent_id}/herdr/settings",
+            post(crate::herdr_proxy::herdr_settings_handler),
+        )
         .route("/api/cancel", post(cancel_handler))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

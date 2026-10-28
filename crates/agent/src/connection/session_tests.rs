@@ -22,6 +22,15 @@ async fn response(rx: &mut mpsc::Receiver<Message>) -> AgentMessage {
     }
 }
 
+async fn settings_response(rx: &mut mpsc::Receiver<Message>, req_id: &str) -> AgentMessage {
+    loop {
+        let message = response(rx).await;
+        if matches!(&message, AgentMessage::HerdrSettingsResponse { req_id: found, .. } if found == req_id) {
+            return message;
+        }
+    }
+}
+
 #[tokio::test]
 async fn terminal_management_burst_survives_a_full_output_queue() {
     let temp = tempfile::tempdir().unwrap();
@@ -76,6 +85,116 @@ async fn collections_burst_keeps_update_before_ack_and_independent_revision() {
     }
     assert_eq!(session.runtime.resource_mgr.resource_revision(), 0);
     session.shutdown().await;
+}
+
+#[tokio::test]
+async fn herdr_disable_cancels_commands_rejects_admission_and_survives_reconnect() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = AgentRuntime::for_tests(temp.path());
+    let running = Arc::new(AtomicBool::new(false));
+    runtime.herdr_cancels.lock().unwrap().insert("active".into(), running.clone());
+    let (sink, mut replies) = capture();
+    let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
+    session.dispatch(HubMessage::HerdrSettingsSet {
+        req_id: "disable".into(),
+        enabled: false,
+    }).unwrap();
+    match settings_response(&mut replies, "disable").await {
+        AgentMessage::HerdrSettingsResponse { req_id, enabled, locked, error, .. } => {
+            assert_eq!(req_id, "disable");
+            assert!(!enabled);
+            assert!(!locked);
+            assert!(error.is_none());
+        }
+        other => panic!("unexpected reply: {other:?}"),
+    }
+    assert!(!session.runtime.herdr_state().enabled);
+    assert!(running.load(Ordering::Relaxed));
+    assert!(std::fs::read_to_string(temp.path().join("agent.toml")).unwrap().contains("herdr_enabled = false"));
+    session.dispatch(HubMessage::HerdrRequest {
+        req_id: "denied".into(),
+        op: filebox_protocol::herdr::HerdrOp::Status,
+        target: None,
+        text: None,
+        keys: Vec::new(),
+        lines: None,
+        read_source: None,
+        wait: false,
+        timeout_ms: None,
+    }).unwrap();
+    match response(&mut replies).await {
+        AgentMessage::HerdrResponse { req_id, error, .. } => {
+            assert_eq!(req_id, "denied");
+            assert_eq!(error.as_deref(), Some("herdr_disabled"));
+        }
+        other => panic!("unexpected reply: {other:?}"),
+    }
+    session.shutdown().await;
+    drop(session);
+
+    let (sink, _replies) = capture();
+    let _reconnected = ConnectionSession::new(&mut runtime, sink, "agent".into());
+    assert_eq!(_reconnected.runtime.herdr_capabilities(), (true, false, false, false));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_herdr_write_preserves_enabled_state_and_running_requests() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = AgentRuntime::for_tests(temp.path());
+    runtime.config_path = temp.path().join("missing").join("agent.toml");
+    let running = Arc::new(AtomicBool::new(false));
+    runtime.herdr_cancels.lock().unwrap().insert("active".into(), running.clone());
+    let (sink, mut replies) = capture();
+    let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
+    session.dispatch(HubMessage::HerdrSettingsSet {
+        req_id: "disable-failed".into(),
+        enabled: false,
+    }).unwrap();
+    match settings_response(&mut replies, "disable-failed").await {
+        AgentMessage::HerdrSettingsResponse { enabled, error, .. } => {
+            assert!(enabled);
+            assert_eq!(error.as_deref(), Some("herdr_settings_write_failed"));
+        }
+        other => panic!("unexpected reply: {other:?}"),
+    }
+    assert!(session.runtime.herdr_state().enabled);
+    assert!(!running.load(Ordering::Relaxed));
+    session.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn herdr_setting_completion_reconciles_reconnected_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = AgentRuntime::for_tests(temp.path());
+    let gate = runtime.herdr_admission_gate.clone();
+    let gate_guard = gate.lock().unwrap();
+    let (sink, old_replies) = capture();
+    let mut old_session = ConnectionSession::new(&mut runtime, sink, "agent".into());
+    old_session.dispatch(HubMessage::HerdrSettingsSet {
+        req_id: "reconnect-setting".into(),
+        enabled: false,
+    }).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !temp.path().join("agent.toml").exists() {
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    old_session.shutdown().await;
+    drop(old_session);
+
+    let (sink, mut new_replies) = capture();
+    let mut new_session = ConnectionSession::new(&mut runtime, sink, "agent".into());
+    drop(gate_guard);
+    match settings_response(&mut new_replies, "reconnect-setting").await {
+        AgentMessage::HerdrSettingsResponse { enabled, error, .. } => {
+            assert!(!enabled);
+            assert!(error.is_none());
+        }
+        other => panic!("unexpected reply: {other:?}"),
+    }
+    assert!(!new_session.runtime.herdr_state().enabled);
+    new_session.shutdown().await;
+    drop(old_replies);
 }
 
 #[tokio::test]
