@@ -57,6 +57,47 @@ x^2 + y_1
     expect(result.querySelector('.katex-error')).toBeNull();
   });
 
+  it.each([
+    String.raw`\begin{equation}
+E=mc^2
+\end{equation}`,
+    String.raw`\begin{align}
+a&=b+c\\
+d&=e
+\end{align}`,
+  ])('renders multiline display environments: %s', source => {
+    const result = render(source);
+    expect(result.querySelectorAll('.katex-display')).toHaveLength(1);
+    expect(result.querySelector('.katex-error')).toBeNull();
+    expect(result.querySelector('annotation')?.textContent).toBe(source);
+  });
+
+  it.each([
+    {
+      source: String.raw`> \[
+> x^2 + y_1
+> \]`,
+      selector: 'blockquote',
+    },
+    {
+      source: String.raw`- \[
+  x^2 + y_1
+  \]`,
+      selector: 'li',
+    },
+  ])('excludes container prefixes from multiline display math', ({ source, selector }) => {
+    const result = render(source);
+    expect(result.querySelector(`${selector} .katex-display`)).not.toBeNull();
+    expect(result.querySelector(`${selector} annotation`)?.textContent).toBe('x^2 + y_1');
+  });
+
+  it('keeps same-line prose in inline parsing after display notation', () => {
+    const result = render(String.raw`\[x^2\] trailing prose`);
+    expect(result.querySelector('p .katex-display')).not.toBeNull();
+    expect(result.querySelector('p')?.textContent).toContain('trailing prose');
+    expect(result.querySelector('annotation')?.textContent).toBe('x^2');
+  });
+
   it('preserves formulas in headings, lists, quotes and GFM tables', () => {
     const result = render('# Title $x$\n\n- Item \\(y\\)\n\n> $$z$$\n\n| Formula |\n| --- |\n| $a_b$ |');
     for (const tag of ['h1', 'li', 'blockquote', 'td']) {
@@ -104,5 +145,33 @@ $\includegraphics{https://example.com/image.png}$`);
     expect(result.querySelector('.katex-error')).not.toBeNull();
     expect(result.textContent).toContain('then');
     expect(result.querySelectorAll('.katex')).toHaveLength(3);
+  });
+
+  it('bails out on nested openers and preserves following Markdown', () => {
+    const source = String.raw`\[
+outer
+\[
+inner
+\]
+
+# Following`;
+    const result = render(source);
+    expect(result.querySelector('h1')?.textContent).toBe('Following');
+    expect(result.querySelectorAll('.katex')).toHaveLength(1);
+    expect(result.querySelector('annotation')?.textContent).toBe('inner');
+  });
+
+  it.each([
+    String.raw`\[
+unclosed
+
+# Following`,
+    `\\[\n${'x'.repeat(32769)}\n\\]\n\n# Following`,
+  ])('bounds malformed or unclosed display lookahead: %s', source => {
+    const started = performance.now();
+    const result = render(source);
+    expect(performance.now() - started).toBeLessThan(1500);
+    expect(result.querySelector('h1')?.textContent).toBe('Following');
+    expect(result.querySelector('.katex')).toBeNull();
   });
 });
