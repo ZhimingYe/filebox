@@ -27,22 +27,42 @@ export function HerdrPopover({ label, trigger, children, above = false, touch = 
   const root = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    if (!open || !above) return;
-    const fitAbove = () => {
-      const triggerTop = root.current?.getBoundingClientRect().top ?? 0;
-      if (!triggerTop || !panel.current) return;
+    if (!open) return;
+    const fitPanel = () => {
+      const anchor = root.current?.getBoundingClientRect();
+      if (!anchor || !panel.current) return;
       const viewport = window.visualViewport;
-      const availableHeight = triggerTop - Math.max(48, viewport?.offsetTop ?? 0) - 8;
-      panel.current.style.maxHeight = `${Math.max(0, Math.min(420, (viewport?.height ?? window.innerHeight) * 0.55, availableHeight))}px`;
+      const viewportTop = viewport?.offsetTop ?? 0;
+      const viewportLeft = viewport?.offsetLeft ?? 0;
+      const height = viewport?.height ?? window.innerHeight;
+      const width = viewport?.width ?? window.innerWidth;
+      const topEdge = Math.max(48, viewportTop + 8);
+      const bottomEdge = viewportTop + height - 8;
+      const spaceAbove = Math.max(0, anchor.top - topEdge - 8);
+      const spaceBelow = Math.max(0, bottomEdge - anchor.bottom - 8);
+      const opensAbove = above ? spaceAbove >= 120 || spaceAbove >= spaceBelow
+        : spaceBelow < 120 && spaceAbove > spaceBelow;
+      const availableHeight = opensAbove ? spaceAbove : spaceBelow;
+      panel.current.style.width = `${Math.max(0, Math.min(300, width - 32))}px`;
+      panel.current.style.maxHeight = `${Math.max(0, Math.min(420, height * 0.55, availableHeight))}px`;
+      const bounds = panel.current.getBoundingClientRect();
+      panel.current.style.left = `${Math.max(viewportLeft + 16, Math.min(anchor.right - bounds.width, viewportLeft + width - bounds.width - 16))}px`;
+      panel.current.style.top = `${opensAbove ? Math.max(topEdge, anchor.top - 8 - bounds.height) : Math.max(topEdge, anchor.bottom + 8)}px`;
     };
-    fitAbove();
-    window.addEventListener('resize', fitAbove);
-    window.addEventListener('scroll', fitAbove, true);
-    window.visualViewport?.addEventListener('resize', fitAbove);
+    fitPanel();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(fitPanel);
+    if (root.current) observer?.observe(root.current);
+    if (panel.current) observer?.observe(panel.current);
+    window.addEventListener('resize', fitPanel);
+    window.addEventListener('scroll', fitPanel, true);
+    window.visualViewport?.addEventListener('resize', fitPanel);
+    window.visualViewport?.addEventListener('scroll', fitPanel);
     return () => {
-      window.removeEventListener('resize', fitAbove);
-      window.removeEventListener('scroll', fitAbove, true);
-      window.visualViewport?.removeEventListener('resize', fitAbove);
+      observer?.disconnect();
+      window.removeEventListener('resize', fitPanel);
+      window.removeEventListener('scroll', fitPanel, true);
+      window.visualViewport?.removeEventListener('resize', fitPanel);
+      window.visualViewport?.removeEventListener('scroll', fitPanel);
     };
   }, [open, above]);
   useEffect(() => {
@@ -72,8 +92,8 @@ export function HerdrPopover({ label, trigger, children, above = false, touch = 
         root.current?.querySelector<HTMLButtonElement>('button')?.focus();
       }
     }} style={{
-      position: 'absolute', right: 0, ...(above ? { bottom: 'calc(100% + 8px)' } : { top: 'calc(100% + 8px)' }),
-      zIndex: 20, width: 300, maxWidth: 'calc(100vw - 48px)', maxHeight: 'min(420px, 55dvh)', overflow: 'auto',
+      position: 'fixed',
+      zIndex: 20, width: 300, maxHeight: 'min(420px, 55dvh)', overflow: 'auto',
       padding: 12, boxSizing: 'border-box', border: `1px solid ${c.border}`,
       borderRadius: radius.lg, background: c.surface, boxShadow: shadow.lg,
       color: c.text, fontFamily: font.sans, fontSize: 12,
