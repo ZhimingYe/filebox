@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as api from '../api/client';
 import { HerdrIntroduction, HerdrSetup, HerdrToggle } from './HerdrSetup';
+import { AgentSettings } from './AgentSettings';
 
 vi.mock('../api/client', async (original) => ({
   ...await original<typeof api>(), setHerdrEnabled: vi.fn(),
@@ -24,7 +25,7 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); });
 function button(label: string) {
-  return [...container.querySelectorAll('button')].find((b) => b.textContent === label)!;
+  return [...container.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') ?? b.textContent) === label)!;
 }
 
 it('introduces missing Herdr, remembers dismissal per backend, and leaves setup reachable', async () => {
@@ -58,19 +59,26 @@ it('waits for a saved Agent setting instead of optimistically switching off', as
   let finish!: (value: api.HerdrSettings) => void;
   vi.mocked(api.setHerdrEnabled).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   await act(async () => root.render(<HerdrToggle agent={agent} onRefresh={refresh} />));
-  await act(async () => button('On').click());
+  const toggle = button('Herdr integration');
+  expect(toggle.style.width).toBe('40px');
+  expect(toggle.style.height).toBe('22px');
+  expect(toggle.querySelector('span')?.style.transform).toBe('translateX(18px)');
+  await act(async () => toggle.click());
   expect(api.setHerdrEnabled).toHaveBeenCalledWith('a1', false);
   expect(container.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
-  expect(button('Saving…').disabled).toBe(true);
+  expect(toggle.disabled).toBe(true);
+  expect(container.querySelector('[role="status"]')?.textContent).toBe('Saving…');
   await act(async () => finish({ enabled: false, environment_override: null }));
-  expect(button('Off')).toBeTruthy();
+  expect(toggle.getAttribute('aria-checked')).toBe('false');
+  expect(toggle.querySelector('span')?.style.transform).toBe('');
+  expect(toggle.disabled).toBe(false);
   expect(refresh).toHaveBeenCalledOnce();
 });
 
 it('shows save failures and keeps the switch at the last confirmed state', async () => {
   vi.mocked(api.setHerdrEnabled).mockRejectedValue({ error: 'permission_denied', message: 'Cannot save setting' });
   await act(async () => root.render(<HerdrToggle agent={agent} onRefresh={refresh} />));
-  await act(async () => button('On').click());
+  await act(async () => button('Herdr integration').click());
   expect(container.querySelector('[role="alert"]')?.textContent).toBeTruthy();
   expect(container.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
 });
@@ -90,4 +98,15 @@ it('rechecks installation without running a Herdr control command', async () => 
   await act(async () => button('Check installation').click());
   expect(api.setHerdrEnabled).toHaveBeenCalledWith('a1', true);
   expect(refresh).toHaveBeenCalledOnce();
+});
+
+it('uses the same switch geometry for Office preview and Herdr in Agent Settings', async () => {
+  const backend = { ...agent, roots: [], last_seen: 0, rtt_ms: null } as api.AgentInfo;
+  await act(async () => root.render(<AgentSettings agent={backend} onRefresh={refresh} />));
+  const office = button('Office preview');
+  const herdr = button('Herdr integration');
+  expect(herdr.style.width).toBe(office.style.width);
+  expect(herdr.style.height).toBe(office.style.height);
+  expect(herdr.style.borderRadius).toBe(office.style.borderRadius);
+  expect(herdr.querySelector('span')?.style.cssText).toBe(office.querySelector('span')?.style.cssText);
 });
