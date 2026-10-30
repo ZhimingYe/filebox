@@ -63,7 +63,7 @@ async function render() {
 
 async function toggleSetting(label: string) {
   await act(async () => button('Herdr settings').click());
-  await act(async () => [...container.querySelectorAll('label')].find((item) => item.textContent?.includes(label))!.querySelector('input')!.click());
+  await act(async () => button(label).click());
   await act(async () => button('Herdr settings').click());
 }
 
@@ -132,7 +132,7 @@ describe('HerdrView', () => {
     });
     await render();
     await typePrompt('long task');
-    await toggleSetting('Wait for result');
+    await toggleSetting('Wait for result after sending');
     await act(async () => button('Send').click());
     expect(button('Stop waiting')).toBeDefined();
     await act(async () => button('Stop waiting').click());
@@ -219,14 +219,14 @@ describe('HerdrView', () => {
     const card = (target: string) => [...container.querySelectorAll<HTMLButtonElement>('aside button')].find((b) => b.textContent?.includes(target))!;
     await act(async () => card('writer').click());
     await act(async () => button('Herdr settings').click());
-    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+    expect(button('Auto-refresh every minute').getAttribute('aria-checked')).toBe('true');
     await act(async () => button('Herdr settings').click());
     vi.mocked(api.herdrCommand).mockClear();
     await act(async () => button('Refresh output').click());
     expect(vi.mocked(api.herdrCommand).mock.calls.map(([, body]) => body)).toEqual([{ op: 'read', target: 'w1:p3', lines: 120, read_source: 'detection' }]);
     await act(async () => card('reviewer').click());
     await act(async () => button('Herdr settings').click());
-    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false);
+    expect(button('Auto-refresh every minute').getAttribute('aria-checked')).toBe('false');
     await act(async () => button('Herdr settings').click());
     expect(container.querySelector('pre')!.textContent).toBe('w1:p2');
     expect(api.herdrCommand).toHaveBeenCalledTimes(1);
@@ -256,7 +256,7 @@ describe('HerdrView', () => {
       return new Promise((_resolve, reject) => signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
     });
     await render(); await typePrompt('wait for me');
-    await toggleSetting('Wait for result');
+    await toggleSetting('Wait for result after sending');
     await act(async () => button('Send').click());
     await act(async () => [...container.querySelectorAll<HTMLButtonElement>('aside button')].find((b) => b.textContent?.includes('writer'))!.click());
     expect(container.querySelector('pre')!.textContent).toBe('w1:p3');
@@ -463,7 +463,7 @@ it('stopping a prompt wait in A leaves the selected B output request running', a
   });
   await render();
   await typePrompt('long running task');
-  await toggleSetting('Wait for result');
+  await toggleSetting('Wait for result after sending');
   await act(async () => button('Send').click());
   await act(async () => [...container.querySelectorAll<HTMLButtonElement>('aside button')]
     .find((b) => b.textContent?.includes('writer'))!.click());
@@ -847,12 +847,12 @@ it('shows snapshot mode and offers an explicit refresh for changed status', asyn
   expect(button('Refresh changed output')).toBeUndefined();
 });
 
-it.each([390, 320])('gives settings checkbox labels 44px touch targets at %spx wide', async (width) => {
+it.each([390, 320])('gives settings switch labels 44px touch targets at %spx wide', async (width) => {
   window.innerWidth = width;
   await render();
   await act(async () => container.querySelector<HTMLButtonElement>('aside button[aria-pressed]')!.click());
   await act(async () => button('Herdr settings').click());
-  const labels = [...container.querySelectorAll<HTMLInputElement>('[role="dialog"] input[type="checkbox"]')]
+  const labels = [...container.querySelectorAll<HTMLButtonElement>('[role="dialog"] [role="switch"]')]
     .map((input) => input.closest('label')!);
   expect(labels).toHaveLength(3);
   for (const label of labels) expect(Number.parseInt(label.style.minHeight)).toBeGreaterThanOrEqual(44);

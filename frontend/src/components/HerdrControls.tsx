@@ -1,18 +1,19 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { c, font, radius, shadow } from '../theme';
 
-/** Quiet controls shared by the Herdr toolbar and remote keyboard. */
-export function HerdrButton({ children, style, touch, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { touch?: boolean }) {
+/** Shared action hierarchy for Herdr onboarding, toolbars and remote input. */
+export function HerdrButton({ children, style, touch, variant = 'secondary', ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { touch?: boolean; variant?: 'primary' | 'secondary' | 'quiet' }) {
   const [hovered, setHovered] = useState(false);
   return <button {...props} type={props.type ?? 'button'}
     onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
     style={{
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-      minHeight: touch ? 44 : 32, minWidth: touch ? 44 : undefined, padding: '0 9px', flexShrink: 0,
-      borderWidth: 1, borderStyle: 'solid', borderColor: 'transparent', borderRadius: radius.sm,
-      background: hovered && !props.disabled ? c.bgMuted : 'transparent',
-      color: c.textSecondary, fontFamily: font.sans, fontSize: 12, lineHeight: 1.4,
-      cursor: props.disabled ? 'default' : 'pointer', opacity: props.disabled ? 0.45 : 1,
+      minHeight: touch ? 44 : 32, minWidth: touch ? 44 : undefined, padding: '0 12px', flexShrink: 0,
+      borderWidth: 1, borderStyle: 'solid', borderColor: variant === 'secondary' ? c.border : 'transparent', borderRadius: radius.md,
+      background: variant === 'primary' ? (hovered && !props.disabled ? c.accentHover : c.accent)
+        : hovered && !props.disabled ? c.bgMuted : variant === 'secondary' ? c.surface : 'transparent',
+      color: variant === 'primary' ? c.onAccent : c.textSecondary, fontFamily: font.sans, fontSize: 13, fontWeight: 500, lineHeight: 1.4,
+      cursor: props.disabled ? 'not-allowed' : 'pointer', opacity: props.disabled ? 0.5 : 1,
       ...style,
     }}>{children}</button>;
 }
