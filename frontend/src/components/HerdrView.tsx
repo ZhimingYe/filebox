@@ -1033,7 +1033,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: `1px solid ${c.border}`,
     borderRadius: radius.lg,
     boxShadow: shadow.xs,
-    overflow: 'hidden',
+    overflow: 'auto',
   },
   detailEmpty: {
     flex: 1,
@@ -1117,7 +1117,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   composer: {
     padding: '12px 16px 16px',
-    flexShrink: 1,
+    flexShrink: 0,
     minHeight: 0,
     display: 'flex',
     flexDirection: 'column',

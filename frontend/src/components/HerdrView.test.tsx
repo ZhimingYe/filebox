@@ -935,7 +935,8 @@ it('grows and shrinks the composer within desktop and mobile height limits', asy
   expect(textarea.style.height).toBe('120px');
   const inputCard = textarea.parentElement!;
   expect(inputCard.style.overflowY).toBe('auto');
-  expect(inputCard.parentElement!.style.flexShrink).toBe('1');
+  expect(inputCard.parentElement!.style.flexShrink).toBe('0');
+  expect(textarea.closest('section')!.style.overflow).toBe('auto');
   Object.defineProperty(textarea, 'scrollHeight', { value: 20 });
   await typePrompt('');
   expect(textarea.style.height).toBe('56px');
