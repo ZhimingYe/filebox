@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, Notify};
 
 use filebox_protocol::resources::{
     Capabilities, CollectionConfig, CollectionInfo, DesiredCollections, DesiredResources,
-    ResourceRevision, RootConfig, RootInfo, TempRootInfo,
+    HerdrSettings, ResourceRevision, RootConfig, RootInfo, TempRootInfo,
 };
 use filebox_protocol::message::HubMessage;
 
@@ -140,6 +140,7 @@ impl AgentConnection {
                 terminal_manage: self.capabilities.terminal_manage,
                 terminal_persistent: self.capabilities.terminal_persistent,
                 herdr: self.capabilities.herdr,
+                herdr_settings: self.capabilities.herdr_settings.clone(),
             },
         }
     }
@@ -189,6 +190,7 @@ pub struct AgentCapabilitiesInfo {
     pub terminal_manage: bool,
     pub terminal_persistent: bool,
     pub herdr: bool,
+    pub herdr_settings: Option<HerdrSettings>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -451,6 +453,23 @@ impl AgentRegistry {
             return false;
         }
         self.update_collections(agent_id, revision, collections);
+        true
+    }
+
+    pub fn update_herdr_settings_for_connection(
+        &mut self,
+        agent_id: &str,
+        connection_id: u64,
+        settings: HerdrSettings,
+        available: bool,
+    ) -> bool {
+        if !self.is_current_connection(agent_id, connection_id) {
+            return false;
+        }
+        if let Some(agent) = self.agents.get_mut(agent_id) {
+            agent.capabilities.herdr_settings = Some(settings);
+            agent.capabilities.herdr = available;
+        }
         true
     }
 

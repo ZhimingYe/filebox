@@ -28,7 +28,8 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
         | AgentMessage::ResourcesUpdated { .. }
         | AgentMessage::CollectionsApplied { .. }
         | AgentMessage::CollectionsRejected { .. }
-        | AgentMessage::CollectionsUpdated { .. }) => updates::dispatch(context, message).await,
+        | AgentMessage::CollectionsUpdated { .. }
+        | AgentMessage::HerdrSettingsApplied { .. }) => updates::dispatch(context, message).await,
         message @ (AgentMessage::TerminalOpened { .. }
         | AgentMessage::TerminalOutput { .. }
         | AgentMessage::TerminalInputAck { .. }

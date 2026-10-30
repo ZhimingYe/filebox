@@ -23,6 +23,7 @@ import { PreviewHeaderActions } from './components/PreviewHeaderActions';
 import { parentDir } from './components/parentDir';
 import { usePreviewTabs } from './hooks/usePreviewTabs';
 import { AgentSettings } from './components/AgentSettings';
+import { HerdrIntroduction, HerdrSetup } from './components/HerdrSetup';
 import { AboutDialog } from './components/AboutDialog';
 import { SystemStats } from './components/SystemStats';
 import { LoginAudit } from './components/LoginAudit';
@@ -548,6 +549,7 @@ export default function App() {
   // Terminal nav entry is only meaningful on a terminal-capable agent.
   const terminalCapable = !!selectedAgent?.capabilities?.terminal;
   const herdrCapable = !!selectedAgent?.capabilities?.herdr;
+  const herdrVisible = herdrCapable || !!selectedAgent?.capabilities?.herdr_settings?.enabled;
   const herdrAttention = useHerdrAttention(agents, loggedIn === true,
     view === 'herdr' && herdrCapable ? selectedAgentId : null);
   const [herdrFocus, setHerdrFocus] = useState<{ backendId: string; target: string; nonce: number } | null>(null);
@@ -709,6 +711,7 @@ export default function App() {
       evt.event === 'agent_disconnected' ||
       evt.event === 'resources_updated' ||
       evt.event === 'collections_updated' ||
+      evt.event === 'herdr_settings_updated' ||
       evt.event === 'sync_required'
     ) {
       refresh();
@@ -826,7 +829,7 @@ export default function App() {
     { v: 'transfer' as const, label: 'Transfer', Icon: IconUpload },
     // Terminal is only meaningful on a terminal-capable agent.
     { v: 'terminal' as const, label: 'Terminal', Icon: IconTerminal },
-    // Herdr is only shown when the agent probed a local `herdr` CLI.
+    // Keep setup reachable before installation, but hide disabled integrations.
     { v: 'herdr' as const, label: 'Herdr', Icon: IconHerd },
     { v: 'search' as const, label: 'Search', Icon: IconSearch },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
@@ -913,7 +916,7 @@ export default function App() {
                 {navItems.filter((n) =>
                   (n.v !== 'transfer' || tempCapable)
                   && (n.v !== 'terminal' || terminalCapable)
-                  && (n.v !== 'herdr' || herdrCapable),
+                  && (n.v !== 'herdr' || herdrVisible),
                 ).map(({ v, label, Icon }) => (
                   <SidebarNavButton
                     key={v}
@@ -1167,6 +1170,8 @@ export default function App() {
         {/* Content area */}
         <HerdrAttention notices={herdrAttention.notices} agents={agents}
           onAcknowledge={herdrAttention.acknowledge} onOpen={openHerdrNotice} isMobile={isMobile} />
+        {selectedAgent && view !== 'herdr' && <HerdrIntroduction key={selectedAgent.id}
+          agent={selectedAgent} onOpen={() => navigate('herdr')} />}
         <div style={styles.contentArea}>
           {!selectedAgent ? (
             view === 'audit' ? (
@@ -1397,11 +1402,7 @@ export default function App() {
                       onStatusError={herdrAttention.reportFailure}
                       focusRequest={herdrFocus?.backendId === selectedAgent.id ? herdrFocus : null} />
                   ) : (
-                    <div style={styles.transferUnsupported}>
-                      <p style={styles.transferUnsupportedText}>
-                        Herdr is unavailable on this backend. Check its installation and Agent configuration.
-                      </p>
-                    </div>
+                    <HerdrSetup key={selectedAgent.id} agent={selectedAgent} onRefresh={refresh} />
                   )}
                 </div>
               )}

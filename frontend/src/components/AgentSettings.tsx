@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { AgentInfo } from '../api/client';
 import { RootManager } from './RootManager';
+import { HerdrToggle } from './HerdrSetup';
 import {
   readOfficePdfPreviewPref,
   writeOfficePdfPreviewPref,
@@ -183,16 +184,8 @@ export function AgentSettings({ agent, onRefresh }: Props) {
                 Coding agents
               </h3>
             </div>
-            <div style={styles.prefRow}>
-              <div style={styles.prefText}>
-                <div style={{ ...styles.prefLabel, display: 'flex', justifyContent: 'space-between', gap: 16 }}>
-                  <span>Herdr</span>
-                  <span style={{ color: agent.capabilities?.herdr ? c.success : c.textMuted, fontSize: 12, fontWeight: 400 }}>
-                    {agent.capabilities?.herdr ? 'Available' : 'Unavailable'}
-                  </span>
-                </div>
-                <p style={{ ...styles.prefHint, overflowWrap: 'anywhere' }}>To disable, set <code>FILEBOX_AGENT_HERDR_ENABLED=0</code> on this agent and restart it.</p>
-              </div>
+            <div style={styles.cardBody}>
+              <HerdrToggle agent={agent} onRefresh={onRefresh} />
             </div>
           </section>
 

@@ -34,16 +34,12 @@ impl HerdrClient {
     pub async fn probe() -> Option<Self> {
         // Operator-owned hard switch. Check before path discovery or --version;
         // a disabled integration never creates a client or advertises capability.
-        match herdr_enabled(std::env::var_os("FILEBOX_AGENT_HERDR_ENABLED").as_deref()) {
-            Ok(true) => {}
-            Ok(false) => {
+        match Self::environment_override() {
+            Some(false) => {
                 tracing::info!("Herdr integration disabled by FILEBOX_AGENT_HERDR_ENABLED");
                 return None;
             }
-            Err(()) => {
-                tracing::warn!("Invalid FILEBOX_AGENT_HERDR_ENABLED; Herdr integration disabled (use 0 or 1)");
-                return None;
-            }
+            None | Some(true) => {}
         }
         let bin = resolve_herdr_path()?;
         match probe_version(&bin).await {
@@ -64,6 +60,17 @@ impl HerdrClient {
                 None
             }
         }
+    }
+
+    pub fn environment_override() -> Option<bool> {
+        let value = std::env::var_os("FILEBOX_AGENT_HERDR_ENABLED");
+        if value
+            .as_deref()
+            .is_some_and(|value| herdr_enabled(Some(value)).is_err())
+        {
+            tracing::warn!("Invalid FILEBOX_AGENT_HERDR_ENABLED; Herdr integration disabled (use 0 or 1)");
+        }
+        parsed_environment_override(value.as_deref())
     }
 
     pub async fn handle(
@@ -307,6 +314,14 @@ fn herdr_enabled(value: Option<&std::ffi::OsStr>) -> Result<bool, ()> {
         "0" | "false" | "off" | "no" => Ok(false),
         _ => Err(()),
     }
+}
+
+fn parsed_environment_override(value: Option<&std::ffi::OsStr>) -> Option<bool> {
+    value.map(|value| herdr_enabled(Some(value)).unwrap_or(false))
+}
+
+pub fn effective_enabled(persisted: bool, environment_override: Option<bool>) -> bool {
+    environment_override.unwrap_or(persisted)
 }
 
 fn resolve_herdr_path() -> Option<PathBuf> {
@@ -721,6 +736,13 @@ mod tests {
         for value in ["", "flase", "2"] {
             assert_eq!(herdr_enabled(Some(OsStr::new(value))), Err(()));
         }
+        assert_eq!(parsed_environment_override(Some(OsStr::new("true"))), Some(true));
+        assert_eq!(parsed_environment_override(Some(OsStr::new("false"))), Some(false));
+        assert_eq!(parsed_environment_override(Some(OsStr::new("invalid"))), Some(false));
+        assert!(effective_enabled(false, Some(true)));
+        assert!(!effective_enabled(true, Some(false)));
+        assert!(!effective_enabled(false, None));
+        assert!(effective_enabled(true, None));
     }
 
     // Run probe in a separate test process so environment overrides cannot race

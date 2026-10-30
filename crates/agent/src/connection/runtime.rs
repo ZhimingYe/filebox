@@ -17,6 +17,7 @@ pub(super) struct AgentRuntime {
     pub(super) terminal_manager: Arc<crate::terminal::TerminalManager>,
     pub(super) upload_workers: Arc<Semaphore>,
     pub(super) herdr: Option<Arc<crate::herdr::HerdrClient>>,
+    pub(super) herdr_environment_override: Option<bool>,
     pub(super) herdr_inflight: Arc<Semaphore>,
     pub(super) herdr_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
@@ -82,7 +83,19 @@ impl AgentRuntime {
             Arc::new(Mutex::new(HashMap::new()));
         // PTYs and anti-replay state live across every transport connection.
         let terminal_manager = Arc::new(crate::terminal::TerminalManager::new(config.terminal_totp_secret.clone()));
-        let herdr = crate::herdr::HerdrClient::probe().await.map(Arc::new);
+        let herdr_override = crate::herdr::HerdrClient::environment_override();
+        let herdr_enabled = crate::herdr::effective_enabled(
+            resource_mgr.herdr_enabled(),
+            herdr_override,
+        );
+        let herdr = if herdr_enabled {
+            crate::herdr::HerdrClient::probe().await.map(Arc::new)
+        } else {
+            None
+        };
+        if !herdr_enabled && herdr_override.is_none() {
+            tracing::info!("Herdr integration disabled by persisted setting");
+        }
 
         Self {
             resource_mgr, stable_agent_id, stats_cache, dir_cache, content_cache,
@@ -90,6 +103,7 @@ impl AgentRuntime {
             search_cancels, terminal_manager,
             upload_workers: Arc::new(Semaphore::new(4)),
             herdr,
+            herdr_environment_override: herdr_override,
             herdr_inflight: Arc::new(Semaphore::new(2)),
             herdr_cancels: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -108,8 +122,20 @@ impl AgentRuntime {
             terminal_manager: Arc::new(crate::terminal::TerminalManager::new(None)),
             upload_workers: Arc::new(Semaphore::new(4)),
             herdr: None,
+            herdr_environment_override: crate::herdr::HerdrClient::environment_override(),
             herdr_inflight: Arc::new(Semaphore::new(1)),
             herdr_cancels: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub(super) fn herdr_settings(&self) -> filebox_protocol::resources::HerdrSettings {
+        let environment_override = self.herdr_environment_override;
+        filebox_protocol::resources::HerdrSettings {
+            enabled: crate::herdr::effective_enabled(
+                self.resource_mgr.herdr_enabled(),
+                environment_override,
+            ),
+            environment_override,
         }
     }
 

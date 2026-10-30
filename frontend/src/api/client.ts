@@ -410,6 +410,21 @@ export interface AgentCapabilities {
   terminal_persistent?: boolean;
   /** Agent found a local `herdr` CLI it can drive. */
   herdr?: boolean;
+  herdr_settings?: HerdrSettings | null;
+}
+
+export interface HerdrSettings {
+  enabled: boolean;
+  environment_override: boolean | null;
+}
+
+export function setHerdrEnabled(agentId: string, enabled: boolean) {
+  return request<HerdrSettings>(
+    `/api/agents/${encodeURIComponent(agentId)}/herdr-settings`,
+    { method: 'POST', body: JSON.stringify({ enabled }) },
+    false,
+    15_000,
+  );
 }
 
 export interface AgentInfo {

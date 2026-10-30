@@ -215,6 +215,13 @@ pub enum AgentMessage {
         req_id: String,
         sessions: Vec<TerminalSessionInfo>,
     },
+    HerdrSettingsApplied {
+        req_id: String,
+        settings: crate::resources::HerdrSettings,
+        available: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Result of a Herdr CLI command (status/list, read, prompt, send-keys).
     HerdrResponse {
         req_id: String,
@@ -301,6 +308,10 @@ pub enum HubMessage {
         req_id: String,
         desired_revision: u64,
         collections: Vec<CollectionConfig>,
+    },
+    HerdrSettingsSet {
+        req_id: String,
+        enabled: bool,
     },
     FsListRequest {
         req_id: String,
@@ -1744,6 +1755,83 @@ mod tests {
         let legacy: AgentMessage = serde_json::from_value(legacy_json).unwrap();
         match legacy {
             AgentMessage::Register { temp_root, .. } => assert!(temp_root.is_none()),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn herdr_settings_messages_round_trip_with_legacy_capability_default() {
+        let mut capabilities = Capabilities::default();
+        assert!(capabilities.herdr_settings.is_none());
+        let mut legacy_capabilities = serde_json::to_value(Capabilities::default()).unwrap();
+        legacy_capabilities
+            .as_object_mut()
+            .unwrap()
+            .remove("herdr_settings");
+        let legacy_capabilities: Capabilities =
+            serde_json::from_value(legacy_capabilities).unwrap();
+        assert!(legacy_capabilities.herdr_settings.is_none());
+
+        capabilities.herdr_settings = Some(crate::resources::HerdrSettings {
+            enabled: false,
+            environment_override: Some(false),
+        });
+        let register = AgentMessage::Register {
+            agent_id: Some("agent".into()),
+            name: "agent".into(),
+            resource_revision: 0,
+            roots: vec![],
+            capabilities,
+            collections_revision: 0,
+            collections: vec![],
+            temp_root: None,
+        };
+        match round_trip_agent(&register) {
+            AgentMessage::Register { capabilities, .. } => {
+                assert_eq!(
+                    capabilities.herdr_settings,
+                    Some(crate::resources::HerdrSettings {
+                        enabled: false,
+                        environment_override: Some(false),
+                    })
+                );
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let set = HubMessage::HerdrSettingsSet {
+            req_id: "settings-1".into(),
+            enabled: true,
+        };
+        match round_trip_hub(&set) {
+            HubMessage::HerdrSettingsSet { req_id, enabled } => {
+                assert_eq!(req_id, "settings-1");
+                assert!(enabled);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let applied = AgentMessage::HerdrSettingsApplied {
+            req_id: "settings-1".into(),
+            settings: crate::resources::HerdrSettings {
+                enabled: true,
+                environment_override: None,
+            },
+            available: false,
+            error: None,
+        };
+        match round_trip_agent(&applied) {
+            AgentMessage::HerdrSettingsApplied {
+                settings,
+                available,
+                error,
+                ..
+            } => {
+                assert!(settings.enabled);
+                assert!(settings.environment_override.is_none());
+                assert!(!available);
+                assert!(error.is_none());
+            }
             _ => panic!("wrong variant"),
         }
     }

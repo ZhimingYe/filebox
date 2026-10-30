@@ -159,6 +159,9 @@ class SseManager {
     es.addEventListener('collections_updated', (e) => {
       this.dispatch('collections_updated', e.data);
     });
+    es.addEventListener('herdr_settings_updated', (e) => {
+      this.dispatch('herdr_settings_updated', e.data);
+    });
     es.addEventListener('progress', (e) => {
       this.dispatch('progress', e.data);
     });

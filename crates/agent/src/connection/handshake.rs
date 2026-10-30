@@ -108,8 +108,10 @@ pub(super) async fn connect_and_register(
     // Session management and persistent attachments ride the same
     // unix-only PTY support as `terminal`.
     capabilities.terminal_manage = cfg!(unix);
+    capabilities.herdr_settings = Some(runtime.herdr_settings());
     capabilities.terminal_persistent = cfg!(unix);
-    capabilities.herdr = runtime.herdr.is_some();
+    capabilities.herdr = capabilities.herdr_settings.as_ref().is_some_and(|settings| settings.enabled)
+        && runtime.herdr.is_some();
     let temp_root = temp_store.map(|store| store.root_info());
     let register = AgentMessage::Register {
         agent_id: Some(runtime.stable_agent_id.clone()),
