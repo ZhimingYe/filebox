@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { MarkdownContent } from './MarkdownContent';
 
 import {
   useFetchText,
@@ -107,18 +106,7 @@ export function MarkdownPreview({ url, agentId, root, path, stateKey }: Props) {
         <CopyButton text={raw} />
       </div>
       <div className="markdown" style={{ ...styles.markdown, marginTop: 0 }}>
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            table: (props) => (
-              <div style={styles.tableWrap}>
-                <table>{props.children}</table>
-              </div>
-            ),
-          }}
-        >
-          {displayText}
-        </ReactMarkdown>
+        <MarkdownContent text={displayText} />
       </div>
     </div>
   );

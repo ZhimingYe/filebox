@@ -127,6 +127,23 @@ on its own, with no duplicate entries and no lost configuration.
   retains the most recent 256 KiB of output. The shell is unsandboxed and
   can do anything the Agent's OS user can.
 
+## Markdown math
+
+Markdown previews render math locally with KaTeX (no CDN). Supported forms:
+`$...$`, `$$...$$` (inline or multiline), `\(...\)`, `\[...\]`, GitHub's
+`` $`...`$ ``, and fenced `math`, `latex`, `tex`, or `katex` blocks.
+Standalone `math`, `displaymath`, `equation`, `align`, `alignat`, `gather`,
+`aligned`, and `gathered` LaTeX environments are recognized, including starred
+variants where supported. Matrices, cases, and other KaTeX-supported commands
+work inside math delimiters.
+
+Ordinary code spans/blocks remain literal. Single-dollar inline math must not
+start/end with whitespace or end immediately before a digit, to avoid common
+currency ambiguities; escape literal dollars as `\$`. Use double dollars or
+LaTeX delimiters for display math. Wide display formulas scroll horizontally.
+Unsupported/invalid TeX stays readable rather than breaking the preview; this
+is KaTeX compatibility, not a full LaTeX engine with arbitrary packages.
+
 ## Quick Start
 
 The hub lives on a central server you control — a small VPS, an internal
