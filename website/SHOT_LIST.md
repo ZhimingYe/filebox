@@ -15,7 +15,6 @@
 | 02c-search-content.png | 内容正则搜索 |
 | 03-collections.png / 03b-… | Collections |
 | 04-transfer.png / 04b-… | Transfer 与上传后 |
-| 05-terminal.png … 05d-… | Terminal TOTP 与会话输出 |
 | 06-stats.png | System Monitor |
 | 07-health.png | About / Diagnostics |
 | 08-preview-*.png | 图 / MD / 代码 / PDF（多页合成报告） / CSV / Office / Quarto·Rmd（08g） / Jupyter ipynb（08h） / HTML（08i） |

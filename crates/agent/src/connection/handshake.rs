@@ -99,17 +99,7 @@ pub(super) async fn connect_and_register(
     // enters the persisted desired set — the hub surfaces it to the UI from
     // the Register payload, and this agent resolves the name specially.
     capabilities.temp_upload = temp_store.is_some();
-    // Remote terminal sessions spawn a shell on a PTY; unix-only
-    // (portable-pty), so non-unix builds advertise false.
-    capabilities.terminal = cfg!(unix);
-    // Required TOTP check is enforced locally in terminal.rs; advertise it
-    // so the hub knows TerminalOpen must carry agent_totp_code.
-    capabilities.terminal_agent_2fa = config.terminal_totp_secret.is_some();
-    // Session management and persistent attachments ride the same
-    // unix-only PTY support as `terminal`.
-    capabilities.terminal_manage = cfg!(unix);
     capabilities.herdr_settings = Some(runtime.herdr_settings());
-    capabilities.terminal_persistent = cfg!(unix);
     capabilities.herdr = capabilities.herdr_settings.as_ref().is_some_and(|settings| settings.enabled)
         && runtime.herdr.is_some();
     let temp_root = temp_store.map(|store| store.root_info());

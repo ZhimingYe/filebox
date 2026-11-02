@@ -1,6 +1,6 @@
 # Security & sensitive files
 
-filebox’s default posture: **read-only browse, path jail, sensitive files denied**. Two write capabilities (Transfer, Terminal) are explicit exceptions and need capability / local configuration.
+filebox’s default posture: **read-only browse, path jail, sensitive files denied**. Transfer writes only to a dedicated scratch folder. Herdr uses a separate, whitelisted CLI integration for coding-agent operations.
 
 ![Sidebar capability entries](/screenshots/00-sidebar-overview.png)
 
@@ -11,7 +11,6 @@ Browse paths have no write / delete / rename / arbitrary exec messages.
 | Exception | Scope | Protections |
 |-----------|-------|-------------|
 | **Transfer** | Agent scratch directory only | Quotas, no overwrite, not a normal root |
-| **Terminal** | Agent host shell (**not sandboxed**) | Agent-local TOTP; secret never enters the Hub |
 
 ## Sensitive files denied by default (excerpt)
 

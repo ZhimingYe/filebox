@@ -14,7 +14,6 @@ pub(super) struct AgentRuntime {
     pub(super) dir_list_workers: Arc<Semaphore>,
     pub(super) search_inflight: Arc<AtomicUsize>,
     pub(super) search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-    pub(super) terminal_manager: Arc<crate::terminal::TerminalManager>,
     pub(super) upload_workers: Arc<Semaphore>,
     pub(super) herdr: Option<Arc<crate::herdr::HerdrClient>>,
     pub(super) herdr_environment_override: Option<bool>,
@@ -81,8 +80,6 @@ impl AgentRuntime {
         let search_inflight = Arc::new(AtomicUsize::new(0));
         let search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        // PTYs and anti-replay state live across every transport connection.
-        let terminal_manager = Arc::new(crate::terminal::TerminalManager::new(config.terminal_totp_secret.clone()));
         let herdr_override = crate::herdr::HerdrClient::environment_override();
         let herdr_enabled = crate::herdr::effective_enabled(
             resource_mgr.herdr_enabled(),
@@ -100,7 +97,7 @@ impl AgentRuntime {
         Self {
             resource_mgr, stable_agent_id, stats_cache, dir_cache, content_cache,
             office_runtime, temp_store, fs_workers, dir_list_workers, search_inflight,
-            search_cancels, terminal_manager,
+            search_cancels,
             upload_workers: Arc::new(Semaphore::new(4)),
             herdr,
             herdr_environment_override: herdr_override,
@@ -119,7 +116,6 @@ impl AgentRuntime {
             office_runtime: None, temp_store: None,
             fs_workers: Arc::new(Semaphore::new(1)), dir_list_workers: Arc::new(Semaphore::new(1)),
             search_inflight: Arc::new(AtomicUsize::new(0)), search_cancels: Arc::new(Mutex::new(HashMap::new())),
-            terminal_manager: Arc::new(crate::terminal::TerminalManager::new(None)),
             upload_workers: Arc::new(Semaphore::new(4)),
             herdr: None,
             herdr_environment_override: crate::herdr::HerdrClient::environment_override(),

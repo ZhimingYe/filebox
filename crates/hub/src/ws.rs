@@ -64,7 +64,6 @@ mod session;
 mod dispatch;
 mod updates;
 mod responses;
-mod terminal;
 
 pub(super) type AgentSink = futures_util::stream::SplitSink<WebSocket, Message>;
 pub(super) type AgentReader = futures_util::stream::SplitStream<WebSocket>;

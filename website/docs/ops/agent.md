@@ -20,7 +20,6 @@ Install an Agent on every host you want to browse; it dials out to the Hub. Inst
 | `FILEBOX_AGENT_DATA_DIR` | State directory |
 | `FILEBOX_ALLOW_INSECURE_HUB` | Allow plaintext Hub (dev only) |
 | `FILEBOX_AGENT_SOFFICE` / `_DIR` | LibreOffice (optional) |
-| `FILEBOX_AGENT_TERMINAL_TOTP_SECRET` | Terminal 2FA (optional) |
 | `FILEBOX_AGENT_STATS_TTL_SECS` | sysinfo cache TTL (default 60) |
 | `FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS` | Directory cache re-stat cooldown |
 
@@ -39,7 +38,6 @@ Verifies checksums and replaces in place. Prefer upgrading with Hub and frontend
 | Capability | Where to configure |
 |------------|--------------------|
 | Office preview | [Office preview](./office) |
-| Terminal 2FA | `./agent --setup-terminal-2fa` or env — see [Terminal](/features/terminal) |
 | Transfer | Capability `temp_upload`; rules in [Transfer](/features/transfer) |
 
 Confirm connection status and enabled roots in UI **Settings**:

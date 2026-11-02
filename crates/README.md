@@ -73,12 +73,10 @@ and free of I/O.
 | `agent.rs` | Agent identity / info shapes used at register time |
 | `denylist.rs` | Default-deny sensitive paths even inside allowed roots |
 | `temp.rs` | Shared temp-upload name validation (single path component) |
-| `totp.rs` | RFC 6238 TOTP core for Agent-local verification |
 | `herdr.rs` | Herdr CLI whitelist types (`status`/`read`/`prompt`/`send_keys`) |
 
 **Capability flags that matter:** `pinned_folders`, `collections`,
-`workspace_search`, `temp_upload`, `terminal`, `terminal_agent_2fa`,
-`terminal_manage`, `terminal_persistent`, `herdr`. Older agents omit them; the Hub returns
+`workspace_search`, `temp_upload`, `herdr`. Older agents omit them; the Hub returns
 unsupported rather than silently no-op'ing. Vestigial flags
 (`image_preview`, `pdf_preview`, `serve_dir`) default `false` and are not
 gated on.
@@ -101,9 +99,8 @@ agent WebSocket.
 | `fs_proxy.rs` | List / stat / raw file proxy to agent WS |
 | `search_proxy.rs` | Workspace Search proxy (long timeout, cancel binding) |
 | `temp_proxy.rs` | Temp-folder upload relay (streams body → WS chunks) + one-click cleanup |
-| `terminal_proxy.rs` | Terminal WS relay, single-use transport tickets, session list/end |
 | `herdr_proxy.rs` | Herdr CLI relay (`POST /api/agents/{id}/herdr`) |
-| `audit.rs` / `audit/queued.rs` | Login/terminal audit trail; bounded background persistence for terminal acknowledgements |
+| `audit.rs` | Login audit trail |
 | `events.rs` | SSE fanout to browsers |
 | `health.rs` | Liveness + version |
 | `config.rs` / `state.rs` | Config load + shared `AppState` |
@@ -125,9 +122,6 @@ Notable invariants (see also root [`CLAUDE.md`](../CLAUDE.md)):
   Congested deliveries survive caller cancellation, with at most 256 background
   waits. Office cancellation reserves caller-chosen IDs before releasing locks.
   Upload chunks remain on their Begin generation and wait at most 10s for space.
-- Terminal acknowledgements queue audit records without waiting on storage or
-  retaining the registry lock during disk I/O. One worker drains at most 256
-  queued records; overflow warns and omits excess records from persistent history.
 - FileChunk JSON is parsed once and bytes are decoded only by the HTTP consumer;
   base64 and legacy byte arrays remain supported, with unchanged wire framing.
 - Body limit is 1MB; resource/collection payloads stay tiny by design.
@@ -140,10 +134,10 @@ Persists identity and desired config under `data_dir` (`agent_state.json`).
 | Module | Responsibility |
 |---|---|
 | `connection.rs` | Reconnect/backoff, fair bounded writer, shared filesystem job admission |
-| `connection/runtime.rs` | Resource state, caches, PTYs/TOTP and worker limits that survive reconnects |
+| `connection/runtime.rs` | Resource state, caches, Herdr settings and worker limits that survive reconnects |
 | `connection/handshake.rs` | Bounded connect/auth/register and capability advertisement |
 | `connection/session.rs` | Transport queues, liveness, dispatch, shutdown/Drop cancellation |
-| `connection/{resources,filesystem,search,office,uploads,terminal,herdr,control}.rs` | Business handlers borrowing the connection context |
+| `connection/{resources,filesystem,search,office,uploads,herdr,control}.rs` | Business handlers borrowing the connection context |
 | `resources.rs` | Validate + atomically apply roots / pins / collections |
 | `config_store.rs` | Persist `agent_id`, roots, pins, collections, revisions |
 | `fs.rs` | Read-only list/stat/read with path safety + denylist |
@@ -151,7 +145,6 @@ Persists identity and desired config under `data_dir` (`agent_state.json`).
 | `search.rs` | In-process fd/rg-like Workspace Search (`ignore` + `regex`) |
 | `sysinfo.rs` | TTL-cached system stats (HPC-safe refresh) |
 | `temp_store.rs` | The ONLY write path: dedicated temp-upload folder (staging, quotas, no-clobber publish, symlink-safe cleanup) |
-| `terminal.rs` | PTY shell sessions (unix-only): persistent sessions, bounded history/writer queues, local TOTP anti-replay and failure limit |
 | `herdr.rs` | Optional local Herdr CLI probe (`FILEBOX_AGENT_HERDR` / PATH) and argv-only whitelist |
 | `config.rs` | TOML / env bootstrap |
 
@@ -160,9 +153,8 @@ so resource/collection `Updated` always precedes its `Applied` reply. Business
 handlers never await socket writes or upload queue capacity. Temp uploads use
 four worker permits shared across reconnects, at most sixteen 512 KiB chunks
 per upload, and worker-owned staging cleanup. Queue congestion terminates only
-the upload with `temp_upload_stalled`; PTY sessions remain available for resume.
-`ConnectionSession::Drop` sets cancellation flags, detaches only its terminal
-sender and aborts its async wrappers/writer. Native filesystem calls cannot be
+the upload with `temp_upload_stalled`.
+`ConnectionSession::Drop` sets cancellation flags and aborts its async wrappers/writer. Native filesystem calls cannot be
 forcibly stopped; they retain global worker permits until they return.
 
 

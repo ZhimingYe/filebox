@@ -13,8 +13,6 @@ interface State {
 
 // A preview can fail while rendering or while a lazy viewer chunk is loading.
 // Keep that failure inside the active preview instead of unmounting the app.
-// Also used for the lazy terminal pane, where the same failure mode (a chunk
-// that never loads, a viewer that throws) would otherwise blank the whole app.
 export class PreviewErrorBoundary extends Component<Props, State> {
   state: State = { error: null };
 

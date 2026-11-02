@@ -1,6 +1,6 @@
 # 安全与敏感文件
 
-filebox 的默认姿态是：**浏览只读、路径牢笼、敏感文件拒绝**。两个写能力（Transfer、Terminal）是显式例外，且默认需要能力开启 / 本地配置。
+filebox 的默认姿态是：**浏览只读、路径牢笼、敏感文件拒绝**。Transfer 仅写入专用临时目录。Herdr 通过独立的白名单 CLI 集成管理编码代理。
 
 ![侧栏能力入口](/screenshots/00-sidebar-overview.png)
 
@@ -11,7 +11,6 @@ filebox 的默认姿态是：**浏览只读、路径牢笼、敏感文件拒绝*
 | 例外 | 作用域 | 防护 |
 |------|--------|------|
 | **Transfer** | 仅 Agent 专用 scratch 目录 | 配额、禁覆盖、不作为普通 root |
-| **Terminal** | Agent 本机 shell（**非沙箱**） | Agent 本地 TOTP；密钥不进 Hub |
 
 ## 敏感文件默认拒绝（节选）
 

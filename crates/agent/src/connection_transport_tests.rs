@@ -20,10 +20,9 @@ async fn stalled_file_writer_keeps_receive_open_and_does_not_bury_directory_repl
     let (control_tx, control_rx) = mpsc::channel(CONTROL_QUEUE_CAPACITY);
     let (dir_tx, dir_rx) = mpsc::channel(4);
     let (file_tx, file_rx) = mpsc::channel(32);
-    let (term_tx, term_rx) = mpsc::channel(64);
     for i in 0..20 { file_tx.send(chunk(i)).await.unwrap(); }
     let mut writer = ConnectionWriter(tokio::spawn(run_connection_writer(
-        write, control_rx, vec![dir_rx, file_rx, term_rx],
+        write, control_rx, vec![dir_rx, file_rx],
     )));
     tokio::time::timeout(Duration::from_secs(1), async {
         while file_tx.capacity() == 12 { tokio::task::yield_now().await; }
@@ -41,15 +40,11 @@ async fn stalled_file_writer_keeps_receive_open_and_does_not_bury_directory_repl
         req_id: "directory".into(), items: vec![], next_cursor: None, error: None,
     }).await.unwrap();
 
-    term_tx.send(AgentMessage::TerminalOutput {
-        req_id: "terminal".into(), data: b"shell output".to_vec(),
-    }).await.unwrap();
-    let mut terminal_at = None;
     let mut files = 0;
     let mut directory_at = None;
     let mut pong_at = None;
     tokio::time::timeout(Duration::from_secs(5), async {
-        for _ in 0..23 {
+        for _ in 0..22 {
             // Several separate stalls; resumed bytes must remain intact.
             if files % 4 == 0 { tokio::time::sleep(Duration::from_millis(20)).await; }
             let frame = server.next().await.unwrap().unwrap();
@@ -61,17 +56,11 @@ async fn stalled_file_writer_keeps_receive_open_and_does_not_bury_directory_repl
                 }
                 AgentMessage::FsListResponse { .. } => directory_at = Some(files),
                 AgentMessage::Pong => pong_at = Some(files),
-                AgentMessage::TerminalOutput { req_id, data } => {
-                    assert_eq!(req_id, "terminal");
-                    assert_eq!(data, b"shell output");
-                    terminal_at = Some(files);
-                }
                 other => panic!("unexpected response: {other:?}"),
             }
         }
     }).await.unwrap();
     assert_eq!(files, 20);
-    assert!(terminal_at.unwrap() < 5, "terminal output buried behind file backlog");
     assert!(directory_at.unwrap() < 5, "directory reply buried behind file backlog");
     assert!(pong_at.unwrap() < 5, "heartbeat buried behind file backlog");
     assert!(queue_frame(&control_tx, Message::Close(None)));
@@ -121,7 +110,7 @@ async fn start_test_connection() -> (
     let config = AgentConfig {
         hub_url: format!("ws://{address}"), token: "test-token".into(),
         agent_name: "test-agent".into(), data_dir: temp.path().to_path_buf(),
-        temp_dir: None, temp_upload_name: None, terminal_totp_secret: None,
+        temp_dir: None, temp_upload_name: None,
     };
     let mut runtime = AgentRuntime::for_tests(temp.path());
     let agent = tokio::spawn(async move {

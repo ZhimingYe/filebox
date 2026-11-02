@@ -16,7 +16,7 @@ filebox 是面向实验室 / HPC / 自建服务器的**只读远程文件浏览�
 
 研究者、分析师、数据科学家：结果以文件形式散落在共享服务器上，需要随时用手机或笔记本**看一眼图、表、日志**，而不想为了瞄一眼就 `scp` 一整份大文件。
 
-filebox 不是网盘同步工具，也不是完整的远程桌面——它是「结果文件的前门」：打开、预览、搜索、偶尔传一个小临时文件或开一扇受 TOTP 保护的终端。
+filebox 不是网盘同步工具，也不是完整的远程桌面——它是「结果文件的前门」：打开、预览、搜索、偶尔传一个小临时文件或通过 Herdr 管理编码代理。
 
 ## 能做什么（v2.5.0）
 
@@ -27,7 +27,6 @@ filebox 不是网盘同步工具，也不是完整的远程桌面——它是「
 | **Search** | 文件名或内容正则；浮窗 / 底部 sheet | [搜索](/zh/features/search) |
 | **Collections** | 跨目录的虚拟文件合集，不复制、不移动 | [合集](/zh/features/collections) |
 | **Transfer** | 唯一可写的临时上传目录（配额、禁覆盖） | [Transfer](/zh/features/transfer) |
-| **Terminal** | 可选；Agent 本地 TOTP 守护的交互式 shell（**非沙箱**） | [Terminal](/zh/features/terminal) |
 | **Settings** | 管理根目录、Office 预览开关 | [首次登录](/zh/guide/first-login) |
 | **System** | CPU / 内存 / 负载 / 按用户占用 / 进程表 | [系统监控](/zh/features/stats) |
 | **Audit** | 登录审计（Hub 级，不依赖选中 Agent） | [Hub 运维](/zh/ops/hub) |
@@ -39,7 +38,6 @@ filebox 不是网盘同步工具，也不是完整的远程桌面——它是「
 - 浏览严格限制在已添加的 root 内；`..`、符号链接逃逸等会被挡住。
 - 两个显式例外（需能力开启 / 本地配置）：
   - **Transfer**：仅写入 Agent 专用临时目录。
-  - **Terminal**：Agent 本地 TOTP 守护的交互式 shell（**非沙箱**，能做 OS 用户能做的一切）。
 
 详见 [安全与敏感文件](/zh/features/security)。
 

@@ -15,10 +15,6 @@ Files live in docs/public/screenshots/. Source: local FILEBOX_DEV_MODE Hub+Agent
 | 03b-collections-watchlist.png | 139589 |
 | 04-transfer.png | 130740 |
 | 04b-transfer-uploaded.png | 134113 |
-| 05-terminal.png | 123643 |
-| 05b-terminal-code.png | 123001 |
-| 05c-terminal-open.png | 86368 |
-| 05d-terminal-session.png | 117259 |
 | 06-stats.png | 127453 |
 | 07-health.png | 347111 |
 | 08-preview-image.png | 116393 |

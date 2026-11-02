@@ -87,8 +87,5 @@ async fn cleanup(context: &AgentContext, sender: &mpsc::Sender<HubMessage>) {
             })).await;
         }
     }
-    crate::terminal_proxy::close_terminal_sessions_for_connection(
-        &context.state, &context.agent_id, context.connection_id,
-    );
     context.state.fail_pending_for_connection(&context.agent_id, context.connection_id).await;
 }
