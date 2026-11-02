@@ -4,7 +4,7 @@ import { defineConfig } from 'vitepress'
 // Published to GitHub Pages at the site root: https://zhimingye.github.io/filebox/
 // Legacy URLs (/filebox/en/..., /filebox/docs/..., /filebox/docs/en/...) redirect
 // via stubs on the gh-pages branch (scripts/gen-legacy-redirects.mjs). Trailing
-// slash URLs (/features/terminal/) are covered by fix-clean-url-slashes.mjs
+// slash URLs (/features/browse/) are covered by fix-clean-url-slashes.mjs
 // stubs plus the 404 fallback script below.
 const LEGACY_REDIRECT = String.raw`(function(){var p=location.pathname,r=null,m;if((m=p.match(/^\/filebox\/docs\/en(\/.*)?$/)))r=m[1]||'/';else if((m=p.match(/^\/filebox\/docs(\/.*)?$/)))r='/zh'+(m[1]||'/');else if((m=p.match(/^\/filebox\/en(\/.*)?$/)))r=m[1]||'/';if(r!==null){r=r.replace(/\.html$/,'').replace(/\/index$/,'/');if(r.length>1&&r.endsWith('/'))r=r.slice(0,-1);location.replace('/filebox'+r+location.search+location.hash);return}if(p.length>9&&p.indexOf('/filebox/')===0&&p.endsWith('/')&&p!=='/filebox/'&&p!=='/filebox/zh/'){location.replace(p.slice(0,-1)+location.search+location.hash)}})()`
 
@@ -39,7 +39,6 @@ const enSidebar = {
         { text: 'Workspace search', link: '/features/search' },
         { text: 'Collections', link: '/features/collections' },
         { text: 'Transfer', link: '/features/transfer' },
-        { text: 'Terminal', link: '/features/terminal' },
         { text: 'System monitor', link: '/features/stats' },
         { text: 'Security & sensitive files', link: '/features/security' },
       ],
@@ -89,7 +88,6 @@ const zhSidebar = {
         { text: '工作区搜索', link: '/zh/features/search' },
         { text: '合集 Collections', link: '/zh/features/collections' },
         { text: '临时传输 Transfer', link: '/zh/features/transfer' },
-        { text: '远程终端 Terminal', link: '/zh/features/terminal' },
         { text: '系统监控', link: '/zh/features/stats' },
         { text: '安全与敏感文件', link: '/zh/features/security' },
       ],
@@ -137,7 +135,7 @@ export default defineConfig({
       lang: 'en-US',
       title: 'filebox Docs',
       description:
-        'Lab / HPC read-only remote file browser — install Hub & Agent; browse, search, collections, transfer, terminal, and system monitor',
+        'Lab / HPC read-only remote file browser — install Hub & Agent; browse, search, collections, transfer, Herdr, and system monitor',
       head: [
         ['meta', { property: 'og:title', content: 'filebox Docs' }],
         [

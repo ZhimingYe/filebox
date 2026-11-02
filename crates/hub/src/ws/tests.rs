@@ -67,54 +67,6 @@ fn test_state() -> AppState {
     }, false)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stalled_terminal_audit_does_not_block_open_output_heartbeat_or_registry() {
-    let mut state = test_state();
-    state.audit = Arc::new(crate::audit::LoginAuditLog::load(None));
-    state.terminal_audit = Arc::new(crate::audit::QueuedAuditLog::new(state.audit.clone()));
-    let (context, _outbound) = install(&state).await;
-    let (tx, mut browser) = mpsc::channel(8);
-    state.terminal_sessions.lock().unwrap().insert("terminal".into(), crate::terminal_proxy::TerminalSessionEntry {
-        agent_id: "agent".into(), connection_id: context.connection_id, principal_id: "principal".into(),
-        revoked: Arc::new(Notify::new()), username: "alice".into(), ip: "192.0.2.1".into(),
-        user_agent: "test-browser".into(), tx,
-    });
-    let pause = state.audit.pause_storage_for_test().await;
-    let opened_context = context.clone();
-    let opened = tokio::spawn(async move {
-        let text = serde_json::to_string(&AgentMessage::TerminalOpened {
-            req_id: "terminal".into(), error: None, replay_bytes: Some(0), input_ack: true,
-        }).unwrap();
-        dispatch::dispatch(&opened_context, &text).await;
-    });
-    tokio::time::timeout(Duration::from_secs(1), opened).await
-        .expect("terminal open must not wait for audit storage").unwrap();
-    assert_eq!(browser.recv().await.unwrap()["type"], "opened");
-    drop(tokio::time::timeout(Duration::from_secs(1), state.inner.write()).await
-        .expect("audit work must not retain the registry lock"));
-    tokio::time::timeout(Duration::from_secs(1), dispatch::dispatch(&context, r#"{"type":"heartbeat"}"#)).await.unwrap();
-    assert!(state.inner.read().await.agents.get("agent").unwrap().last_pong.is_some());
-    let text = serde_json::to_string(&AgentMessage::TerminalOutput {
-        req_id: "terminal".into(), data: b"still live".to_vec(),
-    }).unwrap();
-    tokio::time::timeout(Duration::from_secs(1), dispatch::dispatch(&context, &text)).await.unwrap();
-    assert_eq!(browser.recv().await.unwrap()["type"], "output");
-    drop(pause);
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            let log = state.audit.clone();
-            let (entries, _) = tokio::task::spawn_blocking(move || log.recent(10, None)).await.unwrap();
-            if let Some(entry) = entries.first() {
-                assert_eq!(entry.event, "terminal_opened");
-                assert_eq!(entry.username, "alice");
-                assert_eq!(entry.ip, "192.0.2.1");
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-    }).await.unwrap();
-}
-
 fn register_message() -> AgentMessage {
     AgentMessage::Register {
         agent_id: Some("agent".into()), name: "test agent".into(), resource_revision: 0,

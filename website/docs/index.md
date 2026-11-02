@@ -34,7 +34,7 @@ features:
     link: /features/search
     linkText: Search & collections
   - title: Secure by default
-    details: Read-only protocol; sensitive paths denied by default; optional Transfer and TOTP-gated Terminal keep secrets on the Agent.
+    details: Read-only protocol; sensitive paths denied by default; optional Transfer writes only to a dedicated scratch folder; Herdr is a separate CLI integration.
     link: /features/security
     linkText: Security model
 ---

@@ -18,9 +18,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-mod queued;
-pub(crate) use queued::QueuedAuditLog;
-
 pub const AUDIT_FILE_NAME: &str = "audit-log.jsonl";
 /// Maximum entries kept in memory (and kept after file compaction).
 pub const AUDIT_MAX_ENTRIES: usize = 2000;

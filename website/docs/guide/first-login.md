@@ -23,7 +23,7 @@ If Verification fails or you are rate-limited, click the refresh icon to fetch a
 
 After login, if no machine is selected the main area prompts **Select an agent**. Click the target under sidebar **Agents** (Online, latency, root count).
 
-Once selected, the sidebar shows **Workspace** navigation: Files, Explorer, Collections, Transfer, Terminal, Search, Settings, System; plus **Hub → Audit**.
+Once selected, the sidebar shows **Workspace** navigation: Files, Explorer, Collections, Transfer, Herdr, Search, Settings, System; plus **Hub → Audit**.
 
 ## 3. Settings → Add Root
 
@@ -58,7 +58,6 @@ Go back to **Files**, switch roots with the dropdown, enter directories, and cli
 | Search | Workspace filename / content search (desktop float / mobile sheet) | [Search](/features/search) |
 | Collections | Virtual file groups across directories | [Collections](/features/collections) |
 | Transfer | The only writable scratch upload folder | [Transfer](/features/transfer) |
-| Terminal | Optional TOTP-gated remote shell | [Terminal](/features/terminal) |
 | Settings | Manage roots, Office preview toggle | This page |
 | System | CPU / memory / processes | [System monitor](/features/stats) |
 | Audit | Login audit (no selected Agent required) | [Hub ops](/ops/hub) |

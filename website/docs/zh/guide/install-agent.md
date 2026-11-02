@@ -30,7 +30,6 @@ cd filebox-agent-*
 | `FILEBOX_ALLOW_INSECURE_HUB` | 允许明文 `ws://` / `http://`（仅开发） |
 | `FILEBOX_AGENT_SOFFICE` | LibreOffice `soffice` 路径（可选 Office 预览） |
 | `FILEBOX_AGENT_SOFFICE_DIR` | 含 `soffice` 的目录 |
-| `FILEBOX_AGENT_TERMINAL_TOTP_SECRET` | Terminal 2FA 的 base32 密钥（可选；环境变量优先） |
 
 示例：
 
@@ -69,12 +68,9 @@ FILEBOX_AGENT_DATA_DIR="/tmp/fbx-agent-data" \
 | 能力 | 如何启用 |
 |------|----------|
 | Office 预览 | 安装 LibreOffice 并设置 `FILEBOX_AGENT_SOFFICE`，见 [Office 预览](/zh/ops/office) |
-| Terminal | 在 Agent 本机运行 `./agent --setup-terminal-2fa` 后重启，见 [远程终端](/zh/features/terminal) |
 | Transfer | 能力位 `temp_upload`（当前发布版默认具备）；写入仅限专用 scratch 目录 |
 
-启用 Terminal 与 Office 后，侧栏会出现对应入口，Settings 里也会显示 Office preview 开关：
-
-![Terminal 入口与会话](/screenshots/05-terminal.png)
+启用 Office 后，Settings 里会显示 Office preview 开关。
 
 ## systemd 示例（可选）
 
@@ -103,6 +99,6 @@ WantedBy=multi-user.target
 ./agent --update
 ```
 
-校验校验和后原地替换。Hub / Agent / 前端大版本建议一起升；Terminal 等能力对三端版本有对齐要求（见 release notes）。
+校验校验和后原地替换。Hub / Agent / 前端大版本建议一起升；协议能力对三端版本有对齐要求（见 release notes）。
 
 更多运维细节：[Agent 配置与更新](/zh/ops/agent)

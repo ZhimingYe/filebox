@@ -153,34 +153,6 @@ Agent                                    Hub
    的非敏感文件。安全模型不防"合法用户读文件"，防的是路径逃逸、越权写、
    凭据泄漏。
 
-**远程终端（显式批准的例外，2FA 门控的唯一命令执行通道）**：
-
-- **终端不做沙箱**：PTY 以 Agent 用户的身份、在 Agent 的环境里运行，root
-  白名单、canonicalize 防逃逸、denylist、只读打开这套「纵深防御」对它**完全
-  不适用**——一个通过 2FA 的用户可以 `cat ~/.ssh/id_rsa`、读 Agent 自己的
-  `agent.toml`（内含 token），以及该用户能碰的一切。上面 §5/§8 的读侧加固
-  只约束浏览/预览路径，不要把它当成终端的防线。
-- Agent `terminal.rs` 在 unix 上用 `portable-pty` 起 PTY（`$SHELL`，
-  cwd 为 Agent 用户的 home，注入 `TERM=xterm-256color`），最多 8 个并发
-  会话；`capabilities.terminal` 门控，非 unix / 老 Agent 一律
-  `unsupported_feature`。Hub 侧全局上限 16 个会话。
-- **密钥只在 Agent 配置**：本地 `agent --setup-terminal-2fa` 向导生成并验证
-  密钥，以 0600 原子保存。未配置时拒绝终端；无效配置拒绝启动。Hub 没有
-  配置、绑定或重置接口。Agent 配置文件的路径及 inode（包括硬链接）受读侧保护。
-- 每次打开/恢复 xterm，浏览器提交当前 Agent 验证码，Hub 转发，由 Agent
-  校验。SHA1 TOTP，6 位，30s ±1 步；只接受比上次更大的 counter，失败
-  5 次/30s 限流，均跨 Hub 重连保留。
-- Hub 的 ticket 仅供 WS 握手：session + CSRF 获取，256-bit，绑定 principal
-  和 Agent，60s、单次消费。ticket 和验证码走 WS 子协议，不进 URL。
-  xterm 在 Agent 确认后才显示，没有 Hub 续期接口。
-- Shell 在 Agent 内持久：浏览器离开、掉线、Hub 重启、空闲均只 detach。
-  新 attachment 需要新码；输入只路由到已验证的 attachment。显式 End 或
-  shell 自身退出才结束会话。Agent 重启不保留会话。最近 256 KiB 输出可重放。
-- **残余风险**：Hub 可看到传输中的码并抢先消费，也能对已授权的 attachment
-  注入命令；本地 2FA 不能保护正在使用的终端免受恶意 Hub 控制。
-- 审计记录 `terminal_opened`、`terminal_open_failed`、`terminal_detached`、
-  `terminal_kill`，带用户名、IP、UA。列表和显式结束使用 session + CSRF。
-
 ## 7. 活性检测与资源边界（防僵死 / 防 DoS）
 
 ### 超时（双向）
@@ -248,8 +220,6 @@ Agent 通道相关的审计事件（`audit.rs`，JSONL 侧文件，0600）：
 > Hub 自证身份；Hub 用「会话 + CSRF + PoW」向浏览器自证身份；两者之间的
 > 信任不对称——Agent 完全信任 Hub 的控制消息，Hub 完全信任 Agent 的数据
 > 响应，而**真正的纵深防御在 Agent 侧**：root 白名单、canonicalize 防逃逸、
-> denylist、只读打开、唯一写路径（temp 文件夹）+ 配额。唯一的命令执行通道
-> 是 2FA 门控的远程终端——Hub 校验 session/ticket，每次新连接均由 Agent 校验本地 TOTP；
-> 必须配置 `terminal_totp_secret`，且这条通道**不受**
-> 上面那套读侧加固约束（PTY 是完整 shell）。整条
+> denylist、只读打开、唯一文件上传写路径（temp 文件夹）+ 配额。Herdr 通过
+> 独立 CLI 白名单执行编码代理操作，不提供任意 shell。整条
 > 链路的健壮性靠双向心跳、分层超时、退避重连和资源上限兜底。

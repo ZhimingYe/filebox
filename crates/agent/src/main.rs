@@ -12,7 +12,6 @@ mod resources;
 mod search;
 mod sysinfo;
 mod temp_store;
-mod terminal;
 
 fn agent_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
@@ -32,23 +31,10 @@ async fn run() {
         )
         .init();
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|arg| arg == "--setup-terminal-2fa") {
-        let path = match args.as_slice() {
-            [_] => std::env::var("FILEBOX_AGENT_CONFIG").unwrap_or_else(|_| "agent.toml".into()),
-            [_, flag, path] if flag == "--config" => path.clone(),
-            _ => { eprintln!("Usage: agent --setup-terminal-2fa [--config agent.toml]"); std::process::exit(2); }
-        };
-        if let Err(error) = config::setup_terminal_2fa(std::path::Path::new(&path)) {
-            eprintln!("[agent] 2FA setup failed: {error}"); std::process::exit(1);
-        }
-        return;
-    }
     match filebox_updater::parse_command("agent", std::env::args().skip(1)) {
         Ok(filebox_updater::UpdateCommand::Run) => {}
         Ok(filebox_updater::UpdateCommand::Help) => {
             print!("{}", filebox_updater::usage("agent"));
-            println!("  --setup-terminal-2fa [--config agent.toml]  Configure terminal 2FA locally");
             return;
         }
         Ok(filebox_updater::UpdateCommand::InitConfig(request)) => {
@@ -81,7 +67,6 @@ async fn run() {
             eprintln!("[agent] {error}");
             eprintln!();
             print!("{}", filebox_updater::usage("agent"));
-            println!("  --setup-terminal-2fa [--config agent.toml]  Configure terminal 2FA locally");
             std::process::exit(2);
         }
     }

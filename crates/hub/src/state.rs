@@ -159,8 +159,6 @@ pub struct AppState {
     /// as JSONL next to the hub config. Write failures degrade to in-memory
     /// only — auditing never fails a login.
     pub audit: Arc<crate::audit::LoginAuditLog>,
-    /// Terminal acknowledgements enqueue audit work without waiting on disk.
-    pub terminal_audit: Arc<crate::audit::QueuedAuditLog>,
     /// Login proof-of-work challenges (self-hosted effort check).
     pub pow: Arc<crate::pow::PowStore>,
     /// Per-IP bound on how often a client may fetch fresh challenges.
@@ -178,14 +176,6 @@ pub struct AppState {
     /// permit while its body streams to the agent, so a burst of drag-drops
     /// cannot pile unbounded buffered bodies in memory.
     pub temp_upload_semaphore: Arc<tokio::sync::Semaphore>,
-    /// Single-use WS transport tickets; Agent separately verifies local TOTP.
-    pub terminal_tickets: Arc<crate::terminal_proxy::TerminalTicketStore>,
-    /// Live browser terminal sessions keyed by req_id. `ws.rs` routes agent
-    /// Terminal* messages into the entry's sender; removal closes the browser
-    /// socket.
-    pub terminal_sessions: Arc<
-        std::sync::Mutex<HashMap<String, crate::terminal_proxy::TerminalSessionEntry>>,
-    >,
     /// Serializes full desired-resource rewrites per Agent. Resource updates
     /// carry a revision and a complete root set, so overlapping rewrites for
     /// one Agent would otherwise race while unrelated Agents should proceed.
@@ -310,7 +300,6 @@ impl AppState {
             // or network partition. Keep this high enough for same-IP NATed
             // agents while still bounding unauthenticated WS auth attempts.
             ws_rate_limiter: Arc::new(LoginRateLimiter::new(300, std::time::Duration::from_secs(30))),
-            terminal_audit: Arc::new(crate::audit::QueuedAuditLog::new(audit.clone())),
             audit,
             pow: Arc::new(crate::pow::PowStore::new(
                 crate::pow::difficulty_from_env(),
@@ -326,8 +315,6 @@ impl AppState {
             // Agent for at most FILE_CHUNK_MAX_BYTES at a time.
             raw_read_semaphore: Arc::new(tokio::sync::Semaphore::new(96)),
             temp_upload_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
-            terminal_tickets: Arc::new(crate::terminal_proxy::TerminalTicketStore::new()),
-            terminal_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             resource_update_locks: Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),

@@ -19,9 +19,6 @@ struct TomlConfig {
     /// (default `agent-temp-copied-file`). Env `FILEBOX_AGENT_TEMP_UPLOAD_NAME`
     /// wins over this value.
     temp_upload_name: Option<String>,
-    /// Base32 TOTP secret for agent-side secondary 2FA on terminal opens.
-    /// Env `FILEBOX_AGENT_TERMINAL_TOTP_SECRET` wins over this value.
-    terminal_totp_secret: Option<String>,
 }
 
 pub struct AgentConfig {
@@ -31,7 +28,6 @@ pub struct AgentConfig {
     pub data_dir: PathBuf,
     pub temp_dir: Option<String>,
     pub temp_upload_name: Option<String>,
-    pub terminal_totp_secret: Option<String>,
 }
 
 impl AgentConfig {
@@ -58,7 +54,6 @@ impl AgentConfig {
                 data_dir: None,
                 temp_dir: None,
                 temp_upload_name: None,
-                terminal_totp_secret: None,
             }
         };
 
@@ -98,31 +93,6 @@ impl AgentConfig {
                     .join("filebox")
             });
 
-        // Agent-side secondary 2FA for terminal opens. A configured secret
-        // that cannot be used is FATAL rather than silently ignored: dropping
-        // it would advertise `terminal_agent_2fa = false` and quietly accept
-        // terminal opens with no code at all — a fail-open on the control
-        // whose whole job is to stop a compromised hub from getting a shell.
-        let terminal_totp_secret = std::env::var("FILEBOX_AGENT_TERMINAL_TOTP_SECRET")
-            .ok()
-            .or(toml_config.terminal_totp_secret)
-            .inspect(|secret| {
-                if !filebox_protocol::totp::secret_is_acceptable(secret) {
-                    eprintln!(
-                        "[agent] FATAL: terminal_totp_secret / FILEBOX_AGENT_TERMINAL_TOTP_SECRET is not usable."
-                    );
-                    eprintln!(
-                        "[agent] It must be RFC 4648 base32 (no padding) of at least {} random bytes, e.g.",
-                        filebox_protocol::totp::MIN_SECRET_BYTES
-                    );
-                    eprintln!("[agent]   head -c 20 /dev/urandom | base32 | tr -d '='");
-                    eprintln!(
-                        "[agent] Refusing to start rather than silently disabling agent-side terminal 2FA."
-                    );
-                    std::process::exit(1);
-                }
-            });
-
         enforce_secure_hub_url(&hub_url);
 
         Self {
@@ -132,7 +102,6 @@ impl AgentConfig {
             data_dir,
             temp_dir: toml_config.temp_dir,
             temp_upload_name: toml_config.temp_upload_name,
-            terminal_totp_secret,
         }
     }
 }
@@ -184,7 +153,6 @@ pub fn init_interactive(request: filebox_updater::ConfigInitRequest) -> Result<(
         data_dir: Some(data_dir.to_string_lossy().into_owned()),
         temp_dir: None,
         temp_upload_name: None,
-        terminal_totp_secret: None,
     };
     let mut contents = toml::to_string_pretty(&config)
         .map_err(|error| format!("failed to serialize agent config: {error}"))?;
@@ -197,7 +165,6 @@ pub fn init_interactive(request: filebox_updater::ConfigInitRequest) -> Result<(
 
     eprintln!();
     eprintln!("Created {}", output.display());
-    if prompt_yes_no("Configure remote terminal authenticator now", true)? { setup_terminal_2fa(&output)?; }
     if insecure {
         eprintln!("Plaintext URL selected; start with FILEBOX_ALLOW_INSECURE_HUB=1.");
     }
@@ -252,6 +219,20 @@ mod tests {
     use super::{is_secure_hub_url, TomlConfig};
 
     #[test]
+    fn legacy_terminal_setting_is_ignored_and_not_serialized() {
+        let config: TomlConfig = toml::from_str(r#"
+            hub = "https://hub.example.com"
+            token = "test-token"
+            name = "existing-agent"
+            data_dir = "/var/lib/filebox"
+            terminal_totp_secret = "obsolete-value"
+        "#).unwrap();
+        assert_eq!(config.name.as_deref(), Some("existing-agent"));
+        assert_eq!(config.data_dir.as_deref(), Some("/var/lib/filebox"));
+        assert!(!toml::to_string(&config).unwrap().contains("terminal"));
+    }
+
+    #[test]
     fn secure_hub_url_accepts_https_and_wss() {
         assert!(is_secure_hub_url("https://hub.example.com"));
         assert!(is_secure_hub_url("wss://hub.example.com/ws/agent"));
@@ -274,7 +255,7 @@ mod tests {
             data_dir: Some("/var/lib/filebox".to_string()),
             temp_dir: Some("/var/tmp/filebox".to_string()),
             temp_upload_name: Some("dropbox".to_string()),
-            terminal_totp_secret: Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".to_string()),
+
         };
         let contents = toml::to_string_pretty(&config).unwrap();
         let reparsed: TomlConfig = toml::from_str(&contents).unwrap();
@@ -284,45 +265,9 @@ mod tests {
         assert_eq!(reparsed.data_dir.as_deref(), Some("/var/lib/filebox"));
         assert_eq!(reparsed.temp_dir.as_deref(), Some("/var/tmp/filebox"));
         assert_eq!(reparsed.temp_upload_name.as_deref(), Some("dropbox"));
-        assert_eq!(
-            reparsed.terminal_totp_secret.as_deref(),
-            Some("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
-        );
     }
 }
 
-
-/// Enrollment is local only; no secret or configuration passes through Hub.
-pub fn setup_terminal_2fa(path: &std::path::Path) -> Result<(), String> {
-    if std::env::var_os("FILEBOX_AGENT_TERMINAL_TOTP_SECRET").is_some() {
-        return Err("Unset FILEBOX_AGENT_TERMINAL_TOTP_SECRET before configuring the file; it overrides the saved secret".into());
-    }
-    let original = std::fs::read_to_string(path).map_err(|e| format!("Read {}: {e}. Run agent --init-config first", path.display()))?;
-    let mut value: toml::Value = toml::from_str(&original).map_err(|e| format!("Invalid config: {e}"))?;
-    if value.get("terminal_totp_secret").is_some() && !prompt_yes_no("Replace existing terminal authenticator", false)? { return Ok(()); }
-    let secret = filebox_protocol::totp::base32_encode(&filebox_protocol::totp::generate_secret());
-    eprintln!("Add a new entry in your authenticator app (Filebox Agent).");
-    eprintln!("Choose time-based (TOTP), SHA1, 6 digits, 30 seconds.");
-    eprintln!("Secret key: {secret}");
-    eprintln!("Keep this key private. Enter a code from the new entry to confirm; Ctrl-C cancels.");
-    let mut confirmed = false;
-    for _ in 0..5 {
-        let code = prompt_nonempty_secret("Authenticator code")?;
-        if filebox_protocol::totp::matching_counter_at(&secret, code.trim(), filebox_protocol::totp::current_counter()).is_some() {
-            confirmed = true; break;
-        }
-        eprintln!("Code did not match. Check the entry and your device clock.");
-    }
-    if !confirmed { return Err("Too many incorrect codes; config unchanged".into()); }
-    value.as_table_mut().ok_or("Config must be a TOML table")?.insert("terminal_totp_secret".into(), toml::Value::String(secret));
-    let contents = toml::to_string_pretty(&value).map_err(|e| e.to_string())?;
-    if std::fs::read_to_string(path).map_err(|e| e.to_string())? != original { return Err("Config changed during setup; retry".into()); }
-    let temporary = path.with_file_name(format!(".filebox-2fa-{}.tmp", uuid::Uuid::new_v4()));
-    write_private_file(&temporary, contents.as_bytes(), false)?;
-    if let Err(e) = std::fs::rename(&temporary, path) { let _ = std::fs::remove_file(&temporary); return Err(e.to_string()); }
-    eprintln!("Terminal 2FA saved locally to {} (0600). Restart the Agent to apply it. Agent restart ends existing shells.", path.display());
-    Ok(())
-}
 
 struct PrivateConfig {
     path: PathBuf,

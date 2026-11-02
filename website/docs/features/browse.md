@@ -9,7 +9,7 @@ After selecting an Agent, open **Files**: Agents and nav on the left, a virtuali
 | Area | Contents |
 |------|----------|
 | Sidebar Agents | Connected machines, online status, latency; click to switch Agent |
-| Sidebar Workspace | Files / Explorer / Collections / Transfer / Terminal / Search / Settings / System |
+| Sidebar Workspace | Files / Explorer / Collections / Transfer / Herdr / Search / Settings / System |
 | Root dropdown | Switch enabled roots (e.g. `demo`) |
 | Toolbar | Refresh, filter, sort, tree panel, pin, copy path, … |
 | Address / breadcrumbs | Current path; paste paths and completion supported |

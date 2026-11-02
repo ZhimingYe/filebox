@@ -16,7 +16,7 @@ Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ l
 
 Researchers, analysts, and data scientists whose results live as files on shared servers and who need to **glance at figures, tables, and logs** from a phone or laptop without `scp`-ing an entire archive for a quick look.
 
-filebox is not a sync/drive product and not a full remote desktop — it is the “front door” to result files: open, preview, search, occasionally upload a small scratch file, or open a TOTP-protected terminal.
+filebox is not a sync/drive product and not a full remote desktop — it is the “front door” to result files: open, preview, search, occasionally upload a small scratch file, or manage coding agents through Herdr.
 
 ## What you can do (v2.5.0)
 
@@ -27,7 +27,6 @@ filebox is not a sync/drive product and not a full remote desktop — it is the 
 | **Search** | Filename or content regex; floating panel / bottom sheet | [Search](/features/search) |
 | **Collections** | Virtual file groups across directories — no copy, no move | [Collections](/features/collections) |
 | **Transfer** | The only writable scratch upload folder (quota, no overwrite) | [Transfer](/features/transfer) |
-| **Terminal** | Optional; Agent-local TOTP-gated interactive shell (**not sandboxed**) | [Terminal](/features/terminal) |
 | **Settings** | Manage roots, Office preview toggle | [First login](/guide/first-login) |
 | **System** | CPU / memory / load / per-user usage / process table | [System monitor](/features/stats) |
 | **Audit** | Login audit (Hub-level; does not require a selected Agent) | [Hub ops](/ops/hub) |
@@ -37,9 +36,8 @@ filebox is not a sync/drive product and not a full remote desktop — it is the 
 - Browse protocol is **read-only**: no remote edit, delete, or rename.
 - Sensitive paths (`.ssh/`, `.env*`, `*.pem`, …) are denied by default even inside allowed roots.
 - Browse is strictly confined to added roots; `..` and symlink escapes are blocked.
-- Two explicit exceptions (capability / local config required):
+- Explicit integrations (capability / local config required):
   - **Transfer**: writes only into the Agent’s dedicated scratch directory.
-  - **Terminal**: Agent-local TOTP-gated interactive shell (**not sandboxed** — anything the OS user can do).
 
 See [Security & sensitive files](/features/security).
 

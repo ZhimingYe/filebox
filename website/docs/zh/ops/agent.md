@@ -20,7 +20,6 @@ Agent 装在每台要浏览的机器上，主动出站连 Hub。安装步骤见 
 | `FILEBOX_AGENT_DATA_DIR` | 状态目录 |
 | `FILEBOX_ALLOW_INSECURE_HUB` | 允许明文 Hub（仅开发） |
 | `FILEBOX_AGENT_SOFFICE` / `_DIR` | LibreOffice（可选） |
-| `FILEBOX_AGENT_TERMINAL_TOTP_SECRET` | Terminal 2FA（可选） |
 | `FILEBOX_AGENT_STATS_TTL_SECS` | sysinfo 缓存 TTL（默认 60） |
 | `FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS` | 目录缓存 re-stat 冷却 |
 
@@ -39,7 +38,6 @@ Office 相关上限见 [Office 预览](./office)。
 | 能力 | 配置入口 |
 |------|----------|
 | Office 预览 | [Office 预览](./office) |
-| Terminal 2FA | `./agent --setup-terminal-2fa` 或环境变量，见 [Terminal](/zh/features/terminal) |
 | Transfer | 能力位 `temp_upload`；规则见 [Transfer](/zh/features/transfer) |
 
 在 UI **Settings** 可确认连接状态与已启用 roots：
