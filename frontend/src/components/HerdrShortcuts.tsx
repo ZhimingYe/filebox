@@ -13,8 +13,8 @@ export function HerdrShortcuts({ kind, disabled, onSend }: {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const shortcuts = [...PROFILE_KEYS[profile], ...COMMON_KEYS]
     .filter((item) => `${item.label} ${item.description}`.toLocaleLowerCase().includes(normalizedQuery));
-  return <div style={{ display: 'flex', flexShrink: 0, alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
-    <div role="group" aria-label="Remote input keys" style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+  return <div style={{ display: 'flex', flexShrink: 0, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+    <div role="group" aria-label="Remote input keys" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
       {QUICK_KEYS.map((item) => <HerdrButton key={item.label} disabled={disabled} touch={isMobile}
         aria-label={item.label} aria-description={item.description} title={item.description} onClick={() => onSend(item.keys)}>
         {item.label === 'Up' || item.label === 'Down' ? <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16"
@@ -27,7 +27,7 @@ export function HerdrShortcuts({ kind, disabled, onSend }: {
       <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Remote keyboard</div>
       <select aria-label="Shortcut profile" value={profile} style={{
         width: '100%', minHeight: isMobile ? 44 : 32, border: `1px solid ${c.border}`,
-        borderRadius: radius.sm, background: c.surface, color: c.text, fontFamily: font.sans, fontSize: isMobile ? 16 : 12, padding: '0 8px',
+        borderRadius: radius.md, background: c.surface, color: c.text, fontFamily: font.sans, fontSize: isMobile ? 16 : 13, padding: '0 8px',
       }} onChange={(event) => { setProfile(event.target.value as Profile); setQuery(''); }}>
         <option value="common">Common shortcuts</option><option value="pi">pi</option>
         <option value="claude">Claude Code</option><option value="codex">Codex</option>
@@ -38,12 +38,12 @@ export function HerdrShortcuts({ kind, disabled, onSend }: {
       <input type="search" aria-label="Search shortcuts" placeholder="Find a key or action…" value={query}
         onChange={(event) => setQuery(event.target.value)} style={{
           width: '100%', minHeight: isMobile ? 44 : 32, boxSizing: 'border-box', marginBottom: 6,
-          border: `1px solid ${c.border}`, borderRadius: radius.sm, background: c.surface,
-          color: c.text, fontFamily: font.sans, fontSize: isMobile ? 16 : 12, padding: '0 8px',
+          border: `1px solid ${c.border}`, borderRadius: radius.md, background: c.surface,
+          color: c.text, fontFamily: font.sans, fontSize: isMobile ? 16 : 13, padding: '0 8px',
         }} />
       {shortcuts.length === 0 && <p style={{ color: c.textSecondary, lineHeight: 1.5 }}>No matching shortcuts. Try another key or action.</p>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        {shortcuts.map((item) => <HerdrButton key={item.label} disabled={disabled} touch={isMobile}
+        {shortcuts.map((item) => <HerdrButton key={item.label} variant="quiet" disabled={disabled} touch={isMobile}
           aria-label={`${item.label}: ${item.description}`} onClick={() => onSend(item.keys)}
           style={{ width: '100%', justifyContent: 'space-between', textAlign: 'left', gap: 12, padding: '7px 6px' }}>
           <span style={{ flex: 1, fontSize: 12 }}>{item.description}</span>

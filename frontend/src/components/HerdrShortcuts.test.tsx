@@ -74,13 +74,18 @@ describe('Herdr shortcut profiles', () => {
       vi.stubGlobal('innerHeight', 500);
       await act(async () => root.render(<HerdrShortcuts kind="codex" disabled={false} onSend={vi.fn()} />));
       const trigger = container.querySelector<HTMLButtonElement>('[aria-label="More shortcuts"]')!;
-      Object.defineProperty(trigger.parentElement!, 'getBoundingClientRect', { value: () => ({ top }) });
+      Object.defineProperty(trigger.parentElement!, 'getBoundingClientRect', { value: () => ({ top, bottom: top + 32, right: 300 }) });
       await act(async () => trigger.click());
       const panel = container.querySelector<HTMLElement>('[role="dialog"]')!;
       expect(panel.style.maxHeight).toBe('195px');
+      expect(panel.style.position).toBe('fixed');
       top = 210;
       await act(async () => window.dispatchEvent(new Event('scroll')));
       expect(panel.style.maxHeight).toBe('154px');
+      top = 80;
+      await act(async () => window.dispatchEvent(new Event('scroll')));
+      expect(panel.style.top).toBe('120px');
+      expect(panel.style.maxHeight).toBe('275px');
     } finally { act(() => root.unmount()); vi.unstubAllGlobals(); }
   });
 

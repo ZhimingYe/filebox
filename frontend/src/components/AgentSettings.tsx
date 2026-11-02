@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import type { AgentInfo } from '../api/client';
 import { RootManager } from './RootManager';
 import { HerdrToggle } from './HerdrSetup';
+import { SettingsSwitch } from './SettingsSwitch';
 import {
   readOfficePdfPreviewPref,
   writeOfficePdfPreviewPref,
 } from './officePreviewSupport';
-import { c, radius, font, shadow } from '../theme';
+import { c, radius, font, shadow, settingsLayout } from '../theme';
 
 interface Props {
   agent: AgentInfo;
@@ -155,26 +156,15 @@ export function AgentSettings({ agent, onRefresh }: Props) {
                   </p>
                 )}
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={officePdfPreview}
+              <SettingsSwitch
+                checked={officePdfPreview}
                 aria-label="Office preview"
                 onClick={toggleOfficePdfPreview}
                 style={{
-                  ...styles.switchTrack,
-                  ...(officePdfPreview ? styles.switchTrackOn : null),
                   // Dim when the preference cannot apply to this agent.
                   ...(!officeCapable ? { opacity: 0.72 } : null),
                 }}
-              >
-                <span
-                  style={{
-                    ...styles.switchThumb,
-                    ...(officePdfPreview ? styles.switchThumbOn : null),
-                  }}
-                />
-              </button>
+              />
             </div>
           </section>
 
@@ -184,9 +174,7 @@ export function AgentSettings({ agent, onRefresh }: Props) {
                 Coding agents
               </h3>
             </div>
-            <div style={styles.cardBody}>
-              <HerdrToggle agent={agent} onRefresh={onRefresh} />
-            </div>
+            <HerdrToggle agent={agent} onRefresh={onRefresh} />
           </section>
 
           {/* ── Workspace roots ────────────────────────────────────────── */}
@@ -211,47 +199,7 @@ export function AgentSettings({ agent, onRefresh }: Props) {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  page: {
-    display: 'flex',
-    flexDirection: 'column',
-    height: '100%',
-    minWidth: 0,
-    fontFamily: font.sans,
-    background: c.bgSubtle,
-  },
-  pageHeader: {
-    display: 'flex',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 16,
-    padding: '20px 28px 18px',
-    borderBottom: `1px solid ${c.border}`,
-    background: c.bg,
-    flexShrink: 0,
-    minWidth: 0,
-  },
-  pageHeaderText: {
-    minWidth: 0,
-    flex: 1,
-  },
-  eyebrow: {
-    margin: '0 0 4px',
-    fontSize: 11,
-    fontWeight: 600,
-    letterSpacing: '0.04em',
-    textTransform: 'uppercase' as const,
-    color: c.textMuted,
-  },
-  pageTitle: {
-    margin: 0,
-    color: c.text,
-    fontSize: 18,
-    fontWeight: 600,
-    letterSpacing: '-0.02em',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
+  ...settingsLayout,
   headerBadge: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -270,44 +218,6 @@ const styles: Record<string, React.CSSProperties> = {
     height: 7,
     borderRadius: radius.pill,
     flexShrink: 0,
-  },
-  scroll: {
-    flex: 1,
-    overflow: 'auto',
-    minWidth: 0,
-    minHeight: 0,
-  },
-  stack: {
-    maxWidth: 760,
-    margin: '0 auto',
-    padding: '20px 24px 40px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 16,
-    width: '100%',
-    boxSizing: 'border-box',
-  },
-  card: {
-    background: c.surface,
-    border: `1px solid ${c.border}`,
-    borderRadius: radius.lg,
-    boxShadow: shadow.xs,
-    overflow: 'hidden',
-    minWidth: 0,
-  },
-  cardHeader: {
-    padding: '16px 20px 14px',
-    borderBottom: `1px solid ${c.borderSubtle}`,
-  },
-  cardTitle: {
-    margin: 0,
-    fontSize: 14,
-    fontWeight: 600,
-    color: c.text,
-    letterSpacing: '-0.01em',
-  },
-  cardBody: {
-    padding: '16px 20px 20px',
   },
   propGrid: {
     margin: 0,
@@ -380,59 +290,5 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.45,
     color: c.textSecondary,
     overflowWrap: 'break-word',
-  },
-  prefRow: {
-    display: 'flex',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 16,
-    padding: '16px 20px 18px',
-  },
-  prefText: {
-    minWidth: 0,
-    flex: 1,
-  },
-  prefLabel: {
-    fontSize: 13.5,
-    fontWeight: 500,
-    color: c.text,
-  },
-  prefHint: {
-    margin: '6px 0 0',
-    fontSize: 12.5,
-    lineHeight: 1.45,
-    color: c.textSecondary,
-  },
-  switchTrack: {
-    position: 'relative' as const,
-    width: 40,
-    height: 22,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderStyle: 'solid',
-    borderColor: c.border,
-    background: c.bgMuted,
-    cursor: 'pointer',
-    flexShrink: 0,
-    padding: 0,
-    transition: 'background 0.15s, border-color 0.15s',
-  },
-  switchTrackOn: {
-    background: c.accent,
-    borderColor: c.accent,
-  },
-  switchThumb: {
-    position: 'absolute' as const,
-    top: 2,
-    left: 2,
-    width: 16,
-    height: 16,
-    borderRadius: radius.pill,
-    background: c.surface,
-    boxShadow: shadow.xs,
-    transition: 'transform 0.15s',
-  },
-  switchThumbOn: {
-    transform: 'translateX(18px)',
   },
 };

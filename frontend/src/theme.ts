@@ -185,3 +185,108 @@ export function menuListSubStyle(selected: boolean, extra?: CSSProperties): CSSP
     ...extra,
   };
 }
+
+/** Shared settings and setup surfaces, matching Agent Settings. */
+export const settingsLayout = {
+  page: {
+    display: 'flex',
+    flexDirection: 'column',
+    height: '100%',
+    minWidth: 0,
+    fontFamily: font.sans,
+    background: c.bgSubtle,
+  },
+  pageHeader: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 16,
+    padding: '20px 28px 18px',
+    borderBottom: `1px solid ${c.border}`,
+    background: c.bg,
+    flexShrink: 0,
+    minWidth: 0,
+  },
+  pageHeaderText: {
+    minWidth: 0,
+    flex: 1,
+  },
+  eyebrow: {
+    margin: '0 0 4px',
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: '0.04em',
+    textTransform: 'uppercase' as const,
+    color: c.textMuted,
+  },
+  pageTitle: {
+    margin: 0,
+    color: c.text,
+    fontSize: 18,
+    fontWeight: 600,
+    letterSpacing: '-0.02em',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  scroll: {
+    flex: 1,
+    overflow: 'auto',
+    minWidth: 0,
+    minHeight: 0,
+  },
+  stack: {
+    maxWidth: 760,
+    margin: '0 auto',
+    padding: '20px 24px 40px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 16,
+    width: '100%',
+    boxSizing: 'border-box',
+  },
+  card: {
+    background: c.surface,
+    border: `1px solid ${c.border}`,
+    borderRadius: radius.lg,
+    boxShadow: shadow.xs,
+    overflow: 'hidden',
+    minWidth: 0,
+  },
+  cardHeader: {
+    padding: '16px 20px 14px',
+    borderBottom: `1px solid ${c.borderSubtle}`,
+  },
+  cardTitle: {
+    margin: 0,
+    fontSize: 14,
+    fontWeight: 600,
+    color: c.text,
+    letterSpacing: '-0.01em',
+  },
+  cardBody: {
+    padding: '16px 20px 20px',
+  },
+  prefRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 16,
+    padding: '16px 20px 18px',
+  },
+  prefText: {
+    minWidth: 0,
+    flex: 1,
+  },
+  prefLabel: {
+    fontSize: 13.5,
+    fontWeight: 500,
+    color: c.text,
+  },
+  prefHint: {
+    margin: '6px 0 0',
+    fontSize: 12.5,
+    lineHeight: 1.45,
+    color: c.textSecondary,
+  },
+} satisfies Record<string, CSSProperties>;

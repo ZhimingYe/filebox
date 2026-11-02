@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useId, useMemo, useLayoutEffect, useRef, useState } from 'react';
 import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
-import { c, font, radius } from '../theme';
+import { c, font, radius, settingsLayout as layout, shadow } from '../theme';
+import { SettingsSwitch } from './SettingsSwitch';
 import { HerdrShortcuts } from './HerdrShortcuts';
 import { HerdrButton, HerdrPopover } from './HerdrControls';
 import { HerdrQueue } from '../lib/herdrQueue';
@@ -587,15 +588,15 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
       {selectedAgent && <>
         <label style={styles.settingRow}>
           <span>Auto-refresh every minute</span>
-          <input type="checkbox" checked={autoRefresh[selectedAgent.target] !== false}
-            onChange={(event) => setAutoRefresh((prev) => ({ ...prev, [selectedAgent.target]: event.target.checked }))} />
+          <SettingsSwitch aria-label="Auto-refresh every minute" checked={autoRefresh[selectedAgent.target] !== false}
+            onClick={() => setAutoRefresh((prev) => ({ ...prev, [selectedAgent.target]: prev[selectedAgent.target] === false }))} />
         </label>
         <label style={styles.settingRow}><span>Wrap output</span>
-          <input type="checkbox" checked={wrapOutput} onChange={(event) => setWrapOutput(event.target.checked)} />
+          <SettingsSwitch aria-label="Wrap output" checked={wrapOutput} onClick={() => setWrapOutput((value) => !value)} />
         </label>
         <label style={styles.settingRow} title="Wait up to 60 seconds for completion or a request for input.">
           <span>Wait for result after sending</span>
-          <input type="checkbox" checked={wait} disabled={sending} onChange={(event) => setWait(event.target.checked)} />
+          <SettingsSwitch aria-label="Wait for result after sending" checked={wait} disabled={sending} onClick={() => setWait((value) => !value)} />
         </label>
       </>}
       <p style={styles.menuNote}>{updatedAt ? `Output updated ${new Date(updatedAt).toLocaleTimeString()}. ` : ''}Status checks every 30 seconds.{status?.version ? ` Herdr ${status.version}.` : ''}</p>
@@ -604,15 +605,14 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
 
   return (
     <div style={styles.page}>
-      {!showDetail && <header style={styles.header}>
-        <div style={styles.titleRow}>
-          <h1 style={styles.title}>Herdr</h1>
-          <span style={styles.countChip}>{agents.length}</span>
-          {!isMobile && <span style={styles.subtitle}>Agent workspace</span>}
+      {(!isMobile || !showDetail) && <header style={styles.header}>
+        <div style={layout.pageHeaderText}>
+          <p style={layout.eyebrow}>Coding agents</p>
+          <h1 style={layout.pageTitle}>Herdr</h1>
         </div>
         <div style={styles.keyRow}>
           {listControl}
-          {settingsControl}
+          {!showDetail && settingsControl}
         </div>
       </header>}
 
@@ -622,10 +622,10 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
 
       <div style={isMobile ? styles.bodyMobile : styles.bodyDesktop}>
         {showList && (
-          <aside style={isMobile ? styles.listMobile : styles.listDesktop} aria-label="Herdr agents">
-            {!isMobile && showDetail && <div style={styles.listHeading}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}>Herdr <span style={styles.countChip}>{agents.length}</span></span>
-              {listControl}
+          <aside style={{ ...(isMobile ? styles.listMobile : styles.listDesktop),
+            ...(!isMobile && agents.length === 0 ? { width: '100%', maxWidth: 680, margin: '0 auto', border: 0, background: 'transparent', boxShadow: 'none', padding: 0 } : null) }} aria-label="Herdr agents">
+            {agents.length > 0 && <div style={styles.listHeading}>
+              <span>Coding agents</span><span style={styles.countChip}>{agents.length}</span>
             </div>}
             {reachable && (agents.length > 1 || agentQuery || statusFilter !== 'all') && <div style={styles.listTools}>
               <label style={styles.searchBox}>
@@ -649,9 +649,9 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
               <div style={styles.emptyCard}>
                 <div style={styles.emptyTitle}>Could not reach Herdr</div>
                 <p style={styles.emptyText}>{listError}</p>
-                <button type="button" style={styles.primaryBtn} onClick={() => void loadList(false)} disabled={loadingList}>
+                <HerdrButton variant="primary" touch={isMobile} onClick={() => void loadList(false)} disabled={loadingList}>
                   Check again
-                </button>
+                </HerdrButton>
               </div>
             ) : !reachable ? (
               <div style={styles.emptyCard}>
@@ -660,9 +660,9 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                   Start Herdr on this backend with <span style={styles.inlineCode}>herdr</span> or{' '}
                   <span style={styles.inlineCode}>herdr server</span>, then refresh. Filebox only talks to the local CLI — never to agents on other machines.
                 </p>
-                <button type="button" style={styles.primaryBtn} onClick={() => void loadList(false)} disabled={loadingList}>
+                <HerdrButton variant="primary" touch={isMobile} onClick={() => void loadList(false)} disabled={loadingList}>
                   Check again
-                </button>
+                </HerdrButton>
               </div>
             ) : agents.length === 0 ? (
               <div style={styles.emptyCard}>
@@ -691,17 +691,16 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                       ...(active ? styles.cardActive : null),
                     }}
                   >
-                    <span style={{ ...styles.dot, background: meta.color }} />
                     <span style={styles.cardBody}>
                       <span style={styles.cardName}>{displayName(item)}</span>
                       <span style={styles.cardMeta}>
                         {item.kind || 'agent'}
                         {item.cwd ? ` · ${item.cwd}` : item.pane_id ? ` · ${item.pane_id}` : ''}
                       </span>
+                      <span style={{ ...styles.badge, color: meta.color, background: meta.bg }}>
+                        <span style={{ ...styles.dot, background: meta.color }} />{meta.label}
+                      </span>
                       {drafts[paneIdentity(item)]?.trim() && <span style={styles.draftBadge}>Draft</span>}
-                    </span>
-                    <span style={{ ...styles.badge, color: meta.color, background: meta.bg }}>
-                      {meta.label}
                     </span>
                   </button>
                 );
@@ -711,7 +710,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
         )}
 
         {showDetail && selectedAgent && (
-          <section style={styles.detail}>
+          <section style={{ ...styles.detail, ...(isMobile ? { border: 0, borderRadius: 0, boxShadow: 'none' } : null) }}>
             <div style={{ ...styles.detailHead, ...(isMobile ? { gap: 4, padding: '4px 8px' } : null) }}>
               {isMobile && <HerdrButton touch aria-label="Back to agent list" onClick={() => setSelected(null)}><IconChevronLeft /></HerdrButton>}
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -818,19 +817,14 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                   <span id={promptHintId} style={{ ...styles.composerHint, color: promptBytes > PROMPT_MAX_BYTES ? c.danger : c.textSecondary }}>
                     {promptHint}
                   </span>
-                  <button
-                    type="button"
+                  <HerdrButton
+                    variant="primary" touch={isMobile}
                     onClick={() => void sendPrompt()}
                     disabled={promptDisabled}
                     title={promptDisabled ? promptHint : `Send to ${displayName(selectedAgent)}`}
-                    style={{
-                      ...styles.primaryBtn,
-                      ...(isMobile ? { minHeight: 44 } : null),
-                      ...(promptDisabled ? styles.primaryBtnDisabled : null),
-                    }}
                   >
                     {sending ? (wait ? 'Waiting…' : 'Sending…') : 'Send'}
-                  </button>
+                  </HerdrButton>
                 </div>
               </div>
             </div>
@@ -851,69 +845,47 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  listTools: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 4, flexShrink: 0 },
-  searchBox: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px', border: `1px solid ${c.border}`, borderRadius: radius.sm, background: c.surface, color: c.textSecondary },
+  listTools: { display: 'flex', flexDirection: 'column', gap: 8, padding: '0 4px 12px', flexShrink: 0 },
+  searchBox: { display: 'flex', alignItems: 'center', gap: 8, padding: '0 10px', border: `1px solid ${c.border}`, borderRadius: radius.md, background: c.surface, color: c.textSecondary },
   searchInput: { width: '100%', minWidth: 0, border: 'none', background: 'transparent', color: c.text, fontFamily: font.sans },
-  filterSelect: { width: '100%', border: `1px solid ${c.border}`, borderRadius: radius.sm, background: c.surface, color: c.textSecondary, fontFamily: font.sans, fontSize: 12, padding: '0 8px' },
+  filterSelect: { width: '100%', border: `1px solid ${c.border}`, borderRadius: radius.md, background: c.surface, color: c.textSecondary, fontFamily: font.sans, fontSize: 12, padding: '0 8px' },
   draftBadge: { alignSelf: 'flex-start', fontSize: 10, color: c.accent, fontWeight: 500 },
   snapshotBar: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4, flexShrink: 0, flexWrap: 'wrap', borderBottom: `1px solid ${c.borderSubtle}`, background: c.bgSubtle, minHeight: 32 },
   snapshotMeta: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0 8px', fontSize: 11, color: c.textSecondary, padding: '4px 0' },
-  composerLabel: { display: 'flex', flexShrink: 0, alignItems: 'center', gap: 4, minWidth: 0, padding: '8px 12px 0', fontSize: 11, color: c.textSecondary },
+  composerLabel: { display: 'flex', flexShrink: 0, alignItems: 'center', gap: 4, minWidth: 0, padding: '12px 12px 0', fontSize: 12, color: c.textSecondary },
   srOnly: { position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clipPath: 'inset(50%)', whiteSpace: 'nowrap', border: 0 },
-  menuTitle: { fontSize: 13, fontWeight: 600, marginBottom: 8 },
-  menuNote: { fontSize: 11, lineHeight: 1.5, color: c.textSecondary, margin: '8px 0' },
-  settingRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 44, cursor: 'pointer' },
-  listHeading: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 4px 8px', fontSize: 11, fontWeight: 500, color: c.textSecondary },
+  menuTitle: { ...layout.cardTitle, marginBottom: 12 },
+  menuNote: { ...layout.prefHint, paddingTop: 12, borderTop: `1px solid ${c.borderSubtle}` },
+  settingRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, minHeight: 44, fontSize: 12.5, lineHeight: 1.45, cursor: 'pointer' },
+  listHeading: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 4px 16px', ...layout.cardTitle },
   inputCard: { display: 'flex', flexDirection: 'column', flexShrink: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain',
-    border: `1px solid ${c.border}`, borderRadius: radius.lg, background: c.bgSubtle },
+    border: `1px solid ${c.border}`, borderRadius: radius.md, background: c.surface },
   page: {
     flex: 1,
     minHeight: 0,
     minWidth: 0,
     display: 'flex',
     flexDirection: 'column',
-    background: c.bg,
+    background: c.bgSubtle,
     fontFamily: font.sans,
   },
   header: {
-    display: 'flex',
+    ...layout.pageHeader,
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    padding: '8px 16px',
-    flexShrink: 0,
-    borderBottom: `1px solid ${c.border}`,
-    background: c.bg,
   },
   titleRow: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
-  title: {
-    margin: 0,
-    fontSize: 16,
-    fontWeight: 600,
-    color: c.text,
-    fontFamily: font.sans,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
   countChip: {
     minWidth: 20,
     height: 20,
     padding: '0 6px',
     borderRadius: radius.pill,
-    background: c.accentBg,
-    color: c.accent,
+    background: c.bgMuted,
+    color: c.textSecondary,
     fontSize: 11,
     fontWeight: 600,
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  subtitle: {
-    margin: 0,
-    fontSize: 12,
-    color: c.textMuted,
-    fontFamily: font.sans,
   },
 
   banner: {
@@ -929,6 +901,9 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     minHeight: 0,
     display: 'flex',
+    gap: 16,
+    padding: 20,
+    overflow: 'hidden',
   },
   bodyMobile: {
     flex: 1,
@@ -937,21 +912,23 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
   },
   listDesktop: {
-    width: 224,
+    width: 'clamp(220px, 28%, 300px)',
     flexShrink: 0,
     overflow: 'auto',
-    borderRight: `1px solid ${c.border}`,
-    padding: 8,
+    border: `1px solid ${c.border}`,
+    borderRadius: radius.lg,
+    boxShadow: shadow.xs,
+    padding: 12,
     display: 'flex',
     flexDirection: 'column',
-    gap: 4,
-    background: c.bgSubtle,
+    gap: 8,
+    background: c.surface,
   },
   listMobile: {
     flex: 1,
     minHeight: 0,
     overflow: 'auto',
-    padding: 12,
+    padding: 16,
     display: 'flex',
     flexDirection: 'column',
     gap: 8,
@@ -962,21 +939,21 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 10,
     textAlign: 'left',
     width: '100%',
-    padding: '11px 10px',
-    minHeight: 52,
+    padding: '12px',
+    minHeight: 72,
     borderRadius: radius.md,
-    borderWidth: 1, borderStyle: 'solid', borderColor: 'transparent',
-    background: 'transparent',
+    borderWidth: 1, borderStyle: 'solid', borderColor: c.borderSubtle,
+    background: c.surface,
     cursor: 'pointer',
     fontFamily: font.sans,
   },
   cardActive: {
-    borderColor: c.accentBg,
+    borderColor: c.accent,
     background: c.accentBg,
   },
   dot: {
-    width: 8,
-    height: 8,
+    width: 6,
+    height: 6,
     borderRadius: radius.pill,
     flexShrink: 0,
   },
@@ -985,7 +962,7 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
     display: 'flex',
     flexDirection: 'column',
-    gap: 2,
+    gap: 6,
   },
   cardName: {
     fontSize: 13,
@@ -996,15 +973,19 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: 'nowrap',
   },
   cardMeta: {
-    fontSize: 11,
-    color: c.textMuted,
+    fontSize: 12,
+    color: c.textSecondary,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
   badge: {
     flexShrink: 0,
-    fontSize: 10,
+    alignSelf: 'flex-start',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    fontSize: 11,
     fontWeight: 500,
     letterSpacing: 0.02,
     padding: '3px 7px',
@@ -1017,13 +998,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
   },
   emptyCard: {
-    padding: 20,
-    borderRadius: radius.lg,
-    border: `1px solid ${c.border}`,
-    background: c.surface,
+    ...layout.card,
+    padding: 24,
     display: 'flex',
     flexDirection: 'column',
     gap: 10,
+    alignItems: 'flex-start',
   },
   emptyTitle: {
     fontSize: 14,
@@ -1049,6 +1029,11 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 0,
     display: 'flex',
     flexDirection: 'column',
+    background: c.surface,
+    border: `1px solid ${c.border}`,
+    borderRadius: radius.lg,
+    boxShadow: shadow.xs,
+    overflow: 'auto',
   },
   detailEmpty: {
     flex: 1,
@@ -1065,7 +1050,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
-    padding: '8px 12px',
+    padding: '16px 20px',
     flexShrink: 0,
     borderBottom: `1px solid ${c.border}`,
   },
@@ -1077,7 +1062,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   detailMeta: {
     marginTop: 2,
-    fontSize: 11,
+    fontSize: 12,
     color: c.textSecondary,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -1121,22 +1106,22 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
     padding: '16px 20px',
     overflow: 'auto',
-    background: c.bg,
+    background: c.bgSubtle,
     color: c.text,
     fontFamily: font.mono,
-    fontSize: 12,
+    fontSize: 13,
     lineHeight: 1.7,
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
     borderBottom: `1px solid ${c.border}`,
   },
   composer: {
-    padding: '4px 16px 12px',
-    flexShrink: 1,
+    padding: '12px 16px 16px',
+    flexShrink: 0,
     minHeight: 0,
     display: 'flex',
     flexDirection: 'column',
-    gap: 8,
+    gap: 12,
     background: c.surface,
   },
   keyRow: {
@@ -1167,22 +1152,5 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
-  },
-  primaryBtn: {
-    minHeight: 32,
-    padding: '0 16px',
-    borderRadius: radius.md,
-    border: 'none',
-    background: c.accent,
-    color: c.onAccent,
-    fontSize: 13,
-    fontWeight: 600,
-    fontFamily: font.sans,
-    cursor: 'pointer',
-  },
-  primaryBtnDisabled: {
-    background: c.bgMuted,
-    color: c.textMuted,
-    cursor: 'default',
   },
 };

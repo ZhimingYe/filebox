@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import type { HerdrAttention as Notice } from '../hooks/useHerdrAttention';
 import type { AgentInfo } from '../api/client';
-import { c, radius } from '../theme';
+import { c, radius, settingsLayout as layout } from '../theme';
+import { HerdrButton } from './HerdrControls';
 import { IconClose } from './icons';
 
 export function HerdrAttention({ notices, agents, onAcknowledge, onOpen, isMobile }: {
@@ -16,17 +17,16 @@ export function HerdrAttention({ notices, agents, onAcknowledge, onOpen, isMobil
   if (!unread.length) return null;
   const shown = expanded ? unread : unread.slice(0, 1);
   return (
-    <aside aria-label="Herdr attention" style={{ flexShrink: 0, minWidth: 0, margin: '6px 12px',
-      display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: 'stretch',
-      border: `1px solid ${c.border}`, borderRadius: radius.lg, background: c.surface }}>
+    <aside aria-label="Herdr attention" style={{ ...layout.card, flexShrink: 0, margin: '12px 16px 0',
+      display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: 'stretch' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
         paddingLeft: 12, flexShrink: 0, fontSize: 12, color: c.text, background: c.warningBg, borderRadius: radius.md }}>
         <span>Herdr · {unread.length} need attention</span>
-        <button type="button" aria-label="Close Herdr reminders" title="Close these reminders"
+        <HerdrButton variant="quiet" touch={isMobile} aria-label="Close Herdr reminders" title="Close these reminders"
           onClick={() => { onAcknowledge(unread.map((n) => n.id)); setExpanded(false); }}
-          style={{ ...button, display: 'grid', placeItems: 'center', minWidth: 44, background: 'transparent', border: 0 }}>
+          style={{ minWidth: 44 }}>
           <IconClose />
-        </button>
+        </HerdrButton>
       </div>
       <div style={{ flex: 1, minWidth: 0, maxHeight: isMobile ? '25vh' : '30vh', overflowY: 'auto' }}>
         {shown.map((n) => (
@@ -38,21 +38,18 @@ export function HerdrAttention({ notices, agents, onAcknowledge, onOpen, isMobil
               <p role="status" style={{ fontSize: 13, lineHeight: 1.5, margin: '4px 0', color: c.text }}>{n.message}</p>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button type="button" style={button} onClick={() => {
+              <HerdrButton touch={isMobile} onClick={() => {
                 onAcknowledge([n.id]); setExpanded(false); onOpen(n);
-              }}>View in Herdr</button>
-              <button type="button" style={button} onClick={() => {
+              }}>View in Herdr</HerdrButton>
+              <HerdrButton variant="quiet" touch={isMobile} onClick={() => {
                 onAcknowledge([n.id]); setExpanded(false);
-              }}>Later</button>
+              }}>Later</HerdrButton>
             </div>
           </div>
         ))}
       </div>
-      {!expanded && unread.length > 1 && <button type="button" style={button}
-        onClick={() => setExpanded(true)}>Show all {unread.length}</button>}
+      {!expanded && unread.length > 1 && <HerdrButton variant="quiet" touch={isMobile}
+        onClick={() => setExpanded(true)}>Show all {unread.length}</HerdrButton>}
     </aside>
   );
 }
-
-const button: React.CSSProperties = { minHeight: 44, padding: '6px 12px', cursor: 'pointer',
-  border: `1px solid ${c.border}`, borderRadius: radius.md, color: c.text, background: c.bgSubtle, fontSize: 12 };
