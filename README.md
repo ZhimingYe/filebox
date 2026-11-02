@@ -81,8 +81,9 @@ on its own, with no duplicate entries and no lost configuration.
 - Multi-tab workspace with keyboard shortcuts
 - Markdown, code (find, wrap, syntax highlighting), PDF, images (zoom and
   pan, including TIFF), HTML in a sandboxed session, and CSV tables
-- Quarto and R Markdown source, plus Jupyter notebooks rendered safely
-  in a sandbox
+- Quarto (`.qmd`) and R Markdown (`.rmd`, `.rmarkdown`) with syntax
+  highlighting for front matter and code chunks
+- Jupyter notebooks (`.ipynb`) with Markdown, code, outputs and plots
 - Optional Office conversion: Word and PowerPoint open as PDF, spreadsheets
   as per-sheet CSV
 - Pin tabs to keep your place while you switch between files
