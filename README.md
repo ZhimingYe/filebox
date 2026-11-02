@@ -12,8 +12,7 @@ filebox is a read-only remote file browser with system monitoring. Install a
 small agent on each machine you want to reach, host the hub on a server you
 control, and open a single URL — from your desktop or your phone, wherever
 you are. Every machine is one click away, with no public IP on the target,
-no port forwarding, and no SSH gymnastics. Optional Herdr integration also
-lets you check and respond to coding agents running on those machines.
+no port forwarding, and no SSH gymnastics.
 
 [![Release](https://img.shields.io/github/v/release/ZhimingYe/filebox?sort=semver)](https://github.com/ZhimingYe/filebox/releases/latest)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -21,7 +20,7 @@ lets you check and respond to coding agents running on those machines.
 > **[Documentation →](https://zhimingye.github.io/filebox/)** — install,
 > connect, and use every feature, with screenshots of the real UI.
 >
-> **[中文文档 →](https://zhimingye.github.io/filebox/zh/)** — 安装、连接、浏览、多标签预览、搜索、合集、传输与 Herdr。
+> **[中文文档 →](https://zhimingye.github.io/filebox/zh/)** — 安装、连接、浏览、多标签预览、搜索、合集、传输与终端。
 
 ## Why filebox
 
@@ -89,17 +88,6 @@ on its own, with no duplicate entries and no lost configuration.
 - Pin tabs to keep your place while you switch between files
 - Oversized files ask before loading instead of freezing the browser
 
-### Coding agents (optional, via Herdr)
-
-- See every coding agent running on your machines, read what it is doing,
-  and reply or approve from the browser — even from your phone
-- Reminders when an agent is waiting for your input
-- Built-in safety: every prompt is checked by an AI security review on the
-  hub before it reaches the agent, blocking destructive or data-stealing
-  requests while letting normal analysis and development through
-- Guided setup, and a per-machine on/off switch in Settings.
-  See [Herdr compatibility and prompt review](docs/herdr-compatibility.md)
-
 ### System monitoring
 
 - CPU, memory, and load overview
@@ -115,7 +103,6 @@ on its own, with no duplicate entries and no lost configuration.
   more) are denied by default, even inside allowed folders
 - Browsing is strictly confined to the folders you allow — symlinks,
   `..`, and other escape routes are blocked
-- Run several hubs on one server without their logins interfering
 
 ### Operations
 
@@ -123,7 +110,6 @@ on its own, with no duplicate entries and no lost configuration.
   not just at your desk
 - Live status feed with request progress and cancellation
 - Agents reconnect automatically after outages — identity persists, no duplicates
-- Stays responsive on slow or flaky networks, even during large transfers
 - One-command in-place updates
 
 ### Temp files
@@ -132,8 +118,20 @@ on its own, with no duplicate entries and no lost configuration.
   in one dedicated scratch folder — the only path where an agent ever writes.
   Per-file and total quotas, no overwrites, one-click cleanup, and the folder
   is never browsable as a normal root.
-- Paste screenshots or copied images straight into Transfer
+- Paste screenshots or copied images straight into Transfer.
 
+### Coding agents (optional)
+
+- **Herdr** view: see the coding agents running on each machine, read their
+  window, send prompts and answer their questions from the browser — on
+  desktop or phone. Reminders when an agent is waiting for you. Guided setup,
+  and a per-machine on/off switch in Settings.
+- Every prompt passes an AI security review on the hub before it reaches the
+  agent: destructive commands, permanent deletion and stealing secrets are
+  blocked; normal analysis and development go through. Set it up in
+  `hub.json` only (`herdr_prompt_review`); start the hub with
+  `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED=0` to turn it off. See
+  [docs/herdr-compatibility.md](docs/herdr-compatibility.md).
 ## Markdown math
 
 Markdown previews render math locally with KaTeX (no CDN). Supported forms:
@@ -262,11 +260,11 @@ Most users never need this — see [`docs/`](docs/) for development details.
 | `listen_addr` | Address the hub listens on | `0.0.0.0:3000` |
 | `agent_token_hash` | Hash of the agent token (set during init) | required |
 | `users` | Login accounts | required |
-| `herdr_prompt_review` | AI security review for Herdr prompts (`protocol`, `base_url`, `model`, `api_key` / `api_key_env`, `timeout_secs`); required to send prompts while review is on. See [docs/herdr-compatibility.md](docs/herdr-compatibility.md) | unset |
+| `herdr_prompt_review` | AI security review for Herdr prompts (`protocol`, `base_url`, `model`, `api_key` / `api_key_env`, `timeout_secs`); required to send prompts while review is on | unset |
 
 | Environment variable | Description | Default |
 |---------------------|-------------|---------|
-| `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED` | Set `0` or `false` at Hub startup to turn off Herdr prompt review; unset, `1` or `true` keeps it on | on |
+| `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED` | Set `0` or `false` at hub startup to turn off Herdr prompt review; unset, `1` or `true` keeps it on | on |
 
 ### Agent (`agent.toml`, created by `--init-config`)
 
@@ -276,8 +274,7 @@ Most users never need this — see [`docs/`](docs/) for development details.
 | `token` | `FILEBOX_AGENT_TOKEN` | Agent token | required |
 | `name` | `FILEBOX_AGENT_NAME` | Name shown in the sidebar | `default-agent` |
 | `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Where the agent keeps its state | system data dir + `filebox` |
-| — | `FILEBOX_AGENT_CONFIG` | Agent TOML file to load; environment values override TOML | `./agent.toml` |
-| — | `FILEBOX_AGENT_HERDR_ENABLED` | Set `0` or `false` to completely disable Herdr integration on this Agent; skips CLI discovery/probing and never advertises Herdr capability. `1`/`true` force-enables it and locks the web switch. Restart the Agent after changing. Invalid values disable integration. | unset (web switch, on) |
+| — | `FILEBOX_AGENT_HERDR_ENABLED` | Set `0` or `false` to completely disable Herdr integration on this Agent; skips CLI discovery/probing and never advertises Herdr capability. Restart the Agent after changing. Invalid values disable integration. | `1` (auto-detect) |
 | — | `FILEBOX_AGENT_HERDR` | Explicit Herdr executable path; cannot override `FILEBOX_AGENT_HERDR_ENABLED=0` | search `PATH` |
 | — | `FILEBOX_AGENT_SOFFICE` | Path to `soffice` (enables Office preview) | unset |
 | — | `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` | unset |
