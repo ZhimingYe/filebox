@@ -12,8 +12,7 @@ filebox is a read-only remote file browser with system monitoring. Install a
 small agent on each machine you want to reach, host the hub on a server you
 control, and open a single URL — from your desktop or your phone, wherever
 you are. Every machine is one click away, with no public IP on the target,
-no port forwarding, and no SSH gymnastics. Optional Herdr integration also
-lets you check and respond to coding agents running on those machines.
+no port forwarding, and no SSH gymnastics.
 
 [![Release](https://img.shields.io/github/v/release/ZhimingYe/filebox?sort=semver)](https://github.com/ZhimingYe/filebox/releases/latest)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -61,8 +60,7 @@ on its own, with no duplicate entries and no lost configuration.
 - File-type badges and recently-changed highlighting
 - Remembers your place — positions survive a page refresh
 - Pin folders you use often for one-click access
-- Click a preview's path to open its containing folder in Files or reveal it
-  in Explorer; from Collections, this switches to Files
+- Click a preview's path to open its folder in Files or reveal it in Explorer
 
 ### Search
 
@@ -82,72 +80,16 @@ on its own, with no duplicate entries and no lost configuration.
 - Multi-tab workspace with keyboard shortcuts
 - Markdown, code (find, wrap, syntax highlighting), PDF, images (zoom and
   pan, including TIFF), HTML in a sandboxed session, and CSV tables
-- Quarto (`.qmd`) and R Markdown (`.rmd`, `.rmarkdown`) open as read-only
-  Monaco source with front-matter and code-chunk highlighting, not executed
-  or rendered reports; ordinary `.md` stays rendered
-- Jupyter notebooks (`.ipynb`) open as Hub-sanitized, sandboxed HTML: Markdown,
-  code, text/error output and supported images; no kernel execution, widgets,
-  arbitrary HTML outputs or notebook JavaScript. Large outputs are reduced,
-  truncated or omitted with a note
-- HTML supports relative links, fragments and self-contained Quarto/Pandoc
-  `data:` styles/scripts inside its sandbox, with Source and new-window views;
-  parent-directory traversal is blocked and documents over 64 MiB are refused
+- Quarto (`.qmd`) and R Markdown (`.rmd`, `.rmarkdown`) as read-only source
+  with front-matter and code-chunk highlighting (not executed)
+- Jupyter notebooks (`.ipynb`) with Markdown, code, text/error output and
+  images, without running a kernel
+- HTML with relative links and self-contained Quarto/Pandoc reports, plus
+  Source and new-window views
 - Optional Office conversion: Word and PowerPoint open as PDF, spreadsheets
   as per-sheet CSV
-- Pin preview tabs to preserve viewer state across switches. Up to three
-  inactive heavy previews (HTML/notebooks, PDF, Office) stay mounted offscreen;
-  excess heavy tabs may reload and lose live state. Images, code, Markdown and
-  CSV restore saved viewer state instead; unpinned inactive previews unmount
+- Pin preview tabs to keep their state while you switch
 - Oversized files ask before loading instead of freezing the browser
-
-### Herdr coding-agent controls (optional)
-
-- Select a backend's **Herdr** view to list coding windows, search/filter by
-  name, kind, folder, pane or status, read output snapshots, send prompts, and
-  answer with allowlisted keys. This is not a general-purpose remote shell
-- Requires the Herdr CLI and its running server on the **Agent machine**;
-  compatibility is checked against **Herdr v0.9.5**, with matching CLI/server
-  versions. Filebox calls the CLI directly, without a shell
-- Status checks run every 30 seconds while the page is open; selected-window
-  output refreshes every minute unless disabled per window. Manual refresh,
-  snapshot time, Copy, wrapping and local Latest scrolling are available;
-  refreshing or opening the keyboard does not send remote input
-- Per-pane drafts survive failed sends. Enter adds a newline; Ctrl/Cmd+Enter
-  or Send submits (up to 32 KiB UTF-8). Optional wait mode waits up to 60 seconds
-  after submission; Stop waiting cancels Filebox's request, not work already
-  accepted by Herdr, and never resubmits it
-- Keys has searchable profiles for pi, Claude Code and Codex; detection can be
-  corrected manually. Unsupported bindings show an error rather than silently
-  succeeding. See [the shortcut guide](docs/herdr-shortcuts.md)
-- Input-needed and repeated unknown/error reminders also appear in other
-  views, without navigating or sending input automatically. Dismissal quiets
-  the current episode. Monitoring requires an open page and Herdr detection
-  may miss questions; it is not a guaranteed notification service. Stopped or
-  unavailable Herdr clears reminders quietly rather than reporting a failure
-
-When the CLI is missing, Herdr shows optional onboarding and setup guidance.
-Follow the [official installation guide](https://herdr.ink), install it on
-the Agent's PATH and use **Check installation**, or set
-`FILEBOX_AGENT_HERDR` to its executable and restart the Agent. Changing the
-process PATH also requires a restart.
-
-The **Herdr integration** switch in Agent Settings is per backend, shared
-across browsers, and persisted as `herdr_enabled` (default `true`) in the
-existing `agent_state.json`, **not** `agent.toml`. Changes apply immediately
-after the Agent confirms the save. Turning it off stops Filebox's controls and
-monitoring, not Herdr or its coding agents. Offline backends cannot save; older
-Agents need an upgrade for this switch. An explicit
-`FILEBOX_AGENT_HERDR_ENABLED` value overrides the saved preference and locks
-the web switch: `0`/`false` disables, `1`/`true` enables, invalid values disable
-(boolean words are case-insensitive). Unset it and restart to use the web switch.
-
-Prompts require Hub-side LLM security review by default; missing configuration
-or provider failure refuses submission, while status/reads/keys still work.
-The provider receives the prompt **and recent window context fetched by the
-Hub**. Review is configured only in `hub.json`, not the web UI; the explicit
-startup opt-out and all provider fields are documented in
-[Herdr compatibility and prompt review](docs/herdr-compatibility.md).
-Review is defense in depth, not a sandbox for the coding agent's shell access.
 
 ### System monitoring
 
@@ -159,18 +101,15 @@ Review is defense in depth, not a sandbox for the coding agent's shell access.
 
 - Browsing is read-only. Transfer writes only to its dedicated scratch folder;
   the separate Herdr integration permits whitelisted coding-agent operations.
-- Herdr prompts must pass a Hub-side LLM security review (file-configured;
-  fail-closed by default, with an explicit startup-only opt-out) before they
-  reach the coding agent
+- Herdr prompts must pass a Hub-side LLM security review before they reach
+  the coding agent
 - Per-user logins; a separate token authenticates each machine
 - Sensitive files (credentials, private keys, shell history, `.env`, and
   more) are denied by default, even inside allowed folders
 - Browsing is strictly confined to the folders you allow — symlinks,
   `..`, and other escape routes are blocked
-- Session/CSRF cookie names have an opaque suffix derived from the Agent-token
-  hash and Hub listen port, so multiple Hubs on one host do not overwrite each
-  other's cookies. Changing either requires signing in again; old unsuffixed
-  cookies are not accepted. Reverse proxies should preserve cookie names
+- Several Hubs on one host keep separate logins; changing the Agent token or
+  Hub port requires signing in again
 
 ### Operations
 
@@ -178,20 +117,38 @@ Review is defense in depth, not a sandbox for the coding agent's shell access.
   not just at your desk
 - Live status feed with request progress and cancellation
 - Agents reconnect automatically after outages — identity persists, no duplicates
-- Bounded, separate response queues keep directory requests, heartbeats and
-  cancellation responsive during slow transfers; congestion has visible errors
-  rather than unlimited buffering. Update the Agent as well as the Hub/UI
+- Browsing, heartbeats and cancel stay responsive during slow transfers
+  (update the Agent as well as the Hub)
 - One-command in-place updates
 
 ### Temp files
 
 - **Transfer** view: drag small files onto the page and the agent stores them
-  in one dedicated scratch folder — Filebox's only file-upload write path.
+  in one dedicated scratch folder — the only path where an agent ever writes.
   Per-file and total quotas, no overwrites, one-click cleanup, and the folder
   is never browsable as a normal root.
-- Paste screenshots or copied images with Ctrl/Cmd+V while in Transfer;
-  editable inputs keep normal paste behavior. Images with unusable filenames
-  receive timestamped names and use the same upload limits as dropped files
+- Paste screenshots or copied images with Ctrl/Cmd+V in Transfer; they use
+  the same limits as dropped files
+
+### Coding agents (optional)
+
+- **Herdr** view: list coding windows, read their output, send prompts and
+  answer with allowlisted keys (pi, Claude Code and Codex profiles), with
+  reminders when an agent needs input. Install the
+  [Herdr CLI](https://herdr.ink) (checked against v0.9.5) on the Agent
+  machine, or set `FILEBOX_AGENT_HERDR`, then use **Check installation**.
+  Turn it on or off per backend in Agent Settings;
+  `FILEBOX_AGENT_HERDR_ENABLED=0`/`1` at Agent startup overrides and locks
+  that switch. Not a general-purpose remote shell; reminders need an open
+  page. See [the shortcut guide](docs/herdr-shortcuts.md).
+- Every prompt passes a Hub-side LLM security review first: destructive
+  commands, permanent deletion and secret extraction are blocked; normal data
+  analysis and development go through. The reviewer sees the prompt and the
+  window's recent output. Configured only in `hub.json`
+  (`herdr_prompt_review`), never in the web UI; if it is missing or the
+  review fails, the prompt is refused. Start the Hub with
+  `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED=0` to turn review off. See
+  [Herdr compatibility and prompt review](docs/herdr-compatibility.md).
 
 ## Markdown math
 
