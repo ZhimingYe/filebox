@@ -372,7 +372,7 @@ async fn reviewed_message(state: &AppState, principal_id: &str, agent_id: &str, 
                 Ok(verdict) if matches!(verdict.decision, crate::prompt_review::Decision::Block) => {
                     tracing::warn!(agent_id = %agent_id, target = ?validated.target,
                         category = %verdict.category, reason = %verdict.reason,
-                        prompt = %validated.text.as_deref().unwrap_or_default().chars().take(200).collect::<String>(),
+                        prompt_bytes = validated.text.as_deref().unwrap_or_default().len(),
                         "Herdr prompt blocked");
                     return Err(error_response(StatusCode::FORBIDDEN, "herdr_prompt_blocked",
                         &format!("Prompt blocked: {}", verdict.reason), false));

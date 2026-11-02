@@ -57,13 +57,21 @@ impl std::fmt::Debug for PromptReviewConfig {
 fn base_url() -> String { "https://api.deepseek.com".into() }
 fn model() -> String { "deepseek-flash".into() }
 fn timeout() -> u64 { 20 }
+// HerdrView's 75s review allowance covers 10s context + 200ms retry + this maximum.
+const MAX_REVIEW_TIMEOUT_SECS: u64 = 60;
 impl PromptReviewConfig {
     pub fn validate(&mut self) -> Result<(), &'static str> {
-        self.timeout_secs = self.timeout_secs.clamp(1, 120);
+        self.timeout_secs = self.timeout_secs.clamp(1, MAX_REVIEW_TIMEOUT_SECS);
         let url = reqwest::Url::parse(&self.base_url).map_err(|_| "invalid base_url")?;
         if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
             || !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
             return Err("base_url must be an HTTP(S) URL without credentials, query or fragment");
+        }
+        let host = url.host_str().unwrap_or_default();
+        let loopback = host == "localhost" || host.trim_start_matches('[').trim_end_matches(']')
+            .parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+        if url.scheme() == "http" && !loopback {
+            return Err("base_url requires HTTPS except for loopback hosts");
         }
         if self.model.trim().is_empty() { return Err("model is required"); }
         if self.api_key.as_ref().is_none_or(|k| k.trim().is_empty()) {
@@ -137,7 +145,7 @@ impl PromptReviewer {
     pub async fn review(&self, text: &str, context: Option<&str>) -> Result<Verdict, ()> {
         let c = &self.config;
         let mut request = self.client.post(format!("{}{}", c.base_url.trim_end_matches('/'), c.protocol.path()))
-            .timeout(Duration::from_secs(c.timeout_secs.clamp(1, 120)))
+            .timeout(Duration::from_secs(c.timeout_secs.clamp(1, MAX_REVIEW_TIMEOUT_SECS)))
             .header("content-type", "application/json")
             .body(request_body(c, text, context).to_string());
         let key = c.api_key.as_deref().ok_or(())?;
@@ -186,13 +194,30 @@ mod tests {
             c.api_key = Some("test-key".into());
             c.timeout_secs = 999;
             c.validate().unwrap();
-            assert_eq!(c.timeout_secs, 120);
+            assert_eq!(c.timeout_secs, 60);
             assert!(!format!("{c:?}").contains("test-key"));
             assert!(!serde_json::to_string(&c).unwrap().contains("test-key"));
         }
         assert!(serde_json::from_value::<PromptReviewConfig>(json!({"protocol":"unknown"})).is_err());
         assert!(serde_json::from_value::<PromptReviewConfig>(json!({"protocol":"messages","enabled":false})).is_err());
         assert!(serde_json::from_value::<PromptReviewConfig>(json!({"protocol":"messages","fail_open":true})).is_err());
+    }
+
+    #[test]
+    fn provider_url_requires_https_except_loopback() {
+        for (url, allowed) in [
+            ("https://api.deepseek.com", true), ("http://localhost:8000", true),
+            ("http://127.0.0.1:8000", true), ("http://127.255.1.2", true),
+            ("http://[::1]:8000", true), ("http://api.deepseek.com", false),
+            ("http://192.168.1.1", false), ("http://128.0.0.1", false),
+            ("http://localhost.example.com", false), ("http://[::2]", false),
+            ("", false), ("https://user:password@example.com", false),
+        ] {
+            let mut c: PromptReviewConfig = serde_json::from_value(json!({
+                "protocol":"chat_completions", "base_url":url, "api_key":"test-key"
+            })).unwrap();
+            assert_eq!(c.validate().is_ok(), allowed, "{url}");
+        }
     }
 
     #[test]

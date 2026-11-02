@@ -342,8 +342,22 @@ describe('HerdrView', () => {
       agent.id,
       expect.objectContaining({ op: 'prompt', target: 'w1:p2', text: 'please continue' }),
       expect.any(AbortSignal),
-      25_000,
+      100_000,
     );
+  });
+
+  it('budgets context and maximum review time before waiting for a prompt result', async () => {
+    await render();
+    await typePrompt('run tests');
+    await toggleSetting('Wait for result after sending');
+    await act(async () => button('Send').click());
+    expect(api.herdrCommand).toHaveBeenCalledWith(
+      agent.id,
+      expect.objectContaining({ op: 'prompt', wait: true, timeout_ms: 60_000 }),
+      expect.any(AbortSignal),
+      155_000,
+    );
+    expect(container.querySelector('textarea')!.value).toBe('');
   });
 
   it('drops drafts of replaced panes instead of resurrecting them when an id is reused', async () => {

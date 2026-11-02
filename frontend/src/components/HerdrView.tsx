@@ -19,6 +19,8 @@ interface Props {
 
 const OUTPUT_REFRESH_MS = 60 * 1000;
 const PROMPT_MAX_BYTES = 32 * 1024;
+// Covers hub context (10s + 200ms retry) and max provider review (60s), plus margin.
+const PROMPT_REVIEW_ALLOWANCE_MS = 75_000;
 
 function paneIdentity(item: api.HerdrAgent): string {
   return JSON.stringify([item.target, item.workspace_id, item.pane_id]);
@@ -466,7 +468,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
             timeout_ms: wait ? 60_000 : undefined,
           },
           controller.signal,
-          wait ? 80_000 : 25_000,
+          (wait ? 80_000 : 25_000) + PROMPT_REVIEW_ALLOWANCE_MS,
           valid,
         );
         if (controller.signal.aborted || !mountedRef.current || !valid()) return;
