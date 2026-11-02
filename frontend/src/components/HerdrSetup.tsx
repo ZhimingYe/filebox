@@ -69,7 +69,7 @@ export function HerdrIntroduction({ agent, onOpen }: { agent: api.AgentInfo; onO
     setDismissed(true);
     try { localStorage.setItem(key, 'dismissed'); } catch { /* Storage may be unavailable. */ }
   }
-  return <aside aria-label="Introducing Herdr" style={{ ...layout.card, margin: isMobile ? '8px 12px 0' : '12px 20px 0', padding: isMobile ? '14px 16px' : '16px 20px',
+  return <aside aria-label="Introducing Herdr" style={{ ...layout.card, margin: isMobile ? '8px 12px' : '12px 20px', padding: isMobile ? '14px 16px' : '16px 20px',
     flexShrink: 0, maxHeight: '30vh', overflow: 'auto', color: c.text, fontFamily: font.sans }}>
     <strong style={layout.cardTitle}>Meet Herdr</strong>
     <p style={hint}>Herdr lets you manage coding agents on {agent.name}: see their status, read output, and respond from Filebox. Its CLI has not been detected on this backend. It is optional; file browsing works without it.</p>

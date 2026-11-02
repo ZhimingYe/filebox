@@ -643,7 +643,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
         <HerdrCallout tone="warning" role="status" style={{ margin: isMobile ? '12px 16px 0' : '16px 20px 0' }}>{listError}</HerdrCallout>
       )}
 
-      <div style={isMobile ? styles.bodyMobile : compactHeight ? { ...styles.bodyDesktop, padding: 12, gap: 12 } : styles.bodyDesktop}>
+      <div style={isMobile ? styles.bodyMobile : compactHeight ? { ...styles.bodyDesktop, padding: '8px 12px 12px', gap: 12 } : styles.bodyDesktop}>
         {showList && (
           <aside style={{ ...(isMobile ? styles.listMobile : styles.listDesktop),
             ...(!isMobile && agents.length === 0 ? { width: '100%', maxWidth: 680, margin: '0 auto', border: 0, background: 'transparent', boxShadow: 'none', padding: 0 } : null) }} aria-label="Herdr agents">
@@ -815,7 +815,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
             </div>
             <pre
               ref={outputBoxRef}
-              style={{ ...styles.output, whiteSpace: wrapOutput ? 'pre-wrap' : 'pre', ...(compactHeight ? { minHeight: 24, padding: '8px 20px' } : null) }}
+              style={{ ...styles.output, whiteSpace: wrapOutput ? 'pre-wrap' : 'pre', ...(compactHeight ? { minHeight: 16, padding: '8px 20px' } : null) }}
               aria-label={`Output from ${displayName(selectedAgent)}`}
               tabIndex={0}
               onScroll={(e) => {
@@ -896,7 +896,7 @@ const styles: Record<string, React.CSSProperties> = {
   searchInput: { width: '100%', minWidth: 0, padding: 0, border: 'none', outline: 'none', background: 'transparent', color: c.text, fontFamily: font.sans },
   filterSelect: { width: '100%', borderWidth: 1, borderStyle: 'solid', borderColor: c.border, outline: 'none', transition: 'border-color 0.12s, box-shadow 0.12s', borderRadius: radius.md, background: c.surface, color: c.textSecondary, fontFamily: font.sans, fontSize: 12, padding: '0 8px' },
   draftBadge: { flexShrink: 0, fontSize: 10.5, color: c.accent, fontWeight: 500 },
-  callouts: { display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 16px 0', flexShrink: 0 },
+  callouts: { display: 'flex', flexDirection: 'column', gap: 6, padding: '14px 20px 0', flexShrink: 0 },
   headActions: { display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 },
   cardTop: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
   cardHover: { background: c.bgSubtle },
@@ -1098,7 +1098,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
-    padding: '14px 12px 0 20px',
+    padding: '18px 12px 0 20px',
     flexShrink: 0,
   },
   detailName: {

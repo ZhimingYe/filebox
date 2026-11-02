@@ -21,7 +21,7 @@ export function HerdrAttention({ notices, agents, onAcknowledge, onOpen, isMobil
     <IconClose style={{ width: 13, height: 13 }} />
   </HerdrButton>;
   return (
-    <aside aria-label="Herdr attention" style={{ ...layout.card, flexShrink: 0, margin: isMobile ? '8px 12px 0' : '12px 20px 0',
+    <aside aria-label="Herdr attention" style={{ ...layout.card, flexShrink: 0, margin: isMobile ? '8px 12px' : '12px 20px',
       fontFamily: font.sans }}>
       <div style={{ maxHeight: isMobile ? '25vh' : '30vh', overflowY: 'auto' }}>
         {shown.map((n, index) => {
