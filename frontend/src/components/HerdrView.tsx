@@ -395,8 +395,8 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
     const el = promptRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(isMobile ? 120 : 160, Math.max(56, el.scrollHeight))}px`;
-  }, [prompt, selectedIdentity, isMobile]);
+    el.style.height = `${Math.min(isMobile ? 120 : compactHeight ? 96 : 160, Math.max(compactHeight ? 40 : 56, el.scrollHeight))}px`;
+  }, [prompt, selectedIdentity, isMobile, compactHeight]);
 
   useEffect(() => {
     if (!sending) return;
@@ -615,9 +615,9 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
 
   return (
     <div style={styles.page}>
-      {(!isMobile || !showDetail) && <header style={{ ...styles.header, ...(compactHeight ? { paddingTop: 12, paddingBottom: 12 } : null) }}>
+      {(!isMobile || !showDetail) && <header style={{ ...styles.header, ...(compactHeight ? { paddingTop: 10, paddingBottom: 10, alignItems: 'center' } : null) }}>
         <div style={layout.pageHeaderText}>
-          <p style={layout.eyebrow}>Coding agents</p>
+          {!compactHeight && <p style={layout.eyebrow}>Coding agents</p>}
           <h1 style={layout.pageTitle}>Herdr</h1>
         </div>
         <div style={styles.keyRow}>
@@ -630,7 +630,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
         <HerdrCallout tone="warning" role="status" style={{ margin: isMobile ? '12px 16px 0' : '16px 20px 0' }}>{listError}</HerdrCallout>
       )}
 
-      <div style={isMobile ? styles.bodyMobile : styles.bodyDesktop}>
+      <div style={isMobile ? styles.bodyMobile : compactHeight ? { ...styles.bodyDesktop, padding: 12, gap: 12 } : styles.bodyDesktop}>
         {showList && (
           <aside style={{ ...(isMobile ? styles.listMobile : styles.listDesktop),
             ...(!isMobile && agents.length === 0 ? { width: '100%', maxWidth: 680, margin: '0 auto', border: 0, background: 'transparent', boxShadow: 'none', padding: 0 } : null) }} aria-label="Herdr agents">
@@ -640,7 +640,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
             {reachable && (agents.length > 1 || agentQuery || statusFilter !== 'all') && <div style={{ ...styles.listTools, flexDirection: 'row' }}>
               <label style={{ ...styles.searchBox, ...(searchFocused ? styles.fieldFocused : null) }}>
                 <IconSearch style={{ width: 14, height: 14, flexShrink: 0 }} />
-                <input type="text" role="searchbox" aria-label="Search agents" placeholder="Search agents…" value={agentQuery}
+                <input type="text" role="searchbox" aria-label="Search agents" placeholder="Search…" value={agentQuery}
                   onChange={(event) => setAgentQuery(event.target.value)}
                   onFocus={() => setSearchFocused(true)} onBlur={() => setSearchFocused(false)}
                   onKeyDown={(event) => { if (event.key === 'Escape' && agentQuery) { event.preventDefault(); setAgentQuery(''); } }}
@@ -652,7 +652,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
               </label>
               <select aria-label="Filter agents by status" value={statusFilter}
                 onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
-                style={{ ...styles.filterSelect, fontSize: isMobile ? 16 : 12, minHeight: isMobile ? 44 : 30, width: 'auto', maxWidth: isMobile ? 128 : 116, flexShrink: 0 }}>
+                style={{ ...styles.filterSelect, fontSize: isMobile ? 16 : 12, minHeight: isMobile ? 44 : 30, width: 'auto', maxWidth: isMobile ? 128 : 96, flexShrink: 0 }}>
                 <option value="all">{`All · ${agents.length}`}</option>
                 {(['blocked', 'working', 'done', 'idle', 'unknown'] as const).map((value) => <option key={value} value={value}>
                   {value === 'blocked' ? 'Needs input' : statusMeta(value).label} · {agents.filter((item) => item.status === value).length}
@@ -731,7 +731,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
 
         {showDetail && selectedAgent && (
           <section style={{ ...styles.detail, ...(isMobile ? { border: 0, borderRadius: 0, boxShadow: 'none' } : null) }}>
-            <div style={{ ...styles.detailHead, ...(isMobile ? { gap: 4, padding: '6px 8px' } : null) }}>
+            <div style={{ ...styles.detailHead, ...(isMobile ? { gap: 4, padding: '6px 8px' } : compactHeight ? { paddingTop: 8 } : null) }}>
               {isMobile && <HerdrButton touch variant="quiet" icon aria-label="Back to agent list" onClick={() => setSelected(null)}><IconChevronLeft /></HerdrButton>}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={styles.titleRow}>
@@ -769,7 +769,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
               </HerdrCallout>}
               {copyFailedFor === copyLabel && <HerdrCallout tone="danger" role="alert">Could not copy. Select the output text and copy it manually.</HerdrCallout>}
             </div>}
-            <div style={{ ...styles.snapshotBar, padding: isMobile ? '0 4px 0 12px' : '0 8px 0 20px' }}>
+            <div style={{ ...styles.snapshotBar, padding: isMobile ? '0 4px 0 12px' : '0 8px 0 20px', ...(compactHeight ? { marginTop: 6, minHeight: 30 } : null) }}>
               <div role="group" aria-label="Output snapshot details" style={{ display: 'flex', flex: 1, minWidth: 0, alignItems: 'center', flexWrap: 'wrap', gap: '0 8px' }}>
                 <span style={styles.snapshotMeta} title="A snapshot, not a live terminal stream. Only the selected window is refreshed.">
                   <span>{updatedAt ? `Snapshot · ${new Date(updatedAt).toLocaleTimeString()}` : loadingOutput ? 'Reading output…' : 'No snapshot yet'}</span>
@@ -793,7 +793,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
             </div>
             <pre
               ref={outputBoxRef}
-              style={{ ...styles.output, whiteSpace: wrapOutput ? 'pre-wrap' : 'pre' }}
+              style={{ ...styles.output, whiteSpace: wrapOutput ? 'pre-wrap' : 'pre', ...(compactHeight ? { minHeight: 40, padding: '8px 20px' } : null) }}
               aria-label={`Output from ${displayName(selectedAgent)}`}
               tabIndex={0}
               onScroll={(e) => {
@@ -808,7 +808,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                 : output || 'No output yet. Send a prompt or wait for the agent to write.'}
             </pre>
 
-            <div style={{ ...styles.composer, ...(isMobile ? { padding: '4px 8px max(8px, env(safe-area-inset-bottom))' } : null) }}>
+            <div style={{ ...styles.composer, ...(isMobile ? { padding: '4px 8px max(8px, env(safe-area-inset-bottom))' } : compactHeight ? { padding: '8px 12px 10px', gap: 8 } : null) }}>
               <HerdrShortcuts key={JSON.stringify([selectedIdentity, selectedAgent.kind])} kind={selectedAgent.kind}
                 disabled={sending || !reachable} onSend={sendKeys} />
               <div style={{ ...styles.inputCard, ...(composerFocused ? styles.inputCardFocused : null) }}
@@ -825,7 +825,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                   rows={2}
                   maxLength={PROMPT_MAX_BYTES}
                   disabled={sending}
-                  style={{ ...styles.textarea, fontSize: isMobile ? 16 : 13.5 }}
+                  style={{ ...styles.textarea, fontSize: isMobile ? 16 : 13.5, ...(compactHeight ? { minHeight: 40, padding: '10px 14px 4px' } : null) }}
                   onKeyDown={(e) => {
                     if (!e.nativeEvent.isComposing && (e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                       e.preventDefault();
