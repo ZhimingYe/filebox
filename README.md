@@ -93,6 +93,8 @@ on its own, with no duplicate entries and no lost configuration.
 
 - Browsing is read-only. Transfer writes only to its dedicated scratch folder;
   the separate Herdr integration permits whitelisted coding-agent operations.
+- Herdr prompts must pass a Hub-side LLM security review (file-configured;
+  fail-closed) before they reach the coding agent
 - Per-user logins; a separate token authenticates each machine
 - Sensitive files (credentials, private keys, shell history, `.env`, and
   more) are denied by default, even inside allowed folders
@@ -241,6 +243,11 @@ Most users never need this — see [`docs/`](docs/) for development details.
 | `listen_addr` | Address the hub listens on | `0.0.0.0:3000` |
 | `agent_token_hash` | Hash of the agent token (set during init) | required |
 | `users` | Login accounts | required |
+| `herdr_prompt_review` | LLM security review for Herdr prompts (`protocol`: `chat_completions` / `responses` / `messages`; `base_url`, HTTPS required except loopback; `model`; `api_key` or `api_key_env`; `timeout_secs`, max 60). File-only, no web setting. While review is on, prompts are rejected if this is missing or the review fails. See [docs/herdr-compatibility.md](docs/herdr-compatibility.md). | unset (prompts rejected) |
+
+| Environment variable | Description | Default |
+|---------------------|-------------|---------|
+| `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED` | Read once at Hub startup. `0` / `false` turns Herdr prompt review off (prompts are forwarded unreviewed). Unset, `1`, `true`, or an invalid value keeps review on and mandatory. | `1` |
 
 ### Agent (`agent.toml`, created by `--init-config`)
 

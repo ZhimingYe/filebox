@@ -99,7 +99,8 @@ agent WebSocket.
 | `fs_proxy.rs` | List / stat / raw file proxy to agent WS |
 | `search_proxy.rs` | Workspace Search proxy (long timeout, cancel binding) |
 | `temp_proxy.rs` | Temp-folder upload relay (streams body → WS chunks) + one-click cleanup |
-| `herdr_proxy.rs` | Herdr CLI relay (`POST /api/agents/{id}/herdr`) |
+| `herdr_proxy.rs` | Herdr CLI relay (`POST /api/agents/{id}/herdr`); prompts pass the mandatory review choke point with Hub-read window context |
+| `prompt_review.rs` | Herdr prompt LLM review: file-only config, DeepSeek chat-completions / responses / messages, strict verdict parsing |
 | `audit.rs` | Login audit trail |
 | `events.rs` | SSE fanout to browsers |
 | `health.rs` | Liveness + version |
