@@ -556,6 +556,9 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
     : isMobile ? 'Enter for new line' : 'Ctrl / ⌘ + Enter to send · Enter for new line';
 
   const inlineNotice = compactHeight && !isMobile;
+  const statusWarning = sending || !selectedAgent ? null
+    : selectedAgent.status === 'blocked' ? 'Needs your input. Use the remote keys below to respond.'
+    : selectedAgent.status === 'unknown' ? 'Status unavailable. Check the output before continuing.' : null;
   const noticeActive = sending || (loadingOutput && outputElapsed >= 8) || !!actionNotice;
   const noticeText = sending ? `${wait ? 'Waiting for' : 'Sending to'} ${actionTarget} · ${elapsed}s`
     : loadingOutput ? (outputElapsed >= 8 ? `Taking longer than usual · ${outputElapsed}s` : 'Refreshing…')
@@ -766,12 +769,11 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
               </div>
             </div>
 
-            {(actionError || outputError || (!sending && (selectedAgent.status === 'blocked' || selectedAgent.status === 'unknown'))
+            {(actionError || outputError || (!inlineNotice && statusWarning)
               || (!inlineNotice && noticeActive) || copyFailedFor === copyLabel) && <div style={{ ...styles.callouts, ...(isMobile ? { padding: '8px 8px 0' } : null) }}>
               {actionError && <HerdrCallout tone="danger" role="alert" touch={isMobile} dismissLabel="Dismiss error" onDismiss={() => setActionError(null)}>{actionError}</HerdrCallout>}
               {outputError && <HerdrCallout tone="danger" role="alert">{outputError} Use Refresh to retry.</HerdrCallout>}
-              {selectedAgent.status === 'blocked' && !sending && <HerdrCallout tone="warning">Needs your input. Use the remote keys below to respond.</HerdrCallout>}
-              {selectedAgent.status === 'unknown' && !sending && <HerdrCallout tone="warning">Status unavailable. Check the output before continuing.</HerdrCallout>}
+              {!inlineNotice && statusWarning && <HerdrCallout tone="warning">{statusWarning}</HerdrCallout>}
               {!inlineNotice && noticeActive && <HerdrCallout role="status" touch={isMobile}
                 onDismiss={sending ? undefined : actionNotice ? () => setActionNotice(null) : undefined} dismissLabel="Dismiss notice">
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -783,9 +785,9 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
             </div>}
             <div style={{ ...styles.snapshotBar, padding: isMobile ? '0 4px 0 12px' : '0 8px 0 20px', ...(compactHeight ? { marginTop: 6, minHeight: 30 } : null) }}>
               <div role="group" aria-label="Output snapshot details" style={{ display: 'flex', flex: 1, minWidth: 0, alignItems: 'center', flexWrap: 'wrap', gap: '0 8px' }}>
-                {inlineNotice && noticeActive ? <span role="status" style={{ ...styles.snapshotMeta, flex: 1, minWidth: 0, flexWrap: 'nowrap', color: c.text }}>
-                  <span aria-hidden="true" style={{ ...styles.dot, background: c.textMuted }} />
-                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={noticeText ?? undefined}>{noticeText}</span>
+                {inlineNotice && (noticeActive || statusWarning) ? <span role="status" style={{ ...styles.snapshotMeta, flex: 1, minWidth: 0, flexWrap: 'nowrap', color: c.text }}>
+                  <span aria-hidden="true" style={{ ...styles.dot, background: noticeActive ? c.textMuted : c.warning }} />
+                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={(noticeActive ? noticeText : statusWarning) ?? undefined}>{noticeActive ? noticeText : statusWarning}</span>
                   {stopWaitingButton}
                   {!sending && actionNotice && <HerdrButton variant="quiet" icon size="sm" aria-label="Dismiss notice" title="Dismiss notice"
                     onClick={() => setActionNotice(null)} style={{ width: 20, minWidth: 20, height: 20, color: c.textMuted }}>
