@@ -79,7 +79,7 @@ function isAbortError(error: unknown): boolean {
 /** Null means the failure should stay quiet (abort, or a superseded request). */
 function herdrFailureMessage(error: unknown): string | null {
   if (isAbortError(error)) return null;
-  if (errorCode(error) === 'invalid_request') {
+  if (['invalid_request', 'herdr_prompt_blocked', 'herdr_prompt_review_unavailable', 'herdr_prompt_review_not_configured'].includes(errorCode(error) ?? '')) {
     const message = (error as { message?: unknown }).message;
     if (typeof message === 'string' && message.trim()) return message.trim();
   }

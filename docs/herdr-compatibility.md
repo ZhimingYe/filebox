@@ -6,6 +6,45 @@ The CLI and running Herdr server should have matching versions. Herdr's main
 branch can change its argument parser before a release, so validate against
 the released binary as well as the documentation.
 
+## Mandatory hub-side prompt review
+
+Configure only in `hub.json` and restart the Hub. Without `herdr_prompt_review`
+(including dev mode), Herdr prompts are disabled and return HTTP 503
+`herdr_prompt_review_not_configured`. Status, reads and keys remain available.
+No web API or UI can read or change this configuration.
+
+The only opt-out is the Hub process environment variable
+`FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED=0` (or `false`, case-insensitive).
+It is read once at startup: review config is ignored, no provider calls are
+made, and prompts relay without review with a startup warning. Unset, `1`, or
+`true` means mandatory review; any other value also means mandatory review
+with a warning. Changes require restarting the Hub, never a runtime toggle.
+Add one of these fields alongside the existing Hub configuration:
+
+```json
+{"herdr_prompt_review":{"protocol":"chat_completions","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
+```
+
+```json
+{"herdr_prompt_review":{"protocol":"responses","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
+```
+
+```json
+{"herdr_prompt_review":{"protocol":"messages","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
+```
+
+`api_key` may instead
+contain the key directly in the private config file; it takes precedence over
+`api_key_env`. A configuration without a nonempty key fails startup.
+Keep the config private and use HTTPS for remote providers. Review sends the
+prompt to that provider; choose a trusted service and model. `timeout_secs`
+defaults to 20 and is clamped to 1–120 seconds. Review always fails closed:
+provider/network/timeout/invalid-output failures return retryable HTTP 503 and
+do not relay the prompt. There is no config disable switch or fail-open option. Blocks return
+HTTP 403 with the review reason; the composer retains the draft. Only prompt
+operations are reviewed, not status, output reads or keys. This probabilistic
+gate is defense in depth, not a shell sandbox or a guarantee of safety.
+
 ## Command contract
 
 | Operation | Arguments after `herdr` | Output |

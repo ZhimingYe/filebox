@@ -19,6 +19,10 @@ pub struct UserConfig {
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct HubConfig {
+    #[serde(skip)]
+    pub prompt_review_mode: crate::prompt_review::ReviewMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub herdr_prompt_review: Option<crate::prompt_review::PromptReviewConfig>,
     #[serde(default = "default_listen_addr")]
     pub listen_addr: SocketAddr,
     pub agent_token_hash: String,
@@ -69,6 +73,14 @@ impl HubConfig {
     }
 
     pub fn load() -> Self {
+        let (prompt_review_mode, invalid_mode) = crate::prompt_review::review_mode(
+            std::env::var("FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED").ok().as_deref());
+        if invalid_mode {
+            tracing::warn!("Invalid FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED; prompt review remains mandatory");
+        }
+        if prompt_review_mode == crate::prompt_review::ReviewMode::Disabled {
+            tracing::warn!("prompt review: disabled at startup by FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED; Herdr prompts will relay without review");
+        }
         let path = resolve_config_path();
         if !path.exists() {
             let dev_mode = std::env::var("FILEBOX_DEV_MODE")
@@ -85,8 +97,13 @@ impl HubConfig {
             eprintln!("[hub] WARNING: FILEBOX_DEV_MODE=1 — using insecure dev defaults");
             eprintln!("[hub] WARNING: binding to 127.0.0.1 only — NOT for production");
             eprintln!("[hub] WARNING: dev credentials: admin / dev-password, agent token: dev-token");
+            if prompt_review_mode == crate::prompt_review::ReviewMode::Mandatory {
+                tracing::info!("prompt review: not configured; Herdr prompts are disabled");
+            }
 
             return Self {
+                prompt_review_mode,
+                herdr_prompt_review: None,
                 listen_addr: std::env::var("FILEBOX_LISTEN_ADDR")
                     .unwrap_or_else(|_| "127.0.0.1:3000".to_string())
                     .parse()
@@ -102,8 +119,22 @@ impl HubConfig {
         let contents = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("Failed to read config file '{}': {}", path.display(), e));
 
-        let mut config: HubConfig = serde_json::from_str(&contents)
-            .unwrap_or_else(|e| panic!("Failed to parse config file '{}': {}", path.display(), e));
+        let mut value: serde_json::Value = serde_json::from_str(&contents)
+            .unwrap_or_else(|e| panic!("Failed to parse config file '{}': invalid JSON at line {}, column {}", path.display(), e.line(), e.column()));
+        if prompt_review_mode == crate::prompt_review::ReviewMode::Disabled {
+            if let Some(object) = value.as_object_mut() { object.remove("herdr_prompt_review"); }
+        }
+        let mut config: HubConfig = serde_json::from_value(value)
+            .unwrap_or_else(|_| panic!("Failed to parse config file '{}': invalid Hub configuration fields", path.display()));
+        config.prompt_review_mode = prompt_review_mode;
+        if prompt_review_mode == crate::prompt_review::ReviewMode::Disabled {
+            config.herdr_prompt_review = None;
+        } else if let Some(review) = config.herdr_prompt_review.as_mut() {
+            review.validate().unwrap_or_else(|e| panic!("prompt review: {e}"));
+            tracing::info!("prompt review: enabled, protocol {}, model {}", review.protocol.as_str(), review.model);
+        } else {
+            tracing::info!("prompt review: not configured; Herdr prompts are disabled");
+        }
 
         // Allow env override for listen address
         if let Ok(addr) = std::env::var("FILEBOX_LISTEN_ADDR") {
@@ -188,6 +219,8 @@ fn build_generated_config(
     let agent_token_hash = bcrypt::hash(agent_token, bcrypt_cost)
         .map_err(|error| format!("failed to hash agent token: {error}"))?;
     Ok(HubConfig {
+        prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
+        herdr_prompt_review: None,
         listen_addr,
         agent_token_hash,
         users: vec![UserConfig {

@@ -79,6 +79,19 @@ function button(label: string) {
 }
 
 describe('HerdrView', () => {
+  it.each(['herdr_prompt_blocked', 'herdr_prompt_review_unavailable', 'herdr_prompt_review_not_configured'])('shows %s reason and retains the draft', async (error) => {
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
+      if (body.op === 'status') return listed;
+      if (body.op === 'prompt') throw { error, message: 'Review refused this prompt.' };
+      return { req_id: 'r', output: 'output' };
+    });
+    await render();
+    await typePrompt('keep my draft');
+    await act(async () => button('Send').click());
+    expect(container.textContent).toContain('Review refused this prompt.');
+    expect(container.querySelector('textarea')!.value).toBe('keep my draft');
+  });
+
   it('reports status and opens a notified agent without locking later selection', async () => {
     const report = vi.fn();
     vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'

@@ -301,6 +301,8 @@ mod tests {
 
     fn make_store(users: Vec<(&str, &str)>, agent_hash: &str) -> SessionStore {
         let config = HubConfig {
+            prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
+            herdr_prompt_review: None,
             listen_addr: "0.0.0.0:3000".parse().unwrap(),
             agent_token_hash: agent_hash.to_string(),
             users: users

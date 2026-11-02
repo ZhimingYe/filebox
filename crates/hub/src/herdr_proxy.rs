@@ -218,23 +218,19 @@ pub async fn herdr_handler(
         );
     }
 
+    drop(inner);
     let req_id = format!("herdr_{}", Uuid::new_v4());
-    let wait_ms = if validated.wait {
-        clamp_wait_timeout_ms(validated.timeout_ms)
-    } else {
-        0
-    };
+    let wait_ms = if validated.wait { clamp_wait_timeout_ms(validated.timeout_ms) } else { 0 };
     let hub_timeout = hub_timeout_for(validated.op, validated.wait, wait_ms);
-    let msg = HubMessage::HerdrRequest {
-        req_id: req_id.clone(),
-        op: validated.op,
-        target: validated.target,
-        text: validated.text,
-        keys: validated.keys,
-        lines: validated.lines,
-        read_source: validated.read_source,
-        wait: validated.wait,
-        timeout_ms: validated.timeout_ms,
+    let msg = match reviewed_message(&state, &agent_id, validated, &req_id).await {
+        Ok(msg) => msg,
+        Err(response) => return response,
+    };
+    let inner = state.inner.read().await;
+    let agent = match inner.agents.get(&agent_id) {
+        Some(agent) if agent.status != crate::agent_registry::AgentStatus::Offline && agent.capabilities.herdr => agent,
+        _ => return error_response(StatusCode::SERVICE_UNAVAILABLE, "backend_offline",
+            "Agent disconnected or Herdr became unavailable during review", true),
     };
 
     let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
@@ -305,6 +301,40 @@ pub async fn herdr_handler(
             true,
         ),
     }
+}
+
+async fn reviewed_message(state: &AppState, agent_id: &str, validated: ValidatedBody, req_id: &str) -> Result<HubMessage, Response> {
+    if matches!(validated.op, HerdrOp::Prompt) && state.prompt_review_mode == crate::prompt_review::ReviewMode::Mandatory {
+        if let Some(reviewer) = &state.prompt_reviewer {
+            match reviewer.review(validated.text.as_deref().unwrap_or_default()).await {
+                Ok(verdict) if matches!(verdict.decision, crate::prompt_review::Decision::Block) => {
+                    tracing::warn!(agent_id = %agent_id, target = ?validated.target,
+                        category = %verdict.category, reason = %verdict.reason,
+                        prompt = %validated.text.as_deref().unwrap_or_default().chars().take(200).collect::<String>(),
+                        "Herdr prompt blocked");
+                    return Err(error_response(StatusCode::FORBIDDEN, "herdr_prompt_blocked",
+                        &format!("Prompt blocked: {}", verdict.reason), false));
+                }
+                Ok(_) => {}
+                Err(()) => return Err(error_response(StatusCode::SERVICE_UNAVAILABLE,
+                    "herdr_prompt_review_unavailable", "Prompt review is unavailable; retry later", true)),
+            }
+        } else {
+            return Err(error_response(StatusCode::SERVICE_UNAVAILABLE, "herdr_prompt_review_not_configured",
+                "Herdr prompts are disabled; ask the administrator to configure herdr_prompt_review in hub.json", true));
+        }
+    }
+    Ok(HubMessage::HerdrRequest {
+        req_id: req_id.to_owned(),
+        op: validated.op,
+        target: validated.target,
+        text: validated.text,
+        keys: validated.keys,
+        lines: validated.lines,
+        read_source: validated.read_source,
+        wait: validated.wait,
+        timeout_ms: validated.timeout_ms,
+    })
 }
 
 #[derive(Debug)]
@@ -440,11 +470,79 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn prompt_review_gates_agent_relay() {
+        for (decision, expected, relay) in [
+            ("block", StatusCode::FORBIDDEN, false),
+            ("allow", StatusCode::OK, true),
+            ("down", StatusCode::SERVICE_UNAVAILABLE, false),
+            ("garbage", StatusCode::SERVICE_UNAVAILABLE, false),
+            ("unconfigured", StatusCode::SERVICE_UNAVAILABLE, false),
+            ("off", StatusCode::OK, true),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mock_calls = calls.clone();
+            let app = axum::Router::new().route("/chat/completions", axum::routing::post(move |headers: axum::http::HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                mock_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(headers["authorization"], "Bearer test-key");
+                assert_eq!(body["model"], "deepseek-flash");
+                assert_eq!(body["messages"][1]["content"], "<<<PROMPT\nAnalyze the data\nPROMPT>>>");
+                if decision == "down" { return StatusCode::BAD_GATEWAY.into_response(); }
+                Json(serde_json::json!({"choices":[{"message":{"content":serde_json::json!({"decision":decision,"category":"test","reason":"Review reason."}).to_string()}}]})).into_response()
+            }));
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let mut review: crate::prompt_review::PromptReviewConfig = serde_json::from_value(serde_json::json!({
+                "protocol":"chat_completions", "base_url":format!("http://{addr}"), "api_key":"test-key"
+            })).unwrap();
+            review.validate().unwrap();
+            let state = AppState::new(&crate::config::HubConfig {
+                prompt_review_mode: if decision == "off" { crate::prompt_review::ReviewMode::Disabled } else { crate::prompt_review::ReviewMode::Mandatory },
+                herdr_prompt_review: if decision == "unconfigured" { None } else { Some(review) }, listen_addr: "127.0.0.1:0".parse().unwrap(),
+                agent_token_hash: "fake".into(), users: vec![],
+            }, false);
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+            let capabilities = filebox_protocol::resources::Capabilities { herdr: true, ..Default::default() };
+            state.inner.write().await.agents.register("a".into(), "agent".into(), sender,
+                std::sync::Arc::new(tokio::sync::Notify::new()), 0, vec![], 0, vec![], capabilities, None);
+            let request_state = state.clone();
+            let request = tokio::spawn(async move {
+                herdr_handler(State(request_state), Extension(AuthenticatedSession {
+                    id: "session".into(), principal_id: "principal".into(),
+                }), Path("a".into()), Json(serde_json::from_value(serde_json::json!({
+                    "op":"prompt", "target":"reviewer", "text":"  Analyze the data  "
+                })).unwrap())).await
+            });
+            if relay {
+                let msg = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await.unwrap().unwrap();
+                let HubMessage::HerdrRequest { req_id, text, .. } = msg else { panic!("expected HerdrRequest") };
+                assert_eq!(text.as_deref(), Some("Analyze the data"));
+                let inner = state.inner.read().await;
+                inner.pending_responses.write().await.remove(&req_id).unwrap().deliver(serde_json::json!({"ok":true}));
+            }
+            let response = request.await.unwrap();
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), usize::from(!matches!(decision, "off" | "unconfigured")));
+            assert_eq!(response.status(), expected);
+            if !relay {
+                assert!(receiver.try_recv().is_err());
+                let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(body["retryable"], decision != "block");
+                assert_eq!(body["error"], match decision { "block" => "herdr_prompt_blocked", "unconfigured" => "herdr_prompt_review_not_configured", _ => "herdr_prompt_review_unavailable" });
+                if decision == "block" { assert!(body["message"].as_str().unwrap().contains("Review reason.")); }
+            }
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
     async fn herdr_settings_disconnect_returns_retryable_backend_offline() {
         use filebox_protocol::resources::{Capabilities, HerdrSettings};
         use tokio::sync::mpsc;
 
         let config = crate::config::HubConfig {
+            prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
+            herdr_prompt_review: None,
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],

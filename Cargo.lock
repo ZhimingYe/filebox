@@ -515,6 +515,7 @@ dependencies = [
  "image",
  "pulldown-cmark",
  "rand",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
