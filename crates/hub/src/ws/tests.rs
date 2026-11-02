@@ -62,6 +62,8 @@ fn reconcile_roots_keeps_desired_path_when_name_unknown_to_agent() {
 
 fn test_state() -> AppState {
     AppState::new(&crate::config::HubConfig {
+            prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
+            herdr_prompt_review: None,
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         agent_token_hash: "not-a-hash".into(), users: vec![],
     }, false)
@@ -235,6 +237,8 @@ async fn auth_admission_does_not_hold_registry_lock() {
 
 async fn test_server() -> (AppState, String, tokio::task::JoinHandle<()>) {
     let state = AppState::new(&crate::config::HubConfig {
+            prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
+            herdr_prompt_review: None,
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         agent_token_hash: bcrypt::hash("test-token", 4).unwrap(), users: vec![],
     }, false);

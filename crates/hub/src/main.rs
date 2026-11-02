@@ -9,6 +9,7 @@ mod events;
 mod fs_proxy;
 mod health;
 mod herdr_proxy;
+mod prompt_review;
 mod net;
 mod office_proxy;
 mod pow;

@@ -598,6 +598,8 @@ mod tests {
 
     async fn registered_agent(capacity: usize) -> (AppState, mpsc::Receiver<HubMessage>) {
         let state = AppState::new(&crate::config::HubConfig {
+            prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
+            herdr_prompt_review: None,
             listen_addr: "127.0.0.1:0".parse().unwrap(), agent_token_hash: "fake".into(), users: vec![],
         }, false);
         let (sender, receiver) = mpsc::channel(capacity);
@@ -687,6 +689,8 @@ mod generation_tests {
     #[tokio::test]
     async fn upload_chunk_cannot_cross_to_a_replacement_connection() {
         let state = AppState::new(&crate::config::HubConfig {
+            prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
+            herdr_prompt_review: None,
             listen_addr: "127.0.0.1:0".parse().unwrap(), agent_token_hash: "fake".into(), users: vec![],
         }, false);
         let (old_tx, _old_rx) = mpsc::channel(8);

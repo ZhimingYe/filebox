@@ -79,6 +79,19 @@ function button(label: string) {
 }
 
 describe('HerdrView', () => {
+  it.each(['herdr_prompt_blocked', 'herdr_prompt_review_unavailable', 'herdr_prompt_review_not_configured'])('shows %s reason and retains the draft', async (error) => {
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
+      if (body.op === 'status') return listed;
+      if (body.op === 'prompt') throw { error, message: 'Review refused this prompt.' };
+      return { req_id: 'r', output: 'output' };
+    });
+    await render();
+    await typePrompt('keep my draft');
+    await act(async () => button('Send').click());
+    expect(container.textContent).toContain('Review refused this prompt.');
+    expect(container.querySelector('textarea')!.value).toBe('keep my draft');
+  });
+
   it('reports status and opens a notified agent without locking later selection', async () => {
     const report = vi.fn();
     vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
@@ -329,8 +342,22 @@ describe('HerdrView', () => {
       agent.id,
       expect.objectContaining({ op: 'prompt', target: 'w1:p2', text: 'please continue' }),
       expect.any(AbortSignal),
-      25_000,
+      100_000,
     );
+  });
+
+  it('budgets context and maximum review time before waiting for a prompt result', async () => {
+    await render();
+    await typePrompt('run tests');
+    await toggleSetting('Wait for result after sending');
+    await act(async () => button('Send').click());
+    expect(api.herdrCommand).toHaveBeenCalledWith(
+      agent.id,
+      expect.objectContaining({ op: 'prompt', wait: true, timeout_ms: 60_000 }),
+      expect.any(AbortSignal),
+      155_000,
+    );
+    expect(container.querySelector('textarea')!.value).toBe('');
   });
 
   it('drops drafts of replaced panes instead of resurrecting them when an id is reused', async () => {

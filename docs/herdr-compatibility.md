@@ -6,6 +6,57 @@ The CLI and running Herdr server should have matching versions. Herdr's main
 branch can change its argument parser before a release, so validate against
 the released binary as well as the documentation.
 
+## Mandatory hub-side prompt review
+
+Configure only in `hub.json` and restart the Hub. Without `herdr_prompt_review`
+(including dev mode), Herdr prompts are disabled and return HTTP 503
+`herdr_prompt_review_not_configured`. Status, reads and keys remain available.
+No web API or UI can read or change this configuration.
+
+The only opt-out is the Hub process environment variable
+`FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED=0` (or `false`, case-insensitive).
+It is read once at startup: review config is ignored, no provider calls are
+made, and prompts relay without review with a startup warning. Unset, `1`, or
+`true` means mandatory review; any other value also means mandatory review
+with a warning. Changes require restarting the Hub, never a runtime toggle.
+Add one of these fields alongside the existing Hub configuration:
+
+```json
+{"herdr_prompt_review":{"protocol":"chat_completions","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
+```
+
+```json
+{"herdr_prompt_review":{"protocol":"responses","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
+```
+
+```json
+{"herdr_prompt_review":{"protocol":"messages","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
+```
+
+`api_key` may instead
+contain the key directly in the private config file; it takes precedence over
+`api_key_env`. A configuration without a nonempty key fails startup.
+Keep the config private. HTTPS is required except for loopback hosts
+(`localhost`, `127.0.0.0/8`, or `::1`), where HTTP is allowed for local providers. Review sends the
+prompt and recent displayed output from the target Herdr window to that
+provider; choose a trusted service and model. The Hub reads up to 120 lines
+using the normal detection source, strips terminal controls and sends only
+the last 16 KiB. This read is read-only and does not focus the window or send
+keys. It has a short deadline and retries `agent_busy` once. Failed or empty
+reads are marked unavailable; review still runs. Browser-supplied context is
+never used. Context is untrusted data: confirmations such as “yes” or “继续”
+are judged against the proposed action, not approved blindly. `timeout_secs`
+defaults to 20 and is clamped to 1–60 seconds. The browser adds a 75-second
+review allowance covering the context deadline (10 seconds plus a 200 ms retry
+delay), maximum provider timeout and margin, on top of the existing relay
+budget: 100 seconds total normally, or 155 seconds with wait enabled. Fast
+responses complete immediately. Review always fails closed:
+provider/network/timeout/invalid-output failures return retryable HTTP 503 and
+do not relay the prompt. There is no config disable switch or fail-open option. Blocks return
+HTTP 403 with the review reason; the composer retains the draft. Only prompt
+operations are reviewed, not status, output reads or keys. This probabilistic
+gate is defense in depth, not a shell sandbox or a guarantee of safety.
+
 ## Command contract
 
 | Operation | Arguments after `herdr` | Output |

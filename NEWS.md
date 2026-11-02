@@ -4,6 +4,10 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+### Added
+- **Herdr review context** — the Hub supplies recent target-window output to the review provider along with the prompt, so short confirmations can be judged against the proposed action. Context is bounded, sanitized, and treated as untrusted; unavailable output never bypasses review.
+- **Herdr prompt review** — hub.json LLM security review with Chat Completions, Responses, or Anthropic Messages protocols. By default, Herdr prompts are disabled until review is configured and always fail closed on review errors; blocked prompts retain their browser drafts and show the review reason. A startup-only `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED=0` opt-out restores unreviewed relay. Status, reads and keys remain available.
+
 ## v2.7.1
 
 ### Fixed

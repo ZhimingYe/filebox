@@ -18,7 +18,7 @@ talk only to the Hub.
 |---|---|---|---|
 | [`protocol/`](protocol/) | `filebox-protocol` | library | Shared WS/JSON types, capabilities, denylist |
 | [`hub/`](hub/) | `filebox-hub` | binary `hub` | Auth, agent registry, HTTP/SSE API, static UI |
-| [`agent/`](agent/) | `filebox-agent` | binary `agent` | Outbound WS client; read-only FS, search, stats |
+| [`agent/`](agent/) | `filebox-agent` | binary `agent` | Outbound WS client; read-only FS, search, stats, temp uploads and optional Herdr CLI |
 | [`updater/`](updater/) | `filebox-updater` | library | Shared `--init-config` / `--update` CLI helpers |
 
 Dependency graph (compile-time):
@@ -75,6 +75,11 @@ and free of I/O.
 | `temp.rs` | Shared temp-upload name validation (single path component) |
 | `herdr.rs` | Herdr CLI whitelist types (`status`/`read`/`prompt`/`send_keys`) |
 
+Herdr settings use `HerdrSettingsSet` / `HerdrSettingsApplied` with
+generation-owned acknowledgements. `Capabilities.herdr_settings` exposes
+effective enablement and the environment lock separately from CLI availability
+(`herdr`).
+
 **Capability flags that matter:** `pinned_folders`, `collections`,
 `workspace_search`, `temp_upload`, `herdr`. Older agents omit them; the Hub returns
 unsupported rather than silently no-op'ing. Vestigial flags
@@ -99,7 +104,10 @@ agent WebSocket.
 | `fs_proxy.rs` | List / stat / raw file proxy to agent WS |
 | `search_proxy.rs` | Workspace Search proxy (long timeout, cancel binding) |
 | `temp_proxy.rs` | Temp-folder upload relay (streams body → WS chunks) + one-click cleanup |
-| `herdr_proxy.rs` | Herdr CLI relay (`POST /api/agents/{id}/herdr`) |
+| `herdr_proxy.rs` | Herdr CLI relay (`POST /api/agents/{id}/herdr`); prompts pass the mandatory review choke point with Hub-read window context |
+| `prompt_review.rs` | Herdr prompt LLM review: file-only config, DeepSeek chat-completions / responses / messages, strict verdict parsing |
+| `preview_doc.rs` | Sandboxed HTML/notebook navigation, locked base/CSP, relative links and 64 MiB document cap |
+| `ipynb_preview.rs` | Read-only nbformat-to-HTML washer; sanitized Markdown, escaped code/text and bounded image outputs; no kernel/widgets/HTML output execution |
 | `audit.rs` | Login audit trail |
 | `events.rs` | SSE fanout to browsers |
 | `health.rs` | Liveness + version |
@@ -125,6 +133,9 @@ Notable invariants (see also root [`CLAUDE.md`](../CLAUDE.md)):
 - FileChunk JSON is parsed once and bytes are decoded only by the HTTP consumer;
   base64 and legacy byte arrays remain supported, with unchanged wire framing.
 - Body limit is 1MB; resource/collection payloads stay tiny by design.
+- Session and CSRF cookies use an opaque eight-hex suffix derived from the
+  Agent-token hash and listen port (`__Host-` names in production). Frontend
+  bootstrap reads it from `/api/health`; changing the inputs requires re-login.
 
 ## `agent` — data plane on the machine
 
@@ -139,12 +150,12 @@ Persists identity and desired config under `data_dir` (`agent_state.json`).
 | `connection/session.rs` | Transport queues, liveness, dispatch, shutdown/Drop cancellation |
 | `connection/{resources,filesystem,search,office,uploads,herdr,control}.rs` | Business handlers borrowing the connection context |
 | `resources.rs` | Validate + atomically apply roots / pins / collections |
-| `config_store.rs` | Persist `agent_id`, roots, pins, collections, revisions |
+| `config_store.rs` | Persist `agent_id`, roots, pins, collections, revisions and `herdr_enabled` |
 | `fs.rs` | Read-only list/stat/read with path safety + denylist |
 | `dir_cache.rs` | mtime-keyed directory listing cache (capped; cleared on root apply) |
 | `search.rs` | In-process fd/rg-like Workspace Search (`ignore` + `regex`) |
 | `sysinfo.rs` | TTL-cached system stats (HPC-safe refresh) |
-| `temp_store.rs` | The ONLY write path: dedicated temp-upload folder (staging, quotas, no-clobber publish, symlink-safe cleanup) |
+| `temp_store.rs` | Dedicated file-upload write path (staging, quotas, no-clobber publish, symlink-safe cleanup); also used by Transfer image paste |
 | `herdr.rs` | Optional local Herdr CLI probe (`FILEBOX_AGENT_HERDR` / PATH) and argv-only whitelist |
 | `config.rs` | TOML / env bootstrap |
 
@@ -156,6 +167,61 @@ per upload, and worker-owned staging cleanup. Queue congestion terminates only
 the upload with `temp_upload_stalled`.
 `ConnectionSession::Drop` sets cancellation flags and aborts its async wrappers/writer. Native filesystem calls cannot be
 forcibly stopped; they retain global worker permits until they return.
+
+The Agent uses **two Tokio async workers** and serial sysinfo collection on a
+blocking worker, not an all-core Rayon scan. Cached stats reads use a separate
+snapshot lock and cold requests share one collection. This is not CPU affinity
+or a process/child CPU quota; blocking filesystem I/O has its own pool. There
+is no CPU-limit config field or environment variable for this fixed policy.
+
+### Herdr configuration and settings
+
+Install a matching Herdr CLI/server on the Agent host (tested with v0.9.5).
+Discovery uses `FILEBOX_AGENT_HERDR` or PATH. The Agent only invokes list, read,
+prompt and allowlisted send-keys as argv, never shell commands. Requests have
+bounded output, deadlines and cancellation; disabling Filebox integration does
+not stop Herdr or its coding agents.
+
+`herdr_enabled` defaults to `true` in `agent_state.json` under `data_dir`.
+The per-Agent web switch sends `POST /api/agents/{id}/herdr-settings` through
+the Hub to the Agent, which persists using the existing state store before
+acknowledging and updating capabilities/SSE. It is not an `agent.toml` field.
+`FILEBOX_AGENT_HERDR_ENABLED` is a startup override: `0`/`false` disables
+discovery/probing and requests, `1`/`true` enables, and invalid values disable.
+Any explicit override locks the web switch; unset it and restart to use saved
+settings. New installations show onboarding and Check installation can reprobe
+the current executable search path. Offline/legacy Agents cannot save settings.
+
+Prompt review is separate from this Agent switch. By default the Hub refuses
+prompts without `herdr_prompt_review` in `hub.json` or on provider failure.
+Only `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED=0`/`false` at startup restores
+unreviewed relay; no runtime endpoint changes provider configuration. The Hub
+reads target-window context itself before review and relays exactly the reviewed
+prompt through one choke point. Status/read/keys are not reviewed. See
+[the configuration table](../README.md#configuration-reference) and
+[Herdr compatibility](../docs/herdr-compatibility.md) for provider fields,
+HTTPS requirements, privacy, timeout budgets and detection limits.
+
+### Preview and Transfer clients
+
+The browser's read-only Monaco viewer highlights Quarto/R Markdown source
+(`.qmd`, `.rmd`, `.rmarkdown`) without running chunks. `.ipynb` uses Hub-washed
+HTML in the same sandboxed session path as `.html`/`.htm`; arbitrary notebook
+HTML, widgets and JavaScript outputs are omitted. The HTML CSP permits embedded
+`data:` styles/scripts for self-contained documents while restricting network
+access. Confirmation gates are 2 MiB for HTML and 15 MiB for notebooks; document
+reads have a 64 MiB hard cap.
+
+Pinned previews preserve state: PDF/Office/HTML/notebook sessions park offscreen
+(at most three inactive heavy mounts); lighter viewers restore saved state.
+Evicted heavy mounts may reload and lose live state. Clicking a preview path
+navigates to its folder in Files/Explorer (Collections switches to Files).
+Markdown math supports dollar, bracket and parenthesis delimiters through KaTeX;
+see [syntax and escaping](../README.md#markdown-math).
+
+Transfer image paste uses the existing bounded temp-upload protocol, not a new
+write API. Clipboard uploads leave editable-input paste alone and consume one
+clipboard file source to avoid duplicate images.
 
 
 Path safety on every FS/search op: resolve root → join → normalize /
