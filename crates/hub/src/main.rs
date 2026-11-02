@@ -18,7 +18,6 @@ mod routes;
 mod search_proxy;
 mod state;
 mod temp_proxy;
-mod terminal_proxy;
 mod ws;
 
 #[tokio::main]

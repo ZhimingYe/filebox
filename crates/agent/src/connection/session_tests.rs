@@ -23,32 +23,6 @@ async fn response(rx: &mut mpsc::Receiver<Message>) -> AgentMessage {
 }
 
 #[tokio::test]
-async fn terminal_management_burst_survives_a_full_output_queue() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut runtime = AgentRuntime::for_tests(temp.path());
-    let (sink, mut replies) = capture();
-    let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
-    // No yield yet: PTY output occupies every slot before list requests arrive.
-    for _ in 0..64 {
-        session.term_tx.try_send(AgentMessage::TerminalOutput { req_id: "shell".into(), data: vec![b'x'] }).unwrap();
-    }
-    let mut messages: Vec<_> = (0..80).map(|i| HubMessage::TerminalListRequest { req_id: format!("list-{i}") }).collect();
-    messages.push(HubMessage::Ping);
-    assert_eq!(session.drive(&mut incoming(messages)).await, DisconnectReason::HubClosed);
-    let mut ids = std::collections::HashSet::new();
-    let mut pong = false;
-    while ids.len() < 80 || !pong {
-        match response(&mut replies).await {
-            AgentMessage::TerminalListResponse { req_id, .. } => assert!(ids.insert(req_id)),
-            AgentMessage::Pong => pong = true,
-            AgentMessage::Heartbeat | AgentMessage::TerminalOutput { .. } => {}
-            other => panic!("unexpected reply: {other:?}"),
-        }
-    }
-    session.shutdown().await;
-}
-
-#[tokio::test]
 async fn collections_burst_keeps_update_before_ack_and_independent_revision() {
     let temp = tempfile::tempdir().unwrap();
     let mut runtime = AgentRuntime::for_tests(temp.path());
@@ -95,11 +69,11 @@ async fn aborting_parent_cancels_work_and_closes_all_response_queues() {
         session.fs_cancellations.lock().unwrap().insert("file".into(), cancellation_for_task);
         let queued = session.stats_admission.clone().acquire_owned().await.unwrap();
         session.tasks.spawn(async move { let _permit = queued; std::future::pending::<()>().await; });
-        ready_tx.send((session.term_tx.clone(), session.fs_tx.clone(), session.stats_admission.clone())).unwrap();
+        ready_tx.send((session.herdr_tx.clone(), session.fs_tx.clone(), session.stats_admission.clone())).unwrap();
         let mut read = futures_util::stream::pending::<Result<Message, std::io::Error>>();
         session.drive(&mut read).await;
     });
-    let (term_tx, fs_tx, stats_admission) = ready_rx.await.unwrap();
+    let (herdr_tx, fs_tx, stats_admission) = ready_rx.await.unwrap();
     parent.abort();
     assert!(parent.await.unwrap_err().is_cancelled());
     assert!(cancellation.is_cancelled());
@@ -107,42 +81,9 @@ async fn aborting_parent_cancels_work_and_closes_all_response_queues() {
     assert!(herdr_flag.load(Ordering::Relaxed));
     assert!(herdr_cancels.lock().unwrap().is_empty());
     tokio::time::timeout(Duration::from_secs(1), async {
-        term_tx.closed().await; fs_tx.closed().await;
+        herdr_tx.closed().await; fs_tx.closed().await;
         while stats_admission.available_permits() < 8 { tokio::task::yield_now().await; }
     }).await.unwrap();
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn session_drop_detaches_its_pty_and_preserves_shell_for_resume() {
-    const SECRET: &str = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PX";
-    fn code(offset: u64) -> String {
-        let raw = filebox_protocol::totp::base32_decode(SECRET).unwrap();
-        format!("{:06}", filebox_protocol::totp::totp_at(&raw, filebox_protocol::totp::current_counter() + offset))
-    }
-    let temp = tempfile::tempdir().unwrap();
-    let mut runtime = AgentRuntime::for_tests(temp.path());
-    runtime.terminal_manager = Arc::new(crate::terminal::TerminalManager::new(Some(SECRET.into())));
-    let manager = runtime.terminal_manager.clone();
-    struct CloseShell(Arc<crate::terminal::TerminalManager>);
-    impl Drop for CloseShell { fn drop(&mut self) { self.0.close("shell"); } }
-    let _shell_guard = CloseShell(manager.clone());
-    let (sink, mut replies) = capture();
-    let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
-    session.dispatch(HubMessage::TerminalOpen {
-        req_id: "shell".into(), cols: 80, rows: 24, agent_totp_code: Some(code(0)),
-    }).await.unwrap();
-    loop {
-        if let AgentMessage::TerminalOpened { error, .. } = response(&mut replies).await { assert!(error.is_none()); break; }
-    }
-    drop(session);
-    assert_eq!(manager.list().len(), 1);
-    let (tx, mut rx) = mpsc::channel(64);
-    manager.attach("resume".into(), "shell".into(), Some(code(1)), tx);
-    match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
-        AgentMessage::TerminalOpened { error, req_id, .. } => { assert!(error.is_none()); assert_eq!(req_id, "resume"); }
-        other => panic!("unexpected resume response: {other:?}"),
-    }
 }
 
 // Hold the only blocking thread to reproduce a stalled disk writer without

@@ -35,6 +35,31 @@ fn test_config() -> crate::config::HubConfig {
     }
 }
 
+#[tokio::test]
+async fn removed_terminal_routes_are_not_available() {
+    let state = AppState::new(&test_config(), false);
+    let (session, _) = state.inner.write().await.sessions.create_session("admin", false);
+    let app = create_router(state);
+    for authenticated in [false, true] {
+        for (method, path) in [
+            (Method::POST, "/api/agents/legacy/terminal/ticket"),
+            (Method::GET, "/api/agents/legacy/terminal/ws"),
+            (Method::GET, "/api/agents/legacy/terminals"),
+            (Method::DELETE, "/api/agents/legacy/terminals/shell"),
+        ] {
+            let mut request = axum::http::Request::builder().method(method).uri(path);
+            if authenticated {
+                request = request
+                    .header(header::COOKIE, format!("filebox_session_92701c7f={}", session.session_id))
+                    .header("x-csrf-token", &session.csrf_token);
+            }
+            let response = app.clone().oneshot(request.body(axum::body::Body::empty()).unwrap()).await.unwrap();
+            assert!(matches!(response.status(), StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED),
+                "{path}: {}", response.status());
+        }
+    }
+}
+
 fn test_session() -> Extension<AuthenticatedSession> {
     Extension(AuthenticatedSession {
         id: "test-session".to_string(),
@@ -709,42 +734,6 @@ async fn logout_clears_get_access_tokens_for_session() {
     let tokens = state.inner.read().await.get_access_tokens.clone();
     let map = tokens.read().await;
     assert!(!map.contains_key(&token));
-}
-
-#[tokio::test]
-async fn logout_revokes_only_its_principals_terminal_attachments() {
-    let state = AppState::new(&test_config(), false);
-    let (session, _) = state.inner.write().await.sessions.create_session("admin", false);
-    let revoked = Arc::new(tokio::sync::Notify::new());
-    let other_revoked = Arc::new(tokio::sync::Notify::new());
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-    tx.try_send(serde_json::json!({ "type": "output", "data": "queued" })).unwrap();
-    {
-        let mut terminals = state.terminal_sessions.lock().unwrap();
-        for (id, principal, notify) in [
-            ("mine", session.principal_id.clone(), revoked.clone()),
-            ("other", "other-principal".into(), other_revoked.clone()),
-        ] {
-            terminals.insert(id.into(), crate::terminal_proxy::TerminalSessionEntry {
-                agent_id: "a".into(), connection_id: 1, principal_id: principal, revoked: notify,
-                username: "admin".into(), ip: "127.0.0.1".into(), user_agent: String::new(), tx: tx.clone(),
-            });
-        }
-    }
-    let mut req = axum::http::Request::builder().method(Method::POST).uri("/api/session/logout")
-        .header(header::COOKIE, format!("filebox_session_92701c7f={}", session.session_id))
-        .header("x-csrf-token", &session.csrf_token).body(axum::body::Body::empty()).unwrap();
-    req.extensions_mut().insert(axum::extract::ConnectInfo(
-        std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
-    ));
-    assert_eq!(create_router(state.clone()).oneshot(req).await.unwrap().status(), StatusCode::OK);
-    tokio::time::timeout(std::time::Duration::from_secs(1), revoked.notified()).await.unwrap();
-    assert!(tokio::time::timeout(std::time::Duration::from_millis(10), other_revoked.notified()).await.is_err());
-    let terminals = state.terminal_sessions.lock().unwrap();
-    assert!(!terminals.contains_key("mine"));
-    assert!(terminals.contains_key("other"));
-    // Immediate notification did not require consuming queued output.
-    assert_eq!(rx.try_recv().unwrap()["data"], "queued");
 }
 
 #[test]

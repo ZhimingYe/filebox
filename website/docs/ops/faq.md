@@ -34,17 +34,13 @@ Sensitive paths (`.ssh/`, `.env*`, `*.pem`, …) are denied by default even insi
 
 Is a usable `soffice` configured on the Agent? See [Office preview](./office). Without LibreOffice you can still Download.
 
-## Terminal asks for a code?
-
-Complete `./agent --setup-terminal-2fa` on the Agent host (or set `FILEBOX_AGENT_TERMINAL_TOTP_SECRET`) and restart. The Hub never stores the secret. Every Open / Resume needs a fresh code. See [Terminal](/features/terminal).
-
 ## No Transfer entry?
 
 Transfer appears only when the Agent advertises `temp_upload`. Current releases have it by default; custom builds that disable the capability will hide it.
 
 ## Is there a live demo? Are the screenshots real?
 
-There is no hosted live demo — filebox needs your own Hub and Agent to browse real files; the [Quick start](/guide/quick-start) gets one running locally in minutes. **Every screenshot on this site comes from a live Hub + Agent** — the same UI you get after deploying (login PoW, multi-tab preview, Search float, Settings, Audit, Terminal TOTP, …).
+There is no hosted live demo — filebox needs your own Hub and Agent to browse real files; the [Quick start](/guide/quick-start) gets one running locally in minutes. **Every screenshot on this site comes from a live Hub + Agent** — the same UI you get after deploying (login PoW, multi-tab preview, Search float, Settings, Audit, …).
 
 ## Local debugging?
 

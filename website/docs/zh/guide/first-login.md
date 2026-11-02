@@ -23,7 +23,7 @@
 
 登录成功后，若尚未选中机器，主区会提示 **Select an agent**。在侧栏 **Agents** 点击目标机器（显示 Online、延迟、roots 数）。
 
-选中后，侧栏出现 **Workspace** 导航：Files、Explorer、Collections、Transfer、Terminal、Search、Settings、System；以及 **Hub → Audit**。
+选中后，侧栏出现 **Workspace** 导航：Files、Explorer、Collections、Transfer、Herdr、Search、Settings、System；以及 **Hub → Audit**。
 
 ## 3. Settings → Add Root
 
@@ -58,7 +58,6 @@
 | Search | 工作区文件名 / 内容搜索（桌面浮窗 / 手机底部 sheet） | [搜索](/zh/features/search) |
 | Collections | 跨目录的虚拟文件合集 | [合集](/zh/features/collections) |
 | Transfer | 唯一可写的临时上传目录 | [Transfer](/zh/features/transfer) |
-| Terminal | 可选，TOTP 守护的远程 shell | [Terminal](/zh/features/terminal) |
 | Settings | 管理根目录、Office 预览开关 | 本文 |
 | System | CPU / 内存 / 进程 | [系统监控](/zh/features/stats) |
 | Audit | 登录审计（不依赖选中 Agent） | [Hub 运维](/zh/ops/hub) |

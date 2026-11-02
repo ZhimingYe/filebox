@@ -10,12 +10,11 @@ import { mkdir, writeFile, unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createHmac, createHash } from 'node:crypto'
+import { createHash } from 'node:crypto'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const outDir = path.resolve(__dirname, '../docs/public/screenshots')
 const baseUrl = process.env.FILEBOX_URL || 'http://localhost:3000'
-const totpSecret = (process.env.FILEBOX_TOTP_SECRET || '').trim()
 
 function loadPuppeteer() {
   const require = createRequire(import.meta.url)
@@ -29,34 +28,6 @@ function loadPuppeteer() {
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
-
-function base32Decode(s) {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
-  let bits = ''
-  const clean = s.replace(/=+$/, '').toUpperCase()
-  for (const ch of clean) {
-    const val = alphabet.indexOf(ch)
-    if (val < 0) continue
-    bits += val.toString(2).padStart(5, '0')
-  }
-  const bytes = []
-  for (let i = 0; i + 8 <= bits.length; i += 8) {
-    bytes.push(parseInt(bits.slice(i, i + 8), 2))
-  }
-  return Buffer.from(bytes)
-}
-
-function totp(secret, step = 30) {
-  const key = base32Decode(secret)
-  const counter = Math.floor(Date.now() / 1000 / step)
-  const buf = Buffer.alloc(8)
-  buf.writeUInt32BE(Math.floor(counter / 0x100000000), 0)
-  buf.writeUInt32BE(counter & 0xffffffff, 4)
-  const h = createHmac('sha1', key).update(buf).digest()
-  const o = h[h.length - 1] & 0xf
-  const code = ((h[o] & 0x7f) << 24 | h[o + 1] << 16 | h[o + 2] << 8 | h[o + 3]) % 1_000_000
-  return String(code).padStart(6, '0')
-}
 
 async function shot(page, file, opts = {}) {
   const dest = path.join(outDir, file)
@@ -130,7 +101,7 @@ async function main() {
   // Remove known mock shots first
   for (const f of [
     '00-sidebar-overview.png','01-files-browse.png','02-search.png','03-collections.png',
-    '04-transfer.png','05-terminal.png','06-stats.png','07-health.png','08-preview-stream.png',
+    '04-transfer.png','06-stats.png','07-health.png','08-preview-stream.png',
   ]) {
     const p = path.join(outDir, f)
     if (existsSync(p)) await unlink(p).catch(() => {})
@@ -355,37 +326,6 @@ async function main() {
     }
   } catch (e) {
     console.warn('transfer upload', e.message)
-  }
-
-  // Terminal (2FA gate)
-  await clickNav(page, 'Terminal')
-  await sleep(1000)
-  await shot(page, '05-terminal.png')
-  if (totpSecret) {
-    try {
-      const code = totp(totpSecret)
-      console.log('totp', code)
-      const codeInput = await page.$('input[placeholder="6-digit code"], input[autocomplete="one-time-code"]')
-      if (codeInput) {
-        await codeInput.click({ clickCount: 3 })
-        await codeInput.type(code, { delay: 40 })
-        await shot(page, '05b-terminal-code.png')
-        await page.evaluate(() => {
-          const btn = [...document.querySelectorAll('button')].find((b) =>
-            /Open terminal|Resume/.test(b.textContent || ''))
-          btn?.click()
-        })
-        await sleep(2500)
-        await shot(page, '05c-terminal-open.png')
-        // type a command
-        await page.keyboard.type('echo hello-from-filebox && pwd && ls /tmp/fbx_demo | head', { delay: 25 })
-        await page.keyboard.press('Enter')
-        await sleep(1500)
-        await shot(page, '05d-terminal-session.png')
-      }
-    } catch (e) {
-      console.warn('terminal open', e.message)
-    }
   }
 
   // Stats

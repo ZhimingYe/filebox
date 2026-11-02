@@ -35,7 +35,6 @@ import { WorkspaceSplit } from './components/WorkspaceSplit';
 import { CollectionPicker } from './components/CollectionPicker';
 import { NoAgentSelected } from './components/NoAgentSelected';
 import { TempTransferView } from './components/TempTransferView';
-import { TerminalView } from './components/TerminalView';
 import { HerdrView } from './components/HerdrView';
 import { HerdrAttention } from './components/HerdrAttention';
 import { useHerdrAttention, type HerdrAttention as HerdrNotice } from './hooks/useHerdrAttention';
@@ -53,7 +52,6 @@ import {
   IconBrandMark,
   IconAudit,
   IconUpload,
-  IconTerminal,
   IconHerd,
 } from './components/icons';
 import type { FsEntry } from './api/client';
@@ -84,7 +82,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'explorer' | 'transfer' | 'terminal' | 'herdr' | 'collections' | 'settings' | 'stats' | 'audit';
+type View = 'files' | 'explorer' | 'transfer' | 'herdr' | 'collections' | 'settings' | 'stats' | 'audit';
 
 interface ProgressEvent {
   req_id: string;
@@ -546,8 +544,6 @@ export default function App() {
   // and hands the files to TempTransferView via `uploadRequest`.
   const tempRootName = selectedAgent?.temp_root_name ?? null;
   const tempCapable = !!selectedAgent?.capabilities?.temp_upload && !!tempRootName;
-  // Terminal nav entry is only meaningful on a terminal-capable agent.
-  const terminalCapable = !!selectedAgent?.capabilities?.terminal;
   const herdrCapable = !!selectedAgent?.capabilities?.herdr;
   const herdrVisible = herdrCapable || !!selectedAgent?.capabilities?.herdr_settings?.enabled;
   const herdrAttention = useHerdrAttention(agents, loggedIn === true,
@@ -827,8 +823,6 @@ export default function App() {
     { v: 'collections' as const, label: 'Collections', Icon: IconCollection },
     // Transfer is only meaningful on a temp-capable agent.
     { v: 'transfer' as const, label: 'Transfer', Icon: IconUpload },
-    // Terminal is only meaningful on a terminal-capable agent.
-    { v: 'terminal' as const, label: 'Terminal', Icon: IconTerminal },
     // Keep setup reachable before installation, but hide disabled integrations.
     { v: 'herdr' as const, label: 'Herdr', Icon: IconHerd },
     { v: 'search' as const, label: 'Search', Icon: IconSearch },
@@ -915,7 +909,6 @@ export default function App() {
               <div style={collapsed ? styles.navCollapsed : styles.nav}>
                 {navItems.filter((n) =>
                   (n.v !== 'transfer' || tempCapable)
-                  && (n.v !== 'terminal' || terminalCapable)
                   && (n.v !== 'herdr' || herdrVisible),
                 ).map(({ v, label, Icon }) => (
                   <SidebarNavButton
@@ -1375,20 +1368,6 @@ export default function App() {
                     <div style={styles.transferUnsupported}>
                       <p style={styles.transferUnsupportedText}>
                         This agent does not support temp uploads.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-              {view === 'terminal' && (
-                <div style={styles.secondaryView}>
-                  {terminalCapable ? (
-                    // Remount per agent: re-probe 2FA and drop any ticket.
-                    <TerminalView key={selectedAgent.id} agent={selectedAgent} />
-                  ) : (
-                    <div style={styles.transferUnsupported}>
-                      <p style={styles.transferUnsupportedText}>
-                        This agent does not support remote terminals.
                       </p>
                     </div>
                   )}

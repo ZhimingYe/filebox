@@ -30,15 +30,6 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
         | AgentMessage::CollectionsRejected { .. }
         | AgentMessage::CollectionsUpdated { .. }
         | AgentMessage::HerdrSettingsApplied { .. }) => updates::dispatch(context, message).await,
-        message @ (AgentMessage::TerminalOpened { .. }
-        | AgentMessage::TerminalOutput { .. }
-        | AgentMessage::TerminalInputAck { .. }
-        | AgentMessage::TerminalClosed { .. }) => {
-            let inner = context.state.inner.read().await;
-            if inner.agents.is_current_connection(&context.agent_id, context.connection_id) {
-                terminal::dispatch(context, message);
-            }
-        }
         AgentMessage::FsListResponse { .. }
         | AgentMessage::FsStatResponse { .. }
         | AgentMessage::SysStatsResponse { .. }
@@ -46,7 +37,6 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
         | AgentMessage::OfficeConvertResponse { .. }
         | AgentMessage::TempUploadResponse { .. }
         | AgentMessage::TempCleanupResponse { .. }
-        | AgentMessage::TerminalListResponse { .. }
         | AgentMessage::HerdrResponse { .. } => deliver_response(context, value).await,
         AgentMessage::Progress { req_id, phase, processed, total, message } => {
             let inner = context.state.inner.write().await;

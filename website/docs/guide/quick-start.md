@@ -89,5 +89,5 @@ The Agent is **outbound only**; open no inbound firewall holes for it. Once conn
 | Deeper Hub / HTTPS | [Install Hub](./install-hub) · [Hub ops](/ops/hub) |
 | Multi-host Agents, env vars | [Install Agent](./install-agent) · [Agent ops](/ops/agent) |
 | First login and views | [First login & add roots](./first-login) |
-| Search / collections / transfer / terminal | [Feature tour](/features/browse) |
+| Search / collections / transfer | [Feature tour](/features/browse) |
 | Word / PPT / Excel preview | [Office preview](/ops/office) |

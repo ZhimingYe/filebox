@@ -5,7 +5,6 @@ impl ConnectionSession<'_> {
         let stats_cache = &self.runtime.stats_cache;
         let search_cancels = &self.runtime.search_cancels;
         let herdr_cancels = &self.runtime.herdr_cancels;
-        let terminal_manager = &self.runtime.terminal_manager;
         let office_runtime = self.runtime.office_runtime.as_ref();
         let stats_tx = &self.stats_tx;
         let control_tx = &self.control_tx;
@@ -41,9 +40,6 @@ impl ConnectionSession<'_> {
                 // Dropping the bounded queue sets cancellation; its worker
                 // cleans staging off the receive loop, even with slow storage.
                 temp_writers.remove(&req_id);
-                // Terminal sessions also answer to Cancel
-                // (harmless when req_id isn't a terminal).
-                terminal_manager.detach(&req_id);
             }
             HubMessage::SysStatsRequest { req_id } => {
                 tracing::debug!("Sys stats request");

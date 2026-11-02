@@ -1,12 +1,12 @@
 /**
  * GitHub Pages serves VitePress cleanUrls as:
- *   /filebox/features/terminal      → features/terminal.html   (200)
- *   /filebox/features/terminal/     → features/terminal/       (404)
+ *   /filebox/features/browse      → features/browse.html   (200)
+ *   /filebox/features/browse/     → features/browse/       (404)
  *   /filebox/features/              → features/                (404)
  *
  * After `vitepress build` (and after gen-legacy-redirects), run this on the
  * published tree to emit redirect stubs:
- *   features/terminal/index.html  → /filebox/features/terminal
+ *   features/browse/index.html  → /filebox/features/browse
  *   features/index.html           → /filebox/features/browse
  * so every trailing-slash and section-index URL recovers without a 404 flash
  * that depends solely on the site-wide 404.html fallback.
@@ -51,7 +51,7 @@ const SECTION_INDEX = {
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 
 function stub(targetPath) {
-  // targetPath like /filebox/features/terminal (no trailing slash, except locale roots)
+  // targetPath like /filebox/features/browse (no trailing slash, except locale roots)
   const abs = ORIGIN + targetPath
   return `<!doctype html>
 <html lang="en">
@@ -102,7 +102,7 @@ let sectionStubs = 0
 for (const rel of pages) {
   if (rel === '404.html') continue
   if (rel === 'index.html' || rel.endsWith('/index.html')) continue
-  // features/terminal.html → features/terminal/index.html → /filebox/features/terminal
+  // features/browse.html → features/browse/index.html → /filebox/features/browse
   const noExt = rel.replace(/\.html$/, '')
   const destDir = path.join(siteRoot, noExt)
   const dest = path.join(destDir, 'index.html')

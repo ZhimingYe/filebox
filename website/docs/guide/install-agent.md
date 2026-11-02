@@ -30,7 +30,6 @@ Useful for systemd, containers, or orchestration:
 | `FILEBOX_ALLOW_INSECURE_HUB` | Allow plaintext `ws://` / `http://` (dev only) |
 | `FILEBOX_AGENT_SOFFICE` | Path to LibreOffice `soffice` (optional Office preview) |
 | `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` |
-| `FILEBOX_AGENT_TERMINAL_TOTP_SECRET` | Terminal 2FA base32 secret (optional; env wins) |
 
 Example:
 
@@ -69,12 +68,9 @@ After disconnects the Agent reconnects indefinitely; `agent_id` persists in the 
 | Capability | How to enable |
 |------------|---------------|
 | Office preview | Install LibreOffice and set `FILEBOX_AGENT_SOFFICE` — see [Office preview](/ops/office) |
-| Terminal | On the Agent host run `./agent --setup-terminal-2fa`, then restart — see [Terminal](/features/terminal) |
 | Transfer | Capability `temp_upload` (on by default in current releases); writes only to a dedicated scratch dir |
 
-With Terminal and Office enabled, matching sidebar entries appear, and Settings shows the Office preview toggle:
-
-![Terminal entry and session](/screenshots/05-terminal.png)
+With Office enabled, Settings shows the Office preview toggle.
 
 ## systemd example (optional)
 
@@ -103,6 +99,6 @@ WantedBy=multi-user.target
 ./agent --update
 ```
 
-Verifies checksums and replaces in place. Prefer upgrading Hub / Agent / frontend major versions together; Terminal and related features expect aligned versions (see release notes).
+Verifies checksums and replaces in place. Prefer upgrading Hub / Agent / frontend major versions together; protocol capabilities expect aligned versions (see release notes).
 
 More ops detail: [Agent config & updates](/ops/agent)
