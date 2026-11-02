@@ -222,15 +222,25 @@ pub async fn herdr_handler(
     let req_id = format!("herdr_{}", Uuid::new_v4());
     let wait_ms = if validated.wait { clamp_wait_timeout_ms(validated.timeout_ms) } else { 0 };
     let hub_timeout = hub_timeout_for(validated.op, validated.wait, wait_ms);
-    let msg = match reviewed_message(&state, &agent_id, validated, &req_id).await {
+    let msg = match reviewed_message(&state, &session.principal_id, &agent_id, validated, &req_id).await {
         Ok(msg) => msg,
         Err(response) => return response,
     };
+    match relay_herdr(&state, &session.principal_id, &agent_id, &req_id, msg, hub_timeout).await {
+        Ok(value) => Json(value).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn relay_herdr(
+    state: &AppState, principal_id: &str, agent_id: &str, req_id: &str,
+    msg: HubMessage, hub_timeout: Duration,
+) -> Result<serde_json::Value, Response> {
     let inner = state.inner.read().await;
-    let agent = match inner.agents.get(&agent_id) {
+    let agent = match inner.agents.get(agent_id) {
         Some(agent) if agent.status != crate::agent_registry::AgentStatus::Offline && agent.capabilities.herdr => agent,
-        _ => return error_response(StatusCode::SERVICE_UNAVAILABLE, "backend_offline",
-            "Agent disconnected or Herdr became unavailable during review", true),
+        _ => return Err(error_response(StatusCode::SERVICE_UNAVAILABLE, "backend_offline",
+            "Agent disconnected or Herdr became unavailable during review", true)),
     };
 
     let (resp_tx, mut resp_rx, response_owner) = crate::agent_requests::response_channel();
@@ -240,35 +250,35 @@ pub async fn herdr_handler(
             false
         } else {
             pending.insert(
-                req_id.clone(),
+                req_id.to_owned(),
                 PendingResponse {
                     tx: resp_tx,
-                    agent_id: agent_id.clone(),
+                    agent_id: agent_id.to_owned(),
                     connection_id: agent.connection_id,
-                    session_id: Some(session.principal_id.clone()),
+                    session_id: Some(principal_id.to_owned()),
                     desired_roots: None,
                     desired_collections: None,
                 },
             );
-            inner.agents.send_to_agent(&agent_id, msg)
+            inner.agents.send_to_agent(agent_id, msg)
         }
     };
 
     drop(inner);
     if !send_ok {
-        cleanup_pending(&state, &req_id).await;
-        return error_response(
+        cleanup_pending(state, req_id).await;
+        return Err(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "backend_offline",
             "Failed to send request to agent",
             true,
-        );
+        ));
     }
 
     let guard = PendingResponseCleanup::new(
         state.clone(),
-        req_id.clone(),
-        Some(agent_id.clone()),
+        req_id.to_owned(),
+        Some(agent_id.to_owned()),
         response_owner,
     );
     let resp = tokio::time::timeout(hub_timeout, resp_rx.recv()).await;
@@ -279,34 +289,86 @@ pub async fn herdr_handler(
             let cancelled = value.get("state").and_then(|v| v.as_str()) == Some("cancelled")
                 || value.get("error").and_then(|v| v.as_str()) == Some("cancelled");
             if cancelled {
-                return error_response(
+                return Err(error_response(
                     StatusCode::CONFLICT,
                     "cancelled",
                     "Herdr command was cancelled",
                     true,
-                );
+                ));
             }
             if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
                 if !error.is_empty() && error != "null" {
                     let (status, code) = http_for_herdr_error(error);
-                    return error_response(status, code, human_herdr_error(error), status != StatusCode::BAD_REQUEST && status != StatusCode::UNPROCESSABLE_ENTITY);
+                    return Err(error_response(status, code, human_herdr_error(error), status != StatusCode::BAD_REQUEST && status != StatusCode::UNPROCESSABLE_ENTITY));
                 }
             }
-            Json(value).into_response()
+            Ok(value)
         }
-        _ => error_response(
+        _ => Err(error_response(
             StatusCode::GATEWAY_TIMEOUT,
             "request_timeout",
             "Agent did not respond in time",
             true,
-        ),
+        )),
     }
 }
 
-async fn reviewed_message(state: &AppState, agent_id: &str, validated: ValidatedBody, req_id: &str) -> Result<HubMessage, Response> {
+async fn review_context(state: &AppState, principal_id: &str, agent_id: &str, target: Option<String>) -> Option<String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    for attempt in 0..2 {
+        let req_id = format!("herdr_context_{}", Uuid::new_v4());
+        let msg = HubMessage::HerdrRequest {
+            req_id: req_id.clone(), op: HerdrOp::Read, target: target.clone(),
+            text: None, keys: Vec::new(), lines: Some(120),
+            read_source: Some(HerdrReadSource::Detection), wait: false, timeout_ms: None,
+        };
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match relay_herdr(state, principal_id, agent_id, &req_id, msg, remaining).await {
+            Ok(value) => return value["output"].as_str().and_then(clean_context),
+            Err(response) if attempt == 0 && response.status() == StatusCode::TOO_MANY_REQUESTS => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn clean_context(text: &str) -> Option<String> {
+    let mut clean = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\u{1b}' => match chars.next() {
+                Some('[') => {
+                    for c in chars.by_ref() { if ('@'..='~').contains(&c) { break; } }
+                }
+                Some(']' | 'P' | 'X' | '^' | '_') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) { break; }
+                    }
+                }
+                Some(c) if (' '..='/').contains(&c) => {
+                    for c in chars.by_ref() { if !(' '..='/').contains(&c) { break; } }
+                }
+                _ => {}
+            },
+            '\n' | '\t' => clean.push(ch),
+            c if c.is_control() => {}
+            c => clean.push(c),
+        }
+    }
+    let mut start = clean.len().saturating_sub(16 * 1024);
+    while !clean.is_char_boundary(start) { start += 1; }
+    let tail = clean[start..].trim();
+    if tail.is_empty() { None } else { Some(tail.to_owned()) }
+}
+
+async fn reviewed_message(state: &AppState, principal_id: &str, agent_id: &str, validated: ValidatedBody, req_id: &str) -> Result<HubMessage, Response> {
     if matches!(validated.op, HerdrOp::Prompt) && state.prompt_review_mode == crate::prompt_review::ReviewMode::Mandatory {
         if let Some(reviewer) = &state.prompt_reviewer {
-            match reviewer.review(validated.text.as_deref().unwrap_or_default()).await {
+            let context = review_context(state, principal_id, agent_id, validated.target.clone()).await;
+            match reviewer.review(validated.text.as_deref().unwrap_or_default(), context.as_deref()).await {
                 Ok(verdict) if matches!(verdict.decision, crate::prompt_review::Decision::Block) => {
                     tracing::warn!(agent_id = %agent_id, target = ?validated.target,
                         category = %verdict.category, reason = %verdict.reason,
@@ -478,6 +540,10 @@ mod tests {
             ("garbage", StatusCode::SERVICE_UNAVAILABLE, false),
             ("unconfigured", StatusCode::SERVICE_UNAVAILABLE, false),
             ("off", StatusCode::OK, true),
+            ("read_error", StatusCode::OK, true),
+            ("read_empty", StatusCode::OK, true),
+            ("read_busy", StatusCode::OK, true),
+            ("yes", StatusCode::FORBIDDEN, false),
         ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
@@ -487,9 +553,16 @@ mod tests {
                 mock_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 assert_eq!(headers["authorization"], "Bearer test-key");
                 assert_eq!(body["model"], "deepseek-flash");
-                assert_eq!(body["messages"][1]["content"], "<<<PROMPT\nAnalyze the data\nPROMPT>>>");
+                let context = match decision {
+                    "read_error" | "read_empty" => "[Window context unavailable]",
+                    "yes" => "Shall I run rm -rf /home/data?",
+                    _ => "Current window output",
+                };
+                let prompt = if decision == "yes" { "yes" } else { "Analyze the data" };
+                assert_eq!(body["messages"][1]["content"], format!("<<<CONTEXT\n{context}\nCONTEXT>>>\n\n<<<PROMPT\n{prompt}\nPROMPT>>>"));
                 if decision == "down" { return StatusCode::BAD_GATEWAY.into_response(); }
-                Json(serde_json::json!({"choices":[{"message":{"content":serde_json::json!({"decision":decision,"category":"test","reason":"Review reason."}).to_string()}}]})).into_response()
+                let verdict = match decision { "read_error" | "read_empty" | "read_busy" => "allow", "yes" => "block", _ => decision };
+                Json(serde_json::json!({"choices":[{"message":{"content":serde_json::json!({"decision":verdict,"category":"test","reason":"Review reason."}).to_string()}}]})).into_response()
             }));
             let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
             let mut review: crate::prompt_review::PromptReviewConfig = serde_json::from_value(serde_json::json!({
@@ -510,9 +583,31 @@ mod tests {
                 herdr_handler(State(request_state), Extension(AuthenticatedSession {
                     id: "session".into(), principal_id: "principal".into(),
                 }), Path("a".into()), Json(serde_json::from_value(serde_json::json!({
-                    "op":"prompt", "target":"reviewer", "text":"  Analyze the data  "
+                    "op":"prompt", "target":"reviewer", "text":if decision == "yes" { " yes " } else { "  Analyze the data  " },
+                    "context":"Browser context must not be used"
                 })).unwrap())).await
             });
+            if !matches!(decision, "off" | "unconfigured") {
+                let attempts = if decision == "read_busy" { 2 } else { 1 };
+                for attempt in 0..attempts {
+                    let msg = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await.unwrap().unwrap();
+                    let HubMessage::HerdrRequest { req_id, op, target, text, keys, lines, read_source, wait, .. } = msg else { panic!("expected context Read") };
+                    assert_eq!(op, HerdrOp::Read);
+                    assert_eq!(target.as_deref(), Some("reviewer"));
+                    assert!(text.is_none() && keys.is_empty() && !wait);
+                    assert_eq!(lines, Some(120));
+                    assert_eq!(read_source, Some(HerdrReadSource::Detection));
+                    let value = match decision {
+                        "read_busy" if attempt == 0 => serde_json::json!({"error":"agent_busy"}),
+                        "read_error" => serde_json::json!({"error":"herdr_timeout"}),
+                        "read_empty" => serde_json::json!({"output":"\u{1b}[0m\n"}),
+                        "yes" => serde_json::json!({"output":"Shall I run rm -rf /home/data?"}),
+                        _ => serde_json::json!({"output":"\u{1b}[32mCurrent window output\u{1b}[0m"}),
+                    };
+                    let inner = state.inner.read().await;
+                    inner.pending_responses.write().await.remove(&req_id).unwrap().deliver(value);
+                }
+            }
             if relay {
                 let msg = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await.unwrap().unwrap();
                 let HubMessage::HerdrRequest { req_id, text, .. } = msg else { panic!("expected HerdrRequest") };
@@ -527,12 +622,25 @@ mod tests {
                 assert!(receiver.try_recv().is_err());
                 let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
                 let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                assert_eq!(body["retryable"], decision != "block");
-                assert_eq!(body["error"], match decision { "block" => "herdr_prompt_blocked", "unconfigured" => "herdr_prompt_review_not_configured", _ => "herdr_prompt_review_unavailable" });
-                if decision == "block" { assert!(body["message"].as_str().unwrap().contains("Review reason.")); }
+                assert_eq!(body["retryable"], !matches!(decision, "block" | "yes"));
+                assert_eq!(body["error"], match decision { "block" | "yes" => "herdr_prompt_blocked", "unconfigured" => "herdr_prompt_review_not_configured", _ => "herdr_prompt_review_unavailable" });
+                if matches!(decision, "block" | "yes") { assert!(body["message"].as_str().unwrap().contains("Review reason.")); }
             }
             server.abort();
         }
+    }
+
+    #[test]
+    fn review_context_strips_terminal_controls_and_keeps_utf8_tail() {
+        assert_eq!(clean_context("\u{1b}[31mhello\u{1b}[0m\r\0\u{7}\tworld\n"), Some("hello\tworld".into()));
+        assert_eq!(clean_context("\u{1b}]0;window title\u{7}shown\u{1b}]8;;url\u{1b}\\link\u{1b}]8;;\u{1b}\\"), Some("shownlink".into()));
+        assert_eq!(clean_context("\u{1b}[0m\n\t"), None);
+        assert_eq!(clean_context(""), None);
+        let input = format!("old prefix{}tail", "中".repeat(10_000));
+        let tail = clean_context(&input).unwrap();
+        assert!(tail.len() <= 16 * 1024);
+        assert!(tail.ends_with("tail"));
+        assert!(!tail.contains("old prefix") && !tail.contains('\u{fffd}'));
     }
 
     #[tokio::test]

@@ -37,7 +37,14 @@ Add one of these fields alongside the existing Hub configuration:
 contain the key directly in the private config file; it takes precedence over
 `api_key_env`. A configuration without a nonempty key fails startup.
 Keep the config private and use HTTPS for remote providers. Review sends the
-prompt to that provider; choose a trusted service and model. `timeout_secs`
+prompt and recent displayed output from the target Herdr window to that
+provider; choose a trusted service and model. The Hub reads up to 120 lines
+using the normal detection source, strips terminal controls and sends only
+the last 16 KiB. This read is read-only and does not focus the window or send
+keys. It has a short deadline and retries `agent_busy` once. Failed or empty
+reads are marked unavailable; review still runs. Browser-supplied context is
+never used. Context is untrusted data: confirmations such as “yes” or “继续”
+are judged against the proposed action, not approved blindly. `timeout_secs`
 defaults to 20 and is clamped to 1–120 seconds. Review always fails closed:
 provider/network/timeout/invalid-output failures return retryable HTTP 503 and
 do not relay the prompt. There is no config disable switch or fail-open option. Blocks return
