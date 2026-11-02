@@ -262,7 +262,11 @@ Most users never need this — see [`docs/`](docs/) for development details.
 | `listen_addr` | Address the hub listens on | `0.0.0.0:3000` |
 | `agent_token_hash` | Hash of the agent token (set during init) | required |
 | `users` | Login accounts | required |
-| `herdr_prompt_review` | AI review for coding-agent prompts; required to send prompts. See [docs/herdr-compatibility.md](docs/herdr-compatibility.md) | unset |
+| `herdr_prompt_review` | AI security review for Herdr prompts (`protocol`, `base_url`, `model`, `api_key` / `api_key_env`, `timeout_secs`); required to send prompts while review is on. See [docs/herdr-compatibility.md](docs/herdr-compatibility.md) | unset |
+
+| Environment variable | Description | Default |
+|---------------------|-------------|---------|
+| `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED` | Set `0` or `false` at Hub startup to turn off Herdr prompt review; unset, `1` or `true` keeps it on | on |
 
 ### Agent (`agent.toml`, created by `--init-config`)
 
@@ -272,7 +276,8 @@ Most users never need this — see [`docs/`](docs/) for development details.
 | `token` | `FILEBOX_AGENT_TOKEN` | Agent token | required |
 | `name` | `FILEBOX_AGENT_NAME` | Name shown in the sidebar | `default-agent` |
 | `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Where the agent keeps its state | system data dir + `filebox` |
-| — | `FILEBOX_AGENT_HERDR_ENABLED` | Set `0` to turn off coding-agent controls on this machine | unset |
+| — | `FILEBOX_AGENT_CONFIG` | Agent TOML file to load; environment values override TOML | `./agent.toml` |
+| — | `FILEBOX_AGENT_HERDR_ENABLED` | Set `0` or `false` to completely disable Herdr integration on this Agent; skips CLI discovery/probing and never advertises Herdr capability. `1`/`true` force-enables it and locks the web switch. Restart the Agent after changing. Invalid values disable integration. | unset (web switch, on) |
 | — | `FILEBOX_AGENT_HERDR` | Explicit Herdr executable path; cannot override `FILEBOX_AGENT_HERDR_ENABLED=0` | search `PATH` |
 | — | `FILEBOX_AGENT_SOFFICE` | Path to `soffice` (enables Office preview) | unset |
 | — | `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` | unset |
