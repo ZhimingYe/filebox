@@ -870,7 +870,7 @@ const iconXs: React.CSSProperties = { width: 13, height: 13 };
 
 const styles: Record<string, React.CSSProperties> = {
   listTools: { display: 'flex', flexDirection: 'column', gap: 6, padding: '0 0 10px', flexShrink: 0 },
-  searchBox: { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px', border: `1px solid ${c.border}`, borderRadius: radius.md, background: c.surface, color: c.textMuted, transition: 'border-color 0.12s, box-shadow 0.12s' },
+  searchBox: { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px', borderWidth: 1, borderStyle: 'solid', borderColor: c.border, borderRadius: radius.md, background: c.surface, color: c.textMuted, transition: 'border-color 0.12s, box-shadow 0.12s' },
   searchInput: { width: '100%', minWidth: 0, padding: 0, border: 'none', outline: 'none', background: 'transparent', color: c.text, fontFamily: font.sans },
   filterSelect: { width: '100%', border: `1px solid ${c.border}`, borderRadius: radius.md, background: c.surface, color: c.textSecondary, fontFamily: font.sans, fontSize: 12, padding: '0 8px' },
   draftBadge: { flexShrink: 0, fontSize: 10.5, color: c.accent, fontWeight: 500 },
@@ -889,7 +889,7 @@ const styles: Record<string, React.CSSProperties> = {
   settingRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, minHeight: 44, fontSize: 12.5, lineHeight: 1.45, color: c.text, cursor: 'pointer' },
   listHeading: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 2px 12px', ...layout.cardTitle, fontSize: 13 },
   inputCard: { display: 'flex', flexDirection: 'column', flexShrink: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain',
-    border: `1px solid ${c.border}`, borderRadius: radius.lg, background: c.surface, boxShadow: shadow.xs,
+    borderWidth: 1, borderStyle: 'solid', borderColor: c.border, borderRadius: radius.lg, background: c.surface, boxShadow: shadow.xs,
     transition: 'border-color 0.12s, box-shadow 0.12s' },
   page: {
     flex: 1,
