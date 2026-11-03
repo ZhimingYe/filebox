@@ -90,7 +90,7 @@ pub fn capability(
         backend: backend.map(|backend| backend.kind().to_string()),
         version: backend.map(|backend| backend.version().to_string()),
         settings: AiAgentSettings {
-            enabled,
+            enabled: effective_enabled(enabled, environment_override),
             environment_override,
         },
     }
@@ -316,6 +316,18 @@ mod tests {
         assert!(!effective_enabled(true, Some(false)));
         assert!(!effective_enabled(false, None));
         assert!(effective_enabled(true, None));
+    }
+
+    #[test]
+    fn capability_settings_enabled_reflects_the_environment_override() {
+        let backend = FakeBackend;
+        let disabled = capability(true, Some(false), Some(&backend));
+        assert!(!disabled.settings.enabled);
+        assert!(!disabled.available);
+
+        let enabled = capability(false, Some(true), Some(&backend));
+        assert!(enabled.settings.enabled);
+        assert!(enabled.available);
     }
 
     #[tokio::test]
