@@ -81,7 +81,7 @@ describe('AiAgentsView', () => {
   it.each([
     [{ state: 'on', model: 'deepseek-flash' }, 'Reviewed by deepseek-flash', false],
     [{ state: 'off' }, 'Prompt review off', false],
-    [{ state: 'not_configured' }, 'Prompts disabled: configure ai_agent_prompt_review in hub.json', true],
+    [{ state: 'not_configured' }, 'Prompts disabled: configure prompt_review in hub.json', true],
   ] as const)('shows prompt review state %o', async (review, text, disabled) => {
     vi.mocked(api.aiAgentCommand).mockImplementation(async (_id, body) => body.op === 'status'
       ? { ...listed, prompt_review: review } : { req_id: 'r', output: 'output' });
@@ -311,7 +311,7 @@ describe('AiAgentsView', () => {
     expect(container.textContent).toContain('Output refresh cancelled');
   });
 
-  it('lists running agents from the backend AiAgent server', async () => {
+  it('lists running AI agents from the backend', async () => {
     await render();
     expect(api.aiAgentCommand).toHaveBeenCalledWith(
       agent.id,
@@ -406,7 +406,7 @@ describe('AiAgentsView', () => {
     );
   });
 
-  it('explains a stopped AiAgent server', async () => {
+  it('explains an unavailable AI agent backend', async () => {
     vi.mocked(api.aiAgentCommand).mockRejectedValue({ error: 'ai_agent_backend_unavailable', retryable: true });
     await render();
     expect(container.textContent).toMatch(/not running/i);
@@ -555,7 +555,7 @@ it('does not retry busy input after the original pane is replaced', async () => 
   expect(container.textContent).not.toContain('Prompt sent.');
 });
 
-it('preserves an unsent draft through a temporary AiAgent outage', async () => {
+it('preserves an unsent draft through a temporary AI agent outage', async () => {
   let unavailable = false;
   vi.mocked(api.aiAgentCommand).mockImplementation(async (_id, body) => {
     if (body.op === 'status') {

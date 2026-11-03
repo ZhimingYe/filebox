@@ -7,7 +7,7 @@ afterEach(() => {
 });
 
 it.each(['ai_agent_backend_unavailable', 'ai_agent_blocked', 'ai_agent_timeout', 'ai_agent_not_idle'] as const)(
-  'explains AiAgent errors for %s',
+  'explains AI agent errors for %s',
   (error) => {
     expect(friendlyMessage({ error })).not.toBe('An unexpected error occurred.');
   },

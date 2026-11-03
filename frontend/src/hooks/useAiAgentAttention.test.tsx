@@ -127,7 +127,7 @@ describe('AI Agent attention monitoring', () => {
     await tick(); expect(current.notices).toEqual([]);
   });
 
-  it('stays quiet for unused, stopped, and disabled AiAgent backends', async () => {
+  it('stays quiet for unused, stopped, and disabled AI agent backends', async () => {
     await render({ agents: [{ ...backend, status: 'offline' }] });
     expect(api.aiAgentCommand).not.toHaveBeenCalled();
     expect(current.notices).toEqual([]);

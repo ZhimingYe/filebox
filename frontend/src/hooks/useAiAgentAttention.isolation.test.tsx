@@ -32,7 +32,7 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root.unmount()); vi.useRealTimers(); });
 
-it('Agent A re-registering without AiAgent preserves B acknowledgements and polling cadence', async () => {
+it('Agent A re-registering without the AI Agents capability preserves B acknowledgements and polling cadence', async () => {
   await render();
   const b = monitor.notices.find((n) => n.backendId === 'b')!;
   act(() => monitor.acknowledge([b.id]));

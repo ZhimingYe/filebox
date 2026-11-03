@@ -6,7 +6,7 @@ import { AiAgentShortcuts } from './AiAgentShortcuts';
 import { COMMON_KEYS, PROFILE_KEYS, QUICK_KEYS } from '../lib/aiAgentShortcuts';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-describe('AiAgent shortcut profiles', () => {
+describe('AI agent shortcut profiles', () => {
   it.each([['pi', 'pi', 'Ctrl+L', 'Choose model'], ['claude-code', 'claude', 'Ctrl+O', 'Open transcript'],
     ['codex', 'codex', 'Ctrl+T', 'Open transcript pager']])('explains and sends %s defaults only on click', async (kind, profile, choice, description) => {
     const container = document.createElement('div');

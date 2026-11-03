@@ -6,7 +6,7 @@ import type { AiAgentAttention as Notice } from '../hooks/useAiAgentAttention';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-it.each(['Later', 'Close AiAgent reminders'])('%s removes the whole banner without disturbing work; a new episode can notify again', async (dismiss) => {
+it.each(['Later', 'Close AI Agents reminders'])('%s removes the whole banner without disturbing work; a new episode can notify again', async (dismiss) => {
   const open = vi.fn();
   const container = document.createElement('div'); document.body.append(container);
   const root = createRoot(container);
@@ -21,6 +21,7 @@ it.each(['Later', 'Close AiAgent reminders'])('%s removes the whole banner witho
   }
   try {
     await act(async () => root.render(<Screen />));
+    expect(container.querySelector('aside')?.getAttribute('aria-label')).toBe('AI Agents attention');
     const input = container.querySelector('input')!; input.focus();
     expect(open).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(input);
@@ -32,7 +33,7 @@ it.each(['Later', 'Close AiAgent reminders'])('%s removes the whole banner witho
     expect(input.value).toBe('unsaved work'); expect(open).not.toHaveBeenCalled();
     await act(async () => raiseNewEpisode());
     expect(container.querySelector('aside')).not.toBeNull();
-    await act(async () => button('View in AiAgent').click());
+    await act(async () => button('View in AI Agents').click());
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ backendId: 'b1', target: 'reviewer' }));
     expect(container.querySelector('aside')).toBeNull();
   } finally { act(() => root.unmount()); container.remove(); }

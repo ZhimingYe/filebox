@@ -16,12 +16,12 @@ export function AiAgentAttention({ notices, agents, onAcknowledge, onOpen, isMob
   const unread = notices.filter((n) => !n.acknowledged);
   if (!unread.length) return null;
   const shown = expanded ? unread : unread.slice(0, 1);
-  const closeButton = <AiAgentButton variant="quiet" icon size="sm" touch={isMobile} aria-label="Close AiAgent reminders" title="Close these reminders"
+  const closeButton = <AiAgentButton variant="quiet" icon size="sm" touch={isMobile} aria-label="Close AI Agents reminders" title="Close these reminders"
     onClick={() => { onAcknowledge(unread.map((n) => n.id)); setExpanded(false); }} style={{ color: c.textMuted }}>
     <IconClose style={{ width: 13, height: 13 }} />
   </AiAgentButton>;
   return (
-    <aside aria-label="AiAgent attention" style={{ ...layout.card, flexShrink: 0, margin: isMobile ? '8px 12px' : '12px 20px',
+    <aside aria-label="AI Agents attention" style={{ ...layout.card, flexShrink: 0, margin: isMobile ? '8px 12px' : '12px 20px',
       fontFamily: font.sans }}>
       <div style={{ maxHeight: isMobile ? '25vh' : '30vh', overflowY: 'auto' }}>
         {shown.map((n, index) => {
@@ -39,7 +39,7 @@ export function AiAgentAttention({ notices, agents, onAcknowledge, onOpen, isMob
           const actions = <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
             <AiAgentButton variant="quiet" size="sm" touch={isMobile} style={{ color: c.accent }} onClick={() => {
               onAcknowledge([n.id]); setExpanded(false); onOpen(n);
-            }}>View in AiAgent</AiAgentButton>
+            }}>View in AI Agents</AiAgentButton>
             <AiAgentButton variant="quiet" size="sm" touch={isMobile} onClick={() => {
               onAcknowledge([n.id]); setExpanded(false);
             }}>Later</AiAgentButton>

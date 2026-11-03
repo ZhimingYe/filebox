@@ -1,4 +1,4 @@
-//! Relay a small whitelist of AiAgent CLI commands to a connected agent.
+//! Relay a small whitelist of AI agent CLI commands to a connected agent.
 
 use crate::agent_requests::{cleanup_pending, PendingResponseCleanup};
 use std::time::Duration;
@@ -235,7 +235,7 @@ pub async fn ai_agents_handler(
     }
 }
 
-/// Read-only prompt-review state for the AiAgent UI; configuration stays file-only.
+/// Read-only prompt-review state for the AI Agents UI; configuration stays file-only.
 fn prompt_review_status(state: &AppState) -> serde_json::Value {
     match (state.prompt_review_mode, &state.prompt_reviewer) {
         (crate::prompt_review::ReviewMode::Disabled, _) => serde_json::json!({"state": "off"}),
@@ -385,7 +385,7 @@ async fn reviewed_message(state: &AppState, principal_id: &str, agent_id: &str, 
                     tracing::warn!(agent_id = %agent_id, target = ?validated.target,
                         category = %verdict.category, reason = %verdict.reason,
                         prompt_bytes = validated.text.as_deref().unwrap_or_default().len(),
-                        "AiAgent prompt blocked");
+                        "AI agent prompt blocked");
                     return Err(error_response(StatusCode::FORBIDDEN, "ai_agent_prompt_blocked",
                         &format!("Prompt blocked: {}", verdict.reason), false));
                 }
@@ -521,7 +521,7 @@ fn human_ai_agents_error(error: &str) -> &'static str {
         "ai_agent_not_ready" => "The agent did not become ready in time. Read the output before retrying.",
         "ai_agent_not_idle" => "That agent is busy, so its latest output could not be read. Retry in a moment.",
         "agent_busy" => "Another AI agent command is already running on this backend",
-        "invalid_request" => "Invalid AiAgent request",
+        "invalid_request" => "Invalid AI agent request",
         "cancelled" => "AI agent command was cancelled",
         _ => "The AI agent command failed",
     }
@@ -622,7 +622,7 @@ mod tests {
             }
             if relay {
                 let msg = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await.unwrap().unwrap();
-                let HubMessage::AiAgentRequest { req_id, text, .. } = msg else { panic!("expected AiAgentRequest") };
+                let HubMessage::AiAgentRequest { req_id, text, .. } = msg else { panic!("expected AI agent request") };
                 assert_eq!(text.as_deref(), Some("Analyze the data"));
                 let inner = state.inner.read().await;
                 inner.pending_responses.write().await.remove(&req_id).unwrap().deliver(serde_json::json!({"ok":true}));
@@ -669,7 +669,7 @@ mod tests {
                 }), Path("a".into()), Json(serde_json::from_value(serde_json::json!({"op":"status"})).unwrap())).await
             });
             let msg = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await.unwrap().unwrap();
-            let HubMessage::AiAgentRequest { req_id, op, .. } = msg else { panic!("expected AiAgentRequest") };
+            let HubMessage::AiAgentRequest { req_id, op, .. } = msg else { panic!("expected AI agent request") };
             assert_eq!(op, AiAgentOp::Status);
             state.inner.read().await.pending_responses.write().await.remove(&req_id).unwrap()
                 .deliver(serde_json::json!({"agents":[]}));

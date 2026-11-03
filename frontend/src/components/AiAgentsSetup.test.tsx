@@ -28,7 +28,7 @@ function button(label: string) {
   return [...container.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') ?? b.textContent) === label)!;
 }
 
-it('introduces missing AiAgent, remembers dismissal per backend, and leaves setup reachable', async () => {
+it('introduces AI Agents for a missing backend, remembers dismissal per backend, and leaves setup reachable', async () => {
   const open = vi.fn();
   await act(async () => root.render(<AiAgentsIntroduction key="a1" agent={agent} onOpen={open} />));
   expect(container.textContent).toContain('Meet AI Agents');
@@ -92,7 +92,7 @@ it.each([true, false])('locks the Web switch when the Agent environment override
   expect(api.setAiAgentsEnabled).not.toHaveBeenCalled();
 });
 
-it('rechecks installation without running a AiAgent control command', async () => {
+it('rechecks installation without running an AI agent control command', async () => {
   vi.mocked(api.setAiAgentsEnabled).mockResolvedValue({ available: true, backend: 'herdr', version: '0.9.5', settings: { enabled: true, environment_override: null } });
   await act(async () => root.render(<AiAgentsSetup agent={agent} onRefresh={refresh} />));
   await act(async () => button('Check installation').click());
@@ -100,7 +100,7 @@ it('rechecks installation without running a AiAgent control command', async () =
   expect(refresh).toHaveBeenCalledOnce();
 });
 
-it('uses the same switch geometry for Office preview and AiAgent in Agent Settings', async () => {
+it('uses the same switch geometry for Office preview and AI Agents in Agent Settings', async () => {
   const backend = { ...agent, roots: [], last_seen: 0, rtt_ms: null } as api.AgentInfo;
   await act(async () => root.render(<AgentSettings agent={backend} onRefresh={refresh} />));
   const office = button('Office preview');

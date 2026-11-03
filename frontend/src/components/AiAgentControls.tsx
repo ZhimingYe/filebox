@@ -9,7 +9,7 @@ type AiAgentButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   size?: 'sm' | 'md';
 };
 
-/** Shared action hierarchy for AiAgent onboarding, toolbars and remote input. */
+/** Shared action hierarchy for AI Agents onboarding, toolbars and remote input. */
 export function AiAgentButton({ children, style, touch, variant = 'secondary', icon = false, size = 'md', ...props }: AiAgentButtonProps) {
   const [hovered, setHovered] = useState(false);
   const hot = hovered && !props.disabled;

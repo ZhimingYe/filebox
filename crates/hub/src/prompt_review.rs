@@ -57,7 +57,7 @@ impl std::fmt::Debug for PromptReviewConfig {
 fn base_url() -> String { "https://api.deepseek.com".into() }
 fn model() -> String { "deepseek-flash".into() }
 fn timeout() -> u64 { 20 }
-// AiAgentsView's 75s review allowance covers 10s context + 200ms retry + this maximum.
+// The AI Agents view's 75s review allowance covers 10s context + 200ms retry + this maximum.
 const MAX_REVIEW_TIMEOUT_SECS: u64 = 60;
 impl PromptReviewConfig {
     pub fn validate(&mut self) -> Result<(), &'static str> {

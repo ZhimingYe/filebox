@@ -136,7 +136,7 @@ export function useAiAgentAttention(agents: api.AgentInfo[], enabled: boolean, a
 
   useEffect(() => {
     dispatch(enabled ? { type: 'sync', backends } : { type: 'reset' });
-    // The visible AiAgent view reports its own status. Switching one view or
+    // The visible AI Agents view reports its own status. Switching one view or
     // disabling one backend must not abort another backend's request.
     monitor.current?.sync(enabled
       ? backends.filter((b) => b.status !== 'offline' && b.id !== activeBackendId).map((b) => b.id)

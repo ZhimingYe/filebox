@@ -163,7 +163,7 @@ pub fn normalize_key(raw: &str) -> Result<String, &'static str> {
         return Err("empty key");
     }
     if ALLOWED_KEYS.contains(&key.as_str()) {
-        // Canonical spelling AiAgent documents: `esc` (escape is an alias).
+        // The AI agent uses `esc` canonically; `escape` is an alias.
         if key == "escape" {
             return Ok("esc".to_string());
         }

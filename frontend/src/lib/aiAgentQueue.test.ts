@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AiAgentQueue } from './aiAgentQueue';
 
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
-describe('bounded AiAgent queue', () => {
+describe('bounded AI agent command queue', () => {
   it('caps concurrency, prioritizes input, and removes cancelled queued reads', async () => {
     const queue = new AiAgentQueue();
     const releases: (() => void)[] = [];

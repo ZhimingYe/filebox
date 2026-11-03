@@ -495,7 +495,7 @@ visible screen afterward.
 See docs/herdr-shortcuts.md for the v0.9.5 navigation-key limitation. Drafts, reminder
 acknowledgements and input responses are bound to `[scope, id]`, not just a reusable name;
 Stop waiting cancels the request, but already submitted input may continue.
-App-level `useAiAgentAttention` checks enabled online AI Agents-capable backends even
+App-level `useAiAgentAttention` checks enabled online backends that expose AI Agents even
 outside the AI Agents view (30 seconds after each backend's completed check, at most two status-only
 requests). The visible AI Agents view reports its own results instead of receiving
 competing background checks. Blocked states and repeated unknown states surface in

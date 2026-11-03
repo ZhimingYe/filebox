@@ -565,7 +565,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
   const promptHint = promptBytes > PROMPT_MAX_BYTES ? 'Prompt exceeds the 32 KiB limit. Shorten it before sending.'
     : sending ? (isMobile || compactHeight ? 'Input submitted.' : 'Input submitted. Stop waiting only stops Filebox from waiting.')
     : !reachable ? 'AI agent backend is unavailable. Your draft is kept here.'
-    : promptReview?.state === 'not_configured' ? (isMobile || compactHeight ? 'Prompt review not configured' : 'Prompts disabled: configure ai_agent_prompt_review in hub.json')
+    : promptReview?.state === 'not_configured' ? (isMobile || compactHeight ? 'Prompt review not configured' : 'Prompts disabled: configure prompt_review in hub.json')
     : selectedAgent?.status === 'blocked' ? 'Waiting for approval. Use the remote keys before sending a message.'
     : wait ? 'Wait for result is on · up to 60 seconds'
     : isMobile ? 'Enter for new line' : compactHeight && promptReview?.state ? 'Ctrl / ⌘ + Enter to send' : 'Ctrl / ⌘ + Enter to send · Enter for new line';
