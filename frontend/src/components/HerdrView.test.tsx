@@ -90,6 +90,10 @@ describe('HerdrView', () => {
     await typePrompt('hello');
     expect(container.textContent).toContain(text);
     expect(button('Send').disabled).toBe(disabled);
+    if (disabled) {
+      await act(async () => container.querySelector('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true })));
+      expect(vi.mocked(api.herdrCommand).mock.calls.some(([, body]) => body.op === 'prompt')).toBe(false);
+    }
   });
 
   it.each(['herdr_prompt_blocked', 'herdr_prompt_review_unavailable', 'herdr_prompt_review_not_configured'])('shows %s reason and retains the draft', async (error) => {

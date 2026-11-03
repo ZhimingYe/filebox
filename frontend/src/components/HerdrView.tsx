@@ -462,7 +462,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const sendPrompt = () => {
     if (!selectedAgent || sendingRef.current) return;
     const text = prompt.trim();
-    if (!text || promptBytes > PROMPT_MAX_BYTES || selectedAgent.status === 'blocked') return;
+    if (!text || promptBytes > PROMPT_MAX_BYTES || selectedAgent.status === 'blocked' || promptReview?.state === 'not_configured') return;
     const target = selectedAgent.target;
     const identity = paneIdentity(selectedAgent);
     const valid = () => agentsRef.current.some((a) => a.target === target && paneIdentity(a) === identity);
@@ -552,14 +552,15 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const copyLabel = JSON.stringify([selectedIdentity, updatedAt]);
   const copied = copiedPath === copyLabel;
   const promptHint = promptBytes > PROMPT_MAX_BYTES ? 'Prompt exceeds the 32 KiB limit. Shorten it before sending.'
-    : sending ? 'Input submitted. Stop waiting only stops Filebox from waiting.'
+    : sending ? (isMobile || compactHeight ? 'Input submitted.' : 'Input submitted. Stop waiting only stops Filebox from waiting.')
     : !reachable ? 'Herdr is unavailable. Your draft is kept here.'
-    : promptReview?.state === 'not_configured' ? (isMobile ? 'Prompt review not configured' : 'Prompts disabled: configure herdr_prompt_review in hub.json')
+    : promptReview?.state === 'not_configured' ? (isMobile || compactHeight ? 'Prompt review not configured' : 'Prompts disabled: configure herdr_prompt_review in hub.json')
     : selectedAgent?.status === 'blocked' ? 'Waiting for approval. Use the remote keys before sending a message.'
     : wait ? 'Wait for result is on · up to 60 seconds'
     : isMobile ? 'Enter for new line' : compactHeight && promptReview?.state ? 'Ctrl / ⌘ + Enter to send' : 'Ctrl / ⌘ + Enter to send · Enter for new line';
 
   const inlineNotice = compactHeight && !isMobile;
+  const inlineError = inlineNotice && !sending ? actionError : null;
   const statusWarning = sending || !selectedAgent ? null
     : selectedAgent.status === 'blocked' ? 'Needs your input. Use the remote keys below to respond.'
     : selectedAgent.status === 'unknown' ? 'Status unavailable. Check the output before continuing.' : null;
@@ -773,9 +774,9 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
               </div>
             </div>
 
-            {(actionError || outputError || (!inlineNotice && statusWarning)
+            {((actionError && !inlineError) || outputError || (!inlineNotice && statusWarning)
               || (!inlineNotice && noticeActive) || copyFailedFor === copyLabel) && <div style={{ ...styles.callouts, ...(isMobile ? { padding: '8px 8px 0' } : null) }}>
-              {actionError && <HerdrCallout tone="danger" role="alert" touch={isMobile} dismissLabel="Dismiss error" onDismiss={() => setActionError(null)}>{actionError}</HerdrCallout>}
+              {actionError && !inlineError && <HerdrCallout tone="danger" role="alert" touch={isMobile} dismissLabel="Dismiss error" onDismiss={() => setActionError(null)}>{actionError}</HerdrCallout>}
               {outputError && <HerdrCallout tone="danger" role="alert">{outputError} Use Refresh to retry.</HerdrCallout>}
               {!inlineNotice && statusWarning && <HerdrCallout tone="warning">{statusWarning}</HerdrCallout>}
               {!inlineNotice && noticeActive && <HerdrCallout role="status" touch={isMobile}
@@ -789,7 +790,14 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
             </div>}
             <div style={{ ...styles.snapshotBar, padding: isMobile ? '0 4px 0 12px' : '0 8px 0 20px', ...(compactHeight ? { marginTop: 6, minHeight: 30 } : null) }}>
               <div role="group" aria-label="Output snapshot details" style={{ display: 'flex', flex: 1, minWidth: 0, alignItems: 'center', flexWrap: 'wrap', gap: '0 8px' }}>
-                {inlineNotice && (noticeActive || statusWarning) ? <span role="status" style={{ ...styles.snapshotMeta, flex: 1, minWidth: 0, flexWrap: 'nowrap', color: c.text }}>
+                {inlineError ? <span role="alert" style={{ ...styles.snapshotMeta, flex: 1, minWidth: 0, flexWrap: 'nowrap', color: c.danger }}>
+                  <span aria-hidden="true" style={{ ...styles.dot, background: c.danger }} />
+                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={inlineError}>{inlineError}</span>
+                  <HerdrButton variant="quiet" icon size="sm" aria-label="Dismiss error" title="Dismiss error"
+                    onClick={() => setActionError(null)} style={{ width: 20, minWidth: 20, height: 20, color: c.textMuted }}>
+                    <IconClose style={{ width: 12, height: 12 }} />
+                  </HerdrButton>
+                </span> : inlineNotice && (noticeActive || statusWarning) ? <span role="status" style={{ ...styles.snapshotMeta, flex: 1, minWidth: 0, flexWrap: 'nowrap', color: c.text }}>
                   <span aria-hidden="true" style={{ ...styles.dot, background: noticeActive ? c.textMuted : c.warning }} />
                   <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={(noticeActive ? noticeText : statusWarning) ?? undefined}>{noticeActive ? noticeText : statusWarning}</span>
                   {stopWaitingButton}
