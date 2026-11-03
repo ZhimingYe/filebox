@@ -152,9 +152,10 @@ impl ConnectionSession<'_> {
         {
             return Some("ai_agents_environment_override".into());
         }
-        if backend
-            .as_deref()
-            .is_some_and(|kind| !backend_kinds.contains(&kind))
+        if backend_environment_override.is_none()
+            && backend
+                .as_deref()
+                .is_some_and(|kind| !backend_kinds.contains(&kind))
         {
             return Some("invalid_request".into());
         }

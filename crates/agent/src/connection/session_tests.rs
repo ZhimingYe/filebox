@@ -347,6 +347,27 @@ async fn ai_agents_settings_enforce_field_locks_and_reject_unknown_kinds() {
 }
 
 #[tokio::test]
+async fn unknown_backend_environment_lock_allows_enabled_toggle() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = AgentRuntime::for_tests(temp.path());
+    runtime.ai_agents_environment_override = None;
+    runtime
+        .resource_mgr
+        .set_ai_agents_settings(true, Some("herdr".into()))
+        .unwrap();
+    runtime.ai_agents_backend_environment_override = Some("unknown".into());
+    let (sink, _) = capture();
+    let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
+
+    assert!(session
+        .apply_ai_agent_settings(false, Some("unknown".into()), crate::ai_agents::BACKEND_KINDS)
+        .await
+        .is_none());
+    assert!(!session.runtime.resource_mgr.ai_agents_enabled());
+    assert_eq!(session.runtime.resource_mgr.ai_agents_backend(), Some("herdr"));
+}
+
+#[tokio::test]
 async fn ai_agents_direct_request_is_rejected_when_disabled() {
     let temp = tempfile::tempdir().unwrap();
     let mut runtime = AgentRuntime::for_tests(temp.path());

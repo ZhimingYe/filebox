@@ -11,7 +11,23 @@ interface Props {
   onRefresh: () => void;
 }
 
+function backendLabel(kind: string, version?: string) {
+  const descriptor = aiAgentBackend(kind);
+  const label = descriptor.kind === 'generic' ? kind : descriptor.label;
+  return version ? `${label} ${version}` : label;
+}
+
+function missingBackendMessage(capability: api.AiAgentsCapability | undefined, fallback: string) {
+  const selectedBackend = capability?.backend;
+  if (selectedBackend && capability.backends.length > 0
+    && !capability.backends.some((backend) => backend.kind === selectedBackend)) {
+    return `The selected backend ${backendLabel(selectedBackend)} is not detected on this Agent.`;
+  }
+  return fallback;
+}
+
 export function AiAgentsToggle({ agent, onRefresh }: Props) {
+  const isMobile = useIsMobile();
   const reported = agent.capabilities?.ai_agents;
   const [savedSettings, setSavedSettings] = useState<{
     reported: typeof reported;
@@ -31,6 +47,20 @@ export function AiAgentsToggle({ agent, onRefresh }: Props) {
     && (backends.length >= 2 || selectionMissing || !!settings.backend_environment_override);
   const disabled = busy || !settings || enabledLocked || agent.status === 'offline';
   const backendSelectDisabled = busy || !settings || backendLocked || agent.status === 'offline';
+  const backendSelect = showBackendSelect && settings && <select aria-label="AI Agents backend"
+    value={settings.backend ?? ''} disabled={backendSelectDisabled}
+    onChange={(event) => void saveSettings({ ...settings, backend: event.currentTarget.value || null })}
+    style={{ color: c.text, background: c.bg, border: `1px solid ${c.border}`, borderRadius: radius.sm,
+      padding: '4px 22px 4px 7px', fontFamily: font.sans, fontSize: 12,
+      maxWidth: isMobile ? '100%' : 200 }}>
+    <option value="">Automatic</option>
+    {backends.map((backend) => <option key={backend.kind} value={backend.kind}>
+      {backendLabel(backend.kind, backend.version)}
+    </option>)}
+    {selectionMissing && settings.backend && <option value={settings.backend}>
+      {backendLabel(settings.backend)} (not detected)
+    </option>}
+  </select>;
 
   async function saveSettings(next: api.AiAgentSettings) {
     if (!settings || busy || agent.status === 'offline') return;
@@ -51,12 +81,6 @@ export function AiAgentsToggle({ agent, onRefresh }: Props) {
     }
   }
 
-  function backendLabel(kind: string, version?: string) {
-    const descriptor = aiAgentBackend(kind);
-    const label = descriptor.kind === 'generic' ? kind : descriptor.label;
-    return version ? `${label} ${version}` : label;
-  }
-
   return <div style={layout.prefRow}>
     <div style={layout.prefText}>
       <div style={layout.prefLabel}>AI Agents</div>
@@ -71,21 +95,10 @@ export function AiAgentsToggle({ agent, onRefresh }: Props) {
       {busy && <p role="status" style={layout.prefHint}>Saving…</p>}
       {agent.status === 'offline' && <p style={layout.prefHint}>Reconnect this backend to change the setting.</p>}
       {error && <p role="alert" style={{ ...layout.prefHint, color: c.danger }}>{error}</p>}
+      {isMobile && backendSelect && <div style={{ marginTop: 8 }}>{backendSelect}</div>}
     </div>
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-      {showBackendSelect && settings && <select aria-label="AI Agents backend"
-        value={settings.backend ?? ''} disabled={backendSelectDisabled}
-        onChange={(event) => void saveSettings({ ...settings, backend: event.currentTarget.value || null })}
-        style={{ color: c.text, background: c.bg, border: `1px solid ${c.border}`, borderRadius: radius.sm,
-          padding: '4px 22px 4px 7px', fontFamily: font.sans, fontSize: 12, maxWidth: 145 }}>
-        <option value="">Automatic</option>
-        {backends.map((backend) => <option key={backend.kind} value={backend.kind}>
-          {backendLabel(backend.kind, backend.version)}
-        </option>)}
-        {selectionMissing && settings.backend && <option value={settings.backend}>
-          {backendLabel(settings.backend)} (not detected)
-        </option>}
-      </select>}
+      {!isMobile && backendSelect}
       <SettingsSwitch aria-label="AI Agents" aria-busy={busy}
         checked={settings?.enabled ?? false}
         disabled={disabled} onClick={() => void saveSettings({ ...settings!, enabled: !settings!.enabled })} />
@@ -95,13 +108,14 @@ export function AiAgentsToggle({ agent, onRefresh }: Props) {
 
 export function AiAgentsIntroduction({ agent, onOpen }: { agent: api.AgentInfo; onOpen: () => void }) {
   const isMobile = useIsMobile();
+  const capability = agent.capabilities?.ai_agents;
   const key = `filebox:ai-agents-intro:${agent.id}`;
   const [dismissed, setDismissed] = useState(() => {
     try { return localStorage.getItem(key) === 'dismissed'; } catch { return false; }
   });
   if (dismissed || agent.status === 'offline'
-    || !agent.capabilities?.ai_agents?.settings.enabled
-    || agent.capabilities.ai_agents.available) return null;
+    || !capability?.settings.enabled
+    || capability.available) return null;
   function dismiss() {
     setDismissed(true);
     try { localStorage.setItem(key, 'dismissed'); } catch { /* Storage may be unavailable. */ }
@@ -109,7 +123,7 @@ export function AiAgentsIntroduction({ agent, onOpen }: { agent: api.AgentInfo; 
   return <aside aria-label="Introducing AI Agents" style={{ ...layout.card, margin: isMobile ? '8px 12px' : '12px 20px', padding: isMobile ? '14px 16px' : '16px 20px',
     flexShrink: 0, maxHeight: '30vh', overflow: 'auto', color: c.text, fontFamily: font.sans }}>
     <strong style={layout.cardTitle}>Meet AI Agents</strong>
-    <p style={hint}>Manage coding agents on {agent.name}: see their status, read output, and respond from Filebox. No supported backend has been detected. The integration is optional; file browsing works without it.</p>
+    <p style={hint}>Manage coding agents on {agent.name}: see their status, read output, and respond from Filebox. {missingBackendMessage(capability, 'No supported backend has been detected.')} The integration is optional; file browsing works without it.</p>
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
       <AiAgentButton variant="primary" size="sm" touch={isMobile} onClick={() => { dismiss(); onOpen(); }}>Learn more</AiAgentButton>
       <AiAgentButton variant="quiet" size="sm" touch={isMobile} onClick={dismiss}>Not now</AiAgentButton>
@@ -149,7 +163,7 @@ export function AiAgentsSetup({ agent, onRefresh }: Props) {
             <p style={hint}>{needsAgentUpdate
               ? 'Update the Filebox Agent to manage AI Agents from the web.'
               : settings?.enabled === false ? 'AI Agents is turned off for this backend.'
-                : 'No supported AI agent backend has been detected. Backends are installed separately on the Agent machine, not on the Hub or in your browser.'}</p>
+                : `${missingBackendMessage(capability, 'No supported AI agent backend has been detected.')} Backends are installed separately on the Agent machine, not on the Hub or in your browser.`}</p>
             {!needsAgentUpdate && (capability?.backend
               ? [aiAgentBackend(capability.backend)]
               : supportedAiAgentBackends).map((supportedBackend) => (

@@ -17,6 +17,12 @@ const agent = {
     settings: { enabled: true, environment_override: null, backend: null, backend_environment_override: null } } },
 } as unknown as api.AgentInfo;
 const refresh = vi.fn();
+function agentWithMissingBackend() {
+  return { ...agent, capabilities: { ...agent.capabilities, ai_agents: {
+    available: false, backend: 'other', version: null, backends: [{ kind: 'herdr', version: '0.9.5' }],
+    settings: { enabled: true, environment_override: null, backend: 'other', backend_environment_override: null },
+  } } } as unknown as api.AgentInfo;
+}
 beforeEach(() => {
   vi.resetAllMocks();
   localStorage.clear();
@@ -24,7 +30,12 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
 });
-afterEach(() => { act(() => root.unmount()); container.remove(); });
+const originalInnerWidth = window.innerWidth;
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
+  window.innerWidth = originalInnerWidth;
+});
 function button(label: string) {
   return [...container.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') ?? b.textContent) === label)!;
 }
@@ -33,6 +44,7 @@ it('introduces AI Agents for a missing backend, remembers dismissal per backend,
   const open = vi.fn();
   await act(async () => root.render(<AiAgentsIntroduction key="a1" agent={agent} onOpen={open} />));
   expect(container.textContent).toContain('Meet AI Agents');
+  expect(container.textContent).toContain('No supported backend has been detected.');
   expect(container.textContent).toContain('file browsing works without it');
   await act(async () => button('Learn more').click());
   expect(open).toHaveBeenCalledOnce();
@@ -44,6 +56,17 @@ it('introduces AI Agents for a missing backend, remembers dismissal per backend,
   await act(async () => root.render(<AiAgentsSetup agent={agent} onRefresh={refresh} />));
   expect(container.querySelector('a')?.href).toBe('https://herdr.ink/');
   expect(button('Check installation')).toBeTruthy();
+});
+
+it('identifies the selected backend when another backend is detected', async () => {
+  const missing = agentWithMissingBackend();
+  await act(async () => root.render(<AiAgentsIntroduction agent={missing} onOpen={vi.fn()} />));
+  expect(container.textContent).toContain('The selected backend other is not detected on this Agent.');
+  expect(container.textContent).not.toContain('No supported backend has been detected.');
+
+  await act(async () => root.render(<AiAgentsSetup agent={missing} onRefresh={refresh} />));
+  expect(container.textContent).toContain('The selected backend other is not detected on this Agent.');
+  expect(container.textContent).not.toContain('No supported AI agent backend has been detected.');
 });
 
 it.each([
@@ -127,6 +150,7 @@ it('shows the backend selector only when needed and preserves the selection on c
   await act(async () => root.render(<AiAgentsToggle agent={multi} onRefresh={refresh} />));
   const select = container.querySelector('select')!;
   expect(select).toBeTruthy();
+  expect(select.style.maxWidth).toBe('200px');
   expect([...select.options].map((option) => option.textContent)).toEqual(['Automatic', 'Herdr 0.9.5', 'other 1.2']);
   await act(async () => {
     select.value = 'other';
@@ -135,6 +159,25 @@ it('shows the backend selector only when needed and preserves the selection on c
   expect(api.setAiAgentsSettings).toHaveBeenCalledWith('a1', { enabled: true, backend: 'other' });
   await act(async () => button('AI Agents').click());
   expect(api.setAiAgentsSettings).toHaveBeenLastCalledWith('a1', { enabled: false, backend: 'other' });
+});
+
+it('keeps an undetected backend option readable on desktop', async () => {
+  await act(async () => root.render(<AiAgentsToggle agent={agentWithMissingBackend()} onRefresh={refresh} />));
+  const select = container.querySelector('select')!;
+  expect(select.style.maxWidth).toBe('200px');
+  expect([...select.options].map((option) => option.textContent)).toEqual(['Automatic', 'Herdr 0.9.5', 'other (not detected)']);
+});
+
+it('places the backend selector below the hints on mobile', async () => {
+  window.innerWidth = 390;
+  await act(async () => root.render(<AiAgentsToggle agent={agentWithMissingBackend()} onRefresh={refresh} />));
+  const select = container.querySelector('select')!;
+  const toggle = button('AI Agents');
+  const textColumn = container.querySelector('p')?.parentElement;
+  expect(select.style.maxWidth).toBe('100%');
+  expect([...select.options].at(-1)?.textContent).toBe('other (not detected)');
+  expect(textColumn?.contains(select)).toBe(true);
+  expect(toggle.parentElement?.contains(select)).toBe(false);
 });
 
 it('locks backend selection to FILEBOX_AGENT_AI_AGENTS_BACKEND', async () => {
