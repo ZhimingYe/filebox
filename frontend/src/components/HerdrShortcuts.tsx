@@ -4,8 +4,8 @@ import { useIsMobile } from '../state/useIsMobile';
 import { HerdrButton, HerdrPopover } from './HerdrControls';
 import { QUICK_KEYS, COMMON_KEYS, PROFILE_KEYS, shortcutProfile, type Profile } from '../lib/herdrShortcuts';
 
-export function HerdrShortcuts({ kind, disabled, onSend }: {
-  kind?: string | null; disabled: boolean; onSend: (keys: string[]) => void;
+export function HerdrShortcuts({ kind, disabled, onSend, compact = false }: {
+  kind?: string | null; disabled: boolean; onSend: (keys: string[]) => void; compact?: boolean;
 }) {
   const [profile, setProfile] = useState<Profile>(() => shortcutProfile(kind));
   const [query, setQuery] = useState('');
@@ -35,16 +35,18 @@ export function HerdrShortcuts({ kind, disabled, onSend }: {
       </HerdrButton>)}
     </div>
     <HerdrPopover label="More shortcuts" icon={false} size="sm" trigger={<>More keys <svg aria-hidden="true" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m4 10 4-4 4 4" /></svg></>} above touch={isMobile} closeOnAction>
-      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Remote keyboard</div>
-      <select aria-label="Shortcut profile" value={profile} style={{ ...field, ...ring('profile') }} {...focus('profile')} onChange={(event) => { setProfile(event.target.value as Profile); setQuery(''); }}>
+      {!compact && <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Remote keyboard</div>}
+      <div style={compact ? { display: 'flex', gap: 6, marginBottom: 6 } : undefined}>
+      <select aria-label="Shortcut profile" value={profile} style={{ ...field, ...(compact ? { width: 116, flexShrink: 0 } : null), ...ring('profile') }} {...focus('profile')} onChange={(event) => { setProfile(event.target.value as Profile); setQuery(''); }}>
         <option value="common">Common shortcuts</option><option value="pi">pi</option>
         <option value="claude">Claude Code</option><option value="codex">Codex</option>
       </select>
-      <p style={{ color: c.textMuted, fontSize: 11, lineHeight: 1.5, margin: '8px 0 10px' }}>
+      {!compact && <p style={{ color: c.textMuted, fontSize: 11, lineHeight: 1.5, margin: '8px 0 10px' }}>
         Controls the remote screen, not your unsent message. Defaults depend on the agent's version and active screen.
-      </p>
-      <input type="search" aria-label="Search shortcuts" placeholder="Find a key or action…" value={query}
-        onChange={(event) => setQuery(event.target.value)} style={{ ...field, marginBottom: 6, ...ring('search') }} {...focus('search')} />
+      </p>}
+      <input type="search" aria-label="Search shortcuts" placeholder={compact ? 'Find a key…' : 'Find a key or action…'} value={query}
+        onChange={(event) => setQuery(event.target.value)} style={{ ...field, ...(compact ? { flex: 1, minWidth: 0 } : { marginBottom: 6 }), ...ring('search') }} {...focus('search')} />
+      </div>
       {shortcuts.length === 0 && <p style={{ color: c.textSecondary, lineHeight: 1.5 }}>No matching shortcuts. Try another key or action.</p>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         {shortcuts.map((item) => <HerdrButton key={item.label} variant="quiet" disabled={disabled} touch={isMobile}

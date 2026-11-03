@@ -37,7 +37,7 @@ export function HerdrAttention({ notices, agents, onAcknowledge, onOpen, isMobil
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: isMobile ? 'normal' : 'nowrap' }} title={n.message}>{n.message}</p>
           </div>;
           const actions = <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-            <HerdrButton size="sm" touch={isMobile} onClick={() => {
+            <HerdrButton variant="quiet" size="sm" touch={isMobile} style={{ color: c.accent }} onClick={() => {
               onAcknowledge([n.id]); setExpanded(false); onOpen(n);
             }}>View in Herdr</HerdrButton>
             <HerdrButton variant="quiet" size="sm" touch={isMobile} onClick={() => {
@@ -48,9 +48,9 @@ export function HerdrAttention({ notices, agents, onAcknowledge, onOpen, isMobil
           </div>;
           const divider = index ? `1px solid ${c.borderSubtle}` : undefined;
           return isMobile
-            ? <div key={n.id} style={{ padding: '10px 4px 6px 12px', borderTop: divider }}>
+            ? <div key={n.id} style={{ padding: '8px 4px 4px 12px', borderTop: divider }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>{dot}{text}{index === 0 ? closeButton : <span style={{ width: 28, flexShrink: 0 }} />}</div>
-              <div style={{ marginLeft: 16, marginTop: 6 }}>{actions}</div>
+              <div style={{ marginLeft: 8, marginTop: 2 }}>{actions}</div>
             </div>
             : <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 8px 8px 14px', borderTop: divider }}>
               {dot}{text}{actions}

@@ -627,7 +627,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
 
   return (
     <div style={styles.page}>
-      {(!isMobile || !showDetail) && <header style={{ ...styles.header, ...(compactHeight ? { paddingTop: 10, paddingBottom: 10, alignItems: 'center' } : null) }}>
+      {(!isMobile || !showDetail) && <header style={{ ...styles.header, ...(isMobile ? { padding: '12px 16px' } : null), ...(compactHeight ? { paddingTop: 10, paddingBottom: 10, alignItems: 'center' } : null) }}>
         <div style={layout.pageHeaderText}>
           {!compactHeight && <p style={layout.eyebrow}>Coding agents</p>}
           <h1 style={layout.pageTitle}>Herdr</h1>
@@ -828,7 +828,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
 
             <div style={{ ...styles.composer, ...(isMobile ? { padding: '4px 8px max(8px, env(safe-area-inset-bottom))' } : compactHeight ? { padding: '8px 12px 10px', gap: 8 } : null) }}>
               <HerdrShortcuts key={JSON.stringify([selectedIdentity, selectedAgent.kind])} kind={selectedAgent.kind}
-                disabled={sending || !reachable} onSend={sendKeys} />
+                disabled={sending || !reachable} onSend={sendKeys} compact={compactHeight} />
               <div style={{ ...styles.inputCard, ...(composerFocused ? styles.inputCardFocused : null) }}
                 onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)}>
                 <textarea
