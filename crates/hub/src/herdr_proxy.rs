@@ -222,13 +222,30 @@ pub async fn herdr_handler(
     let req_id = format!("herdr_{}", Uuid::new_v4());
     let wait_ms = if validated.wait { clamp_wait_timeout_ms(validated.timeout_ms) } else { 0 };
     let hub_timeout = hub_timeout_for(validated.op, validated.wait, wait_ms);
+    let is_status = validated.op == HerdrOp::Status;
     let msg = match reviewed_message(&state, &session.principal_id, &agent_id, validated, &req_id).await {
         Ok(msg) => msg,
         Err(response) => return response,
     };
     match relay_herdr(&state, &session.principal_id, &agent_id, &req_id, msg, hub_timeout).await {
-        Ok(value) => Json(value).into_response(),
+        Ok(mut value) => {
+            if is_status {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("prompt_review".into(), prompt_review_status(&state));
+                }
+            }
+            Json(value).into_response()
+        }
         Err(response) => response,
+    }
+}
+
+/// Read-only prompt-review state for the Herdr UI; configuration stays file-only.
+fn prompt_review_status(state: &AppState) -> serde_json::Value {
+    match (state.prompt_review_mode, &state.prompt_reviewer) {
+        (crate::prompt_review::ReviewMode::Disabled, _) => serde_json::json!({"state": "off"}),
+        (_, Some(reviewer)) => serde_json::json!({"state": "on", "model": reviewer.model()}),
+        (_, None) => serde_json::json!({"state": "not_configured"}),
     }
 }
 
@@ -627,6 +644,44 @@ mod tests {
                 if matches!(decision, "block" | "yes") { assert!(body["message"].as_str().unwrap().contains("Review reason.")); }
             }
             server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn status_reports_prompt_review_state() {
+        for (mode, configured, expected) in [
+            (crate::prompt_review::ReviewMode::Mandatory, true, serde_json::json!({"state":"on","model":"deepseek-flash"})),
+            (crate::prompt_review::ReviewMode::Mandatory, false, serde_json::json!({"state":"not_configured"})),
+            (crate::prompt_review::ReviewMode::Disabled, true, serde_json::json!({"state":"off"})),
+        ] {
+            let mut review: crate::prompt_review::PromptReviewConfig = serde_json::from_value(serde_json::json!({
+                "protocol":"chat_completions", "base_url":"http://127.0.0.1:9", "api_key":"test-key"
+            })).unwrap();
+            review.validate().unwrap();
+            let state = AppState::new(&crate::config::HubConfig {
+                prompt_review_mode: mode,
+                herdr_prompt_review: configured.then_some(review), listen_addr: "127.0.0.1:0".parse().unwrap(),
+                agent_token_hash: "fake".into(), users: vec![],
+            }, false);
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+            let capabilities = filebox_protocol::resources::Capabilities { herdr: true, ..Default::default() };
+            state.inner.write().await.agents.register("a".into(), "agent".into(), sender,
+                std::sync::Arc::new(tokio::sync::Notify::new()), 0, vec![], 0, vec![], capabilities, None);
+            let request_state = state.clone();
+            let request = tokio::spawn(async move {
+                herdr_handler(State(request_state), Extension(AuthenticatedSession {
+                    id: "session".into(), principal_id: "principal".into(),
+                }), Path("a".into()), Json(serde_json::from_value(serde_json::json!({"op":"status"})).unwrap())).await
+            });
+            let msg = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await.unwrap().unwrap();
+            let HubMessage::HerdrRequest { req_id, op, .. } = msg else { panic!("expected HerdrRequest") };
+            assert_eq!(op, HerdrOp::Status);
+            state.inner.read().await.pending_responses.write().await.remove(&req_id).unwrap()
+                .deliver(serde_json::json!({"agents":[]}));
+            let response = request.await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+            assert_eq!(body["prompt_review"], expected);
         }
     }
 

@@ -147,7 +147,8 @@ on its own, with no duplicate entries and no lost configuration.
   window's recent output. Configured only in `hub.json`
   (`herdr_prompt_review`), never in the web UI; if it is missing or the
   review fails, the prompt is refused. Start the Hub with
-  `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED=0` to turn review off. See
+  `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED=0` to turn review off. The Herdr
+  view shows the review state (on with its model, off, or not configured). See
   [Herdr compatibility and prompt review](docs/herdr-compatibility.md).
 
 ## Markdown math

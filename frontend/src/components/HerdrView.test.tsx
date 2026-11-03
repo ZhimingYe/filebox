@@ -79,6 +79,23 @@ function button(label: string) {
 }
 
 describe('HerdrView', () => {
+  it.each([
+    [{ state: 'on', model: 'deepseek-flash' }, 'Reviewed by deepseek-flash', false],
+    [{ state: 'off' }, 'Prompt review off', false],
+    [{ state: 'not_configured' }, 'Prompts disabled: configure herdr_prompt_review in hub.json', true],
+  ] as const)('shows prompt review state %o', async (review, text, disabled) => {
+    vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => body.op === 'status'
+      ? { ...listed, prompt_review: review } : { req_id: 'r', output: 'output' });
+    await render();
+    await typePrompt('hello');
+    expect(container.textContent).toContain(text);
+    expect(button('Send').disabled).toBe(disabled);
+    if (disabled) {
+      await act(async () => container.querySelector('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true })));
+      expect(vi.mocked(api.herdrCommand).mock.calls.some(([, body]) => body.op === 'prompt')).toBe(false);
+    }
+  });
+
   it.each(['herdr_prompt_blocked', 'herdr_prompt_review_unavailable', 'herdr_prompt_review_not_configured'])('shows %s reason and retains the draft', async (error) => {
     vi.mocked(api.herdrCommand).mockImplementation(async (_id, body) => {
       if (body.op === 'status') return listed;
