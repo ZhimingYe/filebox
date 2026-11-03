@@ -122,7 +122,6 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const [composerFocused, setComposerFocused] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
   const [filterFocused, setFilterFocused] = useState(false);
-  const [focusedCard, setFocusedCard] = useState<string | null>(null);
   const [compactHeight, setCompactHeight] = useState(() => typeof window !== 'undefined' && window.innerHeight < 560);
   useEffect(() => {
     const update = () => setCompactHeight(window.innerHeight < 560);
@@ -716,14 +715,11 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                     aria-pressed={active}
                     title={`${displayName(item)}${item.cwd ? ` · ${item.cwd}` : ''}`}
                     onClick={() => selectAgent(item.target)}
-                    onFocus={(event) => setFocusedCard(event.currentTarget.matches(':focus-visible') ? item.target : null)}
-                    onBlur={() => setFocusedCard((value) => value === item.target ? null : value)}
                     onMouseEnter={() => setHoveredCard(item.target)}
                     onMouseLeave={() => setHoveredCard((value) => value === item.target ? null : value)}
                     style={{
                       ...styles.card,
                       ...(active ? styles.cardActive : hoveredCard === item.target ? styles.cardHover : null),
-                      outline: focusedCard === item.target ? `2px solid ${c.accent}` : 'none', outlineOffset: -2,
                     }}
                   >
                     <span style={styles.cardBody}>

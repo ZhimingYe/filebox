@@ -1,13 +1,9 @@
-import { useState, type ButtonHTMLAttributes } from 'react';
+import type { ButtonHTMLAttributes } from 'react';
 import { c, radius, shadow } from '../theme';
 
 export function SettingsSwitch({ checked, style, disabled, ...props }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'> & { checked: boolean }) {
-  const [keyboardFocus, setKeyboardFocus] = useState(false);
   return <button {...props} type="button" role="switch" aria-checked={checked} disabled={disabled}
-    onFocus={(event) => { setKeyboardFocus(event.currentTarget.matches(':focus-visible')); props.onFocus?.(event); }}
-    onBlur={(event) => { setKeyboardFocus(false); props.onBlur?.(event); }}
     style={{ position: 'relative', width: 40, height: 22, borderRadius: radius.pill,
-      outline: keyboardFocus ? `2px solid ${c.accent}` : 'none', outlineOffset: 2,
       border: `1px solid ${checked ? c.accent : c.border}`, background: checked ? c.accent : c.bgMuted,
       cursor: disabled ? 'not-allowed' : 'pointer', flexShrink: 0, padding: 0,
       transition: 'background 0.15s, border-color 0.15s', opacity: disabled ? 0.5 : 1, ...style }}>

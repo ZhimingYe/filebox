@@ -12,16 +12,12 @@ type HerdrButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 /** Shared action hierarchy for Herdr onboarding, toolbars and remote input. */
 export function HerdrButton({ children, style, touch, variant = 'secondary', icon = false, size = 'md', ...props }: HerdrButtonProps) {
   const [hovered, setHovered] = useState(false);
-  const [keyboardFocus, setKeyboardFocus] = useState(false);
   const hot = hovered && !props.disabled;
   const height = touch ? (size === 'sm' ? 28 : 32) : (size === 'sm' ? 26 : 30);
   return <button {...props} type={props.type ?? 'button'}
     onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
-    onFocus={(event) => { setKeyboardFocus(event.currentTarget.matches(':focus-visible')); props.onFocus?.(event); }}
-    onBlur={(event) => { setKeyboardFocus(false); props.onBlur?.(event); }}
     style={{
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-      outline: keyboardFocus ? `2px solid ${c.accent}` : 'none', outlineOffset: 1,
       height, minWidth: icon ? height : undefined, padding: icon ? 0 : size === 'sm' ? '0 8px' : '0 12px',
       flexShrink: 0, boxSizing: 'border-box',
       borderWidth: 1, borderStyle: 'solid', borderRadius: size === 'sm' ? radius.sm : radius.md,
