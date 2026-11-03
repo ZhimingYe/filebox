@@ -39,6 +39,8 @@ pub struct AiAgentBody {
 #[derive(Debug, Deserialize)]
 pub struct AiAgentsSettingsBody {
     pub enabled: bool,
+    #[serde(default)]
+    pub backend: Option<String>,
 }
 
 pub async fn ai_agents_settings_handler(
@@ -47,6 +49,14 @@ pub async fn ai_agents_settings_handler(
     Path(agent_id): Path<String>,
     Json(body): Json<AiAgentsSettingsBody>,
 ) -> Response {
+    if body.backend.as_deref().is_some_and(|kind| !valid_backend_kind(kind)) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Backend kind must contain 1–32 lowercase letters, digits, underscores, or hyphens",
+            false,
+        );
+    }
     let inner = state.inner.read().await;
     let agent = match inner.agents.get(&agent_id) {
         Some(agent) => agent,
@@ -75,11 +85,21 @@ pub async fn ai_agents_settings_handler(
             false,
         );
     };
-    if settings.settings.environment_override.is_some() {
+    let (enabled_locked, backend_locked) =
+        settings_override_mismatches(&settings.settings, body.enabled, &body.backend);
+    if enabled_locked || backend_locked {
+        let controls = [
+            enabled_locked.then_some("FILEBOX_AGENT_AI_AGENTS_ENABLED"),
+            backend_locked.then_some("FILEBOX_AGENT_AI_AGENTS_BACKEND"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" and ");
         return error_response(
             StatusCode::CONFLICT,
             "ai_agents_environment_override",
-            "FILEBOX_AGENT_AI_AGENTS_ENABLED overrides the web setting; remove the environment variable to change it here",
+            &format!("{controls} controls this AI Agents setting; change or unset it and restart the Filebox Agent"),
             false,
         );
     }
@@ -108,6 +128,7 @@ pub async fn ai_agents_settings_handler(
                 HubMessage::AiAgentSettingsSet {
                     req_id: req_id.clone(),
                     enabled: body.enabled,
+                    backend: body.backend,
                 },
             )
         }
@@ -140,7 +161,13 @@ pub async fn ai_agents_settings_handler(
                     "ai_agents_environment_override" => (
                         StatusCode::CONFLICT,
                         "ai_agents_environment_override",
-                        "FILEBOX_AGENT_AI_AGENTS_ENABLED overrides the web setting; remove the environment variable to change it here",
+                        "FILEBOX_AGENT_AI_AGENTS_ENABLED or FILEBOX_AGENT_AI_AGENTS_BACKEND controls this AI Agents setting; change or unset it and restart the Filebox Agent",
+                        false,
+                    ),
+                    "invalid_request" => (
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request",
+                        "Invalid AI agent backend selection",
                         false,
                     ),
                     "backend_offline" => (
@@ -167,6 +194,24 @@ pub async fn ai_agents_settings_handler(
             true,
         ),
     }
+}
+
+fn valid_backend_kind(kind: &str) -> bool {
+    (1..=32).contains(&kind.len())
+        && kind
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-')
+}
+
+fn settings_override_mismatches(
+    settings: &filebox_protocol::resources::AiAgentSettings,
+    enabled: bool,
+    backend: &Option<String>,
+) -> (bool, bool) {
+    (
+        settings.environment_override.is_some() && enabled != settings.enabled,
+        settings.backend_environment_override.is_some() && backend != &settings.backend,
+    )
 }
 
 pub async fn ai_agents_handler(
@@ -543,6 +588,110 @@ fn error_response(status: StatusCode, error: &str, message: &str, retryable: boo
 mod tests {
     use super::*;
 
+    #[test]
+    fn backend_kind_validation_matches_the_settings_contract() {
+        for kind in ["a", "backend-1", "agent_backend"] {
+            assert!(valid_backend_kind(kind));
+        }
+        for kind in ["", "A", "bad value", "x".repeat(33).as_str()] {
+            assert!(!valid_backend_kind(kind));
+        }
+        assert_eq!(http_for_ai_agents_error("invalid_request").0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn settings_environment_locks_are_checked_per_field() {
+        let settings = filebox_protocol::resources::AiAgentSettings {
+            enabled: true,
+            environment_override: Some(true),
+            backend: Some("herdr".into()),
+            backend_environment_override: Some("herdr".into()),
+        };
+        assert_eq!(settings_override_mismatches(&settings, true, &Some("herdr".into())), (false, false));
+        assert_eq!(settings_override_mismatches(&settings, false, &Some("herdr".into())), (true, false));
+        assert_eq!(settings_override_mismatches(&settings, true, &None), (false, true));
+    }
+
+    #[tokio::test]
+    async fn invalid_backend_setting_returns_bad_request() {
+        let state = AppState::new(
+            &crate::config::HubConfig {
+                prompt_review_mode: crate::prompt_review::ReviewMode::Disabled,
+                prompt_review: None,
+                listen_addr: "127.0.0.1:0".parse().unwrap(),
+                agent_token_hash: "fake".into(),
+                users: vec![],
+            },
+            false,
+        );
+        let response = ai_agents_settings_handler(
+            State(state),
+            Extension(AuthenticatedSession { id: "s".into(), principal_id: "p".into() }),
+            Path("agent".into()),
+            Json(AiAgentsSettingsBody { enabled: true, backend: Some("Bad Kind".into()) }),
+        ).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn unlocked_backend_setting_is_forwarded_when_enabled_is_locked() {
+        let state = AppState::new(
+            &crate::config::HubConfig {
+                prompt_review_mode: crate::prompt_review::ReviewMode::Disabled,
+                prompt_review: None,
+                listen_addr: "127.0.0.1:0".parse().unwrap(),
+                agent_token_hash: "fake".into(),
+                users: vec![],
+            },
+            false,
+        );
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+        let mut capabilities = filebox_protocol::resources::Capabilities::default();
+        capabilities.ai_agents = Some(filebox_protocol::resources::AiAgentsCapability {
+            available: true,
+            backend: Some("herdr".into()),
+            version: Some("0.9.5".into()),
+            backends: vec![filebox_protocol::resources::AiAgentBackendInfo {
+                kind: "herdr".into(),
+                version: "0.9.5".into(),
+            }],
+            settings: filebox_protocol::resources::AiAgentSettings {
+                enabled: true,
+                environment_override: Some(true),
+                backend: None,
+                backend_environment_override: None,
+            },
+        });
+        let connection_id = {
+            let mut inner = state.inner.write().await;
+            inner.agents.register(
+                "agent".into(), "agent".into(), sender,
+                std::sync::Arc::new(tokio::sync::Notify::new()), 0, vec![], 0, vec![],
+                capabilities, None,
+            );
+            inner.agents.get("agent").unwrap().connection_id
+        };
+        let request_state = state.clone();
+        let request = tokio::spawn(async move {
+            ai_agents_settings_handler(
+                State(request_state),
+                Extension(AuthenticatedSession { id: "s".into(), principal_id: "p".into() }),
+                Path("agent".into()),
+                Json(AiAgentsSettingsBody { enabled: true, backend: Some("herdr".into()) }),
+            ).await
+        });
+        let Some(HubMessage::AiAgentSettingsSet { enabled, backend, .. }) = receiver.recv().await else {
+            panic!("expected AI Agents settings message");
+        };
+        assert!(enabled);
+        assert_eq!(backend.as_deref(), Some("herdr"));
+        state.fail_pending_for_connection("agent", connection_id).await;
+        let _ = request.await.unwrap();
+    }
+
     #[tokio::test]
     async fn prompt_review_gates_agent_relay() {
         for (decision, expected, relay) in [
@@ -587,7 +736,7 @@ mod tests {
                 agent_token_hash: "fake".into(), users: vec![],
             }, false);
             let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
-            let capabilities = filebox_protocol::resources::Capabilities { ai_agents: Some(filebox_protocol::resources::AiAgentsCapability { available: true, backend: Some("herdr".into()), version: None, settings: filebox_protocol::resources::AiAgentSettings { enabled: true, environment_override: None } }), ..Default::default() };
+            let capabilities = filebox_protocol::resources::Capabilities { ai_agents: Some(filebox_protocol::resources::AiAgentsCapability { available: true, backend: Some("herdr".into()), version: None, backends: vec![filebox_protocol::resources::AiAgentBackendInfo { kind: "herdr".into(), version: "0.9.5".into() }], settings: filebox_protocol::resources::AiAgentSettings { enabled: true, environment_override: None, backend: None, backend_environment_override: None } }), ..Default::default() };
             state.inner.write().await.agents.register("a".into(), "agent".into(), sender,
                 std::sync::Arc::new(tokio::sync::Notify::new()), 0, vec![], 0, vec![], capabilities, None);
             let request_state = state.clone();
@@ -659,7 +808,7 @@ mod tests {
                 agent_token_hash: "fake".into(), users: vec![],
             }, false);
             let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
-            let capabilities = filebox_protocol::resources::Capabilities { ai_agents: Some(filebox_protocol::resources::AiAgentsCapability { available: true, backend: Some("herdr".into()), version: None, settings: filebox_protocol::resources::AiAgentSettings { enabled: true, environment_override: None } }), ..Default::default() };
+            let capabilities = filebox_protocol::resources::Capabilities { ai_agents: Some(filebox_protocol::resources::AiAgentsCapability { available: true, backend: Some("herdr".into()), version: None, backends: vec![filebox_protocol::resources::AiAgentBackendInfo { kind: "herdr".into(), version: "0.9.5".into() }], settings: filebox_protocol::resources::AiAgentSettings { enabled: true, environment_override: None, backend: None, backend_environment_override: None } }), ..Default::default() };
             state.inner.write().await.agents.register("a".into(), "agent".into(), sender,
                 std::sync::Arc::new(tokio::sync::Notify::new()), 0, vec![], 0, vec![], capabilities, None);
             let request_state = state.clone();
@@ -712,7 +861,16 @@ mod tests {
             available: true,
             backend: Some("herdr".into()),
             version: None,
-            settings: filebox_protocol::resources::AiAgentSettings { enabled: true, environment_override: None },
+            backends: vec![filebox_protocol::resources::AiAgentBackendInfo {
+                kind: "herdr".into(),
+                version: "0.9.5".into(),
+            }],
+            settings: filebox_protocol::resources::AiAgentSettings {
+                enabled: true,
+                environment_override: None,
+                backend: None,
+                backend_environment_override: None,
+            },
         });
         let connection_id = {
             let mut inner = state.inner.write().await;
@@ -740,7 +898,7 @@ mod tests {
                     principal_id: "principal".to_string(),
                 }),
                 Path("a".to_string()),
-                Json(AiAgentsSettingsBody { enabled: false }),
+                Json(AiAgentsSettingsBody { enabled: false, backend: None }),
             )
             .await
         });

@@ -37,7 +37,7 @@ import { NoAgentSelected } from './components/NoAgentSelected';
 import { TempTransferView } from './components/TempTransferView';
 import { AiAgentsView } from './components/AiAgentsView';
 import { AiAgentAttention } from './components/AiAgentAttention';
-import { useAiAgentAttention, type AiAgentAttention as AiAgentNotice } from './hooks/useAiAgentAttention';
+import { aiAgentBackendKey, useAiAgentAttention, type AiAgentAttention as AiAgentNotice } from './hooks/useAiAgentAttention';
 import {
   IconChevronLeft,
   IconFolder,
@@ -547,9 +547,12 @@ export default function App() {
   const aiAgentsCapable = !!selectedAgent?.capabilities?.ai_agents?.available;
   const aiAgentsVisible = !!selectedAgent && (!selectedAgent.capabilities?.ai_agents
     || aiAgentsCapable || !!selectedAgent.capabilities.ai_agents.settings.enabled);
+  const currentAiAgentBackendKey = selectedAgent
+    ? aiAgentBackendKey(selectedAgent.id, selectedAgent.capabilities?.ai_agents?.backend)
+    : null;
   const aiAgentsAttention = useAiAgentAttention(agents, loggedIn === true,
-    view === 'ai-agents' && aiAgentsCapable ? selectedAgentId : null);
-  const [aiAgentsFocus, setAiAgentFocus] = useState<{ backendId: string; target: string; nonce: number } | null>(null);
+    view === 'ai-agents' && aiAgentsCapable ? currentAiAgentBackendKey : null);
+  const [aiAgentsFocus, setAiAgentFocus] = useState<{ backendKey: string; target: string; nonce: number } | null>(null);
   const openAiAgentNotice = (notice: AiAgentNotice) => {
     // Navigation happens only on this explicit click; keep the current files intact.
     if (selectedAgentId !== notice.backendId) previewTabs.closeAll();
@@ -557,7 +560,7 @@ export default function App() {
     setView('ai-agents');
     setSearchOpen(false);
     if (isMobile) setSidebarOpen(false);
-    setAiAgentFocus(notice.target ? { backendId: notice.backendId, target: notice.target, nonce: Date.now() } : null);
+    setAiAgentFocus(notice.target ? { backendKey: notice.backendKey, target: notice.target, nonce: Date.now() } : null);
   };
   useEffect(() => {
     if (!tempCapable) return;
@@ -1377,10 +1380,10 @@ export default function App() {
               {view === 'ai-agents' && (
                 <div style={styles.secondaryView}>
                   {aiAgentsCapable ? (
-                    <AiAgentsView key={selectedAgent.id} agent={selectedAgent}
+                    <AiAgentsView key={currentAiAgentBackendKey ?? selectedAgent.id} agent={selectedAgent}
                       onStatus={aiAgentsAttention.reportStatus}
                       onStatusError={aiAgentsAttention.reportFailure}
-                      focusRequest={aiAgentsFocus?.backendId === selectedAgent.id ? aiAgentsFocus : null} />
+                      focusRequest={aiAgentsFocus?.backendKey === currentAiAgentBackendKey ? aiAgentsFocus : null} />
                   ) : (
                     <AiAgentsSetup key={selectedAgent.id} agent={selectedAgent} onRefresh={refresh} />
                   )}

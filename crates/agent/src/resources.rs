@@ -34,11 +34,22 @@ impl ResourceManager {
         self.config.ai_agents_enabled
     }
 
-    pub fn set_ai_agents_enabled(&mut self, enabled: bool) -> std::io::Result<()> {
-        let previous = self.config.ai_agents_enabled;
+    pub fn ai_agents_backend(&self) -> Option<&str> {
+        self.config.ai_agents_backend.as_deref()
+    }
+
+    pub fn set_ai_agents_settings(
+        &mut self,
+        enabled: bool,
+        backend: Option<String>,
+    ) -> std::io::Result<()> {
+        let previous_enabled = self.config.ai_agents_enabled;
+        let previous_backend = self.config.ai_agents_backend.clone();
         self.config.ai_agents_enabled = enabled;
+        self.config.ai_agents_backend = backend;
         if let Err(error) = self.config.save_fallible(&self.data_dir) {
-            self.config.ai_agents_enabled = previous;
+            self.config.ai_agents_enabled = previous_enabled;
+            self.config.ai_agents_backend = previous_backend;
             return Err(error);
         }
         Ok(())
@@ -967,7 +978,7 @@ mod tests {
         let data_path = dir.path().to_path_buf();
         let real_root = tempdir().unwrap();
         let mut mgr = ResourceManager::new(data_path.clone());
-        mgr.set_ai_agents_enabled(false).unwrap();
+        mgr.set_ai_agents_settings(false, Some("herdr".into())).unwrap();
         mgr.apply_desired(
             5,
             vec![RootConfig {
@@ -993,6 +1004,7 @@ mod tests {
 
         let reloaded = ResourceManager::new(data_path);
         assert!(!reloaded.ai_agents_enabled());
+        assert_eq!(reloaded.ai_agents_backend(), Some("herdr"));
         assert_eq!(reloaded.resource_revision(), 5);
         assert_eq!(reloaded.roots()[0].pinned_folders, vec!["/reports"]);
         assert_eq!(reloaded.collections_revision(), 3);
@@ -1002,11 +1014,12 @@ mod tests {
     #[test]
     fn failed_ai_agents_setting_save_does_not_change_memory() {
         let dir = tempdir().unwrap();
-        let data_path = dir.path().join("missing");
-        let mut mgr = ResourceManager::new(data_path);
-        assert!(mgr.ai_agents_enabled());
-        assert!(mgr.set_ai_agents_enabled(false).is_err());
-        assert!(mgr.ai_agents_enabled());
+        let mut mgr = ResourceManager::new(dir.path().to_path_buf());
+        mgr.set_ai_agents_settings(false, Some("herdr".into())).unwrap();
+        std::fs::remove_dir_all(dir.path()).unwrap();
+        assert!(mgr.set_ai_agents_settings(true, None).is_err());
+        assert!(!mgr.ai_agents_enabled());
+        assert_eq!(mgr.ai_agents_backend(), Some("herdr"));
     }
 
     #[test]

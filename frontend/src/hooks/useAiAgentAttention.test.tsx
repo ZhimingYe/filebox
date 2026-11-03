@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api/client';
-import { useAiAgentAttention } from './useAiAgentAttention';
+import { aiAgentBackendKey, useAiAgentAttention } from './useAiAgentAttention';
 
 vi.mock('../api/client', async (original) => ({ ...await original<typeof api>(), aiAgentCommand: vi.fn() }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -68,6 +68,16 @@ describe('AI Agent attention monitoring', () => {
     expect(current.notices[0].acknowledged).toBe(false);
   });
 
+  it('clears attention state when the active backend changes', async () => {
+    await render();
+    expect(current.notices).toHaveLength(1);
+    vi.mocked(api.aiAgentCommand).mockResolvedValue(response('idle'));
+    const switched = { ...backend, capabilities: { ...backend.capabilities,
+      ai_agents: { ...backend.capabilities?.ai_agents, backend: 'other' } } } as api.AgentInfo;
+    await render({ agents: [switched] });
+    expect(current.notices).toEqual([]);
+  });
+
   it('retains questions through failures, ignores busy, and recovers after a successful list', async () => {
     await render();
     vi.mocked(api.aiAgentCommand).mockRejectedValue({ error: 'agent_busy' });
@@ -80,9 +90,9 @@ describe('AI Agent attention monitoring', () => {
   });
 
   it('uses visible panel reports without a competing background request', async () => {
-    await render({ active: 'b1' });
+    await render({ active: aiAgentBackendKey('b1', 'herdr') });
     expect(api.aiAgentCommand).not.toHaveBeenCalled();
-    act(() => current.reportStatus('b1', response()));
+    act(() => current.reportStatus(aiAgentBackendKey('b1', 'herdr'), response()));
     expect(current.notices[0].kind).toBe('blocked');
     await tick(); expect(api.aiAgentCommand).not.toHaveBeenCalled();
     await render(); expect(api.aiAgentCommand).toHaveBeenCalledTimes(1);
@@ -105,7 +115,7 @@ describe('AI Agent attention monitoring', () => {
     }));
     const agents = [backend, { ...backend, id: 'b2' }];
     await render({ agents });
-    await render({ agents, active: 'b1' });
+    await render({ agents, active: aiAgentBackendKey('b1', 'herdr') });
     expect(pending[0].signal.aborted).toBe(true);
     expect(pending[1].signal.aborted).toBe(false);
     await act(async () => pending[1].finish(response()));

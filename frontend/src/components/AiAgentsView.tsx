@@ -9,13 +9,14 @@ import { AiAgentQueue } from '../lib/aiAgentQueue';
 import { useIsMobile } from '../state/useIsMobile';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { aiAgentBackend, aiAgentBackendLabel } from '../lib/aiAgentBackends';
+import { aiAgentBackendKey } from '../hooks/useAiAgentAttention';
 import { IconChevronLeft, IconRefresh, IconSettings, IconClose, IconSearch, IconClipboard, IconCheck } from './icons';
 
 interface Props {
   agent: api.AgentInfo;
   onStatus?: (agentId: string, response: api.AiAgentResponse) => void;
   onStatusError?: (agentId: string, error: unknown) => void;
-  focusRequest?: { target: string; nonce: number } | null;
+  focusRequest?: { backendKey: string; target: string; nonce: number } | null;
 }
 
 const OUTPUT_REFRESH_MS = 60 * 1000;
@@ -102,6 +103,7 @@ function aiAgentFailureMessage(error: unknown, backendKind?: string | null): str
 export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: Props) {
   const capability = agent.capabilities?.ai_agents;
   const backendKind = capability?.backend;
+  const backendKey = aiAgentBackendKey(agent.id, backendKind);
   const backend = aiAgentBackend(backendKind);
   const isMobile = useIsMobile();
   const isMobileRef = useRef(isMobile);
@@ -212,7 +214,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
     try {
       const res = await command({ op: 'status' }, controller.signal, 20_000, silent ? 1 : 2);
       if (!mountedRef.current || controller.signal.aborted || genRef.current !== gen) return;
-      statusCallbacks.current.onStatus?.(agent.id, res);
+      statusCallbacks.current.onStatus?.(backendKey, res);
       const next = sortAgents(res.agents ?? []);
       const identities = new Map(next.map((a) => [a.target, paneIdentity(a)]));
       const liveIdentities = new Set(identities.values());
@@ -244,7 +246,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
       });
     } catch (e) {
       if (genRef.current !== gen) return;
-      if (mountedRef.current && !controller.signal.aborted) statusCallbacks.current.onStatusError?.(agent.id, e);
+      if (mountedRef.current && !controller.signal.aborted) statusCallbacks.current.onStatusError?.(backendKey, e);
       if (!mountedRef.current || controller.signal.aborted) return;
       const message = aiAgentFailureMessage(e, backendKind);
       if (message === null) return;
@@ -267,7 +269,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
       parentSignal?.removeEventListener('abort', abort);
       if (genRef.current === gen) { abortList.current = null; if (mountedRef.current) setLoadingList(false); }
     }
-  }, [agent.id, backendKind, command]);
+  }, [backendKey, backendKind, command]);
 
   const loadOutput = useCallback(async (target: string, silent = false, visible = false, parentSignal?: AbortSignal) => {
     if (!mountedRef.current || parentSignal?.aborted || selectedRef.current !== target || (silent && abortOutput.current)) return;
@@ -342,12 +344,12 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
   }, [agent.id, loadList]);
 
   useEffect(() => {
-    if (!focusRequest || handledFocus.current === focusRequest.nonce || loadingList) return;
+    if (!focusRequest || focusRequest.backendKey !== backendKey || handledFocus.current === focusRequest.nonce || loadingList) return;
     if (agents.some((a) => a.target === focusRequest.target)) {
       handledFocus.current = focusRequest.nonce;
       setSelected(focusRequest.target);
     }
-  }, [focusRequest, agents, loadingList]);
+  }, [focusRequest, backendKey, agents, loadingList]);
 
   useLayoutEffect(() => {
     // Invalidate an in-flight read before it can paint the previous agent

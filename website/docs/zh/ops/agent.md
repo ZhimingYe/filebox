@@ -18,6 +18,8 @@ Agent 装在每台要浏览的机器上，主动出站连 Hub。安装步骤见 
 | `FILEBOX_AGENT_TOKEN` | Agent token |
 | `FILEBOX_AGENT_NAME` | 侧栏显示名 |
 | `FILEBOX_AGENT_DATA_DIR` | 状态目录 |
+| `FILEBOX_AGENT_AI_AGENTS_ENABLED` | 在此 Agent 上启用或禁用 AI Agents |
+| `FILEBOX_AGENT_AI_AGENTS_BACKEND` | 将 AI Agents 锁定到指定后端类型 |
 | `FILEBOX_ALLOW_INSECURE_HUB` | 允许明文 Hub（仅开发） |
 | `FILEBOX_AGENT_SOFFICE` / `_DIR` | LibreOffice（可选） |
 | `FILEBOX_AGENT_STATS_TTL_SECS` | sysinfo 缓存 TTL（默认 60） |

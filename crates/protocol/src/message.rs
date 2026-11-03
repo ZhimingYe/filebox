@@ -247,6 +247,8 @@ pub enum HubMessage {
     AiAgentSettingsSet {
         req_id: String,
         enabled: bool,
+        #[serde(default)]
+        backend: Option<String>,
     },
     FsListRequest {
         req_id: String,
@@ -1371,14 +1373,30 @@ mod tests {
         let legacy_capabilities: Capabilities =
             serde_json::from_value(legacy_capabilities).unwrap();
         assert!(legacy_capabilities.ai_agents.is_none());
+        let legacy_capability: crate::resources::AiAgentsCapability =
+            serde_json::from_value(serde_json::json!({
+                "available": true,
+                "backend": "herdr",
+                "version": "1.0",
+                "settings": { "enabled": true, "environment_override": null }
+            })).unwrap();
+        assert!(legacy_capability.backends.is_empty());
+        assert!(legacy_capability.settings.backend.is_none());
+        assert!(legacy_capability.settings.backend_environment_override.is_none());
 
         capabilities.ai_agents = Some(crate::resources::AiAgentsCapability {
             available: false,
             backend: Some("herdr".into()),
             version: Some("1.0".into()),
+            backends: vec![crate::resources::AiAgentBackendInfo {
+                kind: "herdr".into(),
+                version: "1.0".into(),
+            }],
             settings: crate::resources::AiAgentSettings {
                 enabled: false,
                 environment_override: Some(false),
+                backend: Some("herdr".into()),
+                backend_environment_override: None,
             },
         });
         let register = AgentMessage::Register {
@@ -1399,9 +1417,15 @@ mod tests {
                         available: false,
                         backend: Some("herdr".into()),
                         version: Some("1.0".into()),
+                        backends: vec![crate::resources::AiAgentBackendInfo {
+                            kind: "herdr".into(),
+                            version: "1.0".into(),
+                        }],
                         settings: crate::resources::AiAgentSettings {
                             enabled: false,
                             environment_override: Some(false),
+                            backend: Some("herdr".into()),
+                            backend_environment_override: None,
                         },
                     })
                 );
@@ -1412,11 +1436,13 @@ mod tests {
         let set = HubMessage::AiAgentSettingsSet {
             req_id: "settings-1".into(),
             enabled: true,
+            backend: Some("herdr".into()),
         };
         match round_trip_hub(&set) {
-            HubMessage::AiAgentSettingsSet { req_id, enabled } => {
+            HubMessage::AiAgentSettingsSet { req_id, enabled, backend } => {
                 assert_eq!(req_id, "settings-1");
                 assert!(enabled);
+                assert_eq!(backend.as_deref(), Some("herdr"));
             }
             _ => panic!("wrong variant"),
         }
@@ -1427,9 +1453,12 @@ mod tests {
                 available: false,
                 backend: None,
                 version: None,
+                backends: Vec::new(),
                 settings: crate::resources::AiAgentSettings {
                     enabled: true,
                     environment_override: None,
+                    backend: None,
+                    backend_environment_override: None,
                 },
             },
             error: None,
@@ -1442,6 +1471,8 @@ mod tests {
             } => {
                 assert!(ai_agents.settings.enabled);
                 assert!(ai_agents.settings.environment_override.is_none());
+                assert!(ai_agents.settings.backend.is_none());
+                assert!(ai_agents.settings.backend_environment_override.is_none());
                 assert!(!ai_agents.available);
                 assert!(error.is_none());
             }

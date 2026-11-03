@@ -19,13 +19,16 @@ async function render() { await act(async () => root.render(<Probe />)); }
 async function capability(id: string, enabled: boolean) {
   agents = agents.map((a) => a.id === id ? { ...a, capabilities: { ...a.capabilities,
     ai_agents: { available: enabled, backend: enabled ? 'herdr' : null, version: enabled ? '0.9.5' : null,
-      settings: { enabled, environment_override: null } } } } : a);
+      backends: enabled ? [{ kind: 'herdr', version: '0.9.5' }] : [],
+      settings: { enabled, environment_override: null, backend: null, backend_environment_override: null } } } } : a);
   await render();
 }
 beforeEach(() => {
   vi.useFakeTimers(); vi.resetAllMocks();
   agents = ['a', 'b'].map((id) => ({ id, name: id, status: 'online', capabilities: {
-    ai_agents: { available: true, backend: 'herdr', version: '0.9.5', settings: { enabled: true, environment_override: null } },
+    ai_agents: { available: true, backend: 'herdr', version: '0.9.5',
+      backends: [{ kind: 'herdr', version: '0.9.5' }],
+      settings: { enabled: true, environment_override: null, backend: null, backend_environment_override: null } },
   } } as api.AgentInfo));
   vi.mocked(api.aiAgentCommand).mockResolvedValue(response);
   root = createRoot(document.createElement('div'));

@@ -183,7 +183,7 @@ export function friendlyMessage(error: unknown): string {
     temp_unavailable: 'The temp folder is not available on this agent.',
     temp_internal_error: 'The upload failed safely. Please retry.',
     ai_agents_disabled: 'AI Agents is disabled on this backend.',
-    ai_agents_environment_override: 'AI Agents is controlled by the Filebox Agent environment setting. Change it and restart the Agent to use this switch.',
+    ai_agents_environment_override: 'This AI Agents setting is controlled by FILEBOX_AGENT_AI_AGENTS_ENABLED or FILEBOX_AGENT_AI_AGENTS_BACKEND. Change the applicable variable and restart the Filebox Agent.',
     ai_agents_settings_save_failed: 'The AI Agents setting could not be saved.',
     ai_agent_backend_unavailable: 'The AI agent backend is installed but the server is not running on this backend. Start it, then refresh.',
     ai_agent_timeout: 'The AI agent command timed out. Read the latest output before retrying.',
@@ -399,18 +399,26 @@ export interface AiAgentsCapability {
   available: boolean;
   backend: string | null;
   version: string | null;
+  backends: AiAgentBackendInfo[];
   settings: AiAgentSettings;
+}
+
+export interface AiAgentBackendInfo {
+  kind: string;
+  version: string;
 }
 
 export interface AiAgentSettings {
   enabled: boolean;
   environment_override: boolean | null;
+  backend: string | null;
+  backend_environment_override: string | null;
 }
 
-export function setAiAgentsEnabled(agentId: string, enabled: boolean) {
+export function setAiAgentsSettings(agentId: string, settings: Pick<AiAgentSettings, 'enabled' | 'backend'>) {
   return request<AiAgentsCapability>(
     `/api/agents/${encodeURIComponent(agentId)}/ai-agents/settings`,
-    { method: 'POST', body: JSON.stringify({ enabled }) },
+    { method: 'POST', body: JSON.stringify(settings) },
     false,
     15_000,
   );

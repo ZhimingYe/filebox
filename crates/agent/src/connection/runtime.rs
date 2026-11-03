@@ -15,8 +15,9 @@ pub(super) struct AgentRuntime {
     pub(super) search_inflight: Arc<AtomicUsize>,
     pub(super) search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     pub(super) upload_workers: Arc<Semaphore>,
-    pub(super) ai_agent_backend: Option<Arc<dyn crate::ai_agents::AiAgentBackend>>,
+    pub(super) ai_agent_backends: Vec<Arc<dyn crate::ai_agents::AiAgentBackend>>,
     pub(super) ai_agents_environment_override: Option<bool>,
+    pub(super) ai_agents_backend_environment_override: Option<String>,
     pub(super) ai_agent_inflight: Arc<Semaphore>,
     pub(super) ai_agent_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
@@ -85,10 +86,12 @@ impl AgentRuntime {
             resource_mgr.ai_agents_enabled(),
             ai_agents_override,
         );
-        let ai_agent_backend = if ai_agents_enabled {
-            crate::ai_agents::probe().await
+        let ai_agents_backend_environment_override =
+            crate::ai_agents::backend_environment_override();
+        let ai_agent_backends = if ai_agents_enabled {
+            crate::ai_agents::probe_all().await
         } else {
-            None
+            Vec::new()
         };
         if !ai_agents_enabled && ai_agents_override.is_none() {
             tracing::info!("AI Agents disabled by persisted setting");
@@ -99,8 +102,9 @@ impl AgentRuntime {
             office_runtime, temp_store, fs_workers, dir_list_workers, search_inflight,
             search_cancels,
             upload_workers: Arc::new(Semaphore::new(4)),
-            ai_agent_backend,
+            ai_agent_backends,
             ai_agents_environment_override: ai_agents_override,
+            ai_agents_backend_environment_override,
             ai_agent_inflight: Arc::new(Semaphore::new(2)),
             ai_agent_cancels: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -117,8 +121,9 @@ impl AgentRuntime {
             fs_workers: Arc::new(Semaphore::new(1)), dir_list_workers: Arc::new(Semaphore::new(1)),
             search_inflight: Arc::new(AtomicUsize::new(0)), search_cancels: Arc::new(Mutex::new(HashMap::new())),
             upload_workers: Arc::new(Semaphore::new(4)),
-            ai_agent_backend: None,
+            ai_agent_backends: Vec::new(),
             ai_agents_environment_override: crate::ai_agents::environment_override(),
+            ai_agents_backend_environment_override: None,
             ai_agent_inflight: Arc::new(Semaphore::new(1)),
             ai_agent_cancels: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -128,8 +133,20 @@ impl AgentRuntime {
         crate::ai_agents::capability(
             self.resource_mgr.ai_agents_enabled(),
             self.ai_agents_environment_override,
-            self.ai_agent_backend.as_deref(),
+            &self.ai_agent_backends,
+            self.resource_mgr.ai_agents_backend(),
+            self.ai_agents_backend_environment_override.as_deref(),
         )
+    }
+
+    pub(super) fn active_ai_agent_backend(
+        &self,
+    ) -> Option<Arc<dyn crate::ai_agents::AiAgentBackend>> {
+        let selection = self
+            .ai_agents_backend_environment_override
+            .as_deref()
+            .or_else(|| self.resource_mgr.ai_agents_backend());
+        crate::ai_agents::select(&self.ai_agent_backends, selection)
     }
 
 }

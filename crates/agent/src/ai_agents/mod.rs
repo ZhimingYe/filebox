@@ -8,9 +8,13 @@ use filebox_protocol::ai_agents::{
     AiAgent, AiAgentBackendStatus, AiAgentOp, AiAgentReadSource,
 };
 use filebox_protocol::message::AgentMessage;
-use filebox_protocol::resources::{AiAgentSettings, AiAgentsCapability};
+use filebox_protocol::resources::{
+    AiAgentBackendInfo, AiAgentSettings, AiAgentsCapability,
+};
 
 pub mod herdr;
+
+pub const BACKEND_KINDS: &[&str] = &["herdr"];
 
 pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -61,6 +65,20 @@ pub fn environment_override() -> Option<bool> {
     }
 }
 
+pub fn backend_environment_override() -> Option<String> {
+    let value = std::env::var_os("FILEBOX_AGENT_AI_AGENTS_BACKEND")?;
+    let kind = value.to_string_lossy().trim().to_string();
+    if kind.is_empty() {
+        return None;
+    }
+    if !BACKEND_KINDS.contains(&kind.as_str()) {
+        tracing::warn!(
+            "Unknown FILEBOX_AGENT_AI_AGENTS_BACKEND={kind}; the selection remains locked and unavailable"
+        );
+    }
+    Some(kind)
+}
+
 fn parse_environment_override(value: &str) -> Result<bool, ()> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "on" | "yes" => Ok(true),
@@ -73,25 +91,59 @@ pub fn effective_enabled(setting: bool, environment_override: Option<bool>) -> b
     environment_override.unwrap_or(setting)
 }
 
-pub async fn probe() -> Option<Arc<dyn AiAgentBackend>> {
-    if let Some(backend) = herdr::HerdrBackend::probe().await {
-        return Some(Arc::new(backend));
+pub async fn probe_all() -> Vec<Arc<dyn AiAgentBackend>> {
+    let mut backends = Vec::new();
+    for kind in BACKEND_KINDS {
+        match *kind {
+            "herdr" => {
+                if let Some(backend) = herdr::HerdrBackend::probe().await {
+                    backends.push(Arc::new(backend) as Arc<dyn AiAgentBackend>);
+                }
+            }
+            _ => tracing::warn!("AI agent backend {kind} is registered without a probe"),
+        }
     }
-    None
+    backends
+}
+
+pub fn select(
+    backends: &[Arc<dyn AiAgentBackend>],
+    selection: Option<&str>,
+) -> Option<Arc<dyn AiAgentBackend>> {
+    match selection {
+        Some(kind) => backends.iter().find(|backend| backend.kind() == kind).cloned(),
+        None => backends.first().cloned(),
+    }
 }
 
 pub fn capability(
     enabled: bool,
     environment_override: Option<bool>,
-    backend: Option<&dyn AiAgentBackend>,
+    backends: &[Arc<dyn AiAgentBackend>],
+    selection: Option<&str>,
+    backend_environment_override: Option<&str>,
 ) -> AiAgentsCapability {
+    let effective_selection = backend_environment_override.or(selection);
+    let active_backend = select(backends, effective_selection);
+    let selected_kind = effective_selection
+        .map(str::to_string)
+        .or_else(|| active_backend.as_ref().map(|backend| backend.kind().to_string()));
     AiAgentsCapability {
-        available: effective_enabled(enabled, environment_override) && backend.is_some(),
-        backend: backend.map(|backend| backend.kind().to_string()),
-        version: backend.map(|backend| backend.version().to_string()),
+        available: effective_enabled(enabled, environment_override) && active_backend.is_some(),
+        backend: selected_kind,
+        version: active_backend.map(|backend| backend.version().to_string()),
+        backends: backends
+            .iter()
+            .map(|backend| AiAgentBackendInfo {
+                kind: backend.kind().to_string(),
+                version: backend.version().to_string(),
+            })
+            .collect(),
         settings: AiAgentSettings {
             enabled: effective_enabled(enabled, environment_override),
             environment_override,
+            backend: effective_selection.map(str::to_string),
+            backend_environment_override: backend_environment_override.map(str::to_string),
         },
     }
 }
@@ -320,14 +372,111 @@ mod tests {
 
     #[test]
     fn capability_settings_enabled_reflects_the_environment_override() {
-        let backend = FakeBackend;
-        let disabled = capability(true, Some(false), Some(&backend));
+        let backends: Vec<Arc<dyn AiAgentBackend>> = vec![Arc::new(FakeBackend)];
+        let disabled = capability(true, Some(false), &backends, None, None);
         assert!(!disabled.settings.enabled);
         assert!(!disabled.available);
 
-        let enabled = capability(false, Some(true), Some(&backend));
+        let enabled = capability(false, Some(true), &backends, None, None);
         assert!(enabled.settings.enabled);
         assert!(enabled.available);
+    }
+
+    #[test]
+    fn backend_selection_is_explicit_or_automatically_uses_first_detected() {
+        struct NamedBackend(&'static str);
+
+        impl AiAgentBackend for NamedBackend {
+            fn kind(&self) -> &'static str { self.0 }
+            fn version(&self) -> &str { "test" }
+            fn list<'a>(&'a self, _cancel: &'a AtomicBool) -> BackendFuture<'a, Result<AiAgentList, String>> {
+                unreachable!()
+            }
+            fn read<'a>(&'a self, _target: &'a str, _lines: u32, _source: Option<AiAgentReadSource>, _cancel: &'a AtomicBool) -> BackendFuture<'a, Result<String, String>> {
+                unreachable!()
+            }
+            fn prompt<'a>(&'a self, _target: &'a str, _text: &'a str, _wait_timeout_ms: Option<u64>, _cancel: &'a AtomicBool) -> BackendFuture<'a, Result<Option<AiAgent>, String>> {
+                unreachable!()
+            }
+            fn send_keys<'a>(&'a self, _target: &'a str, _keys: &'a [String], _cancel: &'a AtomicBool) -> BackendFuture<'a, Result<Option<AiAgent>, String>> {
+                unreachable!()
+            }
+        }
+
+        let backends: Vec<Arc<dyn AiAgentBackend>> =
+            vec![Arc::new(NamedBackend("a")), Arc::new(NamedBackend("b"))];
+        assert_eq!(select(&backends, None).unwrap().kind(), "a");
+        assert_eq!(select(&backends, Some("b")).unwrap().kind(), "b");
+        assert!(select(&backends, Some("missing")).is_none());
+
+        let missing = capability(true, None, &backends[..1], Some("b"), None);
+        assert!(!missing.available);
+        assert_eq!(missing.backend.as_deref(), Some("b"));
+        assert_eq!(missing.version, None);
+        assert_eq!(missing.backends.len(), 1);
+
+        let locked = capability(true, None, &backends, Some("a"), Some("b"));
+        assert_eq!(locked.backend.as_deref(), Some("b"));
+        assert_eq!(locked.settings.backend.as_deref(), Some("b"));
+        assert_eq!(locked.settings.backend_environment_override.as_deref(), Some("b"));
+        assert_eq!(locked.version.as_deref(), Some("test"));
+
+        let unknown_lock = capability(true, None, &backends, Some("a"), Some("unknown"));
+        assert!(!unknown_lock.available);
+        assert_eq!(unknown_lock.backend.as_deref(), Some("unknown"));
+        assert_eq!(unknown_lock.version, None);
+    }
+
+    #[tokio::test]
+    async fn backend_switch_keeps_an_in_flight_request_on_its_original_backend() {
+        struct WaitingBackend {
+            started: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        }
+        impl AiAgentBackend for WaitingBackend {
+            fn kind(&self) -> &'static str { "a" }
+            fn version(&self) -> &str { "test" }
+            fn list<'a>(&'a self, _: &'a AtomicBool) -> BackendFuture<'a, Result<AiAgentList, String>> {
+                Box::pin(async { Err("unused".into()) })
+            }
+            fn read<'a>(&'a self, _: &'a str, _: u32, _: Option<AiAgentReadSource>, _: &'a AtomicBool) -> BackendFuture<'a, Result<String, String>> {
+                let started = self.started.clone();
+                let release = self.release.clone();
+                Box::pin(async move {
+                    started.notify_one();
+                    release.notified().await;
+                    Ok("a-output".into())
+                })
+            }
+            fn prompt<'a>(&'a self, _: &'a str, _: &'a str, _: Option<u64>, _: &'a AtomicBool) -> BackendFuture<'a, Result<Option<AiAgent>, String>> {
+                Box::pin(async { Err("unused".into()) })
+            }
+            fn send_keys<'a>(&'a self, _: &'a str, _: &'a [String], _: &'a AtomicBool) -> BackendFuture<'a, Result<Option<AiAgent>, String>> {
+                Box::pin(async { Err("unused".into()) })
+            }
+        }
+
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let backends: Vec<Arc<dyn AiAgentBackend>> = vec![
+            Arc::new(WaitingBackend { started: started.clone(), release: release.clone() }),
+            Arc::new(FakeBackend),
+        ];
+        let original = select(&backends, None).unwrap();
+        let request = tokio::spawn(async move {
+            handle_request(
+                original.as_ref(), "in-flight".into(), AiAgentOp::Read,
+                Some("reviewer".into()), None, Vec::new(), Some(10), None,
+                false, None, Arc::new(AtomicBool::new(false)),
+            ).await
+        });
+        started.notified().await;
+        assert_eq!(select(&backends, Some("fake")).unwrap().kind(), "fake");
+        release.notify_one();
+        assert!(matches!(
+            request.await.unwrap(),
+            AgentMessage::AiAgentResponse { output: Some(output), .. } if output == "a-output"
+        ));
     }
 
     #[tokio::test]

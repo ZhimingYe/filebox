@@ -357,7 +357,8 @@ async fn ai_agents_updates_mirror_current_state_and_emit_sse_without_waiter() {
         available: false,
         backend: None,
         version: None,
-        settings: filebox_protocol::resources::AiAgentSettings { enabled: true, environment_override: None },
+        backends: vec![],
+        settings: filebox_protocol::resources::AiAgentSettings { enabled: true, environment_override: None, backend: None, backend_environment_override: None },
     };
     updates::dispatch(
         &context,
@@ -397,7 +398,8 @@ async fn stale_generation_ai_agents_cannot_update_mirror_or_emit_sse() {
                 available: false,
                 backend: None,
                 version: None,
-                settings: filebox_protocol::resources::AiAgentSettings { enabled: false, environment_override: Some(false) },
+                backends: vec![],
+                settings: filebox_protocol::resources::AiAgentSettings { enabled: false, environment_override: Some(false), backend: None, backend_environment_override: None },
             },
             error: None,
         },
@@ -417,7 +419,8 @@ async fn stale_generation_ai_agents_cannot_update_mirror_or_emit_sse() {
                 available: false,
                 backend: None,
                 version: None,
-                settings: filebox_protocol::resources::AiAgentSettings { enabled: false, environment_override: Some(false) },
+                backends: vec![],
+                settings: filebox_protocol::resources::AiAgentSettings { enabled: false, environment_override: Some(false), backend: None, backend_environment_override: None },
             },
             error: None,
         },
@@ -430,7 +433,8 @@ async fn stale_generation_ai_agents_cannot_update_mirror_or_emit_sse() {
             available: false,
             backend: None,
             version: None,
-            settings: filebox_protocol::resources::AiAgentSettings { enabled: false, environment_override: Some(false) },
+            backends: vec![],
+            settings: filebox_protocol::resources::AiAgentSettings { enabled: false, environment_override: Some(false), backend: None, backend_environment_override: None },
         })
     );
     assert_eq!(
@@ -451,9 +455,12 @@ async fn ai_agents_pending_reply_is_generation_owned() {
         available: false,
         backend: None,
         version: None,
+        backends: vec![],
         settings: filebox_protocol::resources::AiAgentSettings {
             enabled: false,
             environment_override: Some(false),
+            backend: None,
+            backend_environment_override: None,
         },
     };
 

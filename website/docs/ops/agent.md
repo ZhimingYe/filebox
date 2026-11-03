@@ -18,6 +18,8 @@ Install an Agent on every host you want to browse; it dials out to the Hub. Inst
 | `FILEBOX_AGENT_TOKEN` | Agent token |
 | `FILEBOX_AGENT_NAME` | Sidebar display name |
 | `FILEBOX_AGENT_DATA_DIR` | State directory |
+| `FILEBOX_AGENT_AI_AGENTS_ENABLED` | Enable or disable AI Agents on this Agent |
+| `FILEBOX_AGENT_AI_AGENTS_BACKEND` | Lock AI Agents to a backend kind |
 | `FILEBOX_ALLOW_INSECURE_HUB` | Allow plaintext Hub (dev only) |
 | `FILEBOX_AGENT_SOFFICE` / `_DIR` | LibreOffice (optional) |
 | `FILEBOX_AGENT_STATS_TTL_SECS` | sysinfo cache TTL (default 60) |

@@ -285,6 +285,7 @@ async fn ai_agents_setting_update_persists_and_cancels_running_requests() {
         .dispatch(HubMessage::AiAgentSettingsSet {
             req_id: "settings".into(),
             enabled: false,
+            backend: None,
         })
         .await
         .unwrap();
@@ -309,11 +310,51 @@ async fn ai_agents_setting_update_persists_and_cancels_running_requests() {
 }
 
 #[tokio::test]
+async fn ai_agents_settings_enforce_field_locks_and_reject_unknown_kinds() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = AgentRuntime::for_tests(temp.path());
+    runtime.ai_agents_environment_override = Some(false);
+    let (sink, _) = capture();
+    let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
+
+    assert!(session
+        .apply_ai_agent_settings(false, Some("herdr".into()), crate::ai_agents::BACKEND_KINDS)
+        .await
+        .is_none());
+    assert!(session.runtime.resource_mgr.ai_agents_enabled());
+    assert_eq!(session.runtime.resource_mgr.ai_agents_backend(), Some("herdr"));
+
+    session.runtime.ai_agents_backend_environment_override = Some("herdr".into());
+    assert_eq!(
+        session
+            .apply_ai_agent_settings(false, None, crate::ai_agents::BACKEND_KINDS)
+            .await
+            .as_deref(),
+        Some("ai_agents_environment_override")
+    );
+    assert_eq!(session.runtime.resource_mgr.ai_agents_backend(), Some("herdr"));
+
+    session.runtime.ai_agents_backend_environment_override = None;
+    session.runtime.ai_agents_environment_override = None;
+    assert_eq!(
+        session
+            .apply_ai_agent_settings(true, Some("unknown".into()), crate::ai_agents::BACKEND_KINDS)
+            .await
+            .as_deref(),
+        Some("invalid_request")
+    );
+    assert_eq!(session.runtime.resource_mgr.ai_agents_backend(), Some("herdr"));
+}
+
+#[tokio::test]
 async fn ai_agents_direct_request_is_rejected_when_disabled() {
     let temp = tempfile::tempdir().unwrap();
     let mut runtime = AgentRuntime::for_tests(temp.path());
     runtime.ai_agents_environment_override = None;
-    runtime.resource_mgr.set_ai_agents_enabled(false).unwrap();
+    runtime
+        .resource_mgr
+        .set_ai_agents_settings(false, None)
+        .unwrap();
     let (sink, mut replies) = capture();
     let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
     session

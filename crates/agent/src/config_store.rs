@@ -16,6 +16,8 @@ pub struct PersistedConfig {
     pub collections: Vec<CollectionConfig>,
     #[serde(default = "default_ai_agents_enabled")]
     pub ai_agents_enabled: bool,
+    #[serde(default)]
+    pub ai_agents_backend: Option<String>,
     /// One-time read of the legacy opt-out; omitted from saved state.
     #[serde(default, rename = "herdr_enabled", skip_serializing)]
     legacy_herdr_enabled: Option<bool>,
@@ -34,6 +36,7 @@ impl PersistedConfig {
             collections_revision: 0,
             collections: vec![],
             ai_agents_enabled: true,
+            ai_agents_backend: None,
             legacy_herdr_enabled: None,
         }
     }
@@ -291,6 +294,7 @@ mod tests {
             collections_revision: 0,
             collections: vec![],
             ai_agents_enabled: true,
+            ai_agents_backend: None,
             legacy_herdr_enabled: None,
         };
         cfg.save(&path);

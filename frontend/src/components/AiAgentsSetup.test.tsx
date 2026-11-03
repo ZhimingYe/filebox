@@ -6,15 +6,16 @@ import { AiAgentsIntroduction, AiAgentsSetup, AiAgentsToggle } from './AiAgentsS
 import { AgentSettings } from './AgentSettings';
 
 vi.mock('../api/client', async (original) => ({
-  ...await original<typeof api>(), setAiAgentsEnabled: vi.fn(),
+  ...await original<typeof api>(), setAiAgentsSettings: vi.fn(),
 }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
 let container: HTMLDivElement;
 const agent = {
   id: 'a1', name: 'Lab', status: 'online',
-  capabilities: { ai_agents: { available: false, backend: null, version: null, settings: { enabled: true, environment_override: null } } },
-} as api.AgentInfo;
+  capabilities: { ai_agents: { available: false, backend: null, version: null, backends: [],
+    settings: { enabled: true, environment_override: null, backend: null, backend_environment_override: null } } },
+} as unknown as api.AgentInfo;
 const refresh = vi.fn();
 beforeEach(() => {
   vi.resetAllMocks();
@@ -47,8 +48,11 @@ it('introduces AI Agents for a missing backend, remembers dismissal per backend,
 
 it.each([
   { ...agent, status: 'offline' },
-  { ...agent, capabilities: { ...agent.capabilities, ai_agents: { available: true, backend: 'herdr', version: '0.9.5', settings: { enabled: true, environment_override: null } } } },
-  { ...agent, capabilities: { ...agent.capabilities, ai_agents: { available: false, backend: null, version: null, settings: { enabled: false, environment_override: null } } } },
+  { ...agent, capabilities: { ...agent.capabilities, ai_agents: { available: true, backend: 'herdr', version: '0.9.5',
+    backends: [{ kind: 'herdr', version: '0.9.5' }],
+    settings: { enabled: true, environment_override: null, backend: null, backend_environment_override: null } } } },
+  { ...agent, capabilities: { ...agent.capabilities, ai_agents: { available: false, backend: null, version: null, backends: [],
+    settings: { enabled: false, environment_override: null, backend: null, backend_environment_override: null } } } },
   { ...agent, capabilities: { ...agent.capabilities, ai_agents: undefined } },
 ])('does not introduce installed, disabled, offline or legacy backends', async (backend) => {
   await act(async () => root.render(<AiAgentsIntroduction agent={backend} onOpen={vi.fn()} />));
@@ -57,18 +61,19 @@ it.each([
 
 it('waits for a saved Agent setting instead of optimistically switching off', async () => {
   let finish!: (value: api.AiAgentsCapability) => void;
-  vi.mocked(api.setAiAgentsEnabled).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  vi.mocked(api.setAiAgentsSettings).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   await act(async () => root.render(<AiAgentsToggle agent={agent} onRefresh={refresh} />));
   const toggle = button('AI Agents');
   expect(toggle.style.width).toBe('40px');
   expect(toggle.style.height).toBe('22px');
   expect(toggle.querySelector('span')?.style.transform).toBe('translateX(18px)');
   await act(async () => toggle.click());
-  expect(api.setAiAgentsEnabled).toHaveBeenCalledWith('a1', false);
+  expect(api.setAiAgentsSettings).toHaveBeenCalledWith('a1', { enabled: false, backend: null });
   expect(container.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
   expect(toggle.disabled).toBe(true);
   expect(container.querySelector('[role="status"]')?.textContent).toBe('Saving…');
-  await act(async () => finish({ available: false, backend: null, version: null, settings: { enabled: false, environment_override: null } }));
+  await act(async () => finish({ available: false, backend: null, version: null, backends: [],
+    settings: { enabled: false, environment_override: null, backend: null, backend_environment_override: null } }));
   expect(toggle.getAttribute('aria-checked')).toBe('false');
   expect(toggle.querySelector('span')?.style.transform).toBe('');
   expect(toggle.disabled).toBe(false);
@@ -76,7 +81,7 @@ it('waits for a saved Agent setting instead of optimistically switching off', as
 });
 
 it('shows save failures and keeps the switch at the last confirmed state', async () => {
-  vi.mocked(api.setAiAgentsEnabled).mockRejectedValue({ error: 'permission_denied', message: 'Cannot save setting' });
+  vi.mocked(api.setAiAgentsSettings).mockRejectedValue({ error: 'permission_denied', message: 'Cannot save setting' });
   await act(async () => root.render(<AiAgentsToggle agent={agent} onRefresh={refresh} />));
   await act(async () => button('AI Agents').click());
   expect(container.querySelector('[role="alert"]')?.textContent).toBeTruthy();
@@ -85,19 +90,62 @@ it('shows save failures and keeps the switch at the last confirmed state', async
 
 it.each([true, false])('locks the Web switch when the Agent environment overrides it (%s)', async (enabled) => {
   const backend = { ...agent, capabilities: { ...agent.capabilities,
-    ai_agents: { available: false, backend: null, version: null, settings: { enabled, environment_override: enabled } } } };
+    ai_agents: { available: false, backend: null, version: null, backends: [],
+      settings: { enabled, environment_override: enabled, backend: null, backend_environment_override: null } } } };
   await act(async () => root.render(<AiAgentsToggle agent={backend} onRefresh={refresh} />));
   expect(container.querySelector('button')?.disabled).toBe(true);
   expect(container.textContent).toContain(`FILEBOX_AGENT_AI_AGENTS_ENABLED=${enabled ? '1' : '0'}`);
-  expect(api.setAiAgentsEnabled).not.toHaveBeenCalled();
+  expect(api.setAiAgentsSettings).not.toHaveBeenCalled();
 });
 
 it('rechecks installation without running an AI agent control command', async () => {
-  vi.mocked(api.setAiAgentsEnabled).mockResolvedValue({ available: true, backend: 'herdr', version: '0.9.5', settings: { enabled: true, environment_override: null } });
+  vi.mocked(api.setAiAgentsSettings).mockResolvedValue({ available: true, backend: 'herdr', version: '0.9.5',
+    backends: [{ kind: 'herdr', version: '0.9.5' }],
+    settings: { enabled: true, environment_override: null, backend: null, backend_environment_override: null } });
   await act(async () => root.render(<AiAgentsSetup agent={agent} onRefresh={refresh} />));
   await act(async () => button('Check installation').click());
-  expect(api.setAiAgentsEnabled).toHaveBeenCalledWith('a1', true);
+  expect(api.setAiAgentsSettings).toHaveBeenCalledWith('a1', { enabled: true, backend: null });
   expect(refresh).toHaveBeenCalledOnce();
+});
+
+it('shows the backend selector only when needed and preserves the selection on changes', async () => {
+  const single = { ...agent, capabilities: { ...agent.capabilities, ai_agents: {
+    available: true, backend: 'herdr', version: '0.9.5', backends: [{ kind: 'herdr', version: '0.9.5' }],
+    settings: { enabled: true, environment_override: null, backend: null, backend_environment_override: null },
+  } } } as api.AgentInfo;
+  await act(async () => root.render(<AiAgentsToggle agent={single} onRefresh={refresh} />));
+  expect(container.querySelector('select')).toBeNull();
+
+  const multi = { ...single, capabilities: { ...single.capabilities, ai_agents: {
+    ...single.capabilities!.ai_agents!,
+    backends: [{ kind: 'herdr', version: '0.9.5' }, { kind: 'other', version: '1.2' }],
+  } } } as api.AgentInfo;
+  vi.mocked(api.setAiAgentsSettings).mockResolvedValue({
+    ...multi.capabilities!.ai_agents!,
+    settings: { ...multi.capabilities!.ai_agents!.settings, backend: 'other' },
+  });
+  await act(async () => root.render(<AiAgentsToggle agent={multi} onRefresh={refresh} />));
+  const select = container.querySelector('select')!;
+  expect(select).toBeTruthy();
+  expect([...select.options].map((option) => option.textContent)).toEqual(['Automatic', 'Herdr 0.9.5', 'other 1.2']);
+  await act(async () => {
+    select.value = 'other';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  expect(api.setAiAgentsSettings).toHaveBeenCalledWith('a1', { enabled: true, backend: 'other' });
+  await act(async () => button('AI Agents').click());
+  expect(api.setAiAgentsSettings).toHaveBeenLastCalledWith('a1', { enabled: false, backend: 'other' });
+});
+
+it('locks backend selection to FILEBOX_AGENT_AI_AGENTS_BACKEND', async () => {
+  const locked = { ...agent, capabilities: { ...agent.capabilities, ai_agents: {
+    available: true, backend: 'herdr', version: '0.9.5', backends: [{ kind: 'herdr', version: '0.9.5' }],
+    settings: { enabled: true, environment_override: null, backend: 'herdr', backend_environment_override: 'herdr' },
+  } } } as api.AgentInfo;
+  await act(async () => root.render(<AiAgentsToggle agent={locked} onRefresh={refresh} />));
+  expect(container.querySelector('select')?.disabled).toBe(true);
+  expect(container.textContent).toContain('FILEBOX_AGENT_AI_AGENTS_BACKEND=herdr');
+  expect(api.setAiAgentsSettings).not.toHaveBeenCalled();
 });
 
 it('uses the same switch geometry for Office preview and AI Agents in Agent Settings', async () => {

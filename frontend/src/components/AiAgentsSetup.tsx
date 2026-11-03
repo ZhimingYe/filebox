@@ -4,7 +4,7 @@ import { c, radius, font, settingsLayout as layout } from '../theme';
 import { SettingsSwitch } from './SettingsSwitch';
 import { AiAgentButton } from './AiAgentControls';
 import { useIsMobile } from '../state/useIsMobile';
-import { supportedAiAgentBackends } from '../lib/aiAgentBackends';
+import { aiAgentBackend, aiAgentBackends, supportedAiAgentBackends } from '../lib/aiAgentBackends';
 
 interface Props {
   agent: api.AgentInfo;
@@ -22,15 +22,25 @@ export function AiAgentsToggle({ agent, onRefresh }: Props) {
     : reported?.settings;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const locked = settings?.environment_override != null;
-  const disabled = busy || !settings || locked || agent.status === 'offline';
+  const enabledLocked = settings?.environment_override != null;
+  const backendLocked = settings?.backend_environment_override != null;
+  const backends = reported?.backends ?? [];
+  const selectionMissing = settings?.backend != null
+    && !backends.some((backend) => backend.kind === settings.backend);
+  const showBackendSelect = !!settings
+    && (backends.length >= 2 || selectionMissing || !!settings.backend_environment_override);
+  const disabled = busy || !settings || enabledLocked || agent.status === 'offline';
+  const backendSelectDisabled = busy || !settings || backendLocked || agent.status === 'offline';
 
-  async function toggle() {
-    if (disabled || !settings) return;
+  async function saveSettings(next: api.AiAgentSettings) {
+    if (!settings || busy || agent.status === 'offline') return;
     setBusy(true);
     setError('');
     try {
-      const saved = await api.setAiAgentsEnabled(agent.id, !settings.enabled);
+      const saved = await api.setAiAgentsSettings(agent.id, {
+        enabled: next.enabled,
+        backend: next.backend,
+      });
       setSavedSettings({ reported, settings: saved.settings });
       onRefresh();
     } catch (e) {
@@ -41,21 +51,45 @@ export function AiAgentsToggle({ agent, onRefresh }: Props) {
     }
   }
 
+  function backendLabel(kind: string, version?: string) {
+    const descriptor = aiAgentBackend(kind);
+    const label = descriptor.kind === 'generic' ? kind : descriptor.label;
+    return version ? `${label} ${version}` : label;
+  }
+
   return <div style={layout.prefRow}>
     <div style={layout.prefText}>
       <div style={layout.prefLabel}>AI Agents</div>
-      <p style={layout.prefHint}>{!settings
-      ? 'Update the Filebox Agent to manage AI Agents from the web. Older Agents can use FILEBOX_AGENT_AI_AGENTS_ENABLED=0 and restart.'
-      : locked
-        ? `Controlled by FILEBOX_AGENT_AI_AGENTS_ENABLED=${settings.environment_override ? '1' : '0'} on this backend. Change or unset it and restart the Filebox Agent to use this switch.`
-        : 'Saved on this backend and shared across browsers. Turning it off stops Filebox’s AI Agents controls and monitoring, not the backend or its running coding agents.'}</p>
+      {!settings
+        ? <p style={layout.prefHint}>Update the Filebox Agent to manage AI Agents from the web. Older Agents can use FILEBOX_AGENT_AI_AGENTS_ENABLED=0 and restart.</p>
+        : enabledLocked
+          ? <p style={layout.prefHint}>Controlled by FILEBOX_AGENT_AI_AGENTS_ENABLED={settings.environment_override ? '1' : '0'} on this backend. Change or unset it and restart the Filebox Agent to use this switch.</p>
+          : <p style={layout.prefHint}>Saved on this backend and shared across browsers. Turning it off stops Filebox’s AI Agents controls and monitoring, not the backend or its running coding agents.</p>}
+      {backendLocked && settings.backend_environment_override && <p style={layout.prefHint}>
+        Controlled by FILEBOX_AGENT_AI_AGENTS_BACKEND={settings.backend_environment_override} on this backend. Change or unset it and restart the Filebox Agent to select a backend here.
+      </p>}
       {busy && <p role="status" style={layout.prefHint}>Saving…</p>}
       {agent.status === 'offline' && <p style={layout.prefHint}>Reconnect this backend to change the setting.</p>}
       {error && <p role="alert" style={{ ...layout.prefHint, color: c.danger }}>{error}</p>}
     </div>
-    <SettingsSwitch aria-label="AI Agents" aria-busy={busy}
-      checked={settings?.enabled ?? false}
-      disabled={disabled} onClick={() => void toggle()} />
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+      {showBackendSelect && settings && <select aria-label="AI Agents backend"
+        value={settings.backend ?? ''} disabled={backendSelectDisabled}
+        onChange={(event) => void saveSettings({ ...settings, backend: event.currentTarget.value || null })}
+        style={{ color: c.text, background: c.bg, border: `1px solid ${c.border}`, borderRadius: radius.sm,
+          padding: '4px 22px 4px 7px', fontFamily: font.sans, fontSize: 12, maxWidth: 145 }}>
+        <option value="">Automatic</option>
+        {backends.map((backend) => <option key={backend.kind} value={backend.kind}>
+          {backendLabel(backend.kind, backend.version)}
+        </option>)}
+        {selectionMissing && settings.backend && <option value={settings.backend}>
+          {backendLabel(settings.backend)} (not detected)
+        </option>}
+      </select>}
+      <SettingsSwitch aria-label="AI Agents" aria-busy={busy}
+        checked={settings?.enabled ?? false}
+        disabled={disabled} onClick={() => void saveSettings({ ...settings!, enabled: !settings!.enabled })} />
+    </div>
   </div>;
 }
 
@@ -94,7 +128,7 @@ export function AiAgentsSetup({ agent, onRefresh }: Props) {
     setBusy(true);
     setError('');
     try {
-      await api.setAiAgentsEnabled(agent.id, true);
+      await api.setAiAgentsSettings(agent.id, { enabled: true, backend: settings?.backend ?? null });
       onRefresh();
     } catch (e) { setError(api.friendlyMessage(e)); }
     finally { setBusy(false); }
@@ -116,9 +150,14 @@ export function AiAgentsSetup({ agent, onRefresh }: Props) {
               ? 'Update the Filebox Agent to manage AI Agents from the web.'
               : settings?.enabled === false ? 'AI Agents is turned off for this backend.'
                 : 'No supported AI agent backend has been detected. Backends are installed separately on the Agent machine, not on the Hub or in your browser.'}</p>
-            {!needsAgentUpdate && supportedAiAgentBackends.map((supportedBackend) => (
+            {!needsAgentUpdate && (capability?.backend
+              ? [aiAgentBackend(capability.backend)]
+              : supportedAiAgentBackends).map((supportedBackend) => (
               <div key={supportedBackend.kind}>
                 <strong style={stepTitle}>{supportedBackend.label}</strong>
+                {capability?.backend && !aiAgentBackends[capability.backend]
+                  ? <p style={hint}>{capability.backend} is not detected. {supportedBackend.noServerMessage}</p>
+                  : <>
                 <ol style={{ ...hint, paddingLeft: 20, display: 'grid', gap: 16, margin: '12px 0 20px' }}>
                   <li>Install on the Agent machine using the {supportedBackend.installUrl
                     ? <a href={supportedBackend.installUrl} target="_blank" rel="noopener noreferrer">{supportedBackend.installGuide}</a>
@@ -127,6 +166,7 @@ export function AiAgentsSetup({ agent, onRefresh }: Props) {
                     {supportedBackend.binaryEnvironment && <> or set <code style={code}>{supportedBackend.binaryEnvironment}</code> to its executable path</>}, then restart the Agent.</li>
                   {supportedBackend.serverCommand && <li>Start <code style={code}>{supportedBackend.serverCommand}</code> on this backend, then check again below.</li>}
                 </ol>
+                  </>}
               </div>
             ))}
             {settings?.enabled && settings.environment_override == null && <AiAgentButton variant="primary" touch={isMobile}

@@ -40,7 +40,7 @@ impl ConnectionSession<'_> {
             return Ok(());
         }
 
-        let Some(backend) = self.runtime.ai_agent_backend.clone() else {
+        let Some(backend) = self.runtime.active_ai_agent_backend() else {
             let resp = AgentMessage::AiAgentResponse {
                 req_id,
                 error: Some("ai_agent_backend_unavailable".to_string()),
@@ -109,33 +109,18 @@ impl ConnectionSession<'_> {
         &mut self,
         message: HubMessage,
     ) -> Result<(), DisconnectReason> {
-        let HubMessage::AiAgentSettingsSet { req_id, enabled } = message else {
+        let HubMessage::AiAgentSettingsSet {
+            req_id,
+            enabled,
+            backend,
+        } = message
+        else {
             unreachable!("dispatcher selected the wrong handler");
         };
 
-        let mut error = None;
-        let environment_override = self.runtime.ai_agents_environment_override;
-        if environment_override.is_some() {
-            error = Some("ai_agents_environment_override".to_string());
-        } else {
-            if enabled && self.runtime.ai_agent_backend.is_none() {
-                self.runtime.ai_agent_backend = crate::ai_agents::probe().await;
-            }
-            match self.runtime.resource_mgr.set_ai_agents_enabled(enabled) {
-                Ok(()) => {
-                    if !enabled {
-                        if let Ok(mut cancels) = self.runtime.ai_agent_cancels.lock() {
-                            for (_, cancel) in cancels.drain() {
-                                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
-                        }
-                    }
-                }
-                Err(save_error) => {
-                    error = Some(format!("ai_agents_settings_save_failed: {save_error}"));
-                }
-            }
-        }
+        let error = self
+            .apply_ai_agent_settings(enabled, backend, crate::ai_agents::BACKEND_KINDS)
+            .await;
 
         let ai_agents = self.runtime.ai_agents_capability();
         let response = AgentMessage::AiAgentSettingsApplied {
@@ -147,5 +132,74 @@ impl ConnectionSession<'_> {
             return Err(DisconnectReason::ControlQueueClosed);
         }
         Ok(())
+    }
+
+    pub(super) async fn apply_ai_agent_settings(
+        &mut self,
+        enabled: bool,
+        backend: Option<String>,
+        backend_kinds: &[&str],
+    ) -> Option<String> {
+        let capability = self.runtime.ai_agents_capability();
+        let enabled_locked = self.runtime.ai_agents_environment_override.is_some();
+        let backend_environment_override = self
+            .runtime
+            .ai_agents_backend_environment_override
+            .clone();
+        if (enabled_locked && enabled != capability.settings.enabled)
+            || (backend_environment_override.is_some()
+                && backend != capability.settings.backend)
+        {
+            return Some("ai_agents_environment_override".into());
+        }
+        if backend
+            .as_deref()
+            .is_some_and(|kind| !backend_kinds.contains(&kind))
+        {
+            return Some("invalid_request".into());
+        }
+
+        let persisted_enabled = if enabled_locked {
+            self.runtime.resource_mgr.ai_agents_enabled()
+        } else {
+            enabled
+        };
+        let persisted_backend = if backend_environment_override.is_some() {
+            self.runtime
+                .resource_mgr
+                .ai_agents_backend()
+                .map(str::to_string)
+        } else {
+            backend.clone()
+        };
+        if let Err(save_error) = self
+            .runtime
+            .resource_mgr
+            .set_ai_agents_settings(persisted_enabled, persisted_backend)
+        {
+            return Some(format!("ai_agents_settings_save_failed: {save_error}"));
+        }
+
+        let effective_enabled = crate::ai_agents::effective_enabled(
+            self.runtime.resource_mgr.ai_agents_enabled(),
+            self.runtime.ai_agents_environment_override,
+        );
+        let selection = backend_environment_override
+            .as_deref()
+            .or_else(|| self.runtime.resource_mgr.ai_agents_backend());
+        if effective_enabled
+            && (self.runtime.ai_agent_backends.is_empty()
+                || crate::ai_agents::select(&self.runtime.ai_agent_backends, selection).is_none())
+        {
+            self.runtime.ai_agent_backends = crate::ai_agents::probe_all().await;
+        }
+        if !effective_enabled {
+            if let Ok(mut cancels) = self.runtime.ai_agent_cancels.lock() {
+                for (_, cancel) in cancels.drain() {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+        None
     }
 }

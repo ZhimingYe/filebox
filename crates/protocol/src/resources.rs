@@ -164,7 +164,15 @@ pub struct AiAgentsCapability {
     pub available: bool,
     pub backend: Option<String>,
     pub version: Option<String>,
+    #[serde(default)]
+    pub backends: Vec<AiAgentBackendInfo>,
     pub settings: AiAgentSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiAgentBackendInfo {
+    pub kind: String,
+    pub version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -173,6 +181,10 @@ pub struct AiAgentSettings {
     /// `Some` when FILEBOX_AGENT_AI_AGENTS_ENABLED is set or invalid.
     #[serde(default)]
     pub environment_override: Option<bool>,
+    #[serde(default)]
+    pub backend: Option<String>,
+    #[serde(default)]
+    pub backend_environment_override: Option<String>,
 }
 
 impl Default for Capabilities {

@@ -27,6 +27,8 @@ cd filebox-agent-*
 | `FILEBOX_AGENT_TOKEN` | Hub 初始化时打印的 token |
 | `FILEBOX_AGENT_NAME` | 侧栏显示名（默认 `default-agent`） |
 | `FILEBOX_AGENT_DATA_DIR` | 状态目录（根目录、合集、临时传输、agent_id 等） |
+| `FILEBOX_AGENT_AI_AGENTS_ENABLED` | 在此 Agent 上启用或禁用 AI Agents |
+| `FILEBOX_AGENT_AI_AGENTS_BACKEND` | 将 AI Agents 锁定到指定后端类型 |
 | `FILEBOX_ALLOW_INSECURE_HUB` | 允许明文 `ws://` / `http://`（仅开发） |
 | `FILEBOX_AGENT_SOFFICE` | LibreOffice `soffice` 路径（可选 Office 预览） |
 | `FILEBOX_AGENT_SOFFICE_DIR` | 含 `soffice` 的目录 |

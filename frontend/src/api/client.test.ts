@@ -49,12 +49,14 @@ const mutations = [
 ];
 
 it('sends the per-Agent AI Agents preference through the authenticated API', async () => {
-  const settings = { available: false, backend: null, version: null, settings: { enabled: false, environment_override: null } };
+  const settings = { available: false, backend: null, version: null, backends: [], settings: {
+    enabled: false, environment_override: null, backend: 'herdr', backend_environment_override: null,
+  } };
   const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(settings)));
   vi.stubGlobal('fetch', fetchMock);
-  await expect(api.setAiAgentsEnabled('agent/a', false)).resolves.toEqual(settings);
+  await expect(api.setAiAgentsSettings('agent/a', { enabled: false, backend: 'herdr' })).resolves.toEqual(settings);
   expect(fetchMock).toHaveBeenCalledWith('/api/agents/agent%2Fa/ai-agents/settings', expect.objectContaining({
-    method: 'POST', body: JSON.stringify({ enabled: false }), credentials: 'include',
+    method: 'POST', body: JSON.stringify({ enabled: false, backend: 'herdr' }), credentials: 'include',
   }));
 });
 

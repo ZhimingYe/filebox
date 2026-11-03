@@ -2,6 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api/client';
+import { aiAgentBackendKey } from '../hooks/useAiAgentAttention';
 import { AiAgentsView } from './AiAgentsView';
 
 vi.mock('../api/client', async (original) => {
@@ -114,8 +115,8 @@ describe('AiAgentsView', () => {
       ? { ...listed, agents: [listed.agents[0], { ...listed.agents[0], target: 'writer', name: 'writer', id: 'w1:p3' }] }
       : { req_id: 'r', output: body.target });
     await act(async () => root.render(<AiAgentsView agent={agent} onStatus={report}
-      focusRequest={{ target: 'writer', nonce: 1 }} />));
-    expect(report).toHaveBeenCalledWith(agent.id, expect.objectContaining({ agents: expect.any(Array) }));
+      focusRequest={{ backendKey: aiAgentBackendKey(agent.id, 'herdr'), target: 'writer', nonce: 1 }} />));
+    expect(report).toHaveBeenCalledWith(aiAgentBackendKey(agent.id, 'herdr'), expect.objectContaining({ agents: expect.any(Array) }));
     expect(container.querySelector('textarea')!.getAttribute('aria-label')).toBe('Prompt for writer');
     const reviewer = [...container.querySelectorAll<HTMLButtonElement>('aside button')].find((b) => b.textContent?.includes('reviewer'))!;
     await act(async () => reviewer.click());

@@ -205,7 +205,7 @@ Agents ignore the optional read mode and retain their old reading behavior.
 
 ## Adding another AI agent backend
 
-Implement `AiAgentBackend` in `crates/agent/src/ai_agents/<name>.rs`, register it in `probe()` in `crates/agent/src/ai_agents/mod.rs`, and add a frontend descriptor in `frontend/src/lib/aiAgentBackends.ts`. Keep backend-specific CLI/protocol behavior in that adapter; request validation, generic response construction and capability/settings handling belong to the shared layer.
+Implement `AiAgentBackend` in `crates/agent/src/ai_agents/<name>.rs`, add its kind to `BACKEND_KINDS` and its probe to `probe_all()` in `crates/agent/src/ai_agents/mod.rs`, and add a frontend descriptor in `frontend/src/lib/aiAgentBackends.ts`. Keep backend-specific CLI/protocol behavior in that adapter; request validation, generic response construction and capability/settings handling belong to the shared layer.
 
 ## Verification
 

@@ -492,7 +492,11 @@ web setting may change it without a restart when the environment does not overri
 A saved `herdr_enabled: false` is carried over once as `ai_agents_enabled: false`; no
 other old names are read. Changing one Agent's capability must
 preserve other Agents' requests and acknowledgements. Explicit key actions read the
-visible screen afterward.
+visible screen afterward. The selected backend is persisted per Agent as
+`ai_agents_backend`; unset means automatic selection.
+`FILEBOX_AGENT_AI_AGENTS_BACKEND` locks selection to one backend, and an
+unsupported value remains unavailable rather than falling back. Add a backend
+to `BACKEND_KINDS` and `probe_all()` when implementing another adapter.
 See docs/herdr-shortcuts.md for the v0.9.5 navigation-key limitation. Drafts, reminder
 acknowledgements and input responses are bound to `[scope, id]`, not just a reusable name;
 Stop waiting cancels the request, but already submitted input may continue.

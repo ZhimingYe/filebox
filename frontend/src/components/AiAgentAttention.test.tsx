@@ -12,7 +12,7 @@ it.each(['Later', 'Close AI Agents reminders'])('%s removes the whole banner wit
   const root = createRoot(container);
   let raiseNewEpisode = () => {};
   function Screen() {
-    const [notices, setNotices] = useState<Notice[]>([{ id: 1, backendId: 'b1', target: 'reviewer',
+    const [notices, setNotices] = useState<Notice[]>([{ id: 1, backendId: 'b1', backendKey: '["b1","herdr"]', target: 'reviewer',
       kind: 'blocked', name: 'reviewer', message: 'Waiting for your input.', acknowledged: false }]);
     raiseNewEpisode = () => setNotices((prev) => prev.map((n) => ({ ...n, id: n.id + 1, acknowledged: false })));
     return <><input aria-label="Current work" defaultValue="unsaved work" />

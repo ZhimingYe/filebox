@@ -5,6 +5,7 @@ import { createAiAgentMonitor } from '../lib/aiAgentMonitor';
 export interface AiAgentAttention {
   id: number;
   backendId: string;
+  backendKey: string;
   target?: string;
   kind: 'blocked' | 'unknown' | 'unavailable';
   name: string;
@@ -13,6 +14,7 @@ export interface AiAgentAttention {
 }
 
 interface BackendState {
+  backendId: string;
   notices: AiAgentAttention[];
   failures: number;
   observedAgents: boolean;
@@ -22,22 +24,22 @@ interface BackendState {
 interface State { nextId: number; backends: Record<string, BackendState> }
 type Issue = Pick<AiAgentAttention, 'target' | 'kind' | 'name' | 'message'>;
 type Action =
-  | { type: 'sync'; backends: { id: string; name: string; status: string }[] }
+  | { type: 'sync'; backends: { key: string; backendId: string; name: string; status: string }[] }
   | { type: 'status'; id: string; agents: api.AiAgent[] }
   | { type: 'failure'; id: string; message: string }
   | { type: 'inactive'; id: string }
   | { type: 'ack'; ids: number[] }
   | { type: 'reset' };
 
-const emptyBackend = (): BackendState => ({ notices: [], failures: 0, unknown: {}, identities: {}, observedAgents: false });
+const emptyBackend = (backendId: string): BackendState => ({ backendId, notices: [], failures: 0, unknown: {}, identities: {}, observedAgents: false });
 
-function reconcile(state: State, id: string, backend: BackendState, issues: Issue[]): State {
+function reconcile(state: State, key: string, backendId: string, backend: BackendState, issues: Issue[]): State {
   let nextId = state.nextId;
   const notices = issues.map((issue) => {
     const old = backend.notices.find((n) => n.kind === issue.kind && n.target === issue.target);
-    return { ...issue, backendId: id, id: old?.id ?? nextId++, acknowledged: old?.acknowledged ?? false };
+    return { ...issue, backendId, backendKey: key, id: old?.id ?? nextId++, acknowledged: old?.acknowledged ?? false };
   });
-  return { nextId, backends: { ...state.backends, [id]: { ...backend, notices } } };
+  return { nextId, backends: { ...state.backends, [key]: { ...backend, notices } } };
 }
 
 function reducer(state: State, action: Action): State {
@@ -48,27 +50,27 @@ function reducer(state: State, action: Action): State {
     }]),
   ) };
   if (action.type === 'sync') {
-    const ids = new Set(action.backends.map((b) => b.id));
+    const ids = new Set(action.backends.map((b) => b.key));
     let next = { ...state, backends: Object.fromEntries(Object.entries(state.backends).filter(([id]) => ids.has(id))) };
     for (const b of action.backends) {
-      const old = next.backends[b.id] ?? emptyBackend();
-      if (b.status === 'offline' && old.observedAgents) next = reconcile(next, b.id, old, [{
+      const old = next.backends[b.key] ?? emptyBackend(b.backendId);
+      if (b.status === 'offline' && old.observedAgents) next = reconcile(next, b.key, b.backendId, old, [{
         kind: 'unavailable', name: 'Backend offline',
         message: 'Cannot check AI Agents while this backend is offline. Checks resume after it reconnects.',
       }]);
-      else if (!next.backends[b.id]) next = { ...next, backends: { ...next.backends, [b.id]: old } };
+      else if (!next.backends[b.key]) next = { ...next, backends: { ...next.backends, [b.key]: old } };
     }
     return next;
   }
   const backend = state.backends[action.id];
   if (!backend) return state; // Ignore a late response after removal/logout.
-  if (action.type === 'inactive') return { ...state, backends: { ...state.backends, [action.id]: emptyBackend() } };
+  if (action.type === 'inactive') return { ...state, backends: { ...state.backends, [action.id]: emptyBackend(backend.backendId) } };
   if (action.type === 'failure') {
     if (!backend.observedAgents) return state;
     const next = { ...backend, failures: backend.failures + 1 };
     if (next.failures < 2) return { ...state, backends: { ...state.backends, [action.id]: next } };
     // Retain known questions until a successful list proves they are resolved.
-    return reconcile(state, action.id, next, [
+    return reconcile(state, action.id, backend.backendId, next, [
       ...backend.notices.filter((n) => n.kind !== 'unavailable'),
       { kind: 'unavailable', name: 'Status unavailable', message: `${action.message} Existing questions may still need attention. Checks retry automatically.` },
     ]);
@@ -89,20 +91,31 @@ function reducer(state: State, action: Action): State {
     }
   }
   const notices = backend.notices.filter((n) => !n.target || backend.identities[n.target] === identities[n.target]);
-  return reconcile(state, action.id, { ...backend, notices, identities, failures: 0, unknown, observedAgents: action.agents.length > 0 }, issues);
+  return reconcile(state, action.id, backend.backendId,
+    { ...backend, notices, identities, failures: 0, unknown, observedAgents: action.agents.length > 0 }, issues);
+}
+
+export function aiAgentBackendKey(agentId: string, kind?: string | null): string {
+  return JSON.stringify([agentId, kind ?? null]);
 }
 
 /** Status-only monitoring: no terminal reads, input, focus changes, or OS notifications. */
 export function useAiAgentAttention(agents: api.AgentInfo[], enabled: boolean, activeBackendId: string | null) {
   const [state, dispatch] = useReducer(reducer, { nextId: 1, backends: {} });
-  const enabledIds = JSON.stringify(agents.filter((a) => a.capabilities?.ai_agents?.available).map((a) => a.id));
-  const allowed = useMemo(() => new Set<string>(JSON.parse(enabledIds)), [enabledIds]);
+  const backendKey = JSON.stringify(agents.filter((a) => a.capabilities?.ai_agents?.available)
+    .map((agent) => ({
+      key: aiAgentBackendKey(agent.id, agent.capabilities?.ai_agents?.backend),
+      backendId: agent.id,
+      name: agent.name,
+      status: agent.status,
+    })));
+  const backends = useMemo(() => JSON.parse(backendKey) as {
+    key: string; backendId: string; name: string; status: string;
+  }[], [backendKey]);
+  const allowed = useMemo(() => new Set(backends.map((backend) => backend.key)), [backends]);
   // Health updates (RTT, stats, etc.) must not restart the polling loop.
-  const backendKey = JSON.stringify(agents.filter((a) => allowed.has(a.id))
-    .map(({ id, name, status }) => ({ id, name, status })));
-  const backends = useMemo(() => JSON.parse(backendKey) as { id: string; name: string; status: string }[], [backendKey]);
-  const enabledRef = useRef({ enabled, allowed });
-  enabledRef.current = { enabled, allowed };
+  const enabledRef = useRef({ enabled, allowed, backendIds: new Map<string, string>() });
+  enabledRef.current = { enabled, allowed, backendIds: new Map(backends.map((backend) => [backend.key, backend.backendId])) };
   const reportFailure = useCallback((id: string, error: unknown) => {
     if (!enabledRef.current.enabled || !enabledRef.current.allowed.has(id)) return;
     const e = error as { name?: string; error?: string } | null;
@@ -123,12 +136,14 @@ export function useAiAgentAttention(agents: api.AgentInfo[], enabled: boolean, a
 
   const monitor = useRef<ReturnType<typeof createAiAgentMonitor> | null>(null);
   useEffect(() => {
-    const instance = createAiAgentMonitor(async (id, signal) => {
+    const instance = createAiAgentMonitor(async (key, signal) => {
+      const agentId = enabledRef.current.backendIds.get(key);
+      if (!agentId) return;
       try {
-        const result = await api.aiAgentCommand(id, { op: 'status' }, signal, 20_000);
+        const result = await api.aiAgentCommand(agentId, { op: 'status' }, signal, 20_000);
         // An old request stays invalid even if the backend was re-enabled.
-        if (!signal.aborted) reportStatus(id, result);
-      } catch (e) { if (!signal.aborted) reportFailure(id, e); }
+        if (!signal.aborted) reportStatus(key, result);
+      } catch (e) { if (!signal.aborted) reportFailure(key, e); }
     });
     monitor.current = instance;
     return () => { instance.stop(); monitor.current = null; };
@@ -139,11 +154,11 @@ export function useAiAgentAttention(agents: api.AgentInfo[], enabled: boolean, a
     // The visible AI Agents view reports its own status. Switching one view or
     // disabling one backend must not abort another backend's request.
     monitor.current?.sync(enabled
-      ? backends.filter((b) => b.status !== 'offline' && b.id !== activeBackendId).map((b) => b.id)
+      ? backends.filter((b) => b.status !== 'offline' && b.key !== activeBackendId).map((b) => b.key)
       : []);
   }, [enabled, backends, activeBackendId]);
 
   const notices = Object.values(state.backends).flatMap((b) => b.notices);
   const acknowledge = useCallback((ids: number[]) => dispatch({ type: 'ack', ids }), []);
-  return { notices: enabled ? notices.filter((n) => allowed.has(n.backendId)) : [], acknowledge, reportStatus, reportFailure };
+  return { notices: enabled ? notices.filter((n) => allowed.has(n.backendKey)) : [], acknowledge, reportStatus, reportFailure };
 }

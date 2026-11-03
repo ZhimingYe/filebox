@@ -7,6 +7,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 ### Added
 - **AI Agents review context** — the Hub supplies recent target-window output to the review provider along with the prompt, so short confirmations can be judged against the proposed action. Context is bounded, sanitized, and treated as untrusted; unavailable output never bypasses review.
 - **AI Agents prompt review** — hub.json LLM security review with Chat Completions, Responses, or Anthropic Messages protocols. By default, AI Agents prompts are disabled until review is configured and always fail closed on review errors; blocked prompts retain their browser drafts and show the review reason. A startup-only `FILEBOX_HUB_PROMPT_REVIEW_ENABLED=0` opt-out restores unreviewed relay. Status, reads and keys remain available.
+- **Per-Agent AI Agents backend selection** — choose an automatically detected or explicit backend in Agent settings, or lock selection with `FILEBOX_AGENT_AI_AGENTS_BACKEND`.
 
 ### Changed
 - **AI Agents hard rename** — Herdr is now the first backend for the backend-neutral AI Agents view. Breaking interface changes: `FILEBOX_AGENT_HERDR_ENABLED` → `FILEBOX_AGENT_AI_AGENTS_ENABLED`; `agent_state.json` `herdr_enabled` → `ai_agents_enabled` (a saved `herdr_enabled: false` is carried over once as `ai_agents_enabled: false`; no other old names are read); `/api/agents/{id}/herdr[-settings]` → `/api/agents/{id}/ai-agents[/settings]`; WebSocket messages and the capability field are renamed. Upgrade Hub and Agent together.
