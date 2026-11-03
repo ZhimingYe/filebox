@@ -840,8 +840,8 @@ it('supports searching on mobile before selecting a window and keeps filters on 
   mockMultipleAgents(); await render(); await searchAgents('writer');
   expect(container.querySelector('textarea')).toBeNull();
   const search = container.querySelector<HTMLInputElement>('[aria-label="Search agents"]')!;
-  expect(search.style.fontSize).toBe('16px');
-  expect(search.style.minHeight).toBe('44px');
+  expect(search.style.fontSize).toBe('13px');
+  expect(search.style.minHeight).toBe('32px');
   await act(async () => container.querySelector<HTMLButtonElement>('aside button[aria-pressed]')!.click());
   expect(container.querySelector('textarea')!.getAttribute('aria-label')).toBe('Prompt for writer');
   await typePrompt('mobile draft');
@@ -874,7 +874,7 @@ it('shows snapshot mode and offers an explicit refresh for changed status', asyn
   expect(button('Refresh changed output')).toBeUndefined();
 });
 
-it.each([390, 320])('gives settings switch labels 44px touch targets at %spx wide', async (width) => {
+it.each([390, 320])('keeps settings switch rows compact at %spx wide', async (width) => {
   window.innerWidth = width;
   await render();
   await act(async () => container.querySelector<HTMLButtonElement>('aside button[aria-pressed]')!.click());
@@ -882,7 +882,7 @@ it.each([390, 320])('gives settings switch labels 44px touch targets at %spx wid
   const labels = [...container.querySelectorAll<HTMLButtonElement>('[role="dialog"] [role="switch"]')]
     .map((input) => input.closest('label')!);
   expect(labels).toHaveLength(3);
-  for (const label of labels) expect(Number.parseInt(label.style.minHeight)).toBeGreaterThanOrEqual(44);
+  for (const label of labels) expect(label.style.minHeight).toBe('32px');
 });
 
 it('preserves reading position on automatic refresh and jumps locally without sending any remote command', async () => {

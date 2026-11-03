@@ -1,26 +1,67 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react';
 import { c, font, radius, shadow } from '../theme';
 
+type HerdrButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+  touch?: boolean;
+  variant?: 'primary' | 'secondary' | 'quiet';
+  /** Square, icon-only control. */
+  icon?: boolean;
+  size?: 'sm' | 'md';
+};
+
 /** Shared action hierarchy for Herdr onboarding, toolbars and remote input. */
-export function HerdrButton({ children, style, touch, variant = 'secondary', ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { touch?: boolean; variant?: 'primary' | 'secondary' | 'quiet' }) {
+export function HerdrButton({ children, style, touch, variant = 'secondary', icon = false, size = 'md', ...props }: HerdrButtonProps) {
   const [hovered, setHovered] = useState(false);
+  const hot = hovered && !props.disabled;
+  const height = touch ? (size === 'sm' ? 28 : 32) : (size === 'sm' ? 26 : 30);
   return <button {...props} type={props.type ?? 'button'}
     onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
     style={{
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-      minHeight: touch ? 44 : 32, minWidth: touch ? 44 : undefined, padding: '0 12px', flexShrink: 0,
-      borderWidth: 1, borderStyle: 'solid', borderColor: variant === 'secondary' ? c.border : 'transparent', borderRadius: radius.md,
-      background: variant === 'primary' ? (hovered && !props.disabled ? c.accentHover : c.accent)
-        : hovered && !props.disabled ? c.bgMuted : variant === 'secondary' ? c.surface : 'transparent',
-      color: variant === 'primary' ? c.onAccent : c.textSecondary, fontFamily: font.sans, fontSize: 13, fontWeight: 500, lineHeight: 1.4,
-      cursor: props.disabled ? 'not-allowed' : 'pointer', opacity: props.disabled ? 0.5 : 1,
+      height, minWidth: icon ? height : undefined, padding: icon ? 0 : size === 'sm' ? '0 8px' : '0 12px',
+      flexShrink: 0, boxSizing: 'border-box',
+      borderWidth: 1, borderStyle: 'solid', borderRadius: size === 'sm' ? radius.sm : radius.md,
+      borderColor: variant === 'secondary' ? (hot ? c.textFaint : c.border) : 'transparent',
+      background: variant === 'primary' ? (hot ? c.accentHover : c.accent)
+        : hot ? (variant === 'secondary' ? c.bgSubtle : c.bgMuted)
+          : variant === 'secondary' ? c.surface : 'transparent',
+      boxShadow: variant === 'secondary' ? shadow.xs : 'none',
+      color: variant === 'primary' ? c.onAccent : hot ? c.text : c.textSecondary,
+      fontFamily: font.sans, fontSize: size === 'sm' ? 12 : 12.5, fontWeight: 500, lineHeight: 1,
+      whiteSpace: 'nowrap', cursor: props.disabled ? 'not-allowed' : 'pointer', opacity: props.disabled ? 0.45 : 1,
+      transition: 'background 0.12s, border-color 0.12s, color 0.12s',
       ...style,
     }}>{children}</button>;
 }
 
+/** Inline status line: one visual language for info, warnings and errors. */
+export function HerdrCallout({ tone = 'info', children, onDismiss, dismissLabel = 'Dismiss', touch, role, style }: {
+  tone?: 'info' | 'warning' | 'danger'; children: ReactNode; onDismiss?: () => void; dismissLabel?: string;
+  touch?: boolean; role?: 'status' | 'alert'; style?: CSSProperties;
+}) {
+  const accent = tone === 'danger' ? c.danger : tone === 'warning' ? c.warning : c.textMuted;
+  return <div role={role} style={{
+    display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, minWidth: 0,
+    minHeight: 30, boxSizing: 'border-box', padding: onDismiss ? '3px 3px 3px 10px' : '6px 10px',
+    borderRadius: radius.md, border: `1px solid ${tone === 'info' ? c.border : 'transparent'}`,
+    background: tone === 'danger' ? c.dangerBg : tone === 'warning' ? c.warningBg : c.bgSubtle,
+    color: tone === 'danger' ? c.danger : c.text, fontFamily: font.sans, fontSize: 12, lineHeight: 1.45,
+    ...style,
+  }}>
+    <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: radius.pill, background: accent, flexShrink: 0 }} />
+    <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{children}</span>
+    {onDismiss && <HerdrButton variant="quiet" icon size="sm" touch={touch} aria-label={dismissLabel} title={dismissLabel}
+      onClick={onDismiss} style={{ color: tone === 'danger' ? c.danger : c.textMuted }}>
+      <svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+        strokeWidth="1.6" strokeLinecap="round"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+    </HerdrButton>}
+  </div>;
+}
+
 /** Non-modal disclosure: pointer dismissal, Escape, and keyboard focus return. */
-export function HerdrPopover({ label, trigger, children, above = false, touch = false, closeOnAction = false }: {
+export function HerdrPopover({ label, trigger, children, above = false, touch = false, closeOnAction = false, triggerVariant = 'quiet', icon = true, size = 'md' }: {
   label: string; trigger: ReactNode; children: ReactNode; above?: boolean; touch?: boolean; closeOnAction?: boolean;
+  triggerVariant?: 'secondary' | 'quiet'; icon?: boolean; size?: 'sm' | 'md';
 }) {
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -67,7 +108,7 @@ export function HerdrPopover({ label, trigger, children, above = false, touch = 
   }, [open, above]);
   useEffect(() => {
     if (!open) return;
-    panel.current?.querySelector<HTMLElement>('button, input, select')?.focus();
+    panel.current?.focus({ preventScroll: true });
     const dismiss = (event: PointerEvent) => {
       if (!root.current?.contains(event.target as Node)) setOpen(false);
     };
@@ -84,9 +125,10 @@ export function HerdrPopover({ label, trigger, children, above = false, touch = 
         root.current?.querySelector<HTMLButtonElement>('button')?.focus();
       }
     }}>
-    <HerdrButton touch={touch} aria-label={label} title={label} aria-expanded={open}
-      aria-controls={open ? id : undefined} onClick={() => setOpen((value) => !value)}>{trigger}</HerdrButton>
-    {open && <div id={id} ref={panel} role="dialog" aria-label={label} onClick={(event) => {
+    <HerdrButton touch={touch} variant={triggerVariant} icon={icon} size={size} aria-label={label} title={label} aria-expanded={open}
+      aria-controls={open ? id : undefined} onClick={() => setOpen((value) => !value)}
+      style={open ? { background: c.bgMuted, color: c.text } : undefined}>{trigger}</HerdrButton>
+    {open && <div id={id} ref={panel} role="dialog" aria-label={label} tabIndex={-1} onClick={(event) => {
       if (closeOnAction && (event.target as Element).closest('button')) {
         setOpen(false);
         root.current?.querySelector<HTMLButtonElement>('button')?.focus();
@@ -94,8 +136,8 @@ export function HerdrPopover({ label, trigger, children, above = false, touch = 
     }} style={{
       position: 'fixed',
       zIndex: 20, width: 300, maxHeight: 'min(420px, 55dvh)', overflow: 'auto',
-      padding: 12, boxSizing: 'border-box', border: `1px solid ${c.border}`,
-      borderRadius: radius.lg, background: c.surface, boxShadow: shadow.lg,
+      padding: 14, boxSizing: 'border-box', border: `1px solid ${c.border}`,
+      borderRadius: radius.lg, background: c.surface, boxShadow: shadow.lg, outline: 'none',
       color: c.text, fontFamily: font.sans, fontSize: 12,
     }}>{children}</div>}
   </div>;

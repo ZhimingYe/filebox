@@ -193,7 +193,7 @@ automatic/manual refresh mode; status changes offer an explicit refresh action.
 Copy copies only the displayed snapshot, not the draft or remote input. Latest
 scrolls only Filebox's snapshot without requesting output or sending keys; automatic
 refresh preserves the reading position when scrolled up. Message fields grow to a
-bounded height and explain blocked submission, with larger touch controls on mobile.
+bounded height and explain blocked submission, with the same compact controls on mobile.
 
 See [remote navigation and shortcut research](herdr-shortcuts.md) for the
 bottom-screen read strategy, per-agent profiles, the Herdr v0.9.5 navigation-key

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { HerdrAttention as Notice } from '../hooks/useHerdrAttention';
 import type { AgentInfo } from '../api/client';
-import { c, radius, settingsLayout as layout } from '../theme';
+import { c, font, radius, settingsLayout as layout } from '../theme';
 import { HerdrButton } from './HerdrControls';
 import { IconClose } from './icons';
 
@@ -16,40 +16,49 @@ export function HerdrAttention({ notices, agents, onAcknowledge, onOpen, isMobil
   const unread = notices.filter((n) => !n.acknowledged);
   if (!unread.length) return null;
   const shown = expanded ? unread : unread.slice(0, 1);
+  const closeButton = <HerdrButton variant="quiet" icon size="sm" touch={isMobile} aria-label="Close Herdr reminders" title="Close these reminders"
+    onClick={() => { onAcknowledge(unread.map((n) => n.id)); setExpanded(false); }} style={{ color: c.textMuted }}>
+    <IconClose style={{ width: 13, height: 13 }} />
+  </HerdrButton>;
   return (
-    <aside aria-label="Herdr attention" style={{ ...layout.card, flexShrink: 0, margin: '12px 16px 0',
-      display: 'flex', flexDirection: isMobile ? 'column' : 'row', alignItems: 'stretch' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-        paddingLeft: 12, flexShrink: 0, fontSize: 12, color: c.text, background: c.warningBg, borderRadius: radius.md }}>
-        <span>Herdr · {unread.length} need attention</span>
-        <HerdrButton variant="quiet" touch={isMobile} aria-label="Close Herdr reminders" title="Close these reminders"
-          onClick={() => { onAcknowledge(unread.map((n) => n.id)); setExpanded(false); }}
-          style={{ minWidth: 44 }}>
-          <IconClose />
-        </HerdrButton>
-      </div>
-      <div style={{ flex: 1, minWidth: 0, maxHeight: isMobile ? '25vh' : '30vh', overflowY: 'auto' }}>
-        {shown.map((n) => (
-          <div key={n.id} style={{ padding: '8px 12px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-              <div style={{ fontSize: 12, color: c.textSecondary, overflowWrap: 'anywhere' }}>
-                {agents.find((a) => a.id === n.backendId)?.name ?? n.backendId} · {n.name}
-              </div>
-              <p role="status" style={{ fontSize: 13, lineHeight: 1.5, margin: '4px 0', color: c.text }}>{n.message}</p>
+    <aside aria-label="Herdr attention" style={{ ...layout.card, flexShrink: 0, margin: isMobile ? '8px 12px' : '12px 20px',
+      fontFamily: font.sans }}>
+      <div style={{ maxHeight: isMobile ? '25vh' : '30vh', overflowY: 'auto' }}>
+        {shown.map((n, index) => {
+          const dot = <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: radius.pill, background: c.warning, flexShrink: 0,
+            boxShadow: `0 0 0 3px ${c.warningBg}`, marginTop: isMobile ? 6 : 0 }} />;
+          const text = <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 11, color: c.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{ color: c.text, fontWeight: 600 }}>{n.name}</span>
+              {' · '}{agents.find((a) => a.id === n.backendId)?.name ?? n.backendId}
+              {index === 0 && unread.length > 1 && ` · ${unread.length} need attention`}
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <HerdrButton touch={isMobile} onClick={() => {
-                onAcknowledge([n.id]); setExpanded(false); onOpen(n);
-              }}>View in Herdr</HerdrButton>
-              <HerdrButton variant="quiet" touch={isMobile} onClick={() => {
-                onAcknowledge([n.id]); setExpanded(false);
-              }}>Later</HerdrButton>
+            <p role="status" style={{ fontSize: 12.5, lineHeight: 1.45, margin: '2px 0 0', color: c.textSecondary,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: isMobile ? 'normal' : 'nowrap' }} title={n.message}>{n.message}</p>
+          </div>;
+          const actions = <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+            <HerdrButton variant="quiet" size="sm" touch={isMobile} style={{ color: c.accent }} onClick={() => {
+              onAcknowledge([n.id]); setExpanded(false); onOpen(n);
+            }}>View in Herdr</HerdrButton>
+            <HerdrButton variant="quiet" size="sm" touch={isMobile} onClick={() => {
+              onAcknowledge([n.id]); setExpanded(false);
+            }}>Later</HerdrButton>
+            {index === 0 && !expanded && unread.length > 1 && <HerdrButton variant="quiet" size="sm" touch={isMobile}
+              onClick={() => setExpanded(true)}>Show all {unread.length}</HerdrButton>}
+          </div>;
+          const divider = index ? `1px solid ${c.borderSubtle}` : undefined;
+          return isMobile
+            ? <div key={n.id} style={{ padding: '8px 4px 4px 12px', borderTop: divider }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>{dot}{text}{index === 0 ? closeButton : <span style={{ width: 28, flexShrink: 0 }} />}</div>
+              <div style={{ marginLeft: 8, marginTop: 2 }}>{actions}</div>
             </div>
-          </div>
-        ))}
+            : <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 8px 8px 14px', borderTop: divider }}>
+              {dot}{text}{actions}
+              {index === 0 ? <><span aria-hidden="true" style={{ width: 1, height: 16, background: c.border, flexShrink: 0 }} />{closeButton}</>
+                : <span style={{ width: 39, flexShrink: 0 }} />}
+            </div>;
+        })}
       </div>
-      {!expanded && unread.length > 1 && <HerdrButton variant="quiet" touch={isMobile}
-        onClick={() => setExpanded(true)}>Show all {unread.length}</HerdrButton>}
     </aside>
   );
 }
