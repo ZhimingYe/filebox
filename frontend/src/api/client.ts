@@ -1076,10 +1076,17 @@ export interface HerdrServerStatus {
   message?: string | null;
 }
 
+/** Hub-side prompt review state, configured only in hub.json. */
+export interface HerdrPromptReview {
+  state: 'on' | 'off' | 'not_configured';
+  model?: string | null;
+}
+
 export interface HerdrResponse {
   req_id: string;
   error?: string | null;
   status?: HerdrServerStatus | null;
+  prompt_review?: HerdrPromptReview | null;
   agents?: HerdrAgent[];
   agent?: HerdrAgent | null;
   output?: string | null;

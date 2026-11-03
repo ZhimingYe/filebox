@@ -99,6 +99,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const isMobileRef = useRef(isMobile);
   isMobileRef.current = isMobile;
   const [status, setStatus] = useState<api.HerdrServerStatus | null>(null);
+  const [promptReview, setPromptReview] = useState<api.HerdrPromptReview | null>(null);
   const [agents, setAgents] = useState<api.HerdrAgent[]>([]);
   const [agentQuery, setAgentQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<api.HerdrAgentStatus | 'all'>('all');
@@ -216,6 +217,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
         abortOutput.current = null;
       }
       setStatus(res.status ?? null);
+      setPromptReview(res.prompt_review ?? null);
       setAgents(next);
       agentsRef.current = next;
       for (const [target, cached] of outputCache.current) if (identities.get(target) !== cached.identity) outputCache.current.delete(target);
@@ -545,23 +547,27 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const showDetail = !!selectedAgent && (!isMobile || selected !== null);
   const showList = !isMobile || !selectedAgent;
   const promptDisabled = sending || !reachable || !prompt.trim()
-    || promptBytes > PROMPT_MAX_BYTES || selectedAgent?.status === 'blocked';
+    || promptBytes > PROMPT_MAX_BYTES || selectedAgent?.status === 'blocked' || promptReview?.state === 'not_configured';
   const outputChanged = selectedAgent && seenSignature !== null && seenSignature !== outputSignature(selectedAgent);
   const copyLabel = JSON.stringify([selectedIdentity, updatedAt]);
   const copied = copiedPath === copyLabel;
   const promptHint = promptBytes > PROMPT_MAX_BYTES ? 'Prompt exceeds the 32 KiB limit. Shorten it before sending.'
     : sending ? 'Input submitted. Stop waiting only stops Filebox from waiting.'
     : !reachable ? 'Herdr is unavailable. Your draft is kept here.'
+    : promptReview?.state === 'not_configured' ? (isMobile ? 'Prompt review not configured' : 'Prompts disabled: configure herdr_prompt_review in hub.json')
     : selectedAgent?.status === 'blocked' ? 'Waiting for approval. Use the remote keys before sending a message.'
     : wait ? 'Wait for result is on · up to 60 seconds'
-    : isMobile ? 'Enter for new line' : 'Ctrl / ⌘ + Enter to send · Enter for new line';
+    : isMobile ? 'Enter for new line' : compactHeight && promptReview?.state ? 'Ctrl / ⌘ + Enter to send' : 'Ctrl / ⌘ + Enter to send · Enter for new line';
 
   const inlineNotice = compactHeight && !isMobile;
   const statusWarning = sending || !selectedAgent ? null
     : selectedAgent.status === 'blocked' ? 'Needs your input. Use the remote keys below to respond.'
     : selectedAgent.status === 'unknown' ? 'Status unavailable. Check the output before continuing.' : null;
   const noticeActive = sending || (loadingOutput && outputElapsed >= 8) || !!actionNotice;
-  const noticeText = sending ? `${wait ? 'Waiting for' : 'Sending to'} ${actionTarget} · ${elapsed}s`
+  const reviewing = promptReview?.state === 'on';
+  const reviewLabel = promptReview?.state === 'on' ? `Reviewed by ${promptReview.model || 'LLM'}`
+    : promptReview?.state === 'off' ? 'Prompt review off' : null;
+  const noticeText = sending ? `${reviewing ? (wait ? 'Reviewing, then waiting for' : 'Reviewing and sending to') : wait ? 'Waiting for' : 'Sending to'} ${actionTarget} · ${elapsed}s`
     : loadingOutput ? (outputElapsed >= 8 ? `Taking longer than usual · ${outputElapsed}s` : 'Refreshing…')
     : actionNotice;
   const stopWaitingButton = sending && <HerdrButton variant="quiet" size="sm" touch={isMobile} onClick={stopWaiting}
@@ -623,7 +629,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
           <SettingsSwitch aria-label="Wait for result after sending" checked={wait} disabled={sending} onClick={() => setWait((value) => !value)} />
         </label>
       </>}
-      <p style={styles.menuNote}>{updatedAt ? `Output updated ${new Date(updatedAt).toLocaleTimeString()}. ` : ''}Status checks every 30 seconds.{status?.version ? ` Herdr ${status.version}.` : ''}</p>
+      <p style={styles.menuNote}>{updatedAt ? `Output updated ${new Date(updatedAt).toLocaleTimeString()}. ` : ''}Status checks every 30 seconds.{status?.version ? ` Herdr ${status.version}.` : ''}{promptReview?.state === 'on' ? ` Prompt review on · ${promptReview.model || 'LLM'}.` : promptReview?.state === 'off' ? ' Prompt review off.' : promptReview?.state === 'not_configured' ? ' Prompt review not configured; prompts are disabled.' : ''}</p>
     </HerdrPopover>
   );
 
@@ -858,13 +864,14 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                     {promptHint}
                   </span>
                   {promptBytes >= PROMPT_MAX_BYTES * 0.75 && <span style={{ ...styles.composerHint, marginLeft: 'auto', whiteSpace: 'nowrap', color: promptBytes > PROMPT_MAX_BYTES ? c.danger : c.textMuted }}>{(promptBytes / 1024).toFixed(1)} / 32 KiB</span>}
+                  {reviewLabel && <span style={{ ...styles.composerHint, marginLeft: promptBytes >= PROMPT_MAX_BYTES * 0.75 ? undefined : 'auto', flexShrink: 0, maxWidth: '45%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: promptReview?.state === 'off' ? c.warning : c.textMuted }} title={reviewLabel}>{reviewLabel}</span>}
                   <HerdrButton
                     variant="primary" touch={isMobile} style={{ padding: '0 14px' }}
                     onClick={() => void sendPrompt()}
                     disabled={promptDisabled}
                     title={promptDisabled ? promptHint : `Send to ${displayName(selectedAgent)}`}
                   >
-                    {sending ? (wait ? 'Waiting…' : 'Sending…') : 'Send'}
+                    {sending ? (wait ? 'Waiting…' : reviewing ? 'Reviewing…' : 'Sending…') : 'Send'}
                   </HerdrButton>
                 </div>
               </div>

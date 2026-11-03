@@ -142,6 +142,7 @@ impl PromptReviewer {
     pub fn new(config: PromptReviewConfig) -> Self {
         Self { config, client: reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().expect("prompt review HTTP client") }
     }
+    pub fn model(&self) -> &str { &self.config.model }
     pub async fn review(&self, text: &str, context: Option<&str>) -> Result<Verdict, ()> {
         let c = &self.config;
         let mut request = self.client.post(format!("{}{}", c.base_url.trim_end_matches('/'), c.protocol.path()))
