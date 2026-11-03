@@ -564,7 +564,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
     : loadingOutput ? (outputElapsed >= 8 ? `Taking longer than usual · ${outputElapsed}s` : 'Refreshing…')
     : actionNotice;
   const stopWaitingButton = sending && <HerdrButton variant="quiet" size="sm" touch={isMobile} onClick={stopWaiting}
-    style={{ color: c.accent, height: isMobile ? 32 : 22, padding: '0 6px' }}>Stop waiting</HerdrButton>;
+    style={{ color: c.accent, height: isMobile ? 24 : 22, padding: '0 6px' }}>Stop waiting</HerdrButton>;
 
   const jumpToLatest = () => {
     stickToBottomRef.current = true;
@@ -657,7 +657,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                   onChange={(event) => setAgentQuery(event.target.value)}
                   onFocus={() => setSearchFocused(true)} onBlur={() => setSearchFocused(false)}
                   onKeyDown={(event) => { if (event.key === 'Escape' && agentQuery) { event.preventDefault(); setAgentQuery(''); } }}
-                  style={{ ...styles.searchInput, fontSize: isMobile ? 16 : 12.5, minHeight: isMobile ? 44 : 30 }} />
+                  style={{ ...styles.searchInput, fontSize: isMobile ? 13 : 12.5, minHeight: isMobile ? 32 : 30 }} />
                 {agentQuery && <HerdrButton variant="quiet" icon size="sm" aria-label="Clear search" title="Clear search"
                   onClick={() => setAgentQuery('')} style={{ width: 20, minWidth: 20, height: 20, marginRight: -4, color: c.textMuted }}>
                   <IconClose style={{ width: 12, height: 12 }} />
@@ -666,7 +666,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
               <select aria-label="Filter agents by status" value={statusFilter}
                 onFocus={() => setFilterFocused(true)} onBlur={() => setFilterFocused(false)}
                 onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
-                style={{ ...styles.filterSelect, fontSize: isMobile ? 16 : 12, minHeight: isMobile ? 44 : 30, width: 'auto', maxWidth: isMobile ? 128 : 96, flexShrink: 0, ...(filterFocused ? styles.fieldFocused : null) }}>
+                style={{ ...styles.filterSelect, fontSize: isMobile ? 13 : 12, minHeight: isMobile ? 32 : 30, width: 'auto', maxWidth: isMobile ? 128 : 96, flexShrink: 0, ...(filterFocused ? styles.fieldFocused : null) }}>
                 <option value="all">{`All · ${agents.length}`}</option>
                 {(['blocked', 'working', 'done', 'idle', 'unknown'] as const).map((value) => <option key={value} value={value}>
                   {value === 'blocked' ? 'Needs input' : statusMeta(value).label} · {agents.filter((item) => item.status === value).length}
@@ -799,7 +799,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                   <span style={{ color: c.textMuted }}>{autoRefresh[selectedAgent.target] === false ? 'Manual' : 'Auto · 1m'}</span>
                 </span>}
                 {outputChanged && <HerdrButton variant="quiet" size="sm" touch={isMobile} aria-label="Refresh changed output" disabled={loadingOutput || !reachable}
-                  onClick={refreshOutput} style={{ color: c.accent, height: isMobile ? 32 : 22, padding: '0 6px', fontSize: 11 }}>
+                  onClick={refreshOutput} style={{ color: c.accent, height: isMobile ? 24 : 22, padding: '0 6px', fontSize: 11 }}>
                   <span aria-hidden="true" style={{ ...styles.dot, background: c.accent }} />Status changed · Refresh</HerdrButton>}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
@@ -847,7 +847,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                   rows={2}
                   maxLength={PROMPT_MAX_BYTES}
                   disabled={sending}
-                  style={{ ...styles.textarea, fontSize: isMobile ? 16 : 13.5, ...(compactHeight ? { minHeight: 40, padding: '10px 14px 4px' } : null) }}
+                  style={{ ...styles.textarea, fontSize: 13.5, ...(compactHeight ? { minHeight: 40, padding: '10px 14px 4px' } : null) }}
                   onKeyDown={(e) => {
                     if (!e.nativeEvent.isComposing && (e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                       e.preventDefault();
@@ -908,7 +908,7 @@ const styles: Record<string, React.CSSProperties> = {
   srOnly: { position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clipPath: 'inset(50%)', whiteSpace: 'nowrap', border: 0 },
   menuTitle: { ...layout.cardTitle, fontSize: 13, marginBottom: 4 },
   menuNote: { ...layout.prefHint, paddingTop: 12, borderTop: `1px solid ${c.borderSubtle}` },
-  settingRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, minHeight: 44, fontSize: 12.5, lineHeight: 1.45, color: c.text, cursor: 'pointer' },
+  settingRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, minHeight: 32, fontSize: 12.5, lineHeight: 1.45, color: c.text, cursor: 'pointer' },
   listHeading: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 2px 12px', ...layout.cardTitle, fontSize: 13 },
   inputCard: { display: 'flex', flexDirection: 'column', flexShrink: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain',
     borderWidth: 1, borderStyle: 'solid', borderColor: c.border, borderRadius: radius.lg, background: c.surface, boxShadow: shadow.xs,

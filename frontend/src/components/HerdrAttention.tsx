@@ -49,7 +49,7 @@ export function HerdrAttention({ notices, agents, onAcknowledge, onOpen, isMobil
           const divider = index ? `1px solid ${c.borderSubtle}` : undefined;
           return isMobile
             ? <div key={n.id} style={{ padding: '10px 4px 6px 12px', borderTop: divider }}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>{dot}{text}{index === 0 ? closeButton : <span style={{ width: 36, flexShrink: 0 }} />}</div>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>{dot}{text}{index === 0 ? closeButton : <span style={{ width: 28, flexShrink: 0 }} />}</div>
               <div style={{ marginLeft: 16, marginTop: 6 }}>{actions}</div>
             </div>
             : <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 8px 8px 14px', borderTop: divider }}>

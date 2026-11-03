@@ -14,7 +14,7 @@ export function HerdrButton({ children, style, touch, variant = 'secondary', ico
   const [hovered, setHovered] = useState(false);
   const [keyboardFocus, setKeyboardFocus] = useState(false);
   const hot = hovered && !props.disabled;
-  const height = touch ? 44 : (size === 'sm' ? 26 : 30);
+  const height = touch ? (size === 'sm' ? 28 : 32) : (size === 'sm' ? 26 : 30);
   return <button {...props} type={props.type ?? 'button'}
     onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
     onFocus={(event) => { setKeyboardFocus(event.currentTarget.matches(':focus-visible')); props.onFocus?.(event); }}

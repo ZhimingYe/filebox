@@ -460,8 +460,10 @@ When the Agent finds a `herdr` binary (`FILEBOX_AGENT_HERDR` or `PATH`) and
 (`agent list` / `agent read` / `agent prompt` / `agent send-keys`) — never a
 shell, never layout/attach commands. The Hub relays
 `POST /api/agents/{id}/herdr`. The UI lists live agents, shows latest
-output, sends a prompt, and exposes large tap targets for Esc / Enter /
-Ctrl+C (useful on a phone when an agent is `blocked`). Legacy reads without an explicit source try
+output, sends a prompt, and exposes compact Esc / Enter / Ctrl+C remote
+keys (useful on a phone when an agent is `blocked`). UI controls favor a
+refined, compact look on every client; do not enlarge buttons, fields or
+panels for touch-target size. Legacy reads without an explicit source try
 `recent-unwrapped` and fall back to `visible` on `agent_not_idle` (full-screen
 agents refuse scrolled history while working). Herdr v0.9.5 requires
 `agent prompt TARGET TEXT [--wait --timeout MS]`: text is positional,

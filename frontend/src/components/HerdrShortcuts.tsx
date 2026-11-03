@@ -19,15 +19,15 @@ export function HerdrShortcuts({ kind, disabled, onSend }: {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const shortcuts = [...PROFILE_KEYS[profile], ...COMMON_KEYS]
     .filter((item) => `${item.label} ${item.description}`.toLocaleLowerCase().includes(normalizedQuery));
-  const field = { width: '100%', height: isMobile ? 40 : 30, boxSizing: 'border-box' as const, borderWidth: 1, borderStyle: 'solid', borderColor: c.border,
+  const field = { width: '100%', height: isMobile ? 32 : 30, boxSizing: 'border-box' as const, borderWidth: 1, borderStyle: 'solid', borderColor: c.border,
     outline: 'none', transition: 'border-color 0.12s, box-shadow 0.12s',
-    borderRadius: radius.md, background: c.surface, color: c.text, fontFamily: font.sans, fontSize: isMobile ? 16 : 12.5, padding: '0 8px' };
+    borderRadius: radius.md, background: c.surface, color: c.text, fontFamily: font.sans, fontSize: isMobile ? 13 : 12.5, padding: '0 8px' };
   return <div style={{ display: 'flex', flexShrink: 0, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
     <div role="group" aria-label="Remote input keys" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
       <span style={{ fontSize: 11, color: c.textMuted, marginRight: 4 }}>Remote</span>
       {QUICK_KEYS.map((item) => <HerdrButton key={item.label} disabled={disabled} touch={isMobile} size="sm" variant="quiet"
         aria-label={item.label} aria-description={item.description} title={item.description} onClick={() => onSend(item.keys)}
-        style={{ minWidth: isMobile ? 40 : 30, padding: '0 8px', background: c.bgMuted, fontSize: 11.5, color: c.textSecondary }}>
+        style={{ minWidth: isMobile ? 32 : 30, padding: '0 8px', background: c.bgMuted, fontSize: 11.5, color: c.textSecondary }}>
         {item.label === 'Up' || item.label === 'Down' ? <svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16"
           fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
           <path d={item.label === 'Up' ? 'M4 7l4-4 4 4M8 3v10' : 'M4 9l4 4 4-4M8 13V3'} />
@@ -49,7 +49,7 @@ export function HerdrShortcuts({ kind, disabled, onSend }: {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         {shortcuts.map((item) => <HerdrButton key={item.label} variant="quiet" disabled={disabled} touch={isMobile}
           aria-label={`${item.label}: ${item.description}`} onClick={() => onSend(item.keys)}
-          style={{ width: '100%', height: 'auto', minHeight: isMobile ? 40 : 30, justifyContent: 'space-between', textAlign: 'left', gap: 12, padding: '5px 6px', whiteSpace: 'normal' }}>
+          style={{ width: '100%', height: 'auto', minHeight: isMobile ? 32 : 30, justifyContent: 'space-between', textAlign: 'left', gap: 12, padding: '5px 6px', whiteSpace: 'normal' }}>
           <span style={{ flex: 1, fontSize: 12, lineHeight: 1.35, fontWeight: 400, color: c.text }}>{item.description}</span>
           <kbd style={{ fontFamily: font.mono, fontSize: 10.5, color: c.textSecondary, whiteSpace: 'nowrap',
             background: c.bgSubtle, border: `1px solid ${c.border}`, borderBottomWidth: 2, borderRadius: radius.sm, padding: '1px 5px' }}>{item.label}</kbd>
