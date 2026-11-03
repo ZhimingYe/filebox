@@ -489,7 +489,8 @@ created; the capability reports unavailable with no backend identity, and incomi
 commands cannot invoke a backend. Unset defaults to auto-detection; invalid values disable
 integration with one startup warning. `ai_agents_enabled` is persisted per Agent, and the
 web setting may change it without a restart when the environment does not override it.
-The old `herdr_enabled` value is not migrated. Changing one Agent's capability must
+A saved `herdr_enabled: false` is carried over once as `ai_agents_enabled: false`; no
+other old names are read. Changing one Agent's capability must
 preserve other Agents' requests and acknowledgements. Explicit key actions read the
 visible screen afterward.
 See docs/herdr-shortcuts.md for the v0.9.5 navigation-key limitation. Drafts, reminder

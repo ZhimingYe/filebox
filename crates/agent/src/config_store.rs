@@ -16,6 +16,9 @@ pub struct PersistedConfig {
     pub collections: Vec<CollectionConfig>,
     #[serde(default = "default_ai_agents_enabled")]
     pub ai_agents_enabled: bool,
+    /// One-time read of the legacy opt-out; omitted from saved state.
+    #[serde(default, rename = "herdr_enabled", skip_serializing)]
+    legacy_herdr_enabled: Option<bool>,
 }
 
 fn default_ai_agents_enabled() -> bool {
@@ -31,6 +34,7 @@ impl PersistedConfig {
             collections_revision: 0,
             collections: vec![],
             ai_agents_enabled: true,
+            legacy_herdr_enabled: None,
         }
     }
 
@@ -43,7 +47,11 @@ impl PersistedConfig {
         if path.exists() {
             match std::fs::read_to_string(&path) {
                 Ok(text) => match serde_json::from_str::<PersistedConfig>(&text) {
-                    Ok(config) => {
+                    Ok(mut config) => {
+                        if config.legacy_herdr_enabled == Some(false) {
+                            config.ai_agents_enabled = false;
+                        }
+                        config.legacy_herdr_enabled = None;
                         tracing::info!(
                             "Loaded persisted config: agent_id={}, rev={}, {} roots",
                             config.agent_id,
@@ -196,6 +204,55 @@ mod tests {
     }
 
     #[test]
+    fn legacy_disabled_setting_is_carried_over_once_and_can_be_reenabled() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::fs::write(
+            path.join("agent_state.json"),
+            r#"{"agent_id":"stable-old-id","resource_revision":4,"roots":[],"herdr_enabled":false}"#,
+        )
+        .unwrap();
+
+        let cfg = PersistedConfig::load_or_create(&path);
+        assert!(!cfg.ai_agents_enabled);
+        assert_eq!(cfg.legacy_herdr_enabled, None);
+
+        cfg.save_fallible(&path).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path.join("agent_state.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["ai_agents_enabled"], false);
+        assert!(saved.get("herdr_enabled").is_none());
+
+        let mut reloaded = PersistedConfig::load_or_create(&path);
+        assert!(!reloaded.ai_agents_enabled);
+        reloaded.ai_agents_enabled = true;
+        reloaded.save_fallible(&path).unwrap();
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path.join("agent_state.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["ai_agents_enabled"], true);
+        assert!(saved.get("herdr_enabled").is_none());
+        assert!(PersistedConfig::load_or_create(&path).ai_agents_enabled);
+    }
+
+    #[test]
+    fn legacy_enabled_setting_defaults_to_enabled() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::fs::write(
+            path.join("agent_state.json"),
+            r#"{"agent_id":"stable-old-id","resource_revision":4,"roots":[],"herdr_enabled":true}"#,
+        )
+        .unwrap();
+
+        let cfg = PersistedConfig::load_or_create(&path);
+        assert!(cfg.ai_agents_enabled);
+        assert_eq!(cfg.legacy_herdr_enabled, None);
+    }
+
+    #[test]
     fn ai_agents_setting_round_trips_and_save_errors_are_returned() {
         let dir = tempdir().unwrap();
         let path = dir.path().to_path_buf();
@@ -234,6 +291,7 @@ mod tests {
             collections_revision: 0,
             collections: vec![],
             ai_agents_enabled: true,
+            legacy_herdr_enabled: None,
         };
         cfg.save(&path);
 

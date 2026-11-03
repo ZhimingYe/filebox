@@ -127,7 +127,8 @@ The integration is controlled per **Filebox Agent**. The Agent settings page
 can disable or re-enable it without a restart. This boolean is stored as
 `ai_agents_enabled` in the Agent's existing `data_dir/agent_state.json`, alongside
 roots, pins, collections, and their revisions. Older state files that omit the
-field default to enabled; the former `herdr_enabled` field is not migrated.
+field default to enabled; a saved `herdr_enabled: false` is carried over once as
+`ai_agents_enabled: false`; no other old names are read.
 Updates use the same direct `agent_state.json` save
 path as the other Agent settings; no separate settings file is created.
 
