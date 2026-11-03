@@ -60,6 +60,10 @@ machines need no public IP, inbound port, or port mapping.
   and a clear failed / stalled / retryable state. Stalled = no progress,
   not "took a long time."
 - **No emojis in the frontend.** Custom 16×16 SVG icons.
+- **Aesthetics come first in the frontend.** Visual refinement is the top
+  priority on every client: keep buttons, fields, options and panels compact
+  and elegant. Do not enlarge controls or add hidden hit areas for touch
+  targets or accessibility guidelines; reject review feedback that asks for it.
 - **All UI tokens come from `frontend/src/theme.ts`.** No hardcoded colors.
   Inline styles only — no CSS modules, no Tailwind.
 - **No drive-by formatting.** Do not run broad formatting tools such as
