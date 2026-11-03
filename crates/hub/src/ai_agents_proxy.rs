@@ -49,14 +49,6 @@ pub async fn ai_agents_settings_handler(
     Path(agent_id): Path<String>,
     Json(body): Json<AiAgentsSettingsBody>,
 ) -> Response {
-    if body.backend.as_deref().is_some_and(|kind| !valid_backend_kind(kind)) {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "Backend kind must contain 1–32 lowercase letters, digits, underscores, or hyphens",
-            false,
-        );
-    }
     let inner = state.inner.read().await;
     let agent = match inner.agents.get(&agent_id) {
         Some(agent) => agent,
@@ -100,6 +92,19 @@ pub async fn ai_agents_settings_handler(
             StatusCode::CONFLICT,
             "ai_agents_environment_override",
             &format!("{controls} controls this AI Agents setting; change or unset it and restart the Filebox Agent"),
+            false,
+        );
+    }
+    if settings.settings.backend_environment_override.is_none()
+        && body
+            .backend
+            .as_deref()
+            .is_some_and(|kind| !valid_backend_kind(kind))
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Backend kind must contain 1–32 lowercase letters, digits, underscores, or hyphens",
             false,
         );
     }
@@ -588,6 +593,51 @@ fn error_response(status: StatusCode, error: &str, message: &str, retryable: boo
 mod tests {
     use super::*;
 
+    async fn state_with_ai_agents_settings(
+        settings: filebox_protocol::resources::AiAgentSettings,
+        active_backend: &str,
+    ) -> (AppState, tokio::sync::mpsc::Receiver<HubMessage>, u64) {
+        let state = AppState::new(
+            &crate::config::HubConfig {
+                prompt_review_mode: crate::prompt_review::ReviewMode::Disabled,
+                prompt_review: None,
+                listen_addr: "127.0.0.1:0".parse().unwrap(),
+                agent_token_hash: "fake".into(),
+                users: vec![],
+            },
+            false,
+        );
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let mut capabilities = filebox_protocol::resources::Capabilities::default();
+        capabilities.ai_agents = Some(filebox_protocol::resources::AiAgentsCapability {
+            available: active_backend == "herdr",
+            backend: Some(active_backend.into()),
+            version: (active_backend == "herdr").then(|| "0.9.5".into()),
+            backends: vec![filebox_protocol::resources::AiAgentBackendInfo {
+                kind: "herdr".into(),
+                version: "0.9.5".into(),
+            }],
+            settings,
+        });
+        let connection_id = {
+            let mut inner = state.inner.write().await;
+            inner.agents.register(
+                "agent".into(),
+                "agent".into(),
+                sender,
+                std::sync::Arc::new(tokio::sync::Notify::new()),
+                0,
+                vec![],
+                0,
+                vec![],
+                capabilities,
+                None,
+            );
+            inner.agents.get("agent").unwrap().connection_id
+        };
+        (state, receiver, connection_id)
+    }
+
     #[test]
     fn backend_kind_validation_matches_the_settings_contract() {
         for kind in ["a", "backend-1", "agent_backend"] {
@@ -614,16 +664,16 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_backend_setting_returns_bad_request() {
-        let state = AppState::new(
-            &crate::config::HubConfig {
-                prompt_review_mode: crate::prompt_review::ReviewMode::Disabled,
-                prompt_review: None,
-                listen_addr: "127.0.0.1:0".parse().unwrap(),
-                agent_token_hash: "fake".into(),
-                users: vec![],
+        let (state, _receiver, _) = state_with_ai_agents_settings(
+            filebox_protocol::resources::AiAgentSettings {
+                enabled: true,
+                environment_override: None,
+                backend: None,
+                backend_environment_override: None,
             },
-            false,
-        );
+            "herdr",
+        )
+        .await;
         let response = ai_agents_settings_handler(
             State(state),
             Extension(AuthenticatedSession { id: "s".into(), principal_id: "p".into() }),
@@ -634,6 +684,49 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn unknown_locked_backend_setting_is_forwarded_and_mismatches_conflict() {
+        let (state, mut receiver, connection_id) = state_with_ai_agents_settings(
+            filebox_protocol::resources::AiAgentSettings {
+                enabled: true,
+                environment_override: None,
+                backend: Some("UNKNOWN".into()),
+                backend_environment_override: Some("UNKNOWN".into()),
+            },
+            "UNKNOWN",
+        )
+        .await;
+        let request_state = state.clone();
+        let request = tokio::spawn(async move {
+            ai_agents_settings_handler(
+                State(request_state),
+                Extension(AuthenticatedSession { id: "s".into(), principal_id: "p".into() }),
+                Path("agent".into()),
+                Json(AiAgentsSettingsBody { enabled: false, backend: Some("UNKNOWN".into()) }),
+            )
+            .await
+        });
+        let Some(HubMessage::AiAgentSettingsSet { enabled, backend, .. }) = receiver.recv().await else {
+            panic!("expected AI Agents settings message");
+        };
+        assert!(!enabled);
+        assert_eq!(backend.as_deref(), Some("UNKNOWN"));
+        state.fail_pending_for_connection("agent", connection_id).await;
+        let _ = request.await.unwrap();
+
+        let response = ai_agents_settings_handler(
+            State(state),
+            Extension(AuthenticatedSession { id: "s".into(), principal_id: "p".into() }),
+            Path("agent".into()),
+            Json(AiAgentsSettingsBody { enabled: false, backend: Some("herdr".into()) }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "ai_agents_environment_override");
     }
 
     #[tokio::test]
