@@ -84,12 +84,12 @@ pub fn create_router(state: AppState) -> Router {
             post(crate::temp_proxy::temp_cleanup_handler),
         )
         .route(
-            "/api/agents/{agent_id}/herdr",
-            post(crate::herdr_proxy::herdr_handler),
+            "/api/agents/{agent_id}/ai-agents",
+            post(crate::ai_agents_proxy::ai_agents_handler),
         )
         .route(
-            "/api/agents/{agent_id}/herdr-settings",
-            post(crate::herdr_proxy::herdr_settings_handler),
+            "/api/agents/{agent_id}/ai-agents/settings",
+            post(crate::ai_agents_proxy::ai_agents_settings_handler),
         )
         .route("/api/cancel", post(cancel_handler))
         .layer(axum::middleware::from_fn_with_state(

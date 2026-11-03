@@ -318,7 +318,7 @@ export function IconTrash({ style }: SvgProps) {
 }
 
 /** Coding-agent face with an antenna. */
-export function IconHerd({ style }: SvgProps) {
+export function IconAiAgents({ style }: SvgProps) {
   return (
     <Svg style={style}>
       <rect x="3" y="5" width="10" height="8" rx="2" />

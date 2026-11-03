@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { HerdrQueue } from './herdrQueue';
+import { AiAgentQueue } from './aiAgentQueue';
 
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
-describe('bounded Herdr queue', () => {
+describe('bounded AiAgent queue', () => {
   it('caps concurrency, prioritizes input, and removes cancelled queued reads', async () => {
-    const queue = new HerdrQueue();
+    const queue = new AiAgentQueue();
     const releases: (() => void)[] = [];
     const started: string[] = [];
     const task = (name: string) => () => { started.push(name); return new Promise<void>((resolve) => releases.push(resolve)); };
@@ -26,7 +26,7 @@ describe('bounded Herdr queue', () => {
   it('bounds pending work and fails expired queue entries without running them', async () => {
     vi.useFakeTimers();
     try {
-      const queue = new HerdrQueue();
+      const queue = new AiAgentQueue();
       const signal = new AbortController().signal;
       const active = new Promise<void>(() => {});
       void queue.run(() => active, signal);

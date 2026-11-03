@@ -8,13 +8,13 @@ the released binary as well as the documentation.
 
 ## Mandatory hub-side prompt review
 
-Configure only in `hub.json` and restart the Hub. Without `herdr_prompt_review`
-(including dev mode), Herdr prompts are disabled and return HTTP 503
-`herdr_prompt_review_not_configured`. Status, reads and keys remain available.
+Configure only in `hub.json` and restart the Hub. Without `prompt_review`
+(including dev mode), AI agent prompts are disabled and return HTTP 503
+`prompt_review_not_configured`. Status, reads and keys remain available.
 No web API or UI can read or change this configuration.
 
 The only opt-out is the Hub process environment variable
-`FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED=0` (or `false`, case-insensitive).
+`FILEBOX_HUB_PROMPT_REVIEW_ENABLED=0` (or `false`, case-insensitive).
 It is read once at startup: review config is ignored, no provider calls are
 made, and prompts relay without review with a startup warning. Unset, `1`, or
 `true` means mandatory review; any other value also means mandatory review
@@ -22,15 +22,15 @@ with a warning. Changes require restarting the Hub, never a runtime toggle.
 Add one of these fields alongside the existing Hub configuration:
 
 ```json
-{"herdr_prompt_review":{"protocol":"chat_completions","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
+{"prompt_review":{"protocol":"chat_completions","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
 ```
 
 ```json
-{"herdr_prompt_review":{"protocol":"responses","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
+{"prompt_review":{"protocol":"responses","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
 ```
 
 ```json
-{"herdr_prompt_review":{"protocol":"messages","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
+{"prompt_review":{"protocol":"messages","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
 ```
 
 `api_key` may instead
@@ -38,7 +38,7 @@ contain the key directly in the private config file; it takes precedence over
 `api_key_env`. A configuration without a nonempty key fails startup.
 Keep the config private. HTTPS is required except for loopback hosts
 (`localhost`, `127.0.0.0/8`, or `::1`), where HTTP is allowed for local providers. Review sends the
-prompt and recent displayed output from the target Herdr window to that
+prompt and recent displayed output from the target agent window to that
 provider; choose a trusted service and model. The Hub reads up to 120 lines
 using the normal detection source, strips terminal controls and sends only
 the last 16 KiB. This read is read-only and does not focus the window or send
@@ -85,22 +85,22 @@ gate is defense in depth, not a shell sandbox or a guarantee of safety.
   errors. Malformed list responses are incompatible, not empty lists.
 - `completion_seq` is optional. Changes show a refresh hint; status polling never
   fetches output. Older payloads still deserialize. Explicit key actions read
-  the visible viewport; ordinary UI reads use the detection/bottom screen.
+  the visible viewport; ordinary UI reads send `read_source: "bottom"` (mapped to Herdr `detection`).
 - Null foreground metadata falls back to the pane's cwd/title. Prompt limits
   count UTF-8 bytes (32 KiB), matching the Agent and Hub validation.
-- The CLI is probed at Agent startup when Herdr is effectively enabled.
-  Enabling Herdr from Agent settings probes again if no client is cached;
+- The CLI is probed at Agent startup when AI Agents is effectively enabled.
+  Enabling AI Agents from Agent settings probes again if no client is cached;
   installing the CLI on the running Agent's PATH can be detected with
   **Check installation**. Changing the Agent process's PATH or
   `FILEBOX_AGENT_HERDR` requires an Agent restart.
 
 ## Attention reminders
 
-The App monitors enabled, online Herdr-capable backends while the page is open,
+The App monitors enabled, online AI Agents-capable backends while the page is open,
 including when browsing Files or another view. Background checks only call
 `agent list`, with at most two concurrent requests and 30 seconds after each
 backend's completed check. Disabling or selecting one backend does not cancel
-another backend's checks or reset its cadence. The active Herdr panel checks status every 30 seconds and supplies its results;
+another backend's checks or reset its cadence. The active AI Agents panel checks status every 30 seconds and supplies its results;
 it is not polled a second time. Slow backends and browser timer throttling can
 increase notification delay. This is not an OS notification or a closed-page
 monitoring service.
@@ -109,7 +109,7 @@ Blocked agents produce an input-needed reminder. Two consecutive unknown
 observations or failed status checks after observing live coding agents produce
 a cannot-determine/check notice; `agent_busy` is ignored. Offline warnings only
 apply to backends with previously observed coding agents. Stopped/unavailable or
-unsupported Herdr clears reminders quietly. Other failures retain known questions
+an unsupported backend clears reminders quietly. Other failures retain known questions
 until a successful list resolves them. Later acknowledges one episode and Close acknowledges all current
 unread episodes. Dismissed reminders leave no banner or placeholder; the same
 episode stays quiet across polling and view changes until the page is reloaded.
@@ -125,17 +125,18 @@ panel directs the user there rather than implying the question was answered.
 
 The integration is controlled per **Filebox Agent**. The Agent settings page
 can disable or re-enable it without a restart. This boolean is stored as
-`herdr_enabled` in the Agent's existing `data_dir/agent_state.json`, alongside
+`ai_agents_enabled` in the Agent's existing `data_dir/agent_state.json`, alongside
 roots, pins, collections, and their revisions. Older state files that omit the
-field default to enabled. Updates use the same direct `agent_state.json` save
+field default to enabled; the former `herdr_enabled` field is not migrated.
+Updates use the same direct `agent_state.json` save
 path as the other Agent settings; no separate settings file is created.
 
 ```sh
-export FILEBOX_AGENT_HERDR_ENABLED=0
+export FILEBOX_AGENT_AI_AGENTS_ENABLED=0
 # Restart the Filebox Agent with this environment.
 ```
 
-The web setting takes effect immediately. Disabling cancels active Herdr
+The web setting uses `POST /api/agents/{agent_id}/ai-agents/settings` and takes effect immediately. Disabling cancels active Herdr
 requests through their cancellation flags and rejects later Herdr commands, but
 does not stop the Herdr server or coding agents. Re-enabling probes for the CLI
 when no client is cached; a missing or failing CLI leaves the setting enabled
@@ -146,15 +147,15 @@ An explicit `0`/`false` disables Herdr and skips executable discovery and
 `herdr --version`; `1`/`true` enables probing even if the saved setting is
 disabled. The values `off`/`no` and `on`/`yes` are also accepted, case-insensitively.
 An invalid or empty value fails closed as disabled. While this variable is set,
-the web toggle is locked and its API returns `409 herdr_environment_override`;
+the web toggle is locked and its API returns `409 ai_agents_environment_override`;
 remove the variable to control the saved setting from the web.
 
-`capabilities.herdr` reports effective enablement plus a successful local CLI
-probe; `capabilities.herdr_settings` reports the effective setting and any
+`capabilities.ai_agents.available` reports effective enablement plus a successful local CLI
+probe; `capabilities.ai_agents.settings` reports the effective setting and any
 environment override, including when Herdr is unavailable. The Hub rejects
 commands when Herdr is unavailable, and the Agent independently rejects direct
 commands while disabled. Settings are unsupported on legacy Agents that omit
-`herdr_settings` (HTTP 501), and cannot be changed while an Agent is offline
+`ai_agents` (HTTP 501), and cannot be changed while an Agent is offline
 (HTTP 503). Environment changes require an Agent restart.
 
 Upgrade the Filebox Agent binary to one that supports persisted settings;
@@ -163,7 +164,7 @@ former browser preference is not used; the web setting now persists on its
 Agent.
 
 Each selected coding window has its own Refresh output button and auto-refresh
-switch in Herdr settings (1 minute by default; manual-only when off). Inactive windows are not
+switch in AI Agents settings (1 minute by default; manual-only when off). Inactive windows are not
 polled. Switching back restores one of at most eight cached snapshots; settings
 and caches are scoped to the mounted panel. Manual list refresh does not read
 output unless the selected target has been replaced by a different pane. Cached
@@ -201,16 +202,20 @@ limitation, and an optional upstream source patch. New key allowlisting and read
 modes require updating Filebox Hub and Agent together with the frontend. Older
 Agents ignore the optional read mode and retain their old reading behavior.
 
+## Adding another AI agent backend
+
+Implement `AiAgentBackend` in `crates/agent/src/ai_agents/<name>.rs`, register it in `probe()` in `crates/agent/src/ai_agents/mod.rs`, and add a frontend descriptor in `frontend/src/lib/aiAgentBackends.ts`. Keep backend-specific CLI/protocol behavior in that adapter; request validation, generic response construction and capability/settings handling belong to the shared layer.
+
 ## Verification
 
 Run the focused regressions:
 
 ```sh
-cargo test -p filebox-agent herdr::
-cargo test -p filebox-hub herdr_proxy::
-cargo test -p filebox-protocol herdr
-npm --prefix frontend test -- src/components/HerdrView.test.tsx src/api/client.test.ts
-npm --prefix frontend test -- src/hooks/useHerdrAttention.test.tsx src/components/HerdrAttention.test.tsx
+cargo test -p filebox-agent ai_agents::herdr::
+cargo test -p filebox-hub ai_agents_proxy::
+cargo test -p filebox-protocol ai_agents
+npm --prefix frontend test -- src/components/AiAgentsView.test.tsx src/api/client.test.ts
+npm --prefix frontend test -- src/hooks/useAiAgentAttention.test.tsx src/hooks/useAiAgentAttention.isolation.test.tsx
 npm --prefix frontend run build
 ```
 

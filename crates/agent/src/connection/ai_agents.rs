@@ -2,8 +2,11 @@ use super::*;
 use filebox_protocol::message::AgentMessage;
 
 impl ConnectionSession<'_> {
-    pub(super) fn handle_herdr(&mut self, message: HubMessage) -> Result<(), DisconnectReason> {
-        let HubMessage::HerdrRequest {
+    pub(super) fn handle_ai_agent_request(
+        &mut self,
+        message: HubMessage,
+    ) -> Result<(), DisconnectReason> {
+        let HubMessage::AiAgentRequest {
             req_id,
             op,
             target,
@@ -18,10 +21,14 @@ impl ConnectionSession<'_> {
             unreachable!("dispatcher selected the wrong handler");
         };
 
-        if !self.runtime.herdr_settings().enabled {
-            let resp = AgentMessage::HerdrResponse {
+        let capability = self.runtime.ai_agents_capability();
+        if !crate::ai_agents::effective_enabled(
+            capability.settings.enabled,
+            capability.settings.environment_override,
+        ) {
+            let resp = AgentMessage::AiAgentResponse {
                 req_id,
-                error: Some("herdr_disabled".to_string()),
+                error: Some("ai_agents_disabled".to_string()),
                 status: None,
                 agents: Vec::new(),
                 agent: None,
@@ -33,15 +40,15 @@ impl ConnectionSession<'_> {
             return Ok(());
         }
 
-        let Some(client) = self.runtime.herdr.clone() else {
-            let resp = AgentMessage::HerdrResponse {
+        let Some(backend) = self.runtime.ai_agent_backend.clone() else {
+            let resp = AgentMessage::AiAgentResponse {
                 req_id,
-                error: Some("herdr_unavailable".to_string()),
-                status: Some(filebox_protocol::herdr::HerdrServerStatus {
+                error: Some("ai_agent_backend_unavailable".to_string()),
+                status: Some(filebox_protocol::ai_agents::AiAgentBackendStatus {
                     installed: false,
                     reachable: false,
                     version: None,
-                    message: Some("herdr is not installed on this agent".to_string()),
+                    message: Some("No supported AI agent backend is installed".to_string()),
                 }),
                 agents: Vec::new(),
                 agent: None,
@@ -53,10 +60,10 @@ impl ConnectionSession<'_> {
             return Ok(());
         };
 
-        let Ok(permit) = self.runtime.herdr_inflight.clone().try_acquire_owned() else {
-            let resp = AgentMessage::HerdrResponse {
+        let Ok(permit) = self.runtime.ai_agent_inflight.clone().try_acquire_owned() else {
+            let resp = AgentMessage::AiAgentResponse {
                 req_id,
-                error: Some("agent_busy: another Herdr command is already running".to_string()),
+                error: Some("agent_busy: another AI agent command is already running".to_string()),
                 status: None,
                 agents: Vec::new(),
                 agent: None,
@@ -69,15 +76,26 @@ impl ConnectionSession<'_> {
         };
 
         let cancel = Arc::new(AtomicBool::new(false));
-        if let Ok(mut map) = self.runtime.herdr_cancels.lock() {
+        if let Ok(mut map) = self.runtime.ai_agent_cancels.lock() {
             map.insert(req_id.clone(), cancel.clone());
         }
-        let tx = self.herdr_tx.clone();
-        let cancels = self.runtime.herdr_cancels.clone();
+        let tx = self.ai_agents_tx.clone();
+        let cancels = self.runtime.ai_agent_cancels.clone();
         self.tasks.spawn(async move {
             let _permit = permit;
-            let response = client
-                .handle(req_id.clone(), op, target, text, keys, lines, read_source, wait, timeout_ms, cancel)
+            let response = crate::ai_agents::handle_request(
+                backend.as_ref(),
+                req_id.clone(),
+                op,
+                target,
+                text,
+                keys,
+                lines,
+                read_source,
+                wait,
+                timeout_ms,
+                cancel,
+            )
                 .await;
             if let Ok(mut map) = cancels.lock() {
                 map.remove(&req_id);
@@ -87,26 +105,26 @@ impl ConnectionSession<'_> {
         Ok(())
     }
 
-    pub(super) async fn handle_herdr_settings(
+    pub(super) async fn handle_ai_agent_settings(
         &mut self,
         message: HubMessage,
     ) -> Result<(), DisconnectReason> {
-        let HubMessage::HerdrSettingsSet { req_id, enabled } = message else {
+        let HubMessage::AiAgentSettingsSet { req_id, enabled } = message else {
             unreachable!("dispatcher selected the wrong handler");
         };
 
         let mut error = None;
-        let environment_override = self.runtime.herdr_environment_override;
+        let environment_override = self.runtime.ai_agents_environment_override;
         if environment_override.is_some() {
-            error = Some("herdr_environment_override".to_string());
+            error = Some("ai_agents_environment_override".to_string());
         } else {
-            if enabled && self.runtime.herdr.is_none() {
-                self.runtime.herdr = crate::herdr::HerdrClient::probe().await.map(Arc::new);
+            if enabled && self.runtime.ai_agent_backend.is_none() {
+                self.runtime.ai_agent_backend = crate::ai_agents::probe().await;
             }
-            match self.runtime.resource_mgr.set_herdr_enabled(enabled) {
+            match self.runtime.resource_mgr.set_ai_agents_enabled(enabled) {
                 Ok(()) => {
                     if !enabled {
-                        if let Ok(mut cancels) = self.runtime.herdr_cancels.lock() {
+                        if let Ok(mut cancels) = self.runtime.ai_agent_cancels.lock() {
                             for (_, cancel) in cancels.drain() {
                                 cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                             }
@@ -114,16 +132,15 @@ impl ConnectionSession<'_> {
                     }
                 }
                 Err(save_error) => {
-                    error = Some(format!("herdr_settings_save_failed: {save_error}"));
+                    error = Some(format!("ai_agents_settings_save_failed: {save_error}"));
                 }
             }
         }
 
-        let settings = self.runtime.herdr_settings();
-        let response = AgentMessage::HerdrSettingsApplied {
+        let ai_agents = self.runtime.ai_agents_capability();
+        let response = AgentMessage::AiAgentSettingsApplied {
             req_id,
-            available: settings.enabled && self.runtime.herdr.is_some(),
-            settings,
+            ai_agents,
             error,
         };
         if !queue_agent_message(&self.control_tx, &response) {

@@ -99,9 +99,7 @@ pub(super) async fn connect_and_register(
     // enters the persisted desired set — the hub surfaces it to the UI from
     // the Register payload, and this agent resolves the name specially.
     capabilities.temp_upload = temp_store.is_some();
-    capabilities.herdr_settings = Some(runtime.herdr_settings());
-    capabilities.herdr = capabilities.herdr_settings.as_ref().is_some_and(|settings| settings.enabled)
-        && runtime.herdr.is_some();
+    capabilities.ai_agents = Some(runtime.ai_agents_capability());
     let temp_root = temp_store.map(|store| store.root_info());
     let register = AgentMessage::Register {
         agent_id: Some(runtime.stable_agent_id.clone()),

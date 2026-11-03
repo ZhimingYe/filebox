@@ -153,21 +153,25 @@ pub struct Capabilities {
     /// the folder could not be initialized.
     #[serde(default)]
     pub temp_upload: bool,
-    /// Whether this agent found a local Herdr CLI it can drive. Defaults to
-    /// `false` for rolling-upgrade safety and when `herdr` is not on PATH.
+    /// AI agent feature information. `None` identifies an Agent predating the
+    /// feature; `available` reflects effective enablement and backend presence.
     #[serde(default)]
-    pub herdr: bool,
-    /// Persisted web-control setting plus any Agent environment override.
-    /// Absent on legacy agents so the Hub can distinguish unsupported settings.
-    #[serde(default)]
-    pub herdr_settings: Option<HerdrSettings>,
+    pub ai_agents: Option<AiAgentsCapability>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct HerdrSettings {
-    /// Effective setting after applying the environment override.
+pub struct AiAgentsCapability {
+    pub available: bool,
+    pub backend: Option<String>,
+    pub version: Option<String>,
+    pub settings: AiAgentSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiAgentSettings {
     pub enabled: bool,
-    /// `Some` when FILEBOX_AGENT_HERDR_ENABLED is set or invalid.
+    /// `Some` when FILEBOX_AGENT_AI_AGENTS_ENABLED is set or invalid.
+    #[serde(default)]
     pub environment_override: Option<bool>,
 }
 
@@ -190,8 +194,7 @@ impl Default for Capabilities {
             office_max_pdf_bytes: None,
             office_timeout_secs: None,
             temp_upload: false,
-            herdr: false,
-            herdr_settings: None,
+            ai_agents: None,
         }
     }
 }
@@ -428,11 +431,7 @@ mod tests {
             !caps.office_pdf_preview,
             "office_pdf_preview must default to false (legacy-detection sentinel)"
         );
-        assert!(
-            !caps.herdr,
-            "herdr must default to false (legacy-detection sentinel)"
-        );
-        assert!(caps.herdr_settings.is_none());
+        assert!(caps.ai_agents.is_none());
     }
 
     #[test]
@@ -453,7 +452,7 @@ mod tests {
         let caps: Capabilities = serde_json::from_str(legacy_json).unwrap();
         assert!(!caps.pinned_folders);
         assert!(!caps.office_pdf_preview);
-        assert!(caps.herdr_settings.is_none());
+        assert!(caps.ai_agents.is_none());
         assert!(caps.fs_list);
     }
 

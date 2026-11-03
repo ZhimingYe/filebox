@@ -58,9 +58,9 @@ async fn aborting_parent_cancels_work_and_closes_all_response_queues() {
     let mut runtime = AgentRuntime::for_tests(temp.path());
     let search_flag = Arc::new(AtomicBool::new(false));
     runtime.search_cancels.lock().unwrap().insert("search".into(), search_flag.clone());
-    let herdr_flag = Arc::new(AtomicBool::new(false));
-    let herdr_cancels = runtime.herdr_cancels.clone();
-    herdr_cancels.lock().unwrap().insert("herdr".into(), herdr_flag.clone());
+    let ai_agents_flag = Arc::new(AtomicBool::new(false));
+    let ai_agent_cancels = runtime.ai_agent_cancels.clone();
+    ai_agent_cancels.lock().unwrap().insert("ai_agents".into(), ai_agents_flag.clone());
     let cancellation = FsCancellation::new();
     let cancellation_for_task = cancellation.clone();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
@@ -69,19 +69,19 @@ async fn aborting_parent_cancels_work_and_closes_all_response_queues() {
         session.fs_cancellations.lock().unwrap().insert("file".into(), cancellation_for_task);
         let queued = session.stats_admission.clone().acquire_owned().await.unwrap();
         session.tasks.spawn(async move { let _permit = queued; std::future::pending::<()>().await; });
-        ready_tx.send((session.herdr_tx.clone(), session.fs_tx.clone(), session.stats_admission.clone())).unwrap();
+        ready_tx.send((session.ai_agents_tx.clone(), session.fs_tx.clone(), session.stats_admission.clone())).unwrap();
         let mut read = futures_util::stream::pending::<Result<Message, std::io::Error>>();
         session.drive(&mut read).await;
     });
-    let (herdr_tx, fs_tx, stats_admission) = ready_rx.await.unwrap();
+    let (ai_agents_tx, fs_tx, stats_admission) = ready_rx.await.unwrap();
     parent.abort();
     assert!(parent.await.unwrap_err().is_cancelled());
     assert!(cancellation.is_cancelled());
     assert!(search_flag.load(Ordering::Relaxed));
-    assert!(herdr_flag.load(Ordering::Relaxed));
-    assert!(herdr_cancels.lock().unwrap().is_empty());
+    assert!(ai_agents_flag.load(Ordering::Relaxed));
+    assert!(ai_agent_cancels.lock().unwrap().is_empty());
     tokio::time::timeout(Duration::from_secs(1), async {
-        herdr_tx.closed().await; fs_tx.closed().await;
+        ai_agents_tx.closed().await; fs_tx.closed().await;
         while stats_admission.available_permits() < 8 { tokio::task::yield_now().await; }
     }).await.unwrap();
 }
@@ -268,21 +268,21 @@ async fn protocol_sized_upload_chunks_and_empty_final_frames_publish_exact_bytes
 }
 
 #[tokio::test]
-async fn herdr_setting_update_persists_and_cancels_running_requests() {
+async fn ai_agents_setting_update_persists_and_cancels_running_requests() {
     let temp = tempfile::tempdir().unwrap();
     let mut runtime = AgentRuntime::for_tests(temp.path());
-    runtime.herdr_environment_override = None;
+    runtime.ai_agents_environment_override = None;
     let active = Arc::new(AtomicBool::new(false));
     runtime
-        .herdr_cancels
+        .ai_agent_cancels
         .lock()
         .unwrap()
         .insert("active".into(), active.clone());
-    let herdr_cancels = runtime.herdr_cancels.clone();
+    let ai_agent_cancels = runtime.ai_agent_cancels.clone();
     let (sink, mut replies) = capture();
     let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
     session
-        .dispatch(HubMessage::HerdrSettingsSet {
+        .dispatch(HubMessage::AiAgentSettingsSet {
             req_id: "settings".into(),
             enabled: false,
         })
@@ -290,41 +290,36 @@ async fn herdr_setting_update_persists_and_cancels_running_requests() {
         .unwrap();
 
     match response(&mut replies).await {
-        AgentMessage::HerdrSettingsApplied {
+        AgentMessage::AiAgentSettingsApplied {
             req_id,
-            settings,
-            available,
+            ai_agents,
             error,
         } => {
             assert_eq!(req_id, "settings");
-            assert!(!settings.enabled);
-            assert!(settings.environment_override.is_none());
-            assert!(!available);
+            assert!(!ai_agents.settings.enabled);
+            assert!(ai_agents.settings.environment_override.is_none());
+            assert!(!ai_agents.available);
             assert!(error.is_none());
         }
         other => panic!("unexpected response: {other:?}"),
     }
     assert!(active.load(Ordering::Relaxed));
-    assert!(herdr_cancels.lock().unwrap().is_empty());
-    assert!(!crate::config_store::PersistedConfig::load_or_create(&temp.path().to_path_buf()).herdr_enabled);
+    assert!(ai_agent_cancels.lock().unwrap().is_empty());
+    assert!(!crate::config_store::PersistedConfig::load_or_create(&temp.path().to_path_buf()).ai_agents_enabled);
 }
 
 #[tokio::test]
-async fn herdr_direct_request_is_rejected_when_disabled_even_with_cached_client() {
+async fn ai_agents_direct_request_is_rejected_when_disabled() {
     let temp = tempfile::tempdir().unwrap();
     let mut runtime = AgentRuntime::for_tests(temp.path());
-    runtime.herdr_environment_override = None;
-    runtime.resource_mgr.set_herdr_enabled(false).unwrap();
-    runtime.herdr = Some(Arc::new(crate::herdr::HerdrClient {
-        bin: temp.path().join("should-not-run"),
-        version: "test".into(),
-    }));
+    runtime.ai_agents_environment_override = None;
+    runtime.resource_mgr.set_ai_agents_enabled(false).unwrap();
     let (sink, mut replies) = capture();
     let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
     session
-        .dispatch(HubMessage::HerdrRequest {
+        .dispatch(HubMessage::AiAgentRequest {
             req_id: "direct".into(),
-            op: filebox_protocol::herdr::HerdrOp::Status,
+            op: filebox_protocol::ai_agents::AiAgentOp::Status,
             target: None,
             text: None,
             keys: vec![],
@@ -337,9 +332,9 @@ async fn herdr_direct_request_is_rejected_when_disabled_even_with_cached_client(
         .unwrap();
 
     match response(&mut replies).await {
-        AgentMessage::HerdrResponse { req_id, error, .. } => {
+        AgentMessage::AiAgentResponse { req_id, error, .. } => {
             assert_eq!(req_id, "direct");
-            assert_eq!(error.as_deref(), Some("herdr_disabled"));
+            assert_eq!(error.as_deref(), Some("ai_agents_disabled"));
         }
         other => panic!("unexpected response: {other:?}"),
     }

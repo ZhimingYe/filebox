@@ -4,7 +4,7 @@ impl ConnectionSession<'_> {
     pub(super) fn handle_control(&mut self, message: HubMessage) -> Result<(), DisconnectReason> {
         let stats_cache = &self.runtime.stats_cache;
         let search_cancels = &self.runtime.search_cancels;
-        let herdr_cancels = &self.runtime.herdr_cancels;
+        let ai_agent_cancels = &self.runtime.ai_agent_cancels;
         let office_runtime = self.runtime.office_runtime.as_ref();
         let stats_tx = &self.stats_tx;
         let control_tx = &self.control_tx;
@@ -29,7 +29,7 @@ impl ConnectionSession<'_> {
                         flag.store(true, Ordering::Relaxed);
                     }
                 }
-                if let Ok(map) = herdr_cancels.lock() {
+                if let Ok(map) = ai_agent_cancels.lock() {
                     if let Some(flag) = map.get(&req_id) {
                         flag.store(true, Ordering::Relaxed);
                     }

@@ -220,6 +220,6 @@ Agent 通道相关的审计事件（`audit.rs`，JSONL 侧文件，0600）：
 > Hub 自证身份；Hub 用「会话 + CSRF + PoW」向浏览器自证身份；两者之间的
 > 信任不对称——Agent 完全信任 Hub 的控制消息，Hub 完全信任 Agent 的数据
 > 响应，而**真正的纵深防御在 Agent 侧**：root 白名单、canonicalize 防逃逸、
-> denylist、只读打开、唯一文件上传写路径（temp 文件夹）+ 配额。Herdr 通过
+> denylist、只读打开、唯一文件上传写路径（temp 文件夹）+ 配额。AI Agents 的 Herdr backend 通过
 > 独立 CLI 白名单执行编码代理操作，不提供任意 shell。整条
 > 链路的健壮性靠双向心跳、分层超时、退避重连和资源上限兜底。

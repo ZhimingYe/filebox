@@ -4,7 +4,7 @@ interface Check {
 }
 
 /** Reconcile only changed backends; unrelated checks and their cadence survive. */
-export function createHerdrMonitor(check: (id: string, signal: AbortSignal) => Promise<void>) {
+export function createAiAgentMonitor(check: (id: string, signal: AbortSignal) => Promise<void>) {
   const checks = new Map<string, Check>();
   let active = 0;
   let stopped = false;

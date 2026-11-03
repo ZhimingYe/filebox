@@ -9,7 +9,7 @@
 | 区域 | 内容 |
 |------|------|
 | 侧栏 Agents | 已连接机器、在线状态、延迟；点选切换当前 Agent |
-| 侧栏 Workspace | Files / Explorer / Collections / Transfer / Herdr / Search / Settings / System |
+| 侧栏 Workspace | Files / Explorer / Collections / Transfer / AI Agents / Search / Settings / System |
 | 根下拉 | 切换已启用的 root（如 `demo`） |
 | 工具栏 | 刷新、过滤、排序、树面板、钉选、复制路径等 |
 | 地址栏 / 面包屑 | 当前路径；支持粘贴路径与补全 |

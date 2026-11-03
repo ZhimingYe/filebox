@@ -100,8 +100,8 @@ on its own, with no duplicate entries and no lost configuration.
 ### Security
 
 - Browsing is read-only. Transfer writes only to its dedicated scratch folder;
-  the separate Herdr integration permits whitelisted coding-agent operations.
-- Herdr prompts must pass a Hub-side LLM security review before they reach
+  the separate AI Agents integration permits whitelisted coding-agent operations.
+- AI agent prompts must pass a Hub-side LLM security review before they reach
   the coding agent
 - Per-user logins; a separate token authenticates each machine
 - Sensitive files (credentials, private keys, shell history, `.env`, and
@@ -132,22 +132,22 @@ on its own, with no duplicate entries and no lost configuration.
 
 ### Coding agents (optional)
 
-- **Herdr** view: list coding windows, read their output, send prompts and
+- **AI Agents** view: list coding agents, read their output, send prompts and
   answer with allowlisted keys (pi, Claude Code and Codex profiles), with
   reminders when an agent needs input. Install the
   [Herdr CLI](https://herdr.ink) (checked against v0.9.5) on the Agent
   machine, or set `FILEBOX_AGENT_HERDR`, then use **Check installation**.
   Turn it on or off per backend in Agent Settings;
-  `FILEBOX_AGENT_HERDR_ENABLED=0`/`1` at Agent startup overrides and locks
+  `FILEBOX_AGENT_AI_AGENTS_ENABLED=0`/`1` at Agent startup overrides and locks
   that switch. Not a general-purpose remote shell; reminders need an open
   page. See [the shortcut guide](docs/herdr-shortcuts.md).
 - Every prompt passes a Hub-side LLM security review first: destructive
   commands, permanent deletion and secret extraction are blocked; normal data
   analysis and development go through. The reviewer sees the prompt and the
   window's recent output. Configured only in `hub.json`
-  (`herdr_prompt_review`), never in the web UI; if it is missing or the
+  (`prompt_review`), never in the web UI; if it is missing or the
   review fails, the prompt is refused. Start the Hub with
-  `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED=0` to turn review off. The Herdr
+  `FILEBOX_HUB_PROMPT_REVIEW_ENABLED=0` to turn review off. The AI Agents
   view shows the review state (on with its model, off, or not configured). See
   [Herdr compatibility and prompt review](docs/herdr-compatibility.md).
 
@@ -279,11 +279,11 @@ Most users never need this — see [`docs/`](docs/) for development details.
 | `listen_addr` | Address the hub listens on | `0.0.0.0:3000` |
 | `agent_token_hash` | Hash of the agent token (set during init) | required |
 | `users` | Login accounts | required |
-| `herdr_prompt_review` | LLM security review for Herdr prompts (`protocol`: `chat_completions` / `responses` / `messages`; `base_url`, HTTPS required except loopback; `model`; `api_key` or `api_key_env`; `timeout_secs`, max 60). File-only, no web setting. While review is on, prompts are rejected if this is missing or the review fails. See [docs/herdr-compatibility.md](docs/herdr-compatibility.md). | unset (prompts rejected) |
+| `prompt_review` | LLM security review for AI agent prompts (`protocol`: `chat_completions` / `responses` / `messages`; `base_url`, HTTPS required except loopback; `model`; `api_key` or `api_key_env`; `timeout_secs`, max 60). File-only, no web setting. While review is on, prompts are rejected if this is missing or the review fails. See [docs/herdr-compatibility.md](docs/herdr-compatibility.md). | unset (prompts rejected) |
 
 | Environment variable | Description | Default |
 |---------------------|-------------|---------|
-| `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED` | Read once at Hub startup. `0` / `false` turns Herdr prompt review off (prompts are forwarded unreviewed). Unset, `1`, `true`, or an invalid value keeps review on and mandatory. | `1` |
+| `FILEBOX_HUB_PROMPT_REVIEW_ENABLED` | Read once at Hub startup. `0` / `false` turns AI agent prompt review off (prompts are forwarded unreviewed). Unset, `1`, `true`, or an invalid value keeps review on and mandatory. | `1` |
 
 ### Agent (`agent.toml`, created by `--init-config`)
 
@@ -294,12 +294,12 @@ Most users never need this — see [`docs/`](docs/) for development details.
 | `name` | `FILEBOX_AGENT_NAME` | Name shown in the sidebar | `default-agent` |
 | `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Where the agent keeps its state | system data dir + `filebox` |
 | — | `FILEBOX_AGENT_CONFIG` | Agent TOML file to load; environment values override TOML | `./agent.toml` |
-| — | `FILEBOX_AGENT_HERDR_ENABLED` | Startup override: `0`/`false` disables discovery, probing and commands; `1`/`true` enables and locks the web switch. Invalid values disable. Restart after changing | unset (saved `herdr_enabled`, initially `true`) |
-| — | `FILEBOX_AGENT_HERDR` | Explicit Herdr executable path; cannot override `FILEBOX_AGENT_HERDR_ENABLED=0` | search `PATH` |
+| — | `FILEBOX_AGENT_AI_AGENTS_ENABLED` | Startup override: `0`/`false` disables discovery, probing and commands; `1`/`true` enables and locks the web switch. Invalid values disable. Restart after changing | unset (saved `ai_agents_enabled`, initially `true`) |
+| — | `FILEBOX_AGENT_HERDR` | Explicit Herdr executable path; cannot override `FILEBOX_AGENT_AI_AGENTS_ENABLED=0` | search `PATH` |
 | — | `FILEBOX_AGENT_SOFFICE` | Path to `soffice` (enables Office preview) | unset |
 | — | `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` | unset |
 
-Herdr's `herdr_enabled` is Agent-owned persisted state, not a TOML bootstrap
+The `ai_agents_enabled` setting is Agent-owned persisted state, not a TOML bootstrap
 field. Do not put it in `agent.toml`; use Agent Settings or the startup override.
 
 ## Office preview (optional)

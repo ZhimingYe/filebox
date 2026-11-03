@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
 import * as api from '../api/client';
-import { createHerdrMonitor } from '../lib/herdrMonitor';
+import { createAiAgentMonitor } from '../lib/aiAgentMonitor';
 
-export interface HerdrAttention {
+export interface AiAgentAttention {
   id: number;
   backendId: string;
   target?: string;
@@ -13,17 +13,17 @@ export interface HerdrAttention {
 }
 
 interface BackendState {
-  notices: HerdrAttention[];
+  notices: AiAgentAttention[];
   failures: number;
   observedAgents: boolean;
   unknown: Record<string, number>;
   identities: Record<string, string>;
 }
 interface State { nextId: number; backends: Record<string, BackendState> }
-type Issue = Pick<HerdrAttention, 'target' | 'kind' | 'name' | 'message'>;
+type Issue = Pick<AiAgentAttention, 'target' | 'kind' | 'name' | 'message'>;
 type Action =
   | { type: 'sync'; backends: { id: string; name: string; status: string }[] }
-  | { type: 'status'; id: string; agents: api.HerdrAgent[] }
+  | { type: 'status'; id: string; agents: api.AiAgent[] }
   | { type: 'failure'; id: string; message: string }
   | { type: 'inactive'; id: string }
   | { type: 'ack'; ids: number[] }
@@ -54,7 +54,7 @@ function reducer(state: State, action: Action): State {
       const old = next.backends[b.id] ?? emptyBackend();
       if (b.status === 'offline' && old.observedAgents) next = reconcile(next, b.id, old, [{
         kind: 'unavailable', name: 'Backend offline',
-        message: 'Cannot check Herdr while this backend is offline. Checks resume after it reconnects.',
+        message: 'Cannot check AI Agents while this backend is offline. Checks resume after it reconnects.',
       }]);
       else if (!next.backends[b.id]) next = { ...next, backends: { ...next.backends, [b.id]: old } };
     }
@@ -77,15 +77,15 @@ function reducer(state: State, action: Action): State {
   const identities: Record<string, string> = {};
   const issues: Issue[] = [];
   for (const agent of action.agents) {
-    identities[agent.target] = JSON.stringify([agent.workspace_id, agent.pane_id]);
+    identities[agent.target] = JSON.stringify([agent.scope, agent.id]);
     const name = agent.name?.trim() || agent.title?.trim() || agent.target;
     if (agent.status === 'blocked') issues.push({ target: agent.target, name, kind: 'blocked',
-      message: 'Waiting for your input. Inspect the screen; use Herdr directly if this panel cannot answer the question.' });
+      message: 'Waiting for your input. Inspect the screen; use the backend directly if this panel cannot answer the question.' });
     if (agent.status === 'unknown') {
       unknown[agent.target] = (backend.identities[agent.target] === identities[agent.target]
         ? backend.unknown[agent.target] ?? 0 : 0) + 1;
       if (unknown[agent.target] >= 2) issues.push({ target: agent.target, name, kind: 'unknown',
-        message: 'Herdr cannot determine this agent’s state. Check its screen for a question or an error.' });
+        message: 'The backend cannot determine this agent’s state. Check its screen for a question or an error.' });
     }
   }
   const notices = backend.notices.filter((n) => !n.target || backend.identities[n.target] === identities[n.target]);
@@ -93,9 +93,9 @@ function reducer(state: State, action: Action): State {
 }
 
 /** Status-only monitoring: no terminal reads, input, focus changes, or OS notifications. */
-export function useHerdrAttention(agents: api.AgentInfo[], enabled: boolean, activeBackendId: string | null) {
+export function useAiAgentAttention(agents: api.AgentInfo[], enabled: boolean, activeBackendId: string | null) {
   const [state, dispatch] = useReducer(reducer, { nextId: 1, backends: {} });
-  const enabledIds = JSON.stringify(agents.filter((a) => a.capabilities?.herdr).map((a) => a.id));
+  const enabledIds = JSON.stringify(agents.filter((a) => a.capabilities?.ai_agents?.available).map((a) => a.id));
   const allowed = useMemo(() => new Set<string>(JSON.parse(enabledIds)), [enabledIds]);
   // Health updates (RTT, stats, etc.) must not restart the polling loop.
   const backendKey = JSON.stringify(agents.filter((a) => allowed.has(a.id))
@@ -108,24 +108,24 @@ export function useHerdrAttention(agents: api.AgentInfo[], enabled: boolean, act
     const e = error as { name?: string; error?: string } | null;
     const code = e?.error?.split(':')[0];
     if (e?.name === 'AbortError' || code === 'agent_busy' || code === 'cancelled') return;
-    if (code === 'herdr_unavailable' || code === 'unsupported' || code === 'unsupported_feature') {
+    if (code === 'ai_agent_backend_unavailable' || code === 'unsupported' || code === 'unsupported_feature') {
       dispatch({ type: 'inactive', id });
       return;
     }
     dispatch({ type: 'failure', id, message: api.friendlyMessage(error) });
   }, []);
-  const reportStatus = useCallback((id: string, response: api.HerdrResponse) => {
+  const reportStatus = useCallback((id: string, response: api.AiAgentResponse) => {
     if (!enabledRef.current.enabled || !enabledRef.current.allowed.has(id)) return;
     if (response.error || response.status?.reachable === false) {
-      reportFailure(id, { error: response.error || 'herdr_unavailable' });
+      reportFailure(id, { error: response.error || 'ai_agent_backend_unavailable' });
     } else dispatch({ type: 'status', id, agents: response.agents ?? [] });
   }, [reportFailure]);
 
-  const monitor = useRef<ReturnType<typeof createHerdrMonitor> | null>(null);
+  const monitor = useRef<ReturnType<typeof createAiAgentMonitor> | null>(null);
   useEffect(() => {
-    const instance = createHerdrMonitor(async (id, signal) => {
+    const instance = createAiAgentMonitor(async (id, signal) => {
       try {
-        const result = await api.herdrCommand(id, { op: 'status' }, signal, 20_000);
+        const result = await api.aiAgentCommand(id, { op: 'status' }, signal, 20_000);
         // An old request stays invalid even if the backend was re-enabled.
         if (!signal.aborted) reportStatus(id, result);
       } catch (e) { if (!signal.aborted) reportFailure(id, e); }
@@ -136,7 +136,7 @@ export function useHerdrAttention(agents: api.AgentInfo[], enabled: boolean, act
 
   useEffect(() => {
     dispatch(enabled ? { type: 'sync', backends } : { type: 'reset' });
-    // The visible Herdr view reports its own status. Switching one view or
+    // The visible AiAgent view reports its own status. Switching one view or
     // disabling one backend must not abort another backend's request.
     monitor.current?.sync(enabled
       ? backends.filter((b) => b.status !== 'offline' && b.id !== activeBackendId).map((b) => b.id)

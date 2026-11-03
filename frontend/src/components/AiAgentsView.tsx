@@ -3,16 +3,17 @@ import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
 import { c, font, radius, settingsLayout as layout, shadow } from '../theme';
 import { SettingsSwitch } from './SettingsSwitch';
-import { HerdrShortcuts } from './HerdrShortcuts';
-import { HerdrButton, HerdrCallout, HerdrPopover } from './HerdrControls';
-import { HerdrQueue } from '../lib/herdrQueue';
+import { AiAgentShortcuts } from './AiAgentShortcuts';
+import { AiAgentButton, AiAgentCallout, AiAgentPopover } from './AiAgentControls';
+import { AiAgentQueue } from '../lib/aiAgentQueue';
 import { useIsMobile } from '../state/useIsMobile';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
+import { aiAgentBackend, aiAgentBackendLabel } from '../lib/aiAgentBackends';
 import { IconChevronLeft, IconRefresh, IconSettings, IconClose, IconSearch, IconClipboard, IconCheck } from './icons';
 
 interface Props {
   agent: api.AgentInfo;
-  onStatus?: (agentId: string, response: api.HerdrResponse) => void;
+  onStatus?: (agentId: string, response: api.AiAgentResponse) => void;
   onStatusError?: (agentId: string, error: unknown) => void;
   focusRequest?: { target: string; nonce: number } | null;
 }
@@ -22,15 +23,15 @@ const PROMPT_MAX_BYTES = 32 * 1024;
 // Covers hub context (10s + 200ms retry) and max provider review (60s), plus margin.
 const PROMPT_REVIEW_ALLOWANCE_MS = 75_000;
 
-function paneIdentity(item: api.HerdrAgent): string {
-  return JSON.stringify([item.target, item.workspace_id, item.pane_id]);
+function paneIdentity(item: api.AiAgent): string {
+  return JSON.stringify([item.target, item.scope, item.id]);
 }
 
-function outputSignature(item: api.HerdrAgent): string {
+function outputSignature(item: api.AiAgent): string {
   return `${item.target}\0${item.status}\0${item.completion_seq ?? ''}`;
 }
 
-const STATUS_ORDER: Record<api.HerdrAgentStatus, number> = {
+const STATUS_ORDER: Record<api.AiAgentStatus, number> = {
   blocked: 0,
   working: 1,
   done: 2,
@@ -38,7 +39,7 @@ const STATUS_ORDER: Record<api.HerdrAgentStatus, number> = {
   unknown: 4,
 };
 
-function statusMeta(status: api.HerdrAgentStatus): { label: string; color: string; bg: string } {
+function statusMeta(status: api.AiAgentStatus): { label: string; color: string; bg: string } {
   switch (status) {
     case 'working':
       return { label: 'Working', color: c.accent, bg: c.accentBg };
@@ -53,11 +54,11 @@ function statusMeta(status: api.HerdrAgentStatus): { label: string; color: strin
   }
 }
 
-function displayName(item: api.HerdrAgent): string {
-  return item.name?.trim() || item.title?.trim() || item.pane_id || item.target;
+function displayName(item: api.AiAgent): string {
+  return item.name?.trim() || item.title?.trim() || item.id || item.target;
 }
 
-function sortAgents(items: api.HerdrAgent[]): api.HerdrAgent[] {
+function sortAgents(items: api.AiAgent[]): api.AiAgent[] {
   return [...items].sort((a, b) => {
     const d = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
     if (d !== 0) return d;
@@ -79,9 +80,13 @@ function isAbortError(error: unknown): boolean {
 }
 
 /** Null means the failure should stay quiet (abort, or a superseded request). */
-function herdrFailureMessage(error: unknown): string | null {
+function aiAgentFailureMessage(error: unknown, backendKind?: string | null): string | null {
   if (isAbortError(error)) return null;
-  if (['invalid_request', 'herdr_prompt_blocked', 'herdr_prompt_review_unavailable', 'herdr_prompt_review_not_configured'].includes(errorCode(error) ?? '')) {
+  if (errorCode(error) === 'ai_agent_key_unsupported') {
+    const note = aiAgentBackend(backendKind).unsupportedKeyNote;
+    if (note) return note;
+  }
+  if (['invalid_request', 'ai_agent_prompt_blocked', 'prompt_review_unavailable', 'prompt_review_not_configured'].includes(errorCode(error) ?? '')) {
     const message = (error as { message?: unknown }).message;
     if (typeof message === 'string' && message.trim()) return message.trim();
   }
@@ -89,20 +94,26 @@ function herdrFailureMessage(error: unknown): string | null {
 }
 
 /**
- * Sidebar Herdr panel: list coding agents on the selected backend, read the
+ * Sidebar AI Agents panel: list coding agents on the selected backend, read the
  * latest output, send a prompt, and tap keys for blocked approvals. The
- * Filebox agent drives the local `herdr` CLI; this UI is a compact control
- * surface, not a clone of the Herdr TUI.
+ * Filebox Agent drives the local backend; this UI is a compact control
+ * surface, not a clone of the backend TUI.
  */
-export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Props) {
+export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: Props) {
+  const capability = agent.capabilities?.ai_agents;
+  const backendKind = capability?.backend;
+  const backend = aiAgentBackend(backendKind);
   const isMobile = useIsMobile();
   const isMobileRef = useRef(isMobile);
   isMobileRef.current = isMobile;
-  const [status, setStatus] = useState<api.HerdrServerStatus | null>(null);
-  const [promptReview, setPromptReview] = useState<api.HerdrPromptReview | null>(null);
-  const [agents, setAgents] = useState<api.HerdrAgent[]>([]);
+  const [status, setStatus] = useState<api.AiAgentBackendStatus | null>(null);
+  const backendVersion = status?.version ?? capability?.version;
+  const backendLabel = aiAgentBackendLabel(backendKind, backendVersion);
+  const backendVersionNote = backendVersion === '0.9.5' ? backend.versionNote : null;
+  const [promptReview, setPromptReview] = useState<api.AiAgentPromptReview | null>(null);
+  const [agents, setAgents] = useState<api.AiAgent[]>([]);
   const [agentQuery, setAgentQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<api.HerdrAgentStatus | 'all'>('all');
+  const [statusFilter, setStatusFilter] = useState<api.AiAgentStatus | 'all'>('all');
   const [selected, setSelected] = useState<string | null>(null);
   const [output, setOutput] = useState<string>('');
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -144,7 +155,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const abortSend = useRef<AbortController | null>(null);
   const outputBoxRef = useRef<HTMLPreElement | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
-  const queue = useRef(new HerdrQueue());
+  const queue = useRef(new AiAgentQueue());
   const outputCache = useRef(new Map<string, { identity: string; output: string; updatedAt: number; signature: string }>());
   const [autoRefresh, setAutoRefresh] = useState<Record<string, boolean>>({});
   const autoRefreshRef = useRef(autoRefresh);
@@ -163,10 +174,10 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   selectedRef.current = selected;
   agentsRef.current = agents;
 
-  const command = useCallback((body: api.HerdrCommandBody, signal: AbortSignal, timeoutMs: number, priority = 0, valid: () => boolean = () => true) =>
+  const command = useCallback((body: api.AiAgentCommandBody, signal: AbortSignal, timeoutMs: number, priority = 0, valid: () => boolean = () => true) =>
     queue.current.run(() => {
       if (signal.aborted || !valid()) throw new DOMException('Obsolete request', 'AbortError');
-      return api.herdrCommand(agent.id, body, signal, timeoutMs);
+      return api.aiAgentCommand(agent.id, body, signal, timeoutMs);
     }, signal, priority), [agent.id]);
 
   const selectedAgent = useMemo(
@@ -179,7 +190,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const filteredAgents = useMemo(() => {
     const query = agentQuery.trim().toLocaleLowerCase();
     return agents.filter((item) => (statusFilter === 'all' || item.status === statusFilter)
-      && [displayName(item), item.kind, item.cwd, item.pane_id, item.target].join(' ').toLocaleLowerCase().includes(query));
+      && [displayName(item), item.kind, item.cwd, item.id, item.target].join(' ').toLocaleLowerCase().includes(query));
   }, [agents, agentQuery, statusFilter]);
 
   const loadList = useCallback(async (silent = false, parentSignal?: AbortSignal) => {
@@ -235,11 +246,11 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
       if (genRef.current !== gen) return;
       if (mountedRef.current && !controller.signal.aborted) statusCallbacks.current.onStatusError?.(agent.id, e);
       if (!mountedRef.current || controller.signal.aborted) return;
-      const message = herdrFailureMessage(e);
+      const message = aiAgentFailureMessage(e, backendKind);
       if (message === null) return;
       if (silent && errorCode(e) === 'agent_busy') return;
       setListError(message);
-      if (errorCode(e) === 'herdr_unavailable') {
+      if (errorCode(e) === 'ai_agent_backend_unavailable') {
         setStatus({
           installed: true,
           reachable: false,
@@ -256,7 +267,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
       parentSignal?.removeEventListener('abort', abort);
       if (genRef.current === gen) { abortList.current = null; if (mountedRef.current) setLoadingList(false); }
     }
-  }, [agent.id, command]);
+  }, [agent.id, backendKind, command]);
 
   const loadOutput = useCallback(async (target: string, silent = false, visible = false, parentSignal?: AbortSignal) => {
     if (!mountedRef.current || parentSignal?.aborted || selectedRef.current !== target || (silent && abortOutput.current)) return;
@@ -282,7 +293,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
       if (!itemAtStart) return;
       const identity = paneIdentity(itemAtStart);
       const res = await command(
-        { op: 'read', target: itemAtStart.pane_id || target, lines: 120, read_source: visible ? 'visible' : 'detection' },
+        { op: 'read', target: itemAtStart.id || target, lines: 120, read_source: visible ? 'visible' : 'bottom' },
         controller.signal,
         25_000,
         silent ? 0 : 2,
@@ -302,22 +313,22 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
       setUpdatedAt(Date.now());
       if (res.agent) {
         setAgents((prev) => {
-          const next = prev.map((a) => (a.target === res.agent!.target || a.pane_id === res.agent!.pane_id ? res.agent! : a));
+          const next = prev.map((a) => (a.target === res.agent!.target || a.id === res.agent!.id ? res.agent! : a));
           return sortAgents(next);
         });
       }
       return true;
     } catch (e) {
       if (!mountedRef.current || controller.signal.aborted || outputGenRef.current !== gen || selectedRef.current !== target) return;
-      const message = herdrFailureMessage(e);
+      const message = aiAgentFailureMessage(e, backendKind);
       if (message === null) return;
-      if (silent && (errorCode(e) === 'agent_busy' || errorCode(e) === 'herdr_not_idle')) return;
+      if (silent && (errorCode(e) === 'agent_busy' || errorCode(e) === 'ai_agent_not_idle')) return;
       setOutputError(message);
     } finally {
       parentSignal?.removeEventListener('abort', abort);
       if (outputGenRef.current === gen) { abortOutput.current = null; if (mountedRef.current) setLoadingOutput(false); }
     }
-  }, [command]);
+  }, [backendKind, command]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -423,7 +434,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   };
 
   const runCommand = async (
-    body: api.HerdrCommandBody,
+    body: api.AiAgentCommandBody,
     signal: AbortSignal,
     timeoutMs: number,
     valid: () => boolean,
@@ -475,7 +486,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
         const res = await runCommand(
           {
             op: 'prompt',
-            target: selectedAgent.pane_id || target,
+            target: selectedAgent.id || target,
             text,
             wait,
             timeout_ms: wait ? 60_000 : undefined,
@@ -495,7 +506,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
         if (!controller.signal.aborted) await loadList(true, controller.signal);
       } catch (e) {
         if (controller.signal.aborted || isAbortError(e) || !mountedRef.current || !valid()) return;
-        const message = herdrFailureMessage(e);
+        const message = aiAgentFailureMessage(e, capability?.backend);
         if (message && selectedRef.current === target) setActionError(message);
         await loadOutput(target, true, false, controller.signal);
       } finally {
@@ -520,7 +531,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
     void (async () => {
       try {
         await runCommand(
-          { op: 'send_keys', target: selectedAgent.pane_id || target, keys },
+          { op: 'send_keys', target: selectedAgent.id || target, keys },
           controller.signal,
           15_000,
           valid,
@@ -531,7 +542,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
         if (!controller.signal.aborted) await loadList(true, controller.signal);
       } catch (e) {
         if (controller.signal.aborted || isAbortError(e) || !mountedRef.current || !valid()) return;
-        const message = herdrFailureMessage(e);
+        const message = aiAgentFailureMessage(e, capability?.backend);
         if (message && selectedRef.current === target) setActionError(message);
       } finally {
         if (abortSend.current === controller) {
@@ -553,8 +564,8 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const copied = copiedPath === copyLabel;
   const promptHint = promptBytes > PROMPT_MAX_BYTES ? 'Prompt exceeds the 32 KiB limit. Shorten it before sending.'
     : sending ? (isMobile || compactHeight ? 'Input submitted.' : 'Input submitted. Stop waiting only stops Filebox from waiting.')
-    : !reachable ? 'Herdr is unavailable. Your draft is kept here.'
-    : promptReview?.state === 'not_configured' ? (isMobile || compactHeight ? 'Prompt review not configured' : 'Prompts disabled: configure herdr_prompt_review in hub.json')
+    : !reachable ? 'AI agent backend is unavailable. Your draft is kept here.'
+    : promptReview?.state === 'not_configured' ? (isMobile || compactHeight ? 'Prompt review not configured' : 'Prompts disabled: configure ai_agent_prompt_review in hub.json')
     : selectedAgent?.status === 'blocked' ? 'Waiting for approval. Use the remote keys before sending a message.'
     : wait ? 'Wait for result is on · up to 60 seconds'
     : isMobile ? 'Enter for new line' : compactHeight && promptReview?.state ? 'Ctrl / ⌘ + Enter to send' : 'Ctrl / ⌘ + Enter to send · Enter for new line';
@@ -571,8 +582,8 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
   const noticeText = sending ? `${reviewing ? (wait ? 'Reviewing, then waiting for' : 'Reviewing and sending to') : wait ? 'Waiting for' : 'Sending to'} ${actionTarget} · ${elapsed}s`
     : loadingOutput ? (outputElapsed >= 8 ? `Taking longer than usual · ${outputElapsed}s` : 'Refreshing…')
     : actionNotice;
-  const stopWaitingButton = sending && <HerdrButton variant="quiet" size="sm" touch={isMobile} onClick={stopWaiting}
-    style={{ color: c.accent, height: isMobile ? 24 : 22, padding: '0 6px' }}>Stop waiting</HerdrButton>;
+  const stopWaitingButton = sending && <AiAgentButton variant="quiet" size="sm" touch={isMobile} onClick={stopWaiting}
+    style={{ color: c.accent, height: isMobile ? 24 : 22, padding: '0 6px' }}>Stop waiting</AiAgentButton>;
 
   const jumpToLatest = () => {
     stickToBottomRef.current = true;
@@ -606,15 +617,15 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
     setLoadingList(false);
     setListError('Status refresh cancelled.');
   };
-  const listControl = <HerdrButton touch={isMobile} variant="quiet" icon
+  const listControl = <AiAgentButton touch={isMobile} variant="quiet" icon
     aria-label={loadingList ? 'Cancel status refresh' : 'Refresh agent list'}
     title={loadingList ? 'Cancel status refresh' : 'Refresh agent list'}
     onClick={() => loadingList ? cancelList() : void loadList(false)}>
     {loadingList ? <IconClose style={iconSm} /> : <IconRefresh style={iconSm} />}
-  </HerdrButton>;
+  </AiAgentButton>;
 
   const settingsControl = (
-    <HerdrPopover key={selectedIdentity ?? 'list'} label="Herdr settings" trigger={<IconSettings style={iconSm} />} touch={isMobile}>
+    <AiAgentPopover key={selectedIdentity ?? 'list'} label="AI Agents settings" trigger={<IconSettings style={iconSm} />} touch={isMobile}>
       <div style={styles.menuTitle}>Workspace settings</div>
       {selectedAgent && <>
         <label style={styles.settingRow}>
@@ -630,16 +641,16 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
           <SettingsSwitch aria-label="Wait for result after sending" checked={wait} disabled={sending} onClick={() => setWait((value) => !value)} />
         </label>
       </>}
-      <p style={styles.menuNote}>{updatedAt ? `Output updated ${new Date(updatedAt).toLocaleTimeString()}. ` : ''}Status checks every 30 seconds.{status?.version ? ` Herdr ${status.version}.` : ''}{promptReview?.state === 'on' ? ` Prompt review on · ${promptReview.model || 'LLM'}.` : promptReview?.state === 'off' ? ' Prompt review off.' : promptReview?.state === 'not_configured' ? ' Prompt review not configured; prompts are disabled.' : ''}</p>
-    </HerdrPopover>
+      <p style={styles.menuNote}>{updatedAt ? `Output updated ${new Date(updatedAt).toLocaleTimeString()}. ` : ''}Status checks every 30 seconds. {backendLabel}.{backendVersionNote ? ` ${backendVersionNote}` : ''}{promptReview?.state === 'on' ? ` Prompt review on · ${promptReview.model || 'LLM'}.` : promptReview?.state === 'off' ? ' Prompt review off.' : promptReview?.state === 'not_configured' ? ' Prompt review not configured; prompts are disabled.' : ''}</p>
+    </AiAgentPopover>
   );
 
   return (
     <div style={styles.page}>
       {(!isMobile || !showDetail) && <header style={{ ...styles.header, ...(isMobile ? { padding: '12px 16px' } : null), ...(compactHeight ? { paddingTop: 10, paddingBottom: 10, alignItems: 'center' } : null) }}>
         <div style={layout.pageHeaderText}>
-          {!compactHeight && <p style={layout.eyebrow}>Coding agents</p>}
-          <h1 style={layout.pageTitle}>Herdr</h1>
+          {!compactHeight && <p style={layout.eyebrow}>{backendLabel}</p>}
+          <h1 style={layout.pageTitle}>AI Agents</h1>
         </div>
         <div style={styles.keyRow}>
           {listControl}
@@ -648,13 +659,13 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
       </header>}
 
       {listError && reachable && (
-        <HerdrCallout tone="warning" role="status" style={{ margin: isMobile ? '12px 16px 0' : '16px 20px 0' }}>{listError}</HerdrCallout>
+        <AiAgentCallout tone="warning" role="status" style={{ margin: isMobile ? '12px 16px 0' : '16px 20px 0' }}>{listError}</AiAgentCallout>
       )}
 
       <div style={isMobile ? styles.bodyMobile : compactHeight ? { ...styles.bodyDesktop, padding: '8px 12px 12px', gap: 12 } : styles.bodyDesktop}>
         {showList && (
           <aside style={{ ...(isMobile ? styles.listMobile : styles.listDesktop),
-            ...(!isMobile && agents.length === 0 ? { width: '100%', maxWidth: 680, margin: '0 auto', border: 0, background: 'transparent', boxShadow: 'none', padding: 0 } : null) }} aria-label="Herdr agents">
+            ...(!isMobile && agents.length === 0 ? { width: '100%', maxWidth: 680, margin: '0 auto', border: 0, background: 'transparent', boxShadow: 'none', padding: 0 } : null) }} aria-label="AI agents">
             {agents.length > 0 && <div style={styles.listHeading}>
               <span>Coding agents</span><span style={styles.countChip}>{agents.length}</span>
             </div>}
@@ -666,10 +677,10 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                   onFocus={() => setSearchFocused(true)} onBlur={() => setSearchFocused(false)}
                   onKeyDown={(event) => { if (event.key === 'Escape' && agentQuery) { event.preventDefault(); setAgentQuery(''); } }}
                   style={{ ...styles.searchInput, fontSize: isMobile ? 13 : 12.5, minHeight: isMobile ? 32 : 30 }} />
-                {agentQuery && <HerdrButton variant="quiet" icon size="sm" aria-label="Clear search" title="Clear search"
+                {agentQuery && <AiAgentButton variant="quiet" icon size="sm" aria-label="Clear search" title="Clear search"
                   onClick={() => setAgentQuery('')} style={{ width: 20, minWidth: 20, height: 20, marginRight: -4, color: c.textMuted }}>
                   <IconClose style={{ width: 12, height: 12 }} />
-                </HerdrButton>}
+                </AiAgentButton>}
               </label>
               <select aria-label="Filter agents by status" value={statusFilter}
                 onFocus={() => setFilterFocused(true)} onBlur={() => setFilterFocused(false)}
@@ -685,35 +696,32 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
               <div style={styles.empty}>Looking for agents…</div>
             ) : !reachable && listError && !status?.installed ? (
               <div style={styles.emptyCard}>
-                <div style={styles.emptyTitle}>Could not reach Herdr</div>
+                <div style={styles.emptyTitle}>Could not reach AI agent backend</div>
                 <p style={styles.emptyText}>{listError}</p>
-                <HerdrButton variant="primary" touch={isMobile} onClick={() => void loadList(false)} disabled={loadingList}>
+                <AiAgentButton variant="primary" touch={isMobile} onClick={() => void loadList(false)} disabled={loadingList}>
                   Check again
-                </HerdrButton>
+                </AiAgentButton>
               </div>
             ) : !reachable ? (
               <div style={styles.emptyCard}>
-                <div style={styles.emptyTitle}>Herdr is not running</div>
-                <p style={styles.emptyText}>
-                  Start Herdr on this backend with <span style={styles.inlineCode}>herdr</span> or{' '}
-                  <span style={styles.inlineCode}>herdr server</span>, then refresh. Filebox only talks to the local CLI — never to agents on other machines.
-                </p>
-                <HerdrButton variant="primary" touch={isMobile} onClick={() => void loadList(false)} disabled={loadingList}>
+                <div style={styles.emptyTitle}>AI agent backend is not running</div>
+                <p style={styles.emptyText}>{backend.noServerMessage}</p>
+                <AiAgentButton variant="primary" touch={isMobile} onClick={() => void loadList(false)} disabled={loadingList}>
                   Check again
-                </HerdrButton>
+                </AiAgentButton>
               </div>
             ) : agents.length === 0 ? (
               <div style={styles.emptyCard}>
                 <div style={styles.emptyTitle}>No agents running</div>
                 <p style={styles.emptyText}>
-                  Start a coding agent inside Herdr on this machine. Filebox will list it here so you can read output and send a prompt from your phone.
+                  {backend.noAgentsMessage}
                 </p>
               </div>
             ) : (
               filteredAgents.length === 0 ? <div style={styles.noMatch}>
                 <div style={{ ...styles.emptyTitle, fontSize: 13 }}>No matching agents</div>
                 <p style={{ ...styles.emptyText, fontSize: 12.5 }}>Try another name, folder, or status.</p>
-                <HerdrButton size="sm" onClick={() => { setAgentQuery(''); setStatusFilter('all'); }} touch={isMobile}>Clear filters</HerdrButton>
+                <AiAgentButton size="sm" onClick={() => { setAgentQuery(''); setStatusFilter('all'); }} touch={isMobile}>Clear filters</AiAgentButton>
               </div> : filteredAgents.map((item) => {
                 const meta = statusMeta(item.status);
                 const active = item.target === selected;
@@ -741,7 +749,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                       </span>
                       <span style={styles.cardMeta}>
                         {item.kind || 'agent'}
-                        {item.cwd ? ` · ${item.cwd}` : item.pane_id ? ` · ${item.pane_id}` : ''}
+                        {item.cwd ? ` · ${item.cwd}` : item.id ? ` · ${item.id}` : ''}
                       </span>
                     </span>
                   </button>
@@ -754,7 +762,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
         {showDetail && selectedAgent && (
           <section style={{ ...styles.detail, ...(isMobile ? { border: 0, borderRadius: 0, boxShadow: 'none' } : null) }}>
             <div style={{ ...styles.detailHead, ...(isMobile ? { gap: 4, padding: '6px 8px' } : compactHeight ? { paddingTop: 8 } : null) }}>
-              {isMobile && <HerdrButton touch variant="quiet" icon aria-label="Back to agent list" onClick={() => setSelected(null)}><IconChevronLeft /></HerdrButton>}
+              {isMobile && <AiAgentButton touch variant="quiet" icon aria-label="Back to agent list" onClick={() => setSelected(null)}><IconChevronLeft /></AiAgentButton>}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={styles.titleRow}>
                   <div style={styles.detailName} title={`${displayName(selectedAgent)}${selectedAgent.cwd ? ` · ${selectedAgent.cwd}` : ''}`}>{displayName(selectedAgent)}</div>
@@ -767,61 +775,61 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                 </div>}
               </div>
               <div style={styles.headActions}>
-                <HerdrButton touch={isMobile} variant="quiet" icon aria-label={loadingOutput ? 'Cancel refresh' : 'Refresh output'}
+                <AiAgentButton touch={isMobile} variant="quiet" icon aria-label={loadingOutput ? 'Cancel refresh' : 'Refresh output'}
                   title={loadingOutput ? 'Reading output · click to cancel' : updatedAt ? `Refresh output · updated ${new Date(updatedAt).toLocaleTimeString()}` : 'Refresh output'}
-                  disabled={!reachable} onClick={refreshOutput}>{loadingOutput ? <IconClose style={iconSm} /> : <IconRefresh style={iconSm} />}</HerdrButton>
+                  disabled={!reachable} onClick={refreshOutput}>{loadingOutput ? <IconClose style={iconSm} /> : <IconRefresh style={iconSm} />}</AiAgentButton>
                 {settingsControl}
               </div>
             </div>
 
             {((actionError && !inlineError) || outputError || (!inlineNotice && statusWarning)
               || (!inlineNotice && noticeActive) || copyFailedFor === copyLabel) && <div style={{ ...styles.callouts, ...(isMobile ? { padding: '8px 8px 0' } : null) }}>
-              {actionError && !inlineError && <HerdrCallout tone="danger" role="alert" touch={isMobile} dismissLabel="Dismiss error" onDismiss={() => setActionError(null)}>{actionError}</HerdrCallout>}
-              {outputError && <HerdrCallout tone="danger" role="alert">{outputError} Use Refresh to retry.</HerdrCallout>}
-              {!inlineNotice && statusWarning && <HerdrCallout tone="warning">{statusWarning}</HerdrCallout>}
-              {!inlineNotice && noticeActive && <HerdrCallout role="status" touch={isMobile}
+              {actionError && !inlineError && <AiAgentCallout tone="danger" role="alert" touch={isMobile} dismissLabel="Dismiss error" onDismiss={() => setActionError(null)}>{actionError}</AiAgentCallout>}
+              {outputError && <AiAgentCallout tone="danger" role="alert">{outputError} Use Refresh to retry.</AiAgentCallout>}
+              {!inlineNotice && statusWarning && <AiAgentCallout tone="warning">{statusWarning}</AiAgentCallout>}
+              {!inlineNotice && noticeActive && <AiAgentCallout role="status" touch={isMobile}
                 onDismiss={sending ? undefined : actionNotice ? () => setActionNotice(null) : undefined} dismissLabel="Dismiss notice">
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span>{noticeText}</span>
                   {stopWaitingButton}
                 </span>
-              </HerdrCallout>}
-              {copyFailedFor === copyLabel && <HerdrCallout tone="danger" role="alert">Could not copy. Select the output text and copy it manually.</HerdrCallout>}
+              </AiAgentCallout>}
+              {copyFailedFor === copyLabel && <AiAgentCallout tone="danger" role="alert">Could not copy. Select the output text and copy it manually.</AiAgentCallout>}
             </div>}
             <div style={{ ...styles.snapshotBar, padding: isMobile ? '0 4px 0 12px' : '0 8px 0 20px', ...(compactHeight ? { marginTop: 6, minHeight: 30 } : null) }}>
               <div role="group" aria-label="Output snapshot details" style={{ display: 'flex', flex: 1, minWidth: 0, alignItems: 'center', flexWrap: 'wrap', gap: '0 8px' }}>
                 {inlineError ? <span role="alert" style={{ ...styles.snapshotMeta, flex: 1, minWidth: 0, flexWrap: 'nowrap', color: c.danger }}>
                   <span aria-hidden="true" style={{ ...styles.dot, background: c.danger }} />
                   <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={inlineError}>{inlineError}</span>
-                  <HerdrButton variant="quiet" icon size="sm" aria-label="Dismiss error" title="Dismiss error"
+                  <AiAgentButton variant="quiet" icon size="sm" aria-label="Dismiss error" title="Dismiss error"
                     onClick={() => setActionError(null)} style={{ width: 20, minWidth: 20, height: 20, color: c.textMuted }}>
                     <IconClose style={{ width: 12, height: 12 }} />
-                  </HerdrButton>
+                  </AiAgentButton>
                 </span> : inlineNotice && (noticeActive || statusWarning) ? <span role="status" style={{ ...styles.snapshotMeta, flex: 1, minWidth: 0, flexWrap: 'nowrap', color: c.text }}>
                   <span aria-hidden="true" style={{ ...styles.dot, background: noticeActive ? c.textMuted : c.warning }} />
                   <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={(noticeActive ? noticeText : statusWarning) ?? undefined}>{noticeActive ? noticeText : statusWarning}</span>
                   {stopWaitingButton}
-                  {!sending && actionNotice && <HerdrButton variant="quiet" icon size="sm" aria-label="Dismiss notice" title="Dismiss notice"
+                  {!sending && actionNotice && <AiAgentButton variant="quiet" icon size="sm" aria-label="Dismiss notice" title="Dismiss notice"
                     onClick={() => setActionNotice(null)} style={{ width: 20, minWidth: 20, height: 20, color: c.textMuted }}>
                     <IconClose style={{ width: 12, height: 12 }} />
-                  </HerdrButton>}
+                  </AiAgentButton>}
                 </span> : <span style={styles.snapshotMeta} title="A snapshot, not a live terminal stream. Only the selected window is refreshed.">
                   <span>{updatedAt ? `Snapshot · ${new Date(updatedAt).toLocaleTimeString()}` : loadingOutput ? 'Reading output…' : 'No snapshot yet'}</span>
                   <span style={{ color: c.textFaint }} aria-hidden="true">·</span>
                   <span style={{ color: c.textMuted }}>{autoRefresh[selectedAgent.target] === false ? 'Manual' : 'Auto · 1m'}</span>
                 </span>}
-                {outputChanged && <HerdrButton variant="quiet" size="sm" touch={isMobile} aria-label="Refresh changed output" disabled={loadingOutput || !reachable}
+                {outputChanged && <AiAgentButton variant="quiet" size="sm" touch={isMobile} aria-label="Refresh changed output" disabled={loadingOutput || !reachable}
                   onClick={refreshOutput} style={{ color: c.accent, height: isMobile ? 24 : 22, padding: '0 6px', fontSize: 11 }}>
-                  <span aria-hidden="true" style={{ ...styles.dot, background: c.accent }} />Status changed · Refresh</HerdrButton>}
+                  <span aria-hidden="true" style={{ ...styles.dot, background: c.accent }} />Status changed · Refresh</AiAgentButton>}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                {!followingOutput && <HerdrButton variant="quiet" size="sm" touch={isMobile} aria-label="Jump to latest output"
-                  title="Scroll to the bottom of this snapshot without sending remote input" onClick={jumpToLatest}>Latest ↓</HerdrButton>}
-                <HerdrButton variant="quiet" size="sm" touch={isMobile} aria-label="Copy output" title={copied ? 'Copied!' : 'Copy this output snapshot'}
+                {!followingOutput && <AiAgentButton variant="quiet" size="sm" touch={isMobile} aria-label="Jump to latest output"
+                  title="Scroll to the bottom of this snapshot without sending remote input" onClick={jumpToLatest}>Latest ↓</AiAgentButton>}
+                <AiAgentButton variant="quiet" size="sm" touch={isMobile} aria-label="Copy output" title={copied ? 'Copied!' : 'Copy this output snapshot'}
                   disabled={!output || copying} onClick={() => void copyOutput()}>
                   {copied ? <IconCheck style={{ ...iconXs, color: c.success }} /> : <IconClipboard style={iconXs} />}
                   {!isMobile && (copied ? 'Copied' : copying ? 'Copying…' : 'Copy')}
-                </HerdrButton>
+                </AiAgentButton>
                 <span role="status" style={styles.srOnly}>{copied ? 'Output copied to clipboard.' : ''}</span>
               </div>
             </div>
@@ -843,7 +851,7 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
             </pre>
 
             <div style={{ ...styles.composer, ...(isMobile ? { padding: '4px 8px max(8px, env(safe-area-inset-bottom))' } : compactHeight ? { padding: '8px 12px 10px', gap: 8 } : null) }}>
-              <HerdrShortcuts key={JSON.stringify([selectedIdentity, selectedAgent.kind])} kind={selectedAgent.kind}
+              <AiAgentShortcuts key={JSON.stringify([selectedIdentity, selectedAgent.kind])} kind={selectedAgent.kind}
                 disabled={sending || !reachable} onSend={sendKeys} compact={compactHeight} />
               <div style={{ ...styles.inputCard, ...(composerFocused ? styles.inputCardFocused : null) }}
                 onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)}>
@@ -873,14 +881,14 @@ export function HerdrView({ agent, onStatus, onStatusError, focusRequest }: Prop
                   </span>
                   {promptBytes >= PROMPT_MAX_BYTES * 0.75 && <span style={{ ...styles.composerHint, marginLeft: 'auto', whiteSpace: 'nowrap', color: promptBytes > PROMPT_MAX_BYTES ? c.danger : c.textMuted }}>{(promptBytes / 1024).toFixed(1)} / 32 KiB</span>}
                   {reviewLabel && <span style={{ ...styles.composerHint, marginLeft: promptBytes >= PROMPT_MAX_BYTES * 0.75 ? undefined : 'auto', flexShrink: 0, maxWidth: '45%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: promptReview?.state === 'off' ? c.warning : c.textMuted }} title={reviewLabel}>{reviewLabel}</span>}
-                  <HerdrButton
+                  <AiAgentButton
                     variant="primary" touch={isMobile} style={{ padding: '0 14px' }}
                     onClick={() => void sendPrompt()}
                     disabled={promptDisabled}
                     title={promptDisabled ? promptHint : `Send to ${displayName(selectedAgent)}`}
                   >
                     {sending ? (wait ? 'Waiting…' : reviewing ? 'Reviewing…' : 'Sending…') : 'Send'}
-                  </HerdrButton>
+                  </AiAgentButton>
                 </div>
               </div>
             </div>

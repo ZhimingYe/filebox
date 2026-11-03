@@ -105,7 +105,7 @@ abort-on-reregister), `events.rs` (SSE fanout), `fs_proxy.rs` (proxies
 file ops to agent WS), `search_proxy.rs` (workspace search),
 `temp_proxy.rs` (temp-folder upload relay + cleanup),
 `terminal_proxy.rs` (terminal WS relay + tickets),
-`herdr_proxy.rs` (Herdr CLI relay),
+`ai_agents_proxy.rs` (backend-neutral AI Agents relay),
 `health.rs`.
 
 **Agent** (`crates/agent/`): Rust + Tokio + tokio-tungstenite (rustls
@@ -119,7 +119,7 @@ apply, capped), `sysinfo.rs` (TTL-cached stats — see below),
 `temp_store.rs` (the ONLY file write path: dedicated temp-upload folder),
 `terminal.rs` (PTY shell sessions — 2FA-gated, unix-only; see "Remote
 Terminal"),
-`herdr.rs` (optional local Herdr CLI probe + whitelist),
+`ai_agents/mod.rs` (generic backend interface and handler), `ai_agents/herdr.rs` (Herdr adapter),
 `config_store.rs` (persists `agent_id`, roots, pins, collections,
 revisions under `data_dir` in `agent_state.json`).
 
@@ -133,7 +133,7 @@ by default; mirrors via `--update-base-url`).
 `Error` / terminal response. File reads stream as `FileChunk { offset,
 data, done }` — agent never slurps whole files. Search types live in
 `search.rs`. `Capabilities` gates real features (`pinned_folders`,
-`collections`, `workspace_search`, `terminal`, `herdr`); vestigial flags (`image_preview`,
+`collections`, `workspace_search`, `terminal`, `ai_agents`); vestigial flags (`image_preview`,
 `pdf_preview`, `serve_dir`) default `false` and aren't gated on — don't
 read meaning into them.
 
@@ -456,20 +456,24 @@ first with "Load older" paging.
   be attributed after the session is removed (captured before removal).
   Keep it set when touching session lifecycle.
 
-## Herdr (optional local coding-agent control)
+## AI Agents (Herdr backend)
 
-When the Agent finds a `herdr` binary (`FILEBOX_AGENT_HERDR` or `PATH`) and
-`--version` succeeds, it advertises `capabilities.herdr`. The sidebar
-**Herdr** item appears only then. The Agent runs a small CLI whitelist
+The Agent advertises `capabilities.ai_agents` with effective availability,
+backend identity/version, and settings. When the capability is absent on an
+older Agent, the UI asks the user to update it. When AI Agents is enabled, the
+generic layer probes registered backends; the Herdr adapter finds a `herdr`
+binary (`FILEBOX_AGENT_HERDR` or `PATH`) and requires a successful `--version`.
+The Agent runs a small CLI whitelist
 (`agent list` / `agent read` / `agent prompt` / `agent send-keys`) — never a
 shell, never layout/attach commands. The Hub relays
-`POST /api/agents/{id}/herdr`. The UI lists live agents, shows latest
+`POST /api/agents/{id}/ai-agents`. The UI lists live agents, shows latest
 output, sends a prompt, and exposes compact Esc / Enter / Ctrl+C remote
 keys (useful on a phone when an agent is `blocked`). UI controls favor a
 refined, compact look on every client; do not enlarge buttons, fields or
-panels for touch-target size. Legacy reads without an explicit source try
-`recent-unwrapped` and fall back to `visible` on `agent_not_idle` (full-screen
-agents refuse scrolled history while working). Herdr v0.9.5 requires
+panels for touch-target size. Reads request `bottom` (Herdr maps this to
+`detection`); requests without a source retain the backend default, including
+Herdr's `recent-unwrapped` and `visible` fallback on `agent_not_idle`.
+Herdr v0.9.5 requires
 `agent prompt TARGET TEXT [--wait --timeout MS]`: text is positional,
 including leading dashes; do not insert a `--` separator. Reads are plain
 terminal text, not socket JSON. If the CLI is present but the Herdr server is down, the view stays
@@ -477,29 +481,30 @@ visible and says so.
 Installing Herdr later requires restarting the Filebox Agent so it can
 re-probe. `completion_seq`, when available, shows a refresh hint
 even if an entire turn finishes between polls. Output refreshes every minute or manually,
-with per-window controls and bounded request scheduling. To completely disable integration
-on a particular Filebox Agent, set `FILEBOX_AGENT_HERDR_ENABLED=0` (or `false`) in that
+with per-agent controls and bounded request scheduling. To completely disable integration
+on a particular Filebox Agent, set `FILEBOX_AGENT_AI_AGENTS_ENABLED=0` (or `false`) in that
 Agent's environment and restart it. This is checked **before** path discovery and
-`--version`, even when `FILEBOX_AGENT_HERDR` points to a valid binary. No Herdr client is
-created, no capability is advertised, and incoming commands cannot invoke Herdr.
-Unset defaults to auto-detection; invalid values disable integration with one startup
-warning. There is no browser override or runtime enable API. Settings displays capability
-and explains the Agent-side environment setting. Changing A's capability must preserve
-B's requests and acknowledgements. Ordinary reads use
-the detection/bottom snapshot; explicit keys read the visible screen afterward.
+`--version`, even when `FILEBOX_AGENT_HERDR` points to a valid binary. No backend client is
+created; the capability reports unavailable with no backend identity, and incoming
+commands cannot invoke a backend. Unset defaults to auto-detection; invalid values disable
+integration with one startup warning. `ai_agents_enabled` is persisted per Agent, and the
+web setting may change it without a restart when the environment does not override it.
+The old `herdr_enabled` value is not migrated. Changing one Agent's capability must
+preserve other Agents' requests and acknowledgements. Explicit key actions read the
+visible screen afterward.
 See docs/herdr-shortcuts.md for the v0.9.5 navigation-key limitation. Drafts, reminder
-acknowledgements and input responses are bound to pane identity, not just its reusable name;
+acknowledgements and input responses are bound to `[scope, id]`, not just a reusable name;
 Stop waiting cancels the request, but already submitted input may continue.
-App-level `useHerdrAttention` checks enabled online Herdr-capable backends even
-outside the Herdr view (30 seconds after each backend's completed check, at most two status-only
-requests). The visible Herdr view reports its own results instead of receiving
+App-level `useAiAgentAttention` checks enabled online AI Agents-capable backends even
+outside the AI Agents view (30 seconds after each backend's completed check, at most two status-only
+requests). The visible AI Agents view reports its own results instead of receiving
 competing background checks. Blocked states and repeated unknown states surface in
-`HerdrAttention`; failures/offline warnings require previously observed coding agents.
-Stopped or unavailable Herdr clears reminders quietly. Later dismisses one reminder,
+`AiAgentAttention`; failures/offline warnings require previously observed coding agents.
+Stopped or unavailable backends clear reminders quietly. Later dismisses one reminder,
 and Close dismisses all currently shown/unread reminders. Once acknowledged,
 they leave no banner or placeholder; only a new episode raises another reminder. Reminders
 never send input, change focus, or navigate automatically. Detection still depends
-on Herdr; an unrecognized question can appear idle. Monitoring requires the page
+on the backend; an unrecognized question can appear idle. Monitoring requires the page
 to remain open and may be delayed by browser background throttling.
 See [docs/herdr-compatibility.md](docs/herdr-compatibility.md) for the tested
 CLI contract and verification scope.
@@ -572,7 +577,7 @@ filebox/
     README.md               # Rust workspace architecture
     protocol/src/           # message.rs, agent.rs, resources.rs (roots/pins/
                             # collections), search.rs, denylist.rs, temp.rs,
-                            # herdr.rs
+                            # ai_agents.rs
                             # (shared upload-name validation)
     updater/src/            # --init-config, --update
     hub/src/                # … + search_proxy.rs, temp_proxy.rs (upload relay),
@@ -594,7 +599,7 @@ filebox/
       components/
         Login BackendList FileBrowser FileEntryList WorkspaceSearch
         TempTransferView TerminalView TerminalPane (lazy, xterm chunk)
-        HerdrView
+        AiAgentsView
         CollectionsView CollectionPicker WorkspaceSplit PreviewWorkspace
         PreviewPane previewShared {Pdf,Text,Markdown,Html,Csv,Image}Preview
         DirectoryTree AddressBar DateFilterControl PinnedFolders

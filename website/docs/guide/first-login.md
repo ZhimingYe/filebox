@@ -23,7 +23,7 @@ If Verification fails or you are rate-limited, click the refresh icon to fetch a
 
 After login, if no machine is selected the main area prompts **Select an agent**. Click the target under sidebar **Agents** (Online, latency, root count).
 
-Once selected, the sidebar shows **Workspace** navigation: Files, Explorer, Collections, Transfer, Herdr, Search, Settings, System; plus **Hub → Audit**.
+Once selected, the sidebar shows **Workspace** navigation: Files, Explorer, Collections, Transfer, AI Agents, Search, Settings, System; plus **Hub → Audit**.
 
 ## 3. Settings → Add Root
 

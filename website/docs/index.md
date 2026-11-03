@@ -34,7 +34,7 @@ features:
     link: /features/search
     linkText: Search & collections
   - title: Secure by default
-    details: Read-only protocol; sensitive paths denied by default; optional Transfer writes only to a dedicated scratch folder; Herdr is a separate CLI integration.
+    details: Read-only protocol; sensitive paths denied by default; optional Transfer writes only to a dedicated scratch folder; AI Agents uses a separate backend integration.
     link: /features/security
     linkText: Security model
 ---

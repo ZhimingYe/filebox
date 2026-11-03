@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { createHerdrMonitor } from './herdrMonitor';
+import { createAiAgentMonitor } from './aiAgentMonitor';
 
 afterEach(() => vi.useRealTimers());
 
@@ -9,7 +9,7 @@ it('does not restart polling when an aborted request finishes after shutdown', a
   const check = vi.fn((_id: string, signal: AbortSignal) => new Promise<void>((resolve) => {
     pending.push({ signal, finish: resolve });
   }));
-  const monitor = createHerdrMonitor(check);
+  const monitor = createAiAgentMonitor(check);
   monitor.sync(['a', 'b', 'c']);
   expect(check).toHaveBeenCalledTimes(2);
   monitor.stop();
@@ -25,7 +25,7 @@ it('gives every backend a turn when slow checks make earlier backends due again'
   const calls: string[] = [];
   let active = 0;
   let peak = 0;
-  const monitor = createHerdrMonitor(async (id) => {
+  const monitor = createAiAgentMonitor(async (id) => {
     calls.push(id); peak = Math.max(peak, ++active);
     await new Promise((resolve) => setTimeout(resolve, 20_000));
     active--;

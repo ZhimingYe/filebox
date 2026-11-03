@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { AgentInfo } from '../api/client';
 import { RootManager } from './RootManager';
-import { HerdrToggle } from './HerdrSetup';
+import { AiAgentsToggle } from './AiAgentsSetup';
 import { SettingsSwitch } from './SettingsSwitch';
 import {
   readOfficePdfPreviewPref,
@@ -174,7 +174,7 @@ export function AgentSettings({ agent, onRefresh }: Props) {
                 Coding agents
               </h3>
             </div>
-            <HerdrToggle agent={agent} onRefresh={onRefresh} />
+            <AiAgentsToggle agent={agent} onRefresh={onRefresh} />
           </section>
 
           {/* ── Workspace roots ────────────────────────────────────────── */}

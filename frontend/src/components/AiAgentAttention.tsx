@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import type { HerdrAttention as Notice } from '../hooks/useHerdrAttention';
+import type { AiAgentAttention as Notice } from '../hooks/useAiAgentAttention';
 import type { AgentInfo } from '../api/client';
 import { c, font, radius, settingsLayout as layout } from '../theme';
-import { HerdrButton } from './HerdrControls';
+import { AiAgentButton } from './AiAgentControls';
 import { IconClose } from './icons';
 
-export function HerdrAttention({ notices, agents, onAcknowledge, onOpen, isMobile }: {
+export function AiAgentAttention({ notices, agents, onAcknowledge, onOpen, isMobile }: {
   notices: Notice[];
   agents: AgentInfo[];
   onAcknowledge: (ids: number[]) => void;
@@ -16,12 +16,12 @@ export function HerdrAttention({ notices, agents, onAcknowledge, onOpen, isMobil
   const unread = notices.filter((n) => !n.acknowledged);
   if (!unread.length) return null;
   const shown = expanded ? unread : unread.slice(0, 1);
-  const closeButton = <HerdrButton variant="quiet" icon size="sm" touch={isMobile} aria-label="Close Herdr reminders" title="Close these reminders"
+  const closeButton = <AiAgentButton variant="quiet" icon size="sm" touch={isMobile} aria-label="Close AiAgent reminders" title="Close these reminders"
     onClick={() => { onAcknowledge(unread.map((n) => n.id)); setExpanded(false); }} style={{ color: c.textMuted }}>
     <IconClose style={{ width: 13, height: 13 }} />
-  </HerdrButton>;
+  </AiAgentButton>;
   return (
-    <aside aria-label="Herdr attention" style={{ ...layout.card, flexShrink: 0, margin: isMobile ? '8px 12px' : '12px 20px',
+    <aside aria-label="AiAgent attention" style={{ ...layout.card, flexShrink: 0, margin: isMobile ? '8px 12px' : '12px 20px',
       fontFamily: font.sans }}>
       <div style={{ maxHeight: isMobile ? '25vh' : '30vh', overflowY: 'auto' }}>
         {shown.map((n, index) => {
@@ -37,14 +37,14 @@ export function HerdrAttention({ notices, agents, onAcknowledge, onOpen, isMobil
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: isMobile ? 'normal' : 'nowrap' }} title={n.message}>{n.message}</p>
           </div>;
           const actions = <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-            <HerdrButton variant="quiet" size="sm" touch={isMobile} style={{ color: c.accent }} onClick={() => {
+            <AiAgentButton variant="quiet" size="sm" touch={isMobile} style={{ color: c.accent }} onClick={() => {
               onAcknowledge([n.id]); setExpanded(false); onOpen(n);
-            }}>View in Herdr</HerdrButton>
-            <HerdrButton variant="quiet" size="sm" touch={isMobile} onClick={() => {
+            }}>View in AiAgent</AiAgentButton>
+            <AiAgentButton variant="quiet" size="sm" touch={isMobile} onClick={() => {
               onAcknowledge([n.id]); setExpanded(false);
-            }}>Later</HerdrButton>
-            {index === 0 && !expanded && unread.length > 1 && <HerdrButton variant="quiet" size="sm" touch={isMobile}
-              onClick={() => setExpanded(true)}>Show all {unread.length}</HerdrButton>}
+            }}>Later</AiAgentButton>
+            {index === 0 && !expanded && unread.length > 1 && <AiAgentButton variant="quiet" size="sm" touch={isMobile}
+              onClick={() => setExpanded(true)}>Show all {unread.length}</AiAgentButton>}
           </div>;
           const divider = index ? `1px solid ${c.borderSubtle}` : undefined;
           return isMobile

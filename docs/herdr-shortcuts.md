@@ -35,7 +35,7 @@ Herdr v0.9.5 has no public `pane.scroll_to_bottom`/`agent.scroll_to_bottom` API.
 Its `agent send-keys` uses a shared parser which omits Home, End, PageUp,
 PageDown, and Delete (including their modified forms). Thus `ctrl+end` returns
 `invalid_key` before any input is written. This is an upstream limitation;
-Filebox reports `herdr_key_unsupported` with a clear explanation. It never
+Filebox reports `ai_agent_key_unsupported` with a clear explanation. It never
 substitutes repeated Down/Enter or pastes escape sequences into a live prompt.
 See [key parser](https://github.com/herdrdev/herdr/blob/v0.9.5/src/config/keybinds.rs)
 and [agent.send_keys validation](https://github.com/herdrdev/herdr/blob/v0.9.5/src/app/api/agents.rs).

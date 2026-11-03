@@ -14,11 +14,11 @@ pub struct PersistedConfig {
     pub collections_revision: u64,
     #[serde(default)]
     pub collections: Vec<CollectionConfig>,
-    #[serde(default = "default_herdr_enabled")]
-    pub herdr_enabled: bool,
+    #[serde(default = "default_ai_agents_enabled")]
+    pub ai_agents_enabled: bool,
 }
 
-fn default_herdr_enabled() -> bool {
+fn default_ai_agents_enabled() -> bool {
     true
 }
 
@@ -30,7 +30,7 @@ impl PersistedConfig {
             roots: vec![],
             collections_revision: 0,
             collections: vec![],
-            herdr_enabled: true,
+            ai_agents_enabled: true,
         }
     }
 
@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(cfg.agent_id, "agent-abc");
         assert_eq!(cfg.resource_revision, 0);
         assert!(cfg.roots.is_empty());
-        assert!(cfg.herdr_enabled);
+        assert!(cfg.ai_agents_enabled);
     }
 
     #[test]
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn old_config_without_herdr_setting_defaults_to_enabled() {
+    fn old_config_without_ai_agents_setting_defaults_to_enabled() {
         let dir = tempdir().unwrap();
         let path = dir.path().to_path_buf();
         std::fs::write(
@@ -192,19 +192,19 @@ mod tests {
 
         let cfg = PersistedConfig::load_or_create(&path);
         assert_eq!(cfg.agent_id, "stable-old-id");
-        assert!(cfg.herdr_enabled);
+        assert!(cfg.ai_agents_enabled);
     }
 
     #[test]
-    fn herdr_setting_round_trips_and_save_errors_are_returned() {
+    fn ai_agents_setting_round_trips_and_save_errors_are_returned() {
         let dir = tempdir().unwrap();
         let path = dir.path().to_path_buf();
         let mut cfg = PersistedConfig::load_or_create(&path);
-        cfg.herdr_enabled = false;
+        cfg.ai_agents_enabled = false;
         cfg.save_fallible(&path).unwrap();
 
         let reloaded = PersistedConfig::load_or_create(&path);
-        assert!(!reloaded.herdr_enabled);
+        assert!(!reloaded.ai_agents_enabled);
         let missing_parent = path.join("missing");
         assert!(reloaded.save_fallible(&missing_parent).is_err());
     }
@@ -233,7 +233,7 @@ mod tests {
             ],
             collections_revision: 0,
             collections: vec![],
-            herdr_enabled: true,
+            ai_agents_enabled: true,
         };
         cfg.save(&path);
 

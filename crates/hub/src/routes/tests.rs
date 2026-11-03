@@ -30,7 +30,7 @@ fn test_preview(session_id: &str, created_at: std::time::Instant) -> PreviewSess
 fn test_config() -> crate::config::HubConfig {
     crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
-            herdr_prompt_review: None,
+            prompt_review: None,
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         agent_token_hash: "fake-hash".to_string(),
         users: vec![],

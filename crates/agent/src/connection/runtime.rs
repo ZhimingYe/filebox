@@ -15,10 +15,10 @@ pub(super) struct AgentRuntime {
     pub(super) search_inflight: Arc<AtomicUsize>,
     pub(super) search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     pub(super) upload_workers: Arc<Semaphore>,
-    pub(super) herdr: Option<Arc<crate::herdr::HerdrClient>>,
-    pub(super) herdr_environment_override: Option<bool>,
-    pub(super) herdr_inflight: Arc<Semaphore>,
-    pub(super) herdr_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    pub(super) ai_agent_backend: Option<Arc<dyn crate::ai_agents::AiAgentBackend>>,
+    pub(super) ai_agents_environment_override: Option<bool>,
+    pub(super) ai_agent_inflight: Arc<Semaphore>,
+    pub(super) ai_agent_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 impl AgentRuntime {
@@ -80,18 +80,18 @@ impl AgentRuntime {
         let search_inflight = Arc::new(AtomicUsize::new(0));
         let search_cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let herdr_override = crate::herdr::HerdrClient::environment_override();
-        let herdr_enabled = crate::herdr::effective_enabled(
-            resource_mgr.herdr_enabled(),
-            herdr_override,
+        let ai_agents_override = crate::ai_agents::environment_override();
+        let ai_agents_enabled = crate::ai_agents::effective_enabled(
+            resource_mgr.ai_agents_enabled(),
+            ai_agents_override,
         );
-        let herdr = if herdr_enabled {
-            crate::herdr::HerdrClient::probe().await.map(Arc::new)
+        let ai_agent_backend = if ai_agents_enabled {
+            crate::ai_agents::probe().await
         } else {
             None
         };
-        if !herdr_enabled && herdr_override.is_none() {
-            tracing::info!("Herdr integration disabled by persisted setting");
+        if !ai_agents_enabled && ai_agents_override.is_none() {
+            tracing::info!("AI Agents disabled by persisted setting");
         }
 
         Self {
@@ -99,10 +99,10 @@ impl AgentRuntime {
             office_runtime, temp_store, fs_workers, dir_list_workers, search_inflight,
             search_cancels,
             upload_workers: Arc::new(Semaphore::new(4)),
-            herdr,
-            herdr_environment_override: herdr_override,
-            herdr_inflight: Arc::new(Semaphore::new(2)),
-            herdr_cancels: Arc::new(Mutex::new(HashMap::new())),
+            ai_agent_backend,
+            ai_agents_environment_override: ai_agents_override,
+            ai_agent_inflight: Arc::new(Semaphore::new(2)),
+            ai_agent_cancels: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -117,22 +117,19 @@ impl AgentRuntime {
             fs_workers: Arc::new(Semaphore::new(1)), dir_list_workers: Arc::new(Semaphore::new(1)),
             search_inflight: Arc::new(AtomicUsize::new(0)), search_cancels: Arc::new(Mutex::new(HashMap::new())),
             upload_workers: Arc::new(Semaphore::new(4)),
-            herdr: None,
-            herdr_environment_override: crate::herdr::HerdrClient::environment_override(),
-            herdr_inflight: Arc::new(Semaphore::new(1)),
-            herdr_cancels: Arc::new(Mutex::new(HashMap::new())),
+            ai_agent_backend: None,
+            ai_agents_environment_override: crate::ai_agents::environment_override(),
+            ai_agent_inflight: Arc::new(Semaphore::new(1)),
+            ai_agent_cancels: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub(super) fn herdr_settings(&self) -> filebox_protocol::resources::HerdrSettings {
-        let environment_override = self.herdr_environment_override;
-        filebox_protocol::resources::HerdrSettings {
-            enabled: crate::herdr::effective_enabled(
-                self.resource_mgr.herdr_enabled(),
-                environment_override,
-            ),
-            environment_override,
-        }
+    pub(super) fn ai_agents_capability(&self) -> filebox_protocol::resources::AiAgentsCapability {
+        crate::ai_agents::capability(
+            self.resource_mgr.ai_agents_enabled(),
+            self.ai_agents_environment_override,
+            self.ai_agent_backend.as_deref(),
+        )
     }
 
 }

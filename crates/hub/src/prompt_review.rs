@@ -57,7 +57,7 @@ impl std::fmt::Debug for PromptReviewConfig {
 fn base_url() -> String { "https://api.deepseek.com".into() }
 fn model() -> String { "deepseek-flash".into() }
 fn timeout() -> u64 { 20 }
-// HerdrView's 75s review allowance covers 10s context + 200ms retry + this maximum.
+// AiAgentsView's 75s review allowance covers 10s context + 200ms retry + this maximum.
 const MAX_REVIEW_TIMEOUT_SECS: u64 = 60;
 impl PromptReviewConfig {
     pub fn validate(&mut self) -> Result<(), &'static str> {
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn config_defaults_and_validation() {
         let hub: crate::config::HubConfig = serde_json::from_value(json!({"agent_token_hash":"x","users":[]})).unwrap();
-        assert!(hub.herdr_prompt_review.is_none());
+        assert!(hub.prompt_review.is_none());
         for protocol in ["chat_completions", "responses", "messages"] {
             let mut c: PromptReviewConfig = serde_json::from_value(json!({"protocol":protocol})).unwrap();
             assert_eq!(c.base_url, "https://api.deepseek.com");

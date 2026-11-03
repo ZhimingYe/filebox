@@ -1,15 +1,14 @@
-//! Herdr CLI automation relayed through a Filebox agent.
+//! Backend-neutral AI agent commands relayed through a Filebox agent.
 //!
-//! The agent probes a local `herdr` binary at startup and, when
-//! present, answers a small whitelist of commands (`status`/`list`, `read`,
-//! `prompt`, `send_keys`). The hub and browser never talk to Herdr directly.
+//! The agent probes registered backend adapters and exposes a small whitelist
+//! of commands (`status`, `read`, `prompt`, `send_keys`).
 
 use serde::{Deserialize, Serialize};
 
-/// Whitelisted Herdr operations the Filebox agent will run.
+/// Whitelisted AI agent operations the Filebox agent will run.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum HerdrOp {
+pub enum AiAgentOp {
     /// Probe the CLI + running server and list live coding agents.
     Status,
     /// Latest terminal snapshot for one live agent (name or pane id).
@@ -20,18 +19,18 @@ pub enum HerdrOp {
     SendKeys,
 }
 
-/// Optional read mode. Omission preserves the legacy history-with-visible-fallback behavior.
+/// Optional read mode. Omission preserves the backend-default behavior.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum HerdrReadSource {
+pub enum AiAgentReadSource {
     Visible,
-    Detection,
+    Bottom,
 }
 
-/// Lifecycle state as reported by Herdr.
+/// Lifecycle state reported by an AI agent backend.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum HerdrAgentStatus {
+pub enum AiAgentStatus {
     Idle,
     Working,
     Blocked,
@@ -39,7 +38,7 @@ pub enum HerdrAgentStatus {
     Unknown,
 }
 
-impl HerdrAgentStatus {
+impl AiAgentStatus {
     pub fn parse_label(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "idle" => Self::Idle,
@@ -51,31 +50,31 @@ impl HerdrAgentStatus {
     }
 }
 
-impl Default for HerdrAgentStatus {
+impl Default for AiAgentStatus {
     fn default() -> Self {
         Self::Unknown
     }
 }
 
-/// One live coding agent inside Herdr, flattened for the Filebox UI.
+/// One live agent exposed by an AI agent backend.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct HerdrAgent {
-    /// Address used for later `read` / `prompt` / `send_keys` (name, else pane id).
+pub struct AiAgent {
+    /// Backend-specific address used for later operations.
     pub target: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Detected kind (`claude`, `codex`, `opencode`, …) when Herdr knows it.
+    /// Backend-specific agent kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    pub status: HerdrAgentStatus,
-    /// Optional on older Herdr versions; detects turns completed between polls.
+    pub status: AiAgentStatus,
+    /// Optional sequence number for detecting turns completed between polls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_seq: Option<u64>,
-    pub pane_id: String,
+    /// Stable backend-specific identity.
+    pub id: String,
+    /// Opaque identity discriminator, such as a workspace identifier.
     #[serde(default)]
-    pub workspace_id: String,
-    #[serde(default)]
-    pub tab_id: String,
+    pub scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -84,9 +83,9 @@ pub struct HerdrAgent {
     pub focused: bool,
 }
 
-/// Whether the Filebox agent can reach a running Herdr server.
+/// Whether the Filebox agent can reach its configured AI agent backend.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct HerdrServerStatus {
+pub struct AiAgentBackendStatus {
     pub installed: bool,
     pub reachable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -95,14 +94,14 @@ pub struct HerdrServerStatus {
     pub message: Option<String>,
 }
 
-pub const HERDR_TARGET_MAX_LEN: usize = 64;
-pub const HERDR_PROMPT_MAX_BYTES: usize = 32 * 1024;
-pub const HERDR_KEYS_MAX: usize = 8;
-pub const HERDR_LINES_DEFAULT: u32 = 80;
-pub const HERDR_LINES_MAX: u32 = 200;
-pub const HERDR_WAIT_TIMEOUT_MAX_MS: u64 = 120_000;
-pub const HERDR_WAIT_TIMEOUT_MIN_MS: u64 = 3_001;
-pub const HERDR_OUTPUT_MAX_BYTES: usize = 256 * 1024;
+pub const AI_AGENT_TARGET_MAX_LEN: usize = 64;
+pub const AI_AGENT_PROMPT_MAX_BYTES: usize = 32 * 1024;
+pub const AI_AGENT_KEYS_MAX: usize = 8;
+pub const AI_AGENT_LINES_DEFAULT: u32 = 80;
+pub const AI_AGENT_LINES_MAX: u32 = 200;
+pub const AI_AGENT_WAIT_TIMEOUT_MAX_MS: u64 = 120_000;
+pub const AI_AGENT_WAIT_TIMEOUT_MIN_MS: u64 = 3_001;
+pub const AI_AGENT_OUTPUT_MAX_BYTES: usize = 256 * 1024;
 
 const ALLOWED_KEYS: &[&str] = &[
     "enter", "esc", "escape", "tab", "space", "backspace", "delete",
@@ -123,7 +122,7 @@ pub fn validate_target(target: &str) -> Result<(), &'static str> {
     if t.is_empty() {
         return Err("target is required");
     }
-    if t.len() > HERDR_TARGET_MAX_LEN {
+    if t.len() > AI_AGENT_TARGET_MAX_LEN {
         return Err("target is too long");
     }
     if t.contains('\0') {
@@ -149,7 +148,7 @@ pub fn validate_prompt_text(text: &str) -> Result<(), &'static str> {
     if text.is_empty() {
         return Err("prompt text is required");
     }
-    if text.len() > HERDR_PROMPT_MAX_BYTES {
+    if text.len() > AI_AGENT_PROMPT_MAX_BYTES {
         return Err("prompt text is too long");
     }
     if text.contains('\0') {
@@ -164,7 +163,7 @@ pub fn normalize_key(raw: &str) -> Result<String, &'static str> {
         return Err("empty key");
     }
     if ALLOWED_KEYS.contains(&key.as_str()) {
-        // Canonical spelling Herdr documents: `esc` (escape is an alias).
+        // Canonical spelling AiAgent documents: `esc` (escape is an alias).
         if key == "escape" {
             return Ok("esc".to_string());
         }
@@ -177,7 +176,7 @@ pub fn validate_keys(keys: &[String]) -> Result<Vec<String>, &'static str> {
     if keys.is_empty() {
         return Err("at least one key is required");
     }
-    if keys.len() > HERDR_KEYS_MAX {
+    if keys.len() > AI_AGENT_KEYS_MAX {
         return Err("too many keys");
     }
     let mut out = Vec::with_capacity(keys.len());
@@ -189,14 +188,14 @@ pub fn validate_keys(keys: &[String]) -> Result<Vec<String>, &'static str> {
 
 pub fn clamp_lines(lines: Option<u32>) -> u32 {
     lines
-        .unwrap_or(HERDR_LINES_DEFAULT)
-        .clamp(1, HERDR_LINES_MAX)
+        .unwrap_or(AI_AGENT_LINES_DEFAULT)
+        .clamp(1, AI_AGENT_LINES_MAX)
 }
 
 pub fn clamp_wait_timeout_ms(timeout_ms: Option<u64>) -> u64 {
     timeout_ms
         .unwrap_or(30_000)
-        .clamp(HERDR_WAIT_TIMEOUT_MIN_MS, HERDR_WAIT_TIMEOUT_MAX_MS)
+        .clamp(AI_AGENT_WAIT_TIMEOUT_MIN_MS, AI_AGENT_WAIT_TIMEOUT_MAX_MS)
 }
 
 #[cfg(test)]
@@ -205,8 +204,8 @@ mod tests {
 
     #[test]
     fn older_agent_payload_does_not_require_completion_sequence() {
-        let agent: HerdrAgent = serde_json::from_str(
-            r#"{"target":"reviewer","status":"idle","pane_id":"w1:p2"}"#,
+        let agent: AiAgent = serde_json::from_str(
+            r#"{"target":"reviewer","status":"idle","id":"w1:p2"}"#,
         ).unwrap();
         assert_eq!(agent.completion_seq, None);
         assert!(serde_json::to_value(agent).unwrap().get("completion_seq").is_none());
@@ -241,8 +240,8 @@ mod tests {
 
     #[test]
     fn status_parse_is_case_insensitive() {
-        assert_eq!(HerdrAgentStatus::parse_label("Working"), HerdrAgentStatus::Working);
-        assert_eq!(HerdrAgentStatus::parse_label("DONE"), HerdrAgentStatus::Done);
-        assert_eq!(HerdrAgentStatus::parse_label("???"), HerdrAgentStatus::Unknown);
+        assert_eq!(AiAgentStatus::parse_label("Working"), AiAgentStatus::Working);
+        assert_eq!(AiAgentStatus::parse_label("DONE"), AiAgentStatus::Done);
+        assert_eq!(AiAgentStatus::parse_label("???"), AiAgentStatus::Unknown);
     }
 }

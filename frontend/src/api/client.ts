@@ -182,15 +182,18 @@ export function friendlyMessage(error: unknown): string {
     temp_upload_too_large: 'This file exceeds the agent’s upload limit.',
     temp_unavailable: 'The temp folder is not available on this agent.',
     temp_internal_error: 'The upload failed safely. Please retry.',
-    herdr_unavailable: 'Herdr is installed but the server is not running on this backend. Start it, then refresh.',
-    herdr_timeout: 'The Herdr command timed out. Read the latest output before retrying.',
-    herdr_key_unsupported: 'This shortcut is unavailable on this backend. Use Herdr directly on the backend instead.',
-    herdr_incompatible: 'Herdr returned an incompatible response. Update its CLI and restart the Herdr server with a matching version.',
-    herdr_blocked: 'That agent is waiting for an approval. Inspect the output, then tap a key.',
-    herdr_agent_missing: 'That Herdr agent is no longer running.',
-    herdr_not_ready: 'The agent did not become ready in time. Read the output before retrying.',
-    herdr_not_idle: 'That agent is busy, so its latest output could not be read. Retry in a moment.',
-    herdr_failed: 'The Herdr command failed. Check the output and retry.',
+    ai_agents_disabled: 'AI Agents is disabled on this backend.',
+    ai_agents_environment_override: 'AI Agents is controlled by the Filebox Agent environment setting. Change it and restart the Agent to use this switch.',
+    ai_agents_settings_save_failed: 'The AI Agents setting could not be saved.',
+    ai_agent_backend_unavailable: 'The AI agent backend is installed but the server is not running on this backend. Start it, then refresh.',
+    ai_agent_timeout: 'The AI agent command timed out. Read the latest output before retrying.',
+    ai_agent_key_unsupported: 'This shortcut is unavailable on this backend. Use the backend directly instead.',
+    ai_agent_backend_incompatible: 'The AI agent backend returned an incompatible response. Update its CLI and restart the backend with a matching version.',
+    ai_agent_blocked: 'That agent is waiting for an approval. Inspect the output, then tap a key.',
+    ai_agent_missing: 'That AI agent is no longer running.',
+    ai_agent_not_ready: 'The agent did not become ready in time. Read the output before retrying.',
+    ai_agent_not_idle: 'That agent is busy, so its latest output could not be read. Retry in a moment.',
+    ai_agent_failed: 'The AI agent command failed. Check the output and retry.',
   };
   if (typeof code === 'string' && Object.hasOwn(map, code)) return map[code];
   return 'An unexpected error occurred.';
@@ -389,19 +392,24 @@ export interface AgentCapabilities {
   pinned_folders: boolean;
   collections: boolean;
   temp_upload: boolean;
-  /** Agent found a local `herdr` CLI it can drive. */
-  herdr?: boolean;
-  herdr_settings?: HerdrSettings | null;
+  ai_agents?: AiAgentsCapability | null;
 }
 
-export interface HerdrSettings {
+export interface AiAgentsCapability {
+  available: boolean;
+  backend: string | null;
+  version: string | null;
+  settings: AiAgentSettings;
+}
+
+export interface AiAgentSettings {
   enabled: boolean;
   environment_override: boolean | null;
 }
 
-export function setHerdrEnabled(agentId: string, enabled: boolean) {
-  return request<HerdrSettings>(
-    `/api/agents/${encodeURIComponent(agentId)}/herdr-settings`,
+export function setAiAgentsEnabled(agentId: string, enabled: boolean) {
+  return request<AiAgentsCapability>(
+    `/api/agents/${encodeURIComponent(agentId)}/ai-agents/settings`,
     { method: 'POST', body: JSON.stringify({ enabled }) },
     false,
     15_000,
@@ -1052,24 +1060,23 @@ export async function cleanupTempFolder(agentId: string, signal?: AbortSignal) {
   );
 }
 
-export type HerdrOp = 'status' | 'read' | 'prompt' | 'send_keys';
-export type HerdrAgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
+export type AiAgentOp = 'status' | 'read' | 'prompt' | 'send_keys';
+export type AiAgentStatus = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
 
-export interface HerdrAgent {
+export interface AiAgent {
   target: string;
   name?: string | null;
   kind?: string | null;
-  status: HerdrAgentStatus;
+  status: AiAgentStatus;
   completion_seq?: number | null;
-  pane_id: string;
-  workspace_id: string;
-  tab_id: string;
+  id: string;
+  scope: string;
   cwd?: string | null;
   title?: string | null;
   focused: boolean;
 }
 
-export interface HerdrServerStatus {
+export interface AiAgentBackendStatus {
   installed: boolean;
   reachable: boolean;
   version?: string | null;
@@ -1077,42 +1084,42 @@ export interface HerdrServerStatus {
 }
 
 /** Hub-side prompt review state, configured only in hub.json. */
-export interface HerdrPromptReview {
+export interface AiAgentPromptReview {
   state: 'on' | 'off' | 'not_configured';
   model?: string | null;
 }
 
-export interface HerdrResponse {
+export interface AiAgentResponse {
   req_id: string;
   error?: string | null;
-  status?: HerdrServerStatus | null;
-  prompt_review?: HerdrPromptReview | null;
-  agents?: HerdrAgent[];
-  agent?: HerdrAgent | null;
+  status?: AiAgentBackendStatus | null;
+  prompt_review?: AiAgentPromptReview | null;
+  agents?: AiAgent[];
+  agent?: AiAgent | null;
   output?: string | null;
 }
 
-export interface HerdrCommandBody {
-  op: HerdrOp;
+export interface AiAgentCommandBody {
+  op: AiAgentOp;
   target?: string;
   text?: string;
   keys?: string[];
   lines?: number;
-  read_source?: 'visible' | 'detection';
+  read_source?: 'visible' | 'bottom';
   wait?: boolean;
   timeout_ms?: number;
 }
 
-/** Drive the agent's local Herdr CLI. Prompt-with-wait may take up to ~2 minutes. */
-export async function herdrCommand(
+/** Execute an AI agent operation. Prompt-with-wait may take up to ~2 minutes. */
+export async function aiAgentCommand(
   agentId: string,
-  body: HerdrCommandBody,
+  body: AiAgentCommandBody,
   signal?: AbortSignal,
   timeoutMs?: number,
 ) {
   const waitBudget = body.wait ? Math.min(130_000, (body.timeout_ms ?? 30_000) + 15_000) : 25_000;
-  return request<HerdrResponse>(
-    `/api/agents/${encodeURIComponent(agentId)}/herdr`,
+  return request<AiAgentResponse>(
+    `/api/agents/${encodeURIComponent(agentId)}/ai-agents`,
     { method: 'POST', body: JSON.stringify(body), signal },
     false,
     timeoutMs ?? waitBudget,

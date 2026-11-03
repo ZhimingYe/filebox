@@ -6,8 +6,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it.each(['herdr_unavailable', 'herdr_blocked', 'herdr_timeout', 'herdr_not_idle'] as const)(
-  'explains Herdr errors for %s',
+it.each(['ai_agent_backend_unavailable', 'ai_agent_blocked', 'ai_agent_timeout', 'ai_agent_not_idle'] as const)(
+  'explains AiAgent errors for %s',
   (error) => {
     expect(friendlyMessage({ error })).not.toBe('An unexpected error occurred.');
   },
@@ -48,12 +48,12 @@ const mutations = [
   { name: 'delete collection', fallback: 'collection_rejected', run: () => api.deleteCollection('a1', 'work') },
 ];
 
-it('sends the per-Agent Herdr preference through the authenticated API', async () => {
-  const settings = { enabled: false, environment_override: null };
+it('sends the per-Agent AI Agents preference through the authenticated API', async () => {
+  const settings = { available: false, backend: null, version: null, settings: { enabled: false, environment_override: null } };
   const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(settings)));
   vi.stubGlobal('fetch', fetchMock);
-  await expect(api.setHerdrEnabled('agent/a', false)).resolves.toEqual(settings);
-  expect(fetchMock).toHaveBeenCalledWith('/api/agents/agent%2Fa/herdr-settings', expect.objectContaining({
+  await expect(api.setAiAgentsEnabled('agent/a', false)).resolves.toEqual(settings);
+  expect(fetchMock).toHaveBeenCalledWith('/api/agents/agent%2Fa/ai-agents/settings', expect.objectContaining({
     method: 'POST', body: JSON.stringify({ enabled: false }), credentials: 'include',
   }));
 });
