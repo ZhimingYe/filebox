@@ -365,6 +365,10 @@ async fn unknown_backend_environment_lock_allows_enabled_toggle() {
         .is_none());
     assert!(!session.runtime.resource_mgr.ai_agents_enabled());
     assert_eq!(session.runtime.resource_mgr.ai_agents_backend(), Some("herdr"));
+    let persisted =
+        crate::config_store::PersistedConfig::load_or_create(&temp.path().to_path_buf());
+    assert!(!persisted.ai_agents_enabled);
+    assert_eq!(persisted.ai_agents_backend.as_deref(), Some("herdr"));
 }
 
 #[tokio::test]
