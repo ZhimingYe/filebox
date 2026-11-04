@@ -1,7 +1,9 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::collections::BTreeMap;
 
 use base64::Engine;
+use filebox_llm::ProviderConfig;
 use filebox_updater::{
     ensure_output_available, prompt_confirmed_secret, prompt_line, prompt_nonempty_secret,
     prompt_yes_no, write_private_file,
@@ -22,11 +24,30 @@ pub struct HubConfig {
     #[serde(skip)]
     pub prompt_review_mode: crate::prompt_review::ReviewMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_review: Option<crate::prompt_review::PromptReviewConfig>,
+    pub prompt_review: Option<PromptReviewConfig>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub llm_providers: BTreeMap<String, ProviderConfig>,
     #[serde(default = "default_listen_addr")]
     pub listen_addr: SocketAddr,
     pub agent_token_hash: String,
     pub users: Vec<UserConfig>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum PromptReviewConfig {
+    Provider(ProviderRef),
+    Inline(ProviderConfig),
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderRef {
+    pub provider: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 fn default_listen_addr() -> SocketAddr {
@@ -104,6 +125,7 @@ impl HubConfig {
             return Self {
                 prompt_review_mode,
                 prompt_review: None,
+                llm_providers: BTreeMap::new(),
                 listen_addr: std::env::var("FILEBOX_LISTEN_ADDR")
                     .unwrap_or_else(|_| "127.0.0.1:3000".to_string())
                     .parse()
@@ -126,12 +148,24 @@ impl HubConfig {
         }
         let mut config: HubConfig = serde_json::from_value(value)
             .unwrap_or_else(|_| panic!("Failed to parse config file '{}': invalid Hub configuration fields", path.display()));
+        for name in config.llm_providers.keys() {
+            validate_provider_name(name).unwrap_or_else(|error| panic!("prompt review: {error}"));
+        }
         config.prompt_review_mode = prompt_review_mode;
         if prompt_review_mode == crate::prompt_review::ReviewMode::Disabled {
             config.prompt_review = None;
-        } else if let Some(review) = config.prompt_review.as_mut() {
-            review.validate().unwrap_or_else(|e| panic!("prompt review: {e}"));
-            tracing::info!("prompt review: enabled, protocol {}, model {}", review.protocol.as_str(), review.model);
+        } else if let Some(provider_name) = config
+            .resolve_prompt_review()
+            .unwrap_or_else(|error| panic!("prompt review: {error}"))
+        {
+            if let Some(PromptReviewConfig::Inline(review)) = config.prompt_review.as_ref() {
+                tracing::info!(
+                    "prompt review: enabled, provider {}, protocol {}, model {}",
+                    provider_name,
+                    review.protocol.as_str(),
+                    review.model
+                );
+            }
         } else {
             tracing::info!("prompt review: not configured; AI agent prompts are disabled");
         }
@@ -149,6 +183,56 @@ impl HubConfig {
         }
 
         config
+    }
+
+    pub fn resolve_prompt_review(&mut self) -> Result<Option<String>, String> {
+        for name in self.llm_providers.keys() {
+            validate_provider_name(name)?;
+        }
+        let Some(prompt_review) = self.prompt_review.take() else {
+            return Ok(None);
+        };
+        match prompt_review {
+            PromptReviewConfig::Inline(mut provider) => {
+                provider.validate().map_err(str::to_owned)?;
+                provider.timeout_secs = provider.timeout_secs.clamp(1, 60);
+                self.prompt_review = Some(PromptReviewConfig::Inline(provider));
+                Ok(Some("inline".into()))
+            }
+            PromptReviewConfig::Provider(reference) => {
+                validate_provider_name(&reference.provider)?;
+                let mut provider = self
+                    .llm_providers
+                    .get(&reference.provider)
+                    .cloned()
+                    .ok_or_else(|| format!("unknown llm provider '{}'", reference.provider))?;
+                if let Some(model) = reference.model {
+                    provider.model = model;
+                }
+                if let Some(timeout_secs) = reference.timeout_secs {
+                    provider.timeout_secs = timeout_secs;
+                }
+                provider.validate().map_err(str::to_owned)?;
+                provider.timeout_secs = provider.timeout_secs.clamp(1, 60);
+                self.prompt_review = Some(PromptReviewConfig::Inline(provider));
+                Ok(Some(reference.provider))
+            }
+        }
+    }
+}
+
+fn validate_provider_name(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let valid_first = chars
+        .next()
+        .is_some_and(|character| character.is_ascii_alphanumeric());
+    let valid_rest = chars.all(|character| {
+        character.is_ascii_alphanumeric() || character == '_' || character == '-'
+    });
+    if valid_first && valid_rest && name.len() <= 64 {
+        Ok(())
+    } else {
+        Err(format!("invalid llm provider name '{name}'"))
     }
 }
 
@@ -204,6 +288,7 @@ pub fn init_interactive(request: filebox_updater::ConfigInitRequest) -> Result<(
     eprintln!("Admin username: {username}");
     eprintln!("Agent token (save this; it is shown only now): {agent_token}");
     eprintln!("Use the same token when running `agent --init-config`.");
+    eprintln!("Run `hub --init-llm` to configure an LLM provider (AI Agents prompts require one).");
     Ok(())
 }
 
@@ -221,6 +306,7 @@ fn build_generated_config(
     Ok(HubConfig {
         prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
         prompt_review: None,
+        llm_providers: BTreeMap::new(),
         listen_addr,
         agent_token_hash,
         users: vec![UserConfig {
@@ -239,6 +325,18 @@ fn random_agent_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_provider() -> ProviderConfig {
+        ProviderConfig {
+            protocol: filebox_llm::Protocol::ChatCompletions,
+            base_url: "https://api.deepseek.com".into(),
+            model: "deepseek-flash".into(),
+            api_key: Some("test-key".into()),
+            api_key_env: None,
+            timeout_secs: 20,
+            path: None,
+        }
+    }
 
     #[test]
     fn default_listen_addr_binds_to_all_interfaces_port_3000() {
@@ -350,5 +448,95 @@ mod tests {
         assert!(first
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'));
+    }
+
+    #[test]
+    fn provider_reference_resolves_overrides_and_clamps_review_timeout() {
+        let mut config: HubConfig = serde_json::from_value(serde_json::json!({
+            "prompt_review": {
+                "provider": "deepseek",
+                "model": "review-model",
+                "timeout_secs": 120
+            },
+            "llm_providers": {
+                "deepseek": {
+                    "protocol": "chat_completions",
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-flash",
+                    "api_key": "test-key"
+                }
+            },
+            "agent_token_hash": "hash",
+            "users": []
+        }))
+        .unwrap();
+
+        assert_eq!(
+            config.resolve_prompt_review().unwrap().as_deref(),
+            Some("deepseek")
+        );
+        let Some(PromptReviewConfig::Inline(provider)) = config.prompt_review else {
+            panic!("provider reference must resolve to inline config");
+        };
+        assert_eq!(provider.model, "review-model");
+        assert_eq!(provider.timeout_secs, 60);
+    }
+
+    #[test]
+    fn provider_reference_rejects_unknown_name() {
+        let mut config = HubConfig {
+            prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
+            prompt_review: Some(PromptReviewConfig::Provider(ProviderRef {
+                provider: "missing".into(),
+                model: None,
+                timeout_secs: None,
+            })),
+            llm_providers: BTreeMap::new(),
+            listen_addr: default_listen_addr(),
+            agent_token_hash: "hash".into(),
+            users: vec![],
+        };
+        assert_eq!(
+            config.resolve_prompt_review().unwrap_err(),
+            "unknown llm provider 'missing'"
+        );
+    }
+
+    #[test]
+    fn invalid_provider_name_is_rejected_at_resolution() {
+        let mut config = HubConfig {
+            prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
+            prompt_review: None,
+            llm_providers: BTreeMap::from([("bad.name".into(), test_provider())]),
+            listen_addr: default_listen_addr(),
+            agent_token_hash: "hash".into(),
+            users: vec![],
+        };
+        assert_eq!(
+            config.resolve_prompt_review().unwrap_err(),
+            "invalid llm provider name 'bad.name'"
+        );
+    }
+
+    #[test]
+    fn legacy_inline_prompt_review_remains_valid_and_is_clamped() {
+        let mut provider = test_provider();
+        provider.timeout_secs = 90;
+        let mut config = HubConfig {
+            prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
+            prompt_review: Some(PromptReviewConfig::Inline(provider)),
+            llm_providers: BTreeMap::new(),
+            listen_addr: default_listen_addr(),
+            agent_token_hash: "hash".into(),
+            users: vec![],
+        };
+        assert_eq!(
+            config.resolve_prompt_review().unwrap().as_deref(),
+            Some("inline")
+        );
+        assert!(matches!(
+            config.prompt_review,
+            Some(PromptReviewConfig::Inline(provider)) if provider.timeout_secs == 60
+        ));
     }
 }

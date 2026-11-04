@@ -20,6 +20,7 @@ mod search_proxy;
 mod state;
 mod temp_proxy;
 mod ws;
+mod llm_wizard;
 
 #[tokio::main]
 async fn main() {
@@ -38,6 +39,13 @@ async fn main() {
         Ok(filebox_updater::UpdateCommand::InitConfig(request)) => {
             if let Err(error) = config::init_interactive(request) {
                 eprintln!("[hub] config creation failed: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Ok(filebox_updater::UpdateCommand::InitLlm(request)) => {
+            if let Err(error) = llm_wizard::init_interactive(request).await {
+                eprintln!("[hub] LLM provider configuration failed: {error}");
                 std::process::exit(1);
             }
             return;

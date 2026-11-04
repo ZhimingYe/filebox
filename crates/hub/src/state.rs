@@ -298,8 +298,16 @@ impl AppState {
                 sse_next_id: Arc::new(AtomicU64::new(1)),
             })),
             prompt_review_mode: config.prompt_review_mode,
-            prompt_reviewer: config.prompt_review.as_ref().filter(|_| config.prompt_review_mode == crate::prompt_review::ReviewMode::Mandatory)
-                .map(|c| Arc::new(crate::prompt_review::PromptReviewer::new(c.clone()))),
+            prompt_reviewer: if config.prompt_review_mode == crate::prompt_review::ReviewMode::Mandatory {
+                config.prompt_review.as_ref().and_then(|review| match review {
+                    crate::config::PromptReviewConfig::Inline(provider) => Some(Arc::new(
+                        crate::prompt_review::PromptReviewer::new(provider.clone()),
+                    )),
+                    crate::config::PromptReviewConfig::Provider(_) => None,
+                })
+            } else {
+                None
+            },
             rate_limiter: Arc::new(LoginRateLimiter::new(5, std::time::Duration::from_secs(30))),
             // Agent fleets commonly reconnect in cohorts after a hub restart
             // or network partition. Keep this high enough for same-IP NATed
@@ -421,6 +429,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unresolved_provider_reference_does_not_construct_a_reviewer() {
+        let config = crate::config::HubConfig {
+            prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
+            prompt_review: Some(crate::config::PromptReviewConfig::Provider(
+                crate::config::ProviderRef {
+                    provider: "missing".into(),
+                    model: None,
+                    timeout_secs: None,
+                },
+            )),
+            llm_providers: Default::default(),
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            agent_token_hash: "fake".into(),
+            users: vec![],
+        };
+
+        let state = AppState::new(&config, false);
+        assert!(state.prompt_reviewer.is_none());
+    }
+
+    #[test]
     fn rate_limiter_allows_first_attempt() {
         let limiter = LoginRateLimiter::new(5, std::time::Duration::from_secs(30));
         assert!(limiter.check("1.2.3.4").is_ok());
@@ -528,6 +557,7 @@ mod tests {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
             prompt_review: None,
+            llm_providers: Default::default(),
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![crate::config::UserConfig {
@@ -553,6 +583,7 @@ mod tests {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
             prompt_review: None,
+            llm_providers: Default::default(),
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],
@@ -568,6 +599,7 @@ mod tests {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
             prompt_review: None,
+            llm_providers: Default::default(),
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],
@@ -620,6 +652,7 @@ mod tests {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
             prompt_review: None,
+            llm_providers: Default::default(),
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],
@@ -667,6 +700,7 @@ mod tests {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
             prompt_review: None,
+            llm_providers: Default::default(),
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],
@@ -733,6 +767,7 @@ mod tests {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
             prompt_review: None,
+            llm_providers: Default::default(),
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],

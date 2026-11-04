@@ -5,6 +5,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 ## Unreleased
 
 ### Added
+- **LLM provider crate and reusable CLI wizard (`hub --init-llm`)** — add protocol-neutral Chat Completions, Responses, and Anthropic Messages support with multi-round tool calling, thinking, JSON mode, and named Hub providers.
 - **AI Agents review context** — the Hub supplies recent target-window output to the review provider along with the prompt, so short confirmations can be judged against the proposed action. Context is bounded, sanitized, and treated as untrusted; unavailable output never bypasses review.
 - **AI Agents prompt review** — hub.json LLM security review with Chat Completions, Responses, or Anthropic Messages protocols. By default, AI Agents prompts are disabled until review is configured and always fail closed on review errors; blocked prompts retain their browser drafts and show the review reason. A startup-only `FILEBOX_HUB_PROMPT_REVIEW_ENABLED=0` opt-out restores unreviewed relay. Status, reads and keys remain available.
 - **Per-Agent AI Agents backend selection and features** — choose an automatically detected or explicit backend in Agent settings, or lock selection with `FILEBOX_AGENT_AI_AGENTS_BACKEND`. Capabilities advertise backend features, and commands plus prompt-review context are bound to the active backend so stale requests cannot be rerouted after a switch.

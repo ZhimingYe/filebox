@@ -1,7 +1,8 @@
 # crates/ — Rust workspace
 
-filebox's backend is a Cargo workspace of four crates. Two binaries
-(`hub`, `agent`) share a wire protocol library and a small updater helper.
+filebox's backend is a Cargo workspace of five crates. Two binaries
+(`hub`, `agent`) share a wire protocol library, an LLM provider library, and
+a small updater helper.
 
 ```text
 Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ local files + sysinfo
@@ -17,6 +18,7 @@ talk only to the Hub.
 | Crate | Package | Kind | Role |
 |---|---|---|---|
 | [`protocol/`](protocol/) | `filebox-protocol` | library | Shared WS/JSON types, capabilities, denylist |
+| [`llm/`](llm/) | `filebox-llm` | library | Protocol-neutral LLM client and reusable CLI wizard (`cli` feature) |
 | [`hub/`](hub/) | `filebox-hub` | binary `hub` | Auth, agent registry, HTTP/SSE API, static UI |
 | [`agent/`](agent/) | `filebox-agent` | binary `agent` | Outbound WS client; read-only FS, search, stats, temp uploads and optional AI Agents backend |
 | [`updater/`](updater/) | `filebox-updater` | library | Shared `--init-config` / `--update` CLI helpers |
@@ -24,14 +26,14 @@ talk only to the Hub.
 Dependency graph (compile-time):
 
 ```text
-filebox-hub ──────┐
-                  ├──▶ filebox-protocol
-filebox-agent ────┘
-       │
-       └──▶ filebox-updater   (hub also depends on updater)
+filebox-hub ───────┐
+                   ├──▶ filebox-protocol
+filebox-agent ─────┘
+filebox-hub ───────────▶ filebox-llm
+filebox-hub / agent ────▶ filebox-updater
 ```
 
-`protocol` and `updater` have no dependency on hub/agent. Workspace version
+`protocol`, `llm`, and `updater` have no dependency on hub/agent. Workspace version
 and shared deps live in the root [`Cargo.toml`](../Cargo.toml).
 
 ## Runtime architecture

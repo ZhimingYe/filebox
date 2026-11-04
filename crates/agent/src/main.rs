@@ -44,6 +44,10 @@ async fn run() {
             }
             return;
         }
+        Ok(filebox_updater::UpdateCommand::InitLlm(_)) => {
+            eprintln!("[agent] --init-llm is only available for hub");
+            std::process::exit(2);
+        }
         Ok(filebox_updater::UpdateCommand::Update(request)) => {
             match filebox_updater::run_update(filebox_updater::Product::Agent, request).await {
                 Ok(outcome) if outcome.installed => {
