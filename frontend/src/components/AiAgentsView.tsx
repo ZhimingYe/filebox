@@ -179,8 +179,10 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
   const command = useCallback((body: api.AiAgentCommandBody, signal: AbortSignal, timeoutMs: number, priority = 0, valid: () => boolean = () => true) =>
     queue.current.run(() => {
       if (signal.aborted || !valid()) throw new DOMException('Obsolete request', 'AbortError');
-      return api.aiAgentCommand(agent.id, body, signal, timeoutMs);
-    }, signal, priority), [agent.id]);
+      const requestBody = { ...body };
+      if (backendKind) requestBody.backend = backendKind;
+      return api.aiAgentCommand(agent.id, requestBody, signal, timeoutMs);
+    }, signal, priority), [agent.id, backendKind]);
 
   const selectedAgent = useMemo(
     () => agents.find((a) => a.target === selected) ?? null,

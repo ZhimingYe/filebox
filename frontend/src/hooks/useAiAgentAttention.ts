@@ -106,22 +106,35 @@ export function useAiAgentAttention(agents: api.AgentInfo[], enabled: boolean, a
     .map((agent) => ({
       key: aiAgentBackendKey(agent.id, agent.capabilities?.ai_agents?.backend),
       backendId: agent.id,
+      backendKind: agent.capabilities?.ai_agents?.backend,
       name: agent.name,
       status: agent.status,
     })));
   const backends = useMemo(() => JSON.parse(backendKey) as {
-    key: string; backendId: string; name: string; status: string;
+    key: string; backendId: string; backendKind: string | null | undefined; name: string; status: string;
   }[], [backendKey]);
   const allowed = useMemo(() => new Set(backends.map((backend) => backend.key)), [backends]);
   // Health updates (RTT, stats, etc.) must not restart the polling loop.
-  const enabledRef = useRef({ enabled, allowed, backendIds: new Map<string, string>() });
-  enabledRef.current = { enabled, allowed, backendIds: new Map(backends.map((backend) => [backend.key, backend.backendId])) };
+  const enabledRef = useRef({
+    enabled,
+    allowed,
+    backendRequests: new Map<string, { agentId: string; backendKind: string | null | undefined }>(),
+  });
+  enabledRef.current = {
+    enabled,
+    allowed,
+    backendRequests: new Map(backends.map((backend) => [
+      backend.key,
+      { agentId: backend.backendId, backendKind: backend.backendKind },
+    ] as const)),
+  };
   const reportFailure = useCallback((id: string, error: unknown) => {
     if (!enabledRef.current.enabled || !enabledRef.current.allowed.has(id)) return;
     const e = error as { name?: string; error?: string } | null;
     const code = e?.error?.split(':')[0];
     if (e?.name === 'AbortError' || code === 'agent_busy' || code === 'cancelled') return;
-    if (code === 'ai_agent_backend_unavailable' || code === 'unsupported' || code === 'unsupported_feature') {
+    if (code === 'ai_agent_backend_unavailable' || code === 'ai_agent_backend_not_detected'
+      || code === 'unsupported' || code === 'unsupported_feature') {
       dispatch({ type: 'inactive', id });
       return;
     }
@@ -137,10 +150,15 @@ export function useAiAgentAttention(agents: api.AgentInfo[], enabled: boolean, a
   const monitor = useRef<ReturnType<typeof createAiAgentMonitor> | null>(null);
   useEffect(() => {
     const instance = createAiAgentMonitor(async (key, signal) => {
-      const agentId = enabledRef.current.backendIds.get(key);
-      if (!agentId) return;
+      const request = enabledRef.current.backendRequests.get(key);
+      if (!request) return;
       try {
-        const result = await api.aiAgentCommand(agentId, { op: 'status' }, signal, 20_000);
+        const result = await api.aiAgentCommand(
+          request.agentId,
+          { op: 'status', ...(request.backendKind ? { backend: request.backendKind } : {}) },
+          signal,
+          20_000,
+        );
         // An old request stays invalid even if the backend was re-enabled.
         if (!signal.aborted) reportStatus(key, result);
       } catch (e) { if (!signal.aborted) reportFailure(key, e); }

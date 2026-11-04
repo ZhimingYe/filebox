@@ -13,6 +13,13 @@ it.each(['ai_agent_backend_unavailable', 'ai_agent_blocked', 'ai_agent_timeout',
   },
 );
 
+it('explains backend changes and undetected selections', () => {
+  expect(friendlyMessage({ error: 'ai_agent_backend_changed' }))
+    .toBe('The AI agent backend changed on this Agent. Refresh and retry.');
+  expect(friendlyMessage({ error: 'ai_agent_backend_not_detected' }))
+    .toBe('The selected AI agent backend is not detected on this Agent. Install it or choose another backend in Settings.');
+});
+
 it.each(['temp_upload_stalled', 'temp_upload_stalled: upload queue is full; retry upload'])(
   'explains upload congestion and retry for %s', (error) => {
     const message = friendlyMessage({ error, retryable: true });

@@ -21,6 +21,8 @@ use crate::state::{AppState, AuthenticatedSession, PendingResponse, MAX_PENDING_
 pub struct AiAgentBody {
     pub op: AiAgentOp,
     #[serde(default)]
+    pub backend: Option<String>,
+    #[serde(default)]
     pub target: Option<String>,
     #[serde(default)]
     pub text: Option<String>,
@@ -254,21 +256,51 @@ pub async fn ai_agents_handler(
         );
     }
 
-    if !agent.capabilities.ai_agents.as_ref().is_some_and(|capability| capability.available) {
+    let Some(capability) = agent.capabilities.ai_agents.as_ref().filter(|capability| capability.available) else {
         return error_response(
             StatusCode::NOT_IMPLEMENTED,
             "unsupported",
             "AI Agents are unavailable on this agent. Check its backend installation and FILEBOX_AGENT_AI_AGENTS_ENABLED, then restart the Filebox Agent",
             false,
         );
+    };
+    let Some(active_backend) = capability.backend.as_deref().map(str::to_owned) else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ai_agent_backend_not_detected",
+            "The selected AI agent backend is not detected on this Agent. Install it or choose another backend in Settings.",
+            true,
+        );
+    };
+    if validated
+        .backend
+        .as_deref()
+        .is_some_and(|backend| backend != active_backend.as_str())
+    {
+        return error_response(
+            StatusCode::CONFLICT,
+            "ai_agent_backend_changed",
+            "The AI agent backend changed on this Agent. Refresh and retry.",
+            false,
+        );
     }
+    let bound_backend = validated.backend.clone().unwrap_or(active_backend);
 
     drop(inner);
     let req_id = format!("ai_agents_{}", Uuid::new_v4());
     let wait_ms = if validated.wait { clamp_wait_timeout_ms(validated.timeout_ms) } else { 0 };
     let hub_timeout = hub_timeout_for(validated.op, validated.wait, wait_ms);
     let is_status = validated.op == AiAgentOp::Status;
-    let msg = match reviewed_message(&state, &session.principal_id, &agent_id, validated, &req_id).await {
+    let msg = match reviewed_message(
+        &state,
+        &session.principal_id,
+        &agent_id,
+        validated,
+        &req_id,
+        bound_backend,
+    )
+    .await
+    {
         Ok(msg) => msg,
         Err(response) => return response,
     };
@@ -375,12 +407,18 @@ async fn relay_ai_agents(
     }
 }
 
-async fn review_context(state: &AppState, principal_id: &str, agent_id: &str, target: Option<String>) -> Option<String> {
+async fn review_context(
+    state: &AppState,
+    principal_id: &str,
+    agent_id: &str,
+    backend: &str,
+    target: Option<String>,
+) -> Option<String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     for attempt in 0..2 {
         let req_id = format!("ai_agents_context_{}", Uuid::new_v4());
         let msg = HubMessage::AiAgentRequest {
-            req_id: req_id.clone(), op: AiAgentOp::Read, target: target.clone(),
+            req_id: req_id.clone(), op: AiAgentOp::Read, backend: Some(backend.into()), target: target.clone(),
             text: None, keys: Vec::new(), lines: Some(120),
             read_source: Some(AiAgentReadSource::Bottom), wait: false, timeout_ms: None,
         };
@@ -426,10 +464,18 @@ fn clean_context(text: &str) -> Option<String> {
     if tail.is_empty() { None } else { Some(tail.to_owned()) }
 }
 
-async fn reviewed_message(state: &AppState, principal_id: &str, agent_id: &str, validated: ValidatedBody, req_id: &str) -> Result<HubMessage, Response> {
+async fn reviewed_message(
+    state: &AppState,
+    principal_id: &str,
+    agent_id: &str,
+    validated: ValidatedBody,
+    req_id: &str,
+    backend: String,
+) -> Result<HubMessage, Response> {
     if matches!(validated.op, AiAgentOp::Prompt) && state.prompt_review_mode == crate::prompt_review::ReviewMode::Mandatory {
         if let Some(reviewer) = &state.prompt_reviewer {
-            let context = review_context(state, principal_id, agent_id, validated.target.clone()).await;
+            let context =
+                review_context(state, principal_id, agent_id, &backend, validated.target.clone()).await;
             match reviewer.review(validated.text.as_deref().unwrap_or_default(), context.as_deref()).await {
                 Ok(verdict) if matches!(verdict.decision, crate::prompt_review::Decision::Block) => {
                     tracing::warn!(agent_id = %agent_id, target = ?validated.target,
@@ -451,6 +497,7 @@ async fn reviewed_message(state: &AppState, principal_id: &str, agent_id: &str, 
     Ok(HubMessage::AiAgentRequest {
         req_id: req_id.to_owned(),
         op: validated.op,
+        backend: Some(backend),
         target: validated.target,
         text: validated.text,
         keys: validated.keys,
@@ -464,6 +511,7 @@ async fn reviewed_message(state: &AppState, principal_id: &str, agent_id: &str, 
 #[derive(Debug)]
 struct ValidatedBody {
     op: AiAgentOp,
+    backend: Option<String>,
     target: Option<String>,
     text: Option<String>,
     keys: Vec<String>,
@@ -474,6 +522,14 @@ struct ValidatedBody {
 }
 
 fn validate_body(body: AiAgentBody) -> Result<ValidatedBody, &'static str> {
+    if body
+        .backend
+        .as_deref()
+        .is_some_and(|kind| !valid_backend_kind(kind))
+    {
+        return Err("Backend kind must contain 1–32 lowercase letters, digits, underscores, or hyphens");
+    }
+    let backend = body.backend;
     let target = match body.target {
         Some(t) => {
             let t = t.trim().to_string();
@@ -522,6 +578,7 @@ fn validate_body(body: AiAgentBody) -> Result<ValidatedBody, &'static str> {
     }
     Ok(ValidatedBody {
         op: body.op,
+        backend,
         target,
         text,
         keys,
@@ -545,6 +602,10 @@ fn hub_timeout_for(op: AiAgentOp, wait: bool, wait_ms: u64) -> Duration {
 fn http_for_ai_agents_error(error: &str) -> (StatusCode, &'static str) {
     let code = error.split(':').next().unwrap_or(error);
     match code {
+        "ai_agent_backend_changed" => (StatusCode::CONFLICT, "ai_agent_backend_changed"),
+        "ai_agent_backend_not_detected" => {
+            (StatusCode::SERVICE_UNAVAILABLE, "ai_agent_backend_not_detected")
+        }
         "ai_agent_backend_unavailable" => (StatusCode::SERVICE_UNAVAILABLE, "ai_agent_backend_unavailable"),
         "ai_agent_key_unsupported" => (StatusCode::UNPROCESSABLE_ENTITY, "ai_agent_key_unsupported"),
         "ai_agent_backend_incompatible" => (StatusCode::BAD_GATEWAY, "ai_agent_backend_incompatible"),
@@ -562,8 +623,10 @@ fn http_for_ai_agents_error(error: &str) -> (StatusCode, &'static str) {
 
 fn human_ai_agents_error(error: &str) -> &'static str {
     match error.split(':').next().unwrap_or(error) {
+        "ai_agent_backend_changed" => "The AI agent backend changed on this Agent. Refresh and retry.",
+        "ai_agent_backend_not_detected" => "The selected AI agent backend is not detected on this Agent. Install it or choose another backend in Settings.",
         "ai_agent_backend_unavailable" => "The AI agent backend is installed but the server is not running on this backend",
-        "ai_agent_key_unsupported" => "This AI agent backend does not support that key. The configured backend does not support that navigation key.",
+        "ai_agent_key_unsupported" => "This AI agent backend does not support that key.",
         "ai_agent_backend_incompatible" => "The AI agent backend returned an incompatible response. Update its CLI and restart the AI agent backend with a matching version.",
         "ai_agent_timeout" => "The AI agent command timed out",
         "ai_agent_blocked" => "That agent is waiting for an approval. Inspect the output, then send a key.",
@@ -684,6 +747,66 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn ai_agent_request_rejects_invalid_and_stale_backends_before_forwarding() {
+        let (state, mut receiver, _) = state_with_ai_agents_settings(
+            filebox_protocol::resources::AiAgentSettings {
+                enabled: true,
+                environment_override: None,
+                backend: Some("herdr".into()),
+                backend_environment_override: None,
+            },
+            "herdr",
+        )
+        .await;
+        let invalid = ai_agents_handler(
+            State(state.clone()),
+            Extension(AuthenticatedSession { id: "s".into(), principal_id: "p".into() }),
+            Path("agent".into()),
+            Json(AiAgentBody {
+                op: AiAgentOp::Status,
+                backend: Some("Not-valid".into()),
+                target: None,
+                text: None,
+                keys: Vec::new(),
+                lines: None,
+                read_source: None,
+                wait: false,
+                timeout_ms: None,
+            }),
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(invalid.into_body(), 4096).await.unwrap())
+                .unwrap();
+        assert_eq!(body["error"], "invalid_request");
+
+        let stale = ai_agents_handler(
+            State(state),
+            Extension(AuthenticatedSession { id: "s".into(), principal_id: "p".into() }),
+            Path("agent".into()),
+            Json(AiAgentBody {
+                op: AiAgentOp::Status,
+                backend: Some("other".into()),
+                target: None,
+                text: None,
+                keys: Vec::new(),
+                lines: None,
+                read_source: None,
+                wait: false,
+                timeout_ms: None,
+            }),
+        )
+        .await;
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(stale.into_body(), 4096).await.unwrap())
+                .unwrap();
+        assert_eq!(body["error"], "ai_agent_backend_changed");
+        assert!(receiver.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -845,8 +968,9 @@ mod tests {
                 let attempts = if decision == "read_busy" { 2 } else { 1 };
                 for attempt in 0..attempts {
                     let msg = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await.unwrap().unwrap();
-                    let HubMessage::AiAgentRequest { req_id, op, target, text, keys, lines, read_source, wait, .. } = msg else { panic!("expected context Read") };
+                    let HubMessage::AiAgentRequest { req_id, op, backend, target, text, keys, lines, read_source, wait, .. } = msg else { panic!("expected context Read") };
                     assert_eq!(op, AiAgentOp::Read);
+                    assert_eq!(backend.as_deref(), Some("herdr"));
                     assert_eq!(target.as_deref(), Some("reviewer"));
                     assert!(text.is_none() && keys.is_empty() && !wait);
                     assert_eq!(lines, Some(120));
@@ -864,7 +988,8 @@ mod tests {
             }
             if relay {
                 let msg = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await.unwrap().unwrap();
-                let HubMessage::AiAgentRequest { req_id, text, .. } = msg else { panic!("expected AI agent request") };
+                let HubMessage::AiAgentRequest { req_id, backend, text, .. } = msg else { panic!("expected AI agent request") };
+                assert_eq!(backend.as_deref(), Some("herdr"));
                 assert_eq!(text.as_deref(), Some("Analyze the data"));
                 let inner = state.inner.read().await;
                 inner.pending_responses.write().await.remove(&req_id).unwrap().deliver(serde_json::json!({"ok":true}));
@@ -911,8 +1036,9 @@ mod tests {
                 }), Path("a".into()), Json(serde_json::from_value(serde_json::json!({"op":"status"})).unwrap())).await
             });
             let msg = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await.unwrap().unwrap();
-            let HubMessage::AiAgentRequest { req_id, op, .. } = msg else { panic!("expected AI agent request") };
+            let HubMessage::AiAgentRequest { req_id, op, backend, .. } = msg else { panic!("expected AI agent request") };
             assert_eq!(op, AiAgentOp::Status);
+            assert_eq!(backend.as_deref(), Some("herdr"));
             state.inner.read().await.pending_responses.write().await.remove(&req_id).unwrap()
                 .deliver(serde_json::json!({"agents":[]}));
             let response = request.await.unwrap();
@@ -1035,13 +1161,30 @@ mod tests {
             (StatusCode::BAD_GATEWAY, "ai_agent_backend_incompatible"));
         assert_eq!(http_for_ai_agents_error("ai_agent_backend_unavailable"),
             (StatusCode::SERVICE_UNAVAILABLE, "ai_agent_backend_unavailable"));
+        assert_eq!(http_for_ai_agents_error("ai_agent_backend_not_detected"),
+            (StatusCode::SERVICE_UNAVAILABLE, "ai_agent_backend_not_detected"));
+        assert_eq!(http_for_ai_agents_error("ai_agent_backend_changed"),
+            (StatusCode::CONFLICT, "ai_agent_backend_changed"));
         assert!(human_ai_agents_error("ai_agent_backend_incompatible").contains("matching version"));
+        assert_eq!(
+            human_ai_agents_error("ai_agent_key_unsupported"),
+            "This AI agent backend does not support that key."
+        );
+        assert_eq!(
+            human_ai_agents_error("ai_agent_backend_changed"),
+            "The AI agent backend changed on this Agent. Refresh and retry."
+        );
+        assert_eq!(
+            human_ai_agents_error("ai_agent_backend_not_detected"),
+            "The selected AI agent backend is not detected on this Agent. Install it or choose another backend in Settings."
+        );
     }
 
     #[test]
     fn status_rejects_target() {
         let err = validate_body(AiAgentBody {
             op: AiAgentOp::Status,
+            backend: None,
             target: Some("w1:p1".into()),
             text: None,
             keys: Vec::new(),
@@ -1058,6 +1201,7 @@ mod tests {
     fn prompt_requires_text_and_target() {
         assert!(validate_body(AiAgentBody {
             op: AiAgentOp::Prompt,
+            backend: None,
             target: Some("reviewer".into()),
             text: Some("look at this".into()),
             keys: Vec::new(),
@@ -1069,6 +1213,7 @@ mod tests {
         .is_ok());
         assert!(validate_body(AiAgentBody {
             op: AiAgentOp::Prompt,
+            backend: None,
             target: None,
             text: Some("x".into()),
             keys: Vec::new(),
@@ -1084,6 +1229,7 @@ mod tests {
     fn send_keys_allowlist() {
         assert!(validate_body(AiAgentBody {
             op: AiAgentOp::SendKeys,
+            backend: None,
             target: Some("w1:p1".into()),
             text: None,
             keys: vec!["esc".into(), "enter".into()],
@@ -1095,6 +1241,7 @@ mod tests {
         .is_ok());
         assert!(validate_body(AiAgentBody {
             op: AiAgentOp::SendKeys,
+            backend: None,
             target: Some("w1:p1".into()),
             text: None,
             keys: vec!["rm -rf".into()],

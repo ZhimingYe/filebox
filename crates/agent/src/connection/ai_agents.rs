@@ -1,6 +1,17 @@
 use super::*;
 use filebox_protocol::message::AgentMessage;
 
+pub(super) fn should_reprobe(
+    prev_enabled: bool,
+    new_enabled: bool,
+    prev_selection: Option<&str>,
+    new_selection: Option<&str>,
+    selected_present: bool,
+) -> bool {
+    (!prev_enabled && new_enabled)
+        || (new_enabled && prev_selection != new_selection && !selected_present)
+}
+
 impl ConnectionSession<'_> {
     pub(super) fn handle_ai_agent_request(
         &mut self,
@@ -9,6 +20,7 @@ impl ConnectionSession<'_> {
         let HubMessage::AiAgentRequest {
             req_id,
             op,
+            backend: request_backend,
             target,
             text,
             keys,
@@ -43,12 +55,14 @@ impl ConnectionSession<'_> {
         let Some(backend) = self.runtime.active_ai_agent_backend() else {
             let resp = AgentMessage::AiAgentResponse {
                 req_id,
-                error: Some("ai_agent_backend_unavailable".to_string()),
+                error: Some("ai_agent_backend_not_detected".to_string()),
                 status: Some(filebox_protocol::ai_agents::AiAgentBackendStatus {
                     installed: false,
                     reachable: false,
                     version: None,
-                    message: Some("No supported AI agent backend is installed".to_string()),
+                    message: Some(
+                        "The selected AI agent backend is not detected on this Agent".to_string(),
+                    ),
                 }),
                 agents: Vec::new(),
                 agent: None,
@@ -59,6 +73,24 @@ impl ConnectionSession<'_> {
             }
             return Ok(());
         };
+
+        if request_backend
+            .as_deref()
+            .is_some_and(|requested| requested != backend.kind())
+        {
+            let resp = AgentMessage::AiAgentResponse {
+                req_id,
+                error: Some("ai_agent_backend_changed".to_string()),
+                status: None,
+                agents: Vec::new(),
+                agent: None,
+                output: None,
+            };
+            if !queue_agent_message(&self.control_tx, &resp) {
+                return Err(DisconnectReason::ControlQueueClosed);
+            }
+            return Ok(());
+        }
 
         let Ok(permit) = self.runtime.ai_agent_inflight.clone().try_acquire_owned() else {
             let resp = AgentMessage::AiAgentResponse {
@@ -141,6 +173,8 @@ impl ConnectionSession<'_> {
         backend_kinds: &[&str],
     ) -> Option<String> {
         let capability = self.runtime.ai_agents_capability();
+        let prev_enabled = capability.settings.enabled;
+        let prev_selection = capability.settings.backend.clone();
         let enabled_locked = self.runtime.ai_agents_environment_override.is_some();
         let backend_environment_override = self
             .runtime
@@ -188,10 +222,21 @@ impl ConnectionSession<'_> {
         let selection = backend_environment_override
             .as_deref()
             .or_else(|| self.runtime.resource_mgr.ai_agents_backend());
-        if effective_enabled
-            && (self.runtime.ai_agent_backends.is_empty()
-                || crate::ai_agents::select(&self.runtime.ai_agent_backends, selection).is_none())
-        {
+        let selected_present = match selection {
+            Some(kind) => self
+                .runtime
+                .ai_agent_backends
+                .iter()
+                .any(|backend| backend.kind() == kind),
+            None => !self.runtime.ai_agent_backends.is_empty(),
+        };
+        if should_reprobe(
+            prev_enabled,
+            effective_enabled,
+            prev_selection.as_deref(),
+            selection,
+            selected_present,
+        ) {
             self.runtime.ai_agent_backends = crate::ai_agents::probe_all().await;
         }
         if !effective_enabled {

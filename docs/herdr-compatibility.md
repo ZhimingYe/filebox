@@ -82,17 +82,26 @@ gate is defense in depth, not a shell sandbox or a guarantee of safety.
   Herdr has already accepted. The UI retains the draft and does not resubmit.
 - `server_not_running`, `protocol_mismatch`, and `agent_name_not_found` /
   `pane_not_found` become distinct unavailable, incompatible, and missing-agent
-  errors. Malformed list responses are incompatible, not empty lists.
+  errors. A detected backend whose server is stopped reports
+  `ai_agent_backend_unavailable`; a selected backend that is not detected
+  reports `ai_agent_backend_not_detected` (HTTP 503). Malformed list responses
+  are incompatible, not empty lists.
+- `POST /api/agents/{agent_id}/ai-agents` accepts an optional `backend` kind,
+  for example `{"op":"status","backend":"herdr"}`; callers omitting it remain
+  supported. The view pins status, read, prompt, and key requests to the active capability backend; the
+  Hub binds both prompt-review context reads and the final prompt to that kind.
+  A stale request is rejected as `ai_agent_backend_changed` (HTTP 409), and
+  invalid kinds return `invalid_request` (HTTP 400).
 - `completion_seq` is optional. Changes show a refresh hint; status polling never
   fetches output. Older payloads still deserialize. Explicit key actions read
   the visible viewport; ordinary UI reads send `read_source: "bottom"` (mapped to Herdr `detection`).
 - Null foreground metadata falls back to the pane's cwd/title. Prompt limits
   count UTF-8 bytes (32 KiB), matching the Agent and Hub validation.
 - The CLI is probed at Agent startup when AI Agents is effectively enabled.
-  Enabling AI Agents from Agent settings probes again if no client is cached;
-  installing the CLI on the running Agent's PATH can be detected with
-  **Check installation**. Changing the Agent process's PATH or
-  `FILEBOX_AGENT_HERDR` requires an Agent restart.
+  A settings save probes again only when effective enablement changes from off
+  to on or the effective backend selection changes to a missing backend;
+  saving identical settings does not retry a failed probe. Changing the Agent
+  process's PATH or `FILEBOX_AGENT_HERDR` requires an Agent restart.
 
 ## Attention reminders
 
@@ -141,8 +150,8 @@ The web setting uses `POST /api/agents/{agent_id}/ai-agents/settings` and takes 
 requests through their cancellation flags and rejects later Herdr commands, but
 does not stop the Herdr server or coding agents. Re-enabling probes for the CLI
 when no client is cached; a missing or failing CLI leaves the setting enabled
-but Herdr unavailable until a later retry or Agent restart. Other Filebox
-Agents are unaffected.
+but Herdr unavailable until another off-to-on transition, an effective
+selection change, or Agent restart. Other Filebox Agents are unaffected.
 
 An explicit `0`/`false` disables Herdr and skips executable discovery and
 `herdr --version`; `1`/`true` enables probing even if the saved setting is

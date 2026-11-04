@@ -473,6 +473,12 @@ refined, compact look on every client; do not enlarge buttons, fields or
 panels for touch-target size. Reads request `bottom` (Herdr maps this to
 `detection`); requests without a source retain the backend default, including
 Herdr's `recent-unwrapped` and `visible` fallback on `agent_not_idle`.
+The HTTP command body may include `backend`; the view binds every command to
+its active capability backend, and the Hub carries the same binding through
+prompt-review context reads and the final prompt. The Agent rejects a stale
+binding as `ai_agent_backend_changed` rather than rerouting it. A missing
+selected backend reports `ai_agent_backend_not_detected`; a detected backend
+whose server is stopped reports `ai_agent_backend_unavailable`.
 Herdr v0.9.5 requires
 `agent prompt TARGET TEXT [--wait --timeout MS]`: text is positional,
 including leading dashes; do not insert a `--` separator. Reads are plain

@@ -22,6 +22,73 @@ async fn response(rx: &mut mpsc::Receiver<Message>) -> AgentMessage {
     }
 }
 
+struct CountingAiAgentBackend {
+    kind: &'static str,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::ai_agents::AiAgentBackend for CountingAiAgentBackend {
+    fn kind(&self) -> &'static str { self.kind }
+    fn version(&self) -> &str { "test" }
+
+    fn list<'a>(
+        &'a self,
+        _: &'a AtomicBool,
+    ) -> crate::ai_agents::BackendFuture<'a, Result<crate::ai_agents::AiAgentList, String>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Ok(crate::ai_agents::AiAgentList {
+                status: filebox_protocol::ai_agents::AiAgentBackendStatus {
+                    installed: true,
+                    reachable: true,
+                    version: Some("test".into()),
+                    message: None,
+                },
+                error: None,
+                agents: Vec::new(),
+            })
+        })
+    }
+
+    fn read<'a>(
+        &'a self,
+        _: &'a str,
+        _: u32,
+        _: Option<filebox_protocol::ai_agents::AiAgentReadSource>,
+        _: &'a AtomicBool,
+    ) -> crate::ai_agents::BackendFuture<'a, Result<String, String>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(String::new()) })
+    }
+
+    fn prompt<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: Option<u64>,
+        _: &'a AtomicBool,
+    ) -> crate::ai_agents::BackendFuture<
+        'a,
+        Result<Option<filebox_protocol::ai_agents::AiAgent>, String>,
+    > {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(None) })
+    }
+
+    fn send_keys<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: &'a AtomicBool,
+    ) -> crate::ai_agents::BackendFuture<
+        'a,
+        Result<Option<filebox_protocol::ai_agents::AiAgent>, String>,
+    > {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(None) })
+    }
+}
+
 #[tokio::test]
 async fn collections_burst_keeps_update_before_ack_and_independent_revision() {
     let temp = tempfile::tempdir().unwrap();
@@ -371,6 +438,126 @@ async fn unknown_backend_environment_lock_allows_enabled_toggle() {
     assert_eq!(persisted.ai_agents_backend.as_deref(), Some("herdr"));
 }
 
+#[test]
+fn ai_agent_reprobe_requires_enable_transition_or_changed_missing_selection() {
+    let should_reprobe = super::ai_agents::should_reprobe;
+    assert!(should_reprobe(false, true, Some("a"), Some("a"), false));
+    assert!(should_reprobe(true, true, Some("a"), Some("b"), false));
+    assert!(!should_reprobe(true, true, Some("a"), Some("a"), false));
+    assert!(!should_reprobe(true, true, Some("a"), Some("b"), true));
+    assert!(!should_reprobe(false, false, Some("a"), Some("b"), false));
+}
+
+#[tokio::test]
+async fn ai_agent_requests_stay_bound_to_the_selected_backend() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = AgentRuntime::for_tests(temp.path());
+    runtime.ai_agents_environment_override = None;
+    runtime.ai_agents_backend_environment_override = None;
+    runtime.resource_mgr.set_ai_agents_settings(true, Some("b".into())).unwrap();
+    let calls_a = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls_b = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    runtime.ai_agent_backends = vec![
+        Arc::new(CountingAiAgentBackend { kind: "a", calls: calls_a.clone() })
+            as Arc<dyn crate::ai_agents::AiAgentBackend>,
+        Arc::new(CountingAiAgentBackend { kind: "b", calls: calls_b.clone() })
+            as Arc<dyn crate::ai_agents::AiAgentBackend>,
+    ];
+    let (sink, mut replies) = capture();
+    let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
+
+    session
+        .dispatch(HubMessage::AiAgentRequest {
+            req_id: "wrong-backend".into(),
+            op: filebox_protocol::ai_agents::AiAgentOp::Status,
+            backend: Some("a".into()),
+            target: None,
+            text: None,
+            keys: Vec::new(),
+            lines: None,
+            read_source: None,
+            wait: false,
+            timeout_ms: None,
+        })
+        .await
+        .unwrap();
+    match response(&mut replies).await {
+        AgentMessage::AiAgentResponse { error, status, agents, .. } => {
+            assert_eq!(error.as_deref(), Some("ai_agent_backend_changed"));
+            assert!(status.is_none());
+            assert!(agents.is_empty());
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+    assert_eq!(calls_a.load(Ordering::SeqCst), 0);
+    assert_eq!(calls_b.load(Ordering::SeqCst), 0);
+    assert_eq!(session.runtime.ai_agent_inflight.available_permits(), 1);
+
+    for (req_id, backend) in [("unbound", None), ("matching", Some("b"))] {
+        session
+            .dispatch(HubMessage::AiAgentRequest {
+                req_id: req_id.into(),
+                op: filebox_protocol::ai_agents::AiAgentOp::Status,
+                backend: backend.map(str::to_owned),
+                target: None,
+                text: None,
+                keys: Vec::new(),
+                lines: None,
+                read_source: None,
+                wait: false,
+                timeout_ms: None,
+            })
+            .await
+            .unwrap();
+        match response(&mut replies).await {
+            AgentMessage::AiAgentResponse { error, status, agents, .. } => {
+                assert!(error.is_none());
+                assert!(status.is_some_and(|status| status.reachable));
+                assert!(agents.is_empty());
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+    assert_eq!(calls_a.load(Ordering::SeqCst), 0);
+    assert_eq!(calls_b.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn ai_agent_request_reports_a_backend_that_is_not_detected() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = AgentRuntime::for_tests(temp.path());
+    runtime.ai_agents_environment_override = None;
+    runtime.ai_agents_backend_environment_override = Some("missing".into());
+    let (sink, mut replies) = capture();
+    let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
+    session
+        .dispatch(HubMessage::AiAgentRequest {
+            req_id: "not-detected".into(),
+            op: filebox_protocol::ai_agents::AiAgentOp::Status,
+            backend: Some("missing".into()),
+            target: None,
+            text: None,
+            keys: Vec::new(),
+            lines: None,
+            read_source: None,
+            wait: false,
+            timeout_ms: None,
+        })
+        .await
+        .unwrap();
+    match response(&mut replies).await {
+        AgentMessage::AiAgentResponse { error, status, agents, .. } => {
+            assert_eq!(error.as_deref(), Some("ai_agent_backend_not_detected"));
+            assert_eq!(
+                status.and_then(|status| status.message).as_deref(),
+                Some("The selected AI agent backend is not detected on this Agent")
+            );
+            assert!(agents.is_empty());
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn ai_agents_direct_request_is_rejected_when_disabled() {
     let temp = tempfile::tempdir().unwrap();
@@ -386,6 +573,7 @@ async fn ai_agents_direct_request_is_rejected_when_disabled() {
         .dispatch(HubMessage::AiAgentRequest {
             req_id: "direct".into(),
             op: filebox_protocol::ai_agents::AiAgentOp::Status,
+            backend: None,
             target: None,
             text: None,
             keys: vec![],

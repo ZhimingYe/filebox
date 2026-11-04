@@ -206,7 +206,7 @@ describe('AiAgentsView', () => {
     expect(document.getElementById(hintId)!.textContent).toContain('Waiting for approval');
     await act(async () => button('Down').click());
     expect(api.aiAgentCommand).toHaveBeenCalledWith(agent.id,
-      { op: 'send_keys', target: 'w1:p2', keys: ['down'] }, expect.any(AbortSignal), 15_000);
+      { op: 'send_keys', backend: 'herdr', target: 'w1:p2', keys: ['down'] }, expect.any(AbortSignal), 15_000);
   });
 
   it('keeps the mobile list until a tap and preserves output across resize', async () => {
@@ -253,7 +253,9 @@ describe('AiAgentsView', () => {
     await act(async () => button('AI Agents settings').click());
     vi.mocked(api.aiAgentCommand).mockClear();
     await act(async () => button('Refresh output').click());
-    expect(vi.mocked(api.aiAgentCommand).mock.calls.map(([, body]) => body)).toEqual([{ op: 'read', target: 'w1:p3', lines: 120, read_source: 'bottom' }]);
+    expect(vi.mocked(api.aiAgentCommand).mock.calls.map(([, body]) => body)).toEqual([
+      { op: 'read', backend: 'herdr', target: 'w1:p3', lines: 120, read_source: 'bottom' },
+    ]);
     await act(async () => card('reviewer').click());
     await act(async () => button('AI Agents settings').click());
     expect(button('Auto-refresh every minute').getAttribute('aria-checked')).toBe('false');
@@ -274,7 +276,7 @@ describe('AiAgentsView', () => {
     await act(async () => button('Refresh output').click());
     expect(output.scrollTop).toBe(1000);
     expect(vi.mocked(api.aiAgentCommand).mock.calls.map(([, body]) => body)).toEqual([
-      { op: 'read', target: 'w1:p2', lines: 120, read_source: 'bottom' },
+      { op: 'read', backend: 'herdr', target: 'w1:p2', lines: 120, read_source: 'bottom' },
     ]);
   });
 
@@ -316,7 +318,7 @@ describe('AiAgentsView', () => {
     await render();
     expect(api.aiAgentCommand).toHaveBeenCalledWith(
       agent.id,
-      { op: 'status' },
+      { op: 'status', backend: 'herdr' },
       expect.any(AbortSignal),
       20_000,
     );
@@ -328,7 +330,7 @@ describe('AiAgentsView', () => {
     // Desktop auto-selects the first agent and loads latest output.
     expect(api.aiAgentCommand).toHaveBeenCalledWith(
       agent.id,
-      { op: 'read', target: 'w1:p2', lines: 120, read_source: 'bottom' },
+      { op: 'read', backend: 'herdr', target: 'w1:p2', lines: 120, read_source: 'bottom' },
       expect.any(AbortSignal),
       25_000,
     );
@@ -342,7 +344,7 @@ describe('AiAgentsView', () => {
     await act(async () => card!.click());
     expect(api.aiAgentCommand).toHaveBeenCalledWith(
       agent.id,
-      { op: 'read', target: 'w1:p2', lines: 120, read_source: 'bottom' },
+      { op: 'read', backend: 'herdr', target: 'w1:p2', lines: 120, read_source: 'bottom' },
       expect.any(AbortSignal),
       25_000,
     );
@@ -357,7 +359,7 @@ describe('AiAgentsView', () => {
     await act(async () => send!.click());
     expect(api.aiAgentCommand).toHaveBeenCalledWith(
       agent.id,
-      expect.objectContaining({ op: 'prompt', target: 'w1:p2', text: 'please continue' }),
+      expect.objectContaining({ op: 'prompt', backend: 'herdr', target: 'w1:p2', text: 'please continue' }),
       expect.any(AbortSignal),
       100_000,
     );
@@ -370,7 +372,7 @@ describe('AiAgentsView', () => {
     await act(async () => button('Send').click());
     expect(api.aiAgentCommand).toHaveBeenCalledWith(
       agent.id,
-      expect.objectContaining({ op: 'prompt', wait: true, timeout_ms: 60_000 }),
+      expect.objectContaining({ op: 'prompt', backend: 'herdr', wait: true, timeout_ms: 60_000 }),
       expect.any(AbortSignal),
       155_000,
     );
@@ -401,7 +403,7 @@ describe('AiAgentsView', () => {
     await act(async () => esc!.click());
     expect(api.aiAgentCommand).toHaveBeenCalledWith(
       agent.id,
-      { op: 'send_keys', target: 'w1:p2', keys: ['esc'] },
+      { op: 'send_keys', backend: 'herdr', target: 'w1:p2', keys: ['esc'] },
       expect.any(AbortSignal),
       15_000,
     );
@@ -642,7 +644,7 @@ it('falls back to the target name when no pane id is available', async () => {
   await render();
   expect(container.querySelector('pre')!.textContent).toBe('reviewer');
   expect(api.aiAgentCommand).toHaveBeenCalledWith(agent.id,
-    { op: 'read', target: 'reviewer', lines: 120, read_source: 'bottom' }, expect.any(AbortSignal), 25_000);
+    { op: 'read', backend: 'herdr', target: 'reviewer', lines: 120, read_source: 'bottom' }, expect.any(AbortSignal), 25_000);
 });
 
 it.each(['w1:p2', 'w1:p99'])('resets shortcut defaults when the agent type changes in %s', async (paneId) => {

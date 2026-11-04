@@ -354,6 +354,8 @@ pub enum HubMessage {
         req_id: String,
         op: AiAgentOp,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        backend: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
@@ -1006,6 +1008,7 @@ mod tests {
         let req = HubMessage::AiAgentRequest {
             req_id: "h1".into(),
             op: crate::ai_agents::AiAgentOp::Status,
+            backend: None,
             target: None,
             text: None,
             keys: Vec::new(),
@@ -1015,10 +1018,32 @@ mod tests {
             timeout_ms: None,
         };
         assert_eq!(serde_json::to_value(&req).unwrap()["type"], "ai_agent_request");
+        assert!(serde_json::to_value(&req).unwrap().get("backend").is_none());
         match round_trip_hub(&req) {
-            HubMessage::AiAgentRequest { req_id, op, .. } => {
+            HubMessage::AiAgentRequest { req_id, op, backend, .. } => {
                 assert_eq!(req_id, "h1");
                 assert_eq!(op, crate::ai_agents::AiAgentOp::Status);
+                assert!(backend.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let bound_req = HubMessage::AiAgentRequest {
+            req_id: "h2".into(),
+            op: crate::ai_agents::AiAgentOp::Status,
+            backend: Some("herdr".into()),
+            target: None,
+            text: None,
+            keys: Vec::new(),
+            lines: None,
+            read_source: None,
+            wait: false,
+            timeout_ms: None,
+        };
+        assert_eq!(serde_json::to_value(&bound_req).unwrap()["backend"], "herdr");
+        match round_trip_hub(&bound_req) {
+            HubMessage::AiAgentRequest { backend, .. } => {
+                assert_eq!(backend.as_deref(), Some("herdr"));
             }
             _ => panic!("wrong variant"),
         }

@@ -185,6 +185,8 @@ export function friendlyMessage(error: unknown): string {
     ai_agents_disabled: 'AI Agents is disabled on this backend.',
     ai_agents_environment_override: 'This AI Agents setting is controlled by FILEBOX_AGENT_AI_AGENTS_ENABLED or FILEBOX_AGENT_AI_AGENTS_BACKEND. Change the applicable variable and restart the Filebox Agent.',
     ai_agents_settings_save_failed: 'The AI Agents setting could not be saved.',
+    ai_agent_backend_changed: 'The AI agent backend changed on this Agent. Refresh and retry.',
+    ai_agent_backend_not_detected: 'The selected AI agent backend is not detected on this Agent. Install it or choose another backend in Settings.',
     ai_agent_backend_unavailable: 'The AI agent backend is installed but the server is not running on this backend. Start it, then refresh.',
     ai_agent_timeout: 'The AI agent command timed out. Read the latest output before retrying.',
     ai_agent_key_unsupported: 'This shortcut is unavailable on this backend. Use the backend directly instead.',
@@ -1109,6 +1111,7 @@ export interface AiAgentResponse {
 
 export interface AiAgentCommandBody {
   op: AiAgentOp;
+  backend?: string;
   target?: string;
   text?: string;
   keys?: string[];

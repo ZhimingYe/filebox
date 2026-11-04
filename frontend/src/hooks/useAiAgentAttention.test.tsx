@@ -33,7 +33,7 @@ describe('AI Agent attention monitoring', () => {
     await render({ agents: [backend, { ...backend, id: 'b2' }, { ...backend, id: 'legacy', capabilities: {} }] });
     expect(current.notices.map((n) => n.backendId)).toEqual(['b1', 'b2']);
     expect(vi.mocked(api.aiAgentCommand).mock.calls.map(([id, body]) => [id, body])).toEqual([
-      ['b1', { op: 'status' }], ['b2', { op: 'status' }],
+      ['b1', { op: 'status', backend: 'herdr' }], ['b2', { op: 'status', backend: 'herdr' }],
     ]);
   });
 
