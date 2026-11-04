@@ -536,6 +536,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: c.bg,
     maxHeight: 140,
     overflowY: 'auto',
+    flexShrink: 0,
   },
   uploadRow: {
     display: 'flex',
@@ -599,6 +600,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: `1px solid ${c.border}`,
     background: c.bg,
     overflow: 'hidden',
+    flexShrink: 0,
   },
   listHeader: {
     display: 'grid',
