@@ -256,7 +256,7 @@ pub async fn ai_agents_handler(
         );
     }
 
-    let Some(capability) = agent.capabilities.ai_agents.as_ref().filter(|capability| capability.available) else {
+    let Some(capability) = agent.capabilities.ai_agents.as_ref() else {
         return error_response(
             StatusCode::NOT_IMPLEMENTED,
             "unsupported",
@@ -264,13 +264,26 @@ pub async fn ai_agents_handler(
             false,
         );
     };
-    let Some(active_backend) = capability.backend.as_deref().map(str::to_owned) else {
+    if capability.settings.enabled
+        && capability.backend.as_deref().is_some_and(|kind| {
+            !capability
+                .backends
+                .iter()
+                .any(|backend| backend.kind.as_str() == kind)
+        })
+    {
+        return ai_agent_backend_not_detected_response();
+    }
+    if !capability.available {
         return error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "ai_agent_backend_not_detected",
-            "The selected AI agent backend is not detected on this Agent. Install it or choose another backend in Settings.",
-            true,
+            StatusCode::NOT_IMPLEMENTED,
+            "unsupported",
+            "AI Agents are unavailable on this agent. Check its backend installation and FILEBOX_AGENT_AI_AGENTS_ENABLED, then restart the Filebox Agent",
+            false,
         );
+    }
+    let Some(active_backend) = capability.backend.as_deref().map(str::to_owned) else {
+        return ai_agent_backend_not_detected_response();
     };
     if validated
         .backend
@@ -315,6 +328,15 @@ pub async fn ai_agents_handler(
         }
         Err(response) => response,
     }
+}
+
+fn ai_agent_backend_not_detected_response() -> Response {
+    error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "ai_agent_backend_not_detected",
+        "The selected AI agent backend is not detected on this Agent. Install it or choose another backend in Settings.",
+        true,
+    )
 }
 
 /// Read-only prompt-review state for the AI Agents UI; configuration stays file-only.
@@ -807,6 +829,79 @@ mod tests {
                 .unwrap();
         assert_eq!(body["error"], "ai_agent_backend_changed");
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn missing_selected_backend_is_reported_but_disabled_agents_remain_unsupported() {
+        for (enabled, expected_status, expected_error) in [
+            (
+                true,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "ai_agent_backend_not_detected",
+            ),
+            (false, StatusCode::NOT_IMPLEMENTED, "unsupported"),
+        ] {
+            let (state, mut receiver, _) = state_with_ai_agents_settings(
+                filebox_protocol::resources::AiAgentSettings {
+                    enabled,
+                    environment_override: None,
+                    backend: Some("other".into()),
+                    backend_environment_override: None,
+                },
+                "other",
+            )
+            .await;
+            {
+                let inner = state.inner.read().await;
+                let capability = inner
+                    .agents
+                    .get("agent")
+                    .unwrap()
+                    .capabilities
+                    .ai_agents
+                    .as_ref()
+                    .unwrap();
+                assert!(!capability.available);
+                assert_eq!(capability.backend.as_deref(), Some("other"));
+                assert_eq!(
+                    capability
+                        .backends
+                        .iter()
+                        .map(|backend| backend.kind.as_str())
+                        .collect::<Vec<_>>(),
+                    ["herdr"]
+                );
+            }
+            let response = ai_agents_handler(
+                State(state),
+                Extension(AuthenticatedSession {
+                    id: "s".into(),
+                    principal_id: "p".into(),
+                }),
+                Path("agent".into()),
+                Json(AiAgentBody {
+                    op: AiAgentOp::Status,
+                    backend: None,
+                    target: None,
+                    text: None,
+                    keys: Vec::new(),
+                    lines: None,
+                    read_source: None,
+                    wait: false,
+                    timeout_ms: None,
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), expected_status);
+            let body: serde_json::Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), 4096)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(body["error"], expected_error);
+            assert!(receiver.try_recv().is_err());
+        }
     }
 
     #[tokio::test]
