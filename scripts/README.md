@@ -10,7 +10,7 @@ developer-facing tools.
 | Script | Who runs it | What it does |
 |---|---|---|
 | `release.sh` | Maintainer, on dev machine | Bumps workspace version, commits, tags `v{version}`, pushes. The pushed tag triggers `.github/workflows/release.yml` which builds the musl binaries and publishes a GitHub Release. |
-| `gen_notice.sh` | Maintainer, before a release | Generates the third-party license attribution manifests (`NOTICE` summary + `NOTICE.csv` per-package) for Rust (`Cargo.lock`) and the frontend (`package-lock.json`). Required because release binaries strip the upstream `LICENSE` files. |
+| `gen_notice.sh` | Maintainer, before a release | Generates third-party license attribution manifests and the full-text license data bundled in the frontend About dialog. |
 
 ## Releasing a new version
 
@@ -34,12 +34,16 @@ and publishes a Release with auto-generated notes. The whole flow takes
 ./scripts/gen_notice.sh              # both Rust + frontend
 ./scripts/gen_notice.sh rust         # Cargo.lock only  -> ./NOTICE(.csv)
 ./scripts/gen_notice.sh frontend     # package-lock.json only -> frontend/NOTICE(.csv)
+./scripts/gen_notice.sh about        # full license texts -> frontend/public/third-party-licenses.json
 ```
 
 This refreshes `NOTICE` + `NOTICE.csv` (Rust, repo root) and
-`frontend/NOTICE` + `frontend/NOTICE.csv` (frontend). Run it whenever
-`Cargo.lock` or `frontend/package-lock.json` changes meaningfully —
-ideally as part of the release checklist.
+`frontend/NOTICE` + `frontend/NOTICE.csv` (frontend), plus the frontend's
+`public/third-party-licenses.json` used by the About dialog. The `about`
+target reads resolved Cargo metadata and the npm lockfile locally (no network)
+and is included in the default `all` target. Run it whenever `Cargo.lock`
+or `frontend/package-lock.json` changes meaningfully — ideally as part of
+the release checklist.
 
 Why this matters: filebox statically links its Rust dependencies into a
 single binary and bundles the frontend through Vite, so the per-package

@@ -15,9 +15,10 @@
 # distributing the release tarballs. See frontend/package.json + Cargo.lock.
 #
 # Usage:
-#   ./scripts/gen_notice.sh              # both Rust + frontend
+#   ./scripts/gen_notice.sh              # Rust + frontend notices and About data
 #   ./scripts/gen_notice.sh rust         # Rust only  -> ./NOTICE, ./NOTICE.csv
 #   ./scripts/gen_notice.sh frontend     # frontend only -> frontend/NOTICE(.csv)
+#   ./scripts/gen_notice.sh about        # frontend About dialog data
 #   ./scripts/gen_notice.sh --help
 #
 # Requirements:
@@ -37,14 +38,16 @@ usage() {
 gen_notice.sh — generate third-party license attribution manifests.
 
 Usage:
-  ./scripts/gen_notice.sh              # Rust + frontend
+  ./scripts/gen_notice.sh              # Rust + frontend notices and About data
   ./scripts/gen_notice.sh rust         # Cargo.lock only
   ./scripts/gen_notice.sh frontend     # package-lock.json only
+  ./scripts/gen_notice.sh about        # bundled license texts for About
   ./scripts/gen_notice.sh --help
 
 Outputs:
   rust:     ./NOTICE  +  ./NOTICE.csv   (one row per third-party crate)
   frontend: frontend/NOTICE  +  frontend/NOTICE.csv
+  about:    frontend/public/third-party-licenses.json
 
 The project's own packages (filebox-*, frontend) are excluded from the
 counts since they are covered by the repo LICENSE (Apache-2.0).
@@ -177,13 +180,178 @@ gen_frontend() {
 }
 
 # --------------------------------------------------------------------------- #
+# About dialog: bundle full license texts from the resolved Cargo/npm graphs.
+# --------------------------------------------------------------------------- #
+gen_about() {
+  [ -f "frontend/package-lock.json" ] || { echo "gen_notice: frontend/package-lock.json not found" >&2; exit 1; }
+  [ -f "LICENSE" ] || { echo "gen_notice: LICENSE not found" >&2; exit 1; }
+
+  python3 - <<'PY'
+import gzip
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+from pathlib import Path
+
+ROOT = Path.cwd()
+TARGET = ROOT / "frontend/public/third-party-licenses.json"
+LICENSE_PREFIXES = ("LICENSE", "LICENCE", "COPYING", "UNLICENSE", "NOTICE")
+texts = {}
+
+def license_files(directory):
+    files = []
+    if not directory.is_dir():
+        return files
+    for entry in sorted(os.scandir(directory), key=lambda item: item.name):
+        if not entry.name.upper().startswith(LICENSE_PREFIXES):
+            continue
+        try:
+            if not stat.S_ISREG(entry.stat(follow_symlinks=False).st_mode):
+                continue
+            text = Path(entry.path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        existing = texts.setdefault(digest, text)
+        if existing != text:
+            raise RuntimeError(f"license text hash collision: {digest}")
+        files.append({"name": entry.name, "text": digest})
+    return files
+
+def license_value(value):
+    if isinstance(value, dict):
+        value = value.get("type")
+    return value if isinstance(value, str) and value else "(unknown)"
+
+def cargo_packages():
+    metadata = json.loads(subprocess.run(
+        ["cargo", "metadata", "--format-version", "1", "--locked",
+         "--filter-platform", "x86_64-unknown-linux-musl"],
+        cwd=ROOT, check=True, text=True, capture_output=True,
+    ).stdout)
+    package_by_id = {package["id"]: package for package in metadata["packages"]}
+    workspace_ids = set(metadata["workspace_members"])
+    nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
+    component_roots = {}
+    for package in metadata["packages"]:
+        if package["id"] in workspace_ids and package["name"] in ("filebox-hub", "filebox-agent"):
+            component_roots[package["name"]] = package["id"]
+
+    grouped = {}
+    for component, root_id in (("hub", component_roots.get("filebox-hub")),
+                               ("agent", component_roots.get("filebox-agent"))):
+        if root_id is None:
+            raise RuntimeError(f"workspace member for {component} binary not found")
+        pending, visited = [root_id], set()
+        while pending:
+            package_id = pending.pop()
+            if package_id in visited:
+                continue
+            visited.add(package_id)
+            node = nodes.get(package_id)
+            if node is None:
+                continue
+            for dependency in node["deps"]:
+                if any(kind.get("kind") is None for kind in dependency["dep_kinds"]):
+                    pending.append(dependency["pkg"])
+        for package_id in visited - workspace_ids:
+            package = package_by_id[package_id]
+            key = (package["name"], package["version"])
+            entry = grouped.setdefault(key, {
+                "name": package["name"],
+                "version": package["version"],
+                "license": license_value(package.get("license")),
+                "repository": package.get("repository") or None,
+                "components": set(),
+                "files": license_files(Path(package["manifest_path"]).parent),
+            })
+            entry["components"].add(component)
+    return grouped
+
+def npm_packages():
+    lock = json.loads((ROOT / "frontend/package-lock.json").read_text(encoding="utf-8"))
+    grouped = {}
+    for path, package in sorted(lock.get("packages", {}).items()):
+        if not path or package.get("dev") or package.get("optional"):
+            continue
+        marker = "node_modules/"
+        if marker not in path:
+            continue
+        name = path.rsplit(marker, 1)[1]
+        if not name:
+            continue
+        package_dir = ROOT / "frontend" / path
+        package_json = {}
+        try:
+            package_json = json.loads((package_dir / "package.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+        repository = package_json.get("repository")
+        if isinstance(repository, dict):
+            repository = repository.get("url")
+        if isinstance(repository, str):
+            repository = re.sub(r"^git\+", "", repository)
+            repository = re.sub(r"\.git$", "", repository)
+        else:
+            repository = None
+        key = (name, package.get("version", ""))
+        grouped.setdefault(key, {
+            "name": name,
+            "version": package.get("version", ""),
+            "license": license_value(package.get("license")),
+            "repository": repository,
+            "components": {"frontend"},
+            "files": license_files(package_dir),
+        })
+    return grouped
+
+rust = cargo_packages()
+frontend = npm_packages()
+packages_by_key = {}
+for ecosystem in (rust, frontend):
+    for key, package in ecosystem.items():
+        existing = packages_by_key.get(key)
+        if existing is None:
+            packages_by_key[key] = package
+        else:
+            existing["components"].update(package["components"])
+
+packages = []
+for package in packages_by_key.values():
+    packages.append({
+        **package,
+        "components": sorted(package["components"]),
+    })
+packages.sort(key=lambda package: (package["name"].lower(), package["version"]))
+project = {
+    "name": "filebox",
+    "license": "Apache-2.0",
+    "files": license_files(ROOT),
+}
+data = {"project": project, "packages": packages, "texts": texts}
+encoded = json.dumps(data, separators=(",", ":"), ensure_ascii=False, sort_keys=True) + "\n"
+TARGET.parent.mkdir(parents=True, exist_ok=True)
+TARGET.write_text(encoded, encoding="utf-8")
+raw_size = len(encoded.encode("utf-8"))
+gzip_size = len(gzip.compress(encoded.encode("utf-8"), mtime=0))
+print(f"about: {len(rust)} Rust packages, {len(frontend)} frontend packages, "
+      f"{len(texts)} unique license texts -> {TARGET.relative_to(ROOT)}", flush=True)
+print(f"about: {raw_size} bytes raw, {gzip_size} bytes gzip", flush=True)
+PY
+}
+
+# --------------------------------------------------------------------------- #
 target="${1:-all}"
 case "$target" in
   -h|--help) usage; exit 0 ;;
   rust)    gen_rust ;;
   frontend) gen_frontend ;;
-  all)     gen_rust; gen_frontend ;;
-  *) echo "gen_notice: unknown target '$target' (try: rust, frontend, all, --help)" >&2; exit 1 ;;
+  about)   gen_about ;;
+  all)     gen_rust; gen_frontend; gen_about ;;
+  *) echo "gen_notice: unknown target '$target' (try: rust, frontend, about, all, --help)" >&2; exit 1 ;;
 esac
 
 echo "done." >&2
