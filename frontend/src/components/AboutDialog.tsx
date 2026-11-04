@@ -261,7 +261,7 @@ export function AboutDialog({ open, health, agents, healthError, isLikelyDev, on
                         {(components || row.repository) && (
                           <div style={styles.licenseMeta}>
                             {components && <span>{components}</span>}
-                            {row.repository && (
+                            {row.repository && /^https?:\/\//.test(row.repository) && (
                               <a href={row.repository} target="_blank" rel="noopener noreferrer" style={styles.repositoryLink}>
                                 Repository
                               </a>

@@ -12,7 +12,7 @@ const fixture = {
       components: ['frontend'], files: [{ name: 'LICENSE', text: 'react-license' }],
     },
     {
-      name: 'zod', version: '4.0.0', license: 'Apache-2.0', repository: null,
+      name: 'zod', version: '4.0.0', license: 'Apache-2.0', repository: 'git://github.com/example/zod',
       components: ['hub', 'agent'], files: [],
     },
   ],
@@ -113,6 +113,14 @@ describe('AboutDialog licenses', () => {
     await openLicenses();
     await act(async () => button('react').click());
     expect(container.textContent).toContain('Full React license text.');
+  });
+
+  it('does not render a repository link for a non-http URL', async () => {
+    await render();
+    await openLicenses();
+    await act(async () => button('zod').click());
+    expect(container.querySelector('a[href="git://github.com/example/zod"]')).toBeNull();
+    expect(container.textContent).not.toContain('Repository');
   });
 
   it('shows a retryable error and refetches after Retry', async () => {

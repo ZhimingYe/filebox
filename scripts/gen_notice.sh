@@ -201,11 +201,13 @@ TARGET = ROOT / "frontend/public/third-party-licenses.json"
 LICENSE_PREFIXES = ("LICENSE", "LICENCE", "COPYING", "UNLICENSE", "NOTICE")
 texts = {}
 
-def license_files(directory):
+def license_files(directory, allowed_names=None):
     files = []
     if not directory.is_dir():
         return files
     for entry in sorted(os.scandir(directory), key=lambda item: item.name):
+        if allowed_names is not None and entry.name not in allowed_names:
+            continue
         if not entry.name.upper().startswith(LICENSE_PREFIXES):
             continue
         try:
@@ -220,6 +222,30 @@ def license_files(directory):
             raise RuntimeError(f"license text hash collision: {digest}")
         files.append({"name": entry.name, "text": digest})
     return files
+
+def normalize_repository(value):
+    if not isinstance(value, str):
+        return None
+    repository = re.sub(r"^git\+", "", value.strip()).split("#", 1)[0]
+    if repository.startswith("git://"):
+        repository = "https://" + repository[len("git://"):]
+    elif repository.startswith("ssh://git@"):
+        repository = re.sub(r"^ssh://git@([^/]+)/", r"https://\1/", repository)
+    elif repository.startswith("git@"):
+        match = re.fullmatch(r"git@([^:]+):(.+)", repository)
+        if match:
+            repository = f"https://{match.group(1)}/{match.group(2)}"
+    elif repository.startswith("github:"):
+        repository = "https://github.com/" + repository[len("github:"):]
+    elif repository.startswith("gitlab:"):
+        repository = "https://gitlab.com/" + repository[len("gitlab:"):]
+    elif repository.startswith("bitbucket:"):
+        repository = "https://bitbucket.org/" + repository[len("bitbucket:"):]
+    elif re.fullmatch(r"[\w.-]+/[\w.-]+", repository):
+        repository = "https://github.com/" + repository
+    if repository.endswith(".git"):
+        repository = repository[:-4]
+    return repository if repository.startswith(("http://", "https://")) else None
 
 def license_value(value):
     if isinstance(value, dict):
@@ -264,7 +290,7 @@ def cargo_packages():
                 "name": package["name"],
                 "version": package["version"],
                 "license": license_value(package.get("license")),
-                "repository": package.get("repository") or None,
+                "repository": normalize_repository(package.get("repository")),
                 "components": set(),
                 "files": license_files(Path(package["manifest_path"]).parent),
             })
@@ -292,11 +318,7 @@ def npm_packages():
         repository = package_json.get("repository")
         if isinstance(repository, dict):
             repository = repository.get("url")
-        if isinstance(repository, str):
-            repository = re.sub(r"^git\+", "", repository)
-            repository = re.sub(r"\.git$", "", repository)
-        else:
-            repository = None
+        repository = normalize_repository(repository)
         key = (name, package.get("version", ""))
         grouped.setdefault(key, {
             "name": name,
@@ -329,7 +351,7 @@ packages.sort(key=lambda package: (package["name"].lower(), package["version"]))
 project = {
     "name": "filebox",
     "license": "Apache-2.0",
-    "files": license_files(ROOT),
+    "files": license_files(ROOT, {"LICENSE", "NOTICE"}),
 }
 data = {"project": project, "packages": packages, "texts": texts}
 encoded = json.dumps(data, separators=(",", ":"), ensure_ascii=False, sort_keys=True) + "\n"
