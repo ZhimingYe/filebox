@@ -20,12 +20,31 @@ Agent 装在每台要浏览的机器上，主动出站连 Hub。安装步骤见 
 | `FILEBOX_AGENT_DATA_DIR` | 状态目录 |
 | `FILEBOX_AGENT_AI_AGENTS_ENABLED` | 在此 Agent 上启用或禁用 AI Agents |
 | `FILEBOX_AGENT_AI_AGENTS_BACKEND` | 将 AI Agents 锁定到指定后端类型 |
+| `FILEBOX_AGENT_HC` | 指定 hc 可执行文件路径（试验性后端；未设置时搜索 PATH） |
 | `FILEBOX_ALLOW_INSECURE_HUB` | 允许明文 Hub（仅开发） |
 | `FILEBOX_AGENT_SOFFICE` / `_DIR` | LibreOffice（可选） |
 | `FILEBOX_AGENT_STATS_TTL_SECS` | sysinfo 缓存 TTL（默认 60） |
 | `FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS` | 目录缓存 re-stat 冷却 |
 
 Office 相关上限见 [Office 预览](./office)。
+
+## 试验性 hc 后端
+
+在 Agent 机器安装 [herdr-core](https://github.com/herdrdev/herdr-core#install)，
+让 Filebox Agent 能找到 `hc`。只接入显式标记 `filebox=ai-agent` 的本地运行中终端：
+
+```sh
+hc run --bg --label filebox=ai-agent -- claude
+hc label t7 filebox=ai-agent  # 接入已有的编码代理终端
+hc label t7 filebox=          # 撤销后续 Filebox 访问
+```
+
+将 `t7` 换成实际终端地址，`claude` 换成使用的编码代理。
+在 Agent Settings 选择 **hc (experimental)**；同时安装两种后端时，自动选择仍优先 Herdr。
+`FILEBOX_AGENT_AI_AGENTS_BACKEND=hc` 可锁定选择。hc 沿用 Agent 进程的 hc session/config 环境，
+`hc connect` 可自动启动本地 core。状态只来自程序的 OSC 7501 报告，没有报告则显示 Unknown；
+prompt 审核链路不变。不接入未标记、已结束或远端机器的终端。取消不能撤回 hc 已接受的输入，
+重试前请先检查输出。已验证 hc 0.1.17、API generation 1。
 
 ## 更新
 

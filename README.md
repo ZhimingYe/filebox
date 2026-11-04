@@ -141,6 +141,9 @@ on its own, with no duplicate entries and no lost configuration.
   `FILEBOX_AGENT_AI_AGENTS_ENABLED=0`/`1` at Agent startup overrides and locks
   that switch. Not a general-purpose remote shell; reminders need an open
   page. See [the shortcut guide](docs/herdr-shortcuts.md).
+- **Experimental hc backend**: bring labelled herdr-core coding agents into
+  the same AI Agents view, without changing the existing Herdr integration.
+  See [hc setup and compatibility](docs/hc-compatibility.md).
 - Every prompt passes a Hub-side LLM security review first: destructive
   commands, permanent deletion and secret extraction are blocked; normal data
   analysis and development go through. The reviewer sees the prompt and the
