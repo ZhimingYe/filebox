@@ -1,6 +1,6 @@
-// Herdr permits two commands per backend. Keep this view's work bounded and
-// let a second window/status request proceed during a prompt's long wait.
-export class HerdrQueue {
+// The AI Agents view allows two commands per backend. Keep its work bounded
+// and let a second window/status request proceed during a prompt's long wait.
+export class AiAgentQueue {
   private active = 0;
   private pending: { priority: number; start: () => void }[] = [];
 

@@ -124,25 +124,24 @@ pub(super) async fn dispatch(context: &AgentContext, message: AgentMessage) {
                 "agent_id": id, "collections_revision": collections_revision, "state": "applied",
             })).await;
         }
-        AgentMessage::HerdrSettingsApplied { req_id, settings, available, error } => {
-            inner.agents.update_herdr_settings_for_connection(
+        AgentMessage::AiAgentSettingsApplied { req_id, ai_agents, error } => {
+            inner.agents.update_ai_agents_for_connection(
                 id,
                 context.connection_id,
-                settings.clone(),
-                available,
+                ai_agents.clone(),
             );
             if let Some(pending) = take_pending_locked(&inner, context, &req_id).await {
                 pending.deliver(serde_json::json!({
-                    "settings": settings,
-                    "available": available,
+                    "ai_agents": ai_agents,
                     "error": error,
                 }));
             }
-            AppState::emit_sse_locked(&inner, "herdr_settings_updated", serde_json::json!({
+            AppState::emit_sse_locked(&inner, "ai_agent_settings_updated", serde_json::json!({
                 "agent_id": id,
+                "ai_agents": ai_agents,
             })).await;
         }
-        _ => unreachable!("only resource, collection, and Herdr settings updates are dispatched here"),
+        _ => unreachable!("only resource, collection, and AI agent settings updates are dispatched here"),
     }
 }
 

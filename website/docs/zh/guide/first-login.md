@@ -23,7 +23,7 @@
 
 登录成功后，若尚未选中机器，主区会提示 **Select an agent**。在侧栏 **Agents** 点击目标机器（显示 Online、延迟、roots 数）。
 
-选中后，侧栏出现 **Workspace** 导航：Files、Explorer、Collections、Transfer、Herdr、Search、Settings、System；以及 **Hub → Audit**。
+选中后，侧栏出现 **Workspace** 导航：Files、Explorer、Collections、Transfer、AI Agents、Search、Settings、System；以及 **Hub → Audit**。
 
 ## 3. Settings → Add Root
 

@@ -298,7 +298,7 @@ impl AppState {
                 sse_next_id: Arc::new(AtomicU64::new(1)),
             })),
             prompt_review_mode: config.prompt_review_mode,
-            prompt_reviewer: config.herdr_prompt_review.as_ref().filter(|_| config.prompt_review_mode == crate::prompt_review::ReviewMode::Mandatory)
+            prompt_reviewer: config.prompt_review.as_ref().filter(|_| config.prompt_review_mode == crate::prompt_review::ReviewMode::Mandatory)
                 .map(|c| Arc::new(crate::prompt_review::PromptReviewer::new(c.clone()))),
             rate_limiter: Arc::new(LoginRateLimiter::new(5, std::time::Duration::from_secs(30))),
             // Agent fleets commonly reconnect in cohorts after a hub restart
@@ -527,7 +527,7 @@ mod tests {
     fn app_state_can_be_constructed_from_dev_config() {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
-            herdr_prompt_review: None,
+            prompt_review: None,
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![crate::config::UserConfig {
@@ -552,7 +552,7 @@ mod tests {
     fn app_state_inner_starts_with_no_pending_responses() {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
-            herdr_prompt_review: None,
+            prompt_review: None,
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],
@@ -567,7 +567,7 @@ mod tests {
     async fn fail_pending_for_connection_notifies_only_matching_waiters() {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
-            herdr_prompt_review: None,
+            prompt_review: None,
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],
@@ -619,7 +619,7 @@ mod tests {
     async fn fail_pending_for_connection_skips_newer_reconnect_waiters() {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
-            herdr_prompt_review: None,
+            prompt_review: None,
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],
@@ -666,7 +666,7 @@ mod tests {
     async fn disconnect_requeues_desired_resource_update_for_reconnect() {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
-            herdr_prompt_review: None,
+            prompt_review: None,
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],
@@ -732,7 +732,7 @@ mod tests {
     async fn resource_updates_serialize_per_agent_only() {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
-            herdr_prompt_review: None,
+            prompt_review: None,
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],

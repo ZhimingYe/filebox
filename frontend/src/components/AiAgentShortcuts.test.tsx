@@ -2,32 +2,32 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { HerdrShortcuts } from './HerdrShortcuts';
-import { COMMON_KEYS, PROFILE_KEYS, QUICK_KEYS } from '../lib/herdrShortcuts';
+import { AiAgentShortcuts } from './AiAgentShortcuts';
+import { COMMON_KEYS, PROFILE_KEYS, QUICK_KEYS } from '../lib/aiAgentShortcuts';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-describe('Herdr shortcut profiles', () => {
+describe('AI agent shortcut profiles', () => {
   it.each([['pi', 'pi', 'Ctrl+L', 'Choose model'], ['claude-code', 'claude', 'Ctrl+O', 'Open transcript'],
     ['codex', 'codex', 'Ctrl+T', 'Open transcript pager']])('explains and sends %s defaults only on click', async (kind, profile, choice, description) => {
     const container = document.createElement('div');
     const root = createRoot(container);
     const send = vi.fn();
     try {
-      await act(async () => root.render(<HerdrShortcuts kind={kind} disabled={false} onSend={send} />));
+      await act(async () => root.render(<AiAgentShortcuts kind={kind} disabled={false} onSend={send} />));
       await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="More shortcuts"]')!.click());
       expect(container.querySelector<HTMLSelectElement>('[aria-label="Shortcut profile"]')!.value).toBe(profile);
       expect(send).not.toHaveBeenCalled();
       await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="${choice}: ${description}"]`)!.click());
       expect(send).toHaveBeenCalledWith([choice.toLowerCase()]);
       expect(container.querySelector('[role="dialog"]')).toBeNull();
-      await act(async () => root.render(<HerdrShortcuts kind={kind} disabled onSend={send} />));
+      await act(async () => root.render(<AiAgentShortcuts kind={kind} disabled onSend={send} />));
       await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="More shortcuts"]')!.click());
       expect([...container.querySelectorAll('button')].filter((b) => b.getAttribute('aria-label') !== 'More shortcuts').every((b) => b.disabled)).toBe(true);
     } finally { act(() => root.unmount()); }
   });
 
   it('keeps every advertised key within the shared Hub/Agent whitelist', () => {
-    const source = readFileSync('../crates/protocol/src/herdr.rs', 'utf8');
+    const source = readFileSync('../crates/protocol/src/ai_agents.rs', 'utf8');
     const allowed = [...source.split('const ALLOWED_KEYS:')[1].split('];')[0].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
     for (const shortcut of [...QUICK_KEYS, ...COMMON_KEYS, ...Object.values(PROFILE_KEYS).flat()]) {
       expect(shortcut.keys.length).toBeLessThanOrEqual(8);
@@ -40,7 +40,7 @@ describe('Herdr shortcut profiles', () => {
     const root = createRoot(container);
     const send = vi.fn();
     try {
-      await act(async () => root.render(<HerdrShortcuts kind="codex" disabled={false} onSend={send} />));
+      await act(async () => root.render(<AiAgentShortcuts kind="codex" disabled={false} onSend={send} />));
       await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="More shortcuts"]')!.click());
       const search = container.querySelector<HTMLInputElement>('[aria-label="Search shortcuts"]')!;
       const input = async (value: string) => act(async () => {
@@ -72,7 +72,7 @@ describe('Herdr shortcut profiles', () => {
     let top = 251;
     try {
       vi.stubGlobal('innerHeight', 500);
-      await act(async () => root.render(<HerdrShortcuts kind="codex" disabled={false} onSend={vi.fn()} />));
+      await act(async () => root.render(<AiAgentShortcuts kind="codex" disabled={false} onSend={vi.fn()} />));
       const trigger = container.querySelector<HTMLButtonElement>('[aria-label="More shortcuts"]')!;
       Object.defineProperty(trigger.parentElement!, 'getBoundingClientRect', { value: () => ({ top, bottom: top + 32, right: 300 }) });
       await act(async () => trigger.click());
@@ -95,7 +95,7 @@ describe('Herdr shortcut profiles', () => {
     const root = createRoot(container);
     const send = vi.fn();
     try {
-      await act(async () => root.render(<HerdrShortcuts kind="claude" disabled={false} onSend={send} />));
+      await act(async () => root.render(<AiAgentShortcuts kind="claude" disabled={false} onSend={send} />));
       const trigger = container.querySelector<HTMLButtonElement>('[aria-label="More shortcuts"]')!;
       expect(container.querySelector('[role="dialog"]')).toBeNull();
       await act(async () => trigger.click());
@@ -109,5 +109,15 @@ describe('Herdr shortcut profiles', () => {
       expect(container.querySelector('[role="dialog"]')).toBeNull();
       expect(send).not.toHaveBeenCalled();
     } finally { act(() => root.unmount()); container.remove(); }
+  });
+
+  it('filters quick and expanded keys and hides an empty More keys menu', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<AiAgentShortcuts kind="limited" disabled={false} onSend={vi.fn()} allowedKeys={[]} />));
+      expect(container.querySelectorAll('[aria-label="Remote input keys"] button')).toHaveLength(0);
+      expect(container.querySelector('[aria-label="More shortcuts"]')).toBeNull();
+    } finally { act(() => root.unmount()); }
   });
 });

@@ -1,6 +1,6 @@
 # Security & sensitive files
 
-filebox’s default posture: **read-only browse, path jail, sensitive files denied**. Transfer writes only to a dedicated scratch folder. Herdr uses a separate, whitelisted CLI integration for coding-agent operations.
+filebox’s default posture: **read-only browse, path jail, sensitive files denied**. Transfer writes only to a dedicated scratch folder. AI Agents uses a separate, whitelisted CLI integration for coding-agent operations.
 
 ![Sidebar capability entries](/screenshots/00-sidebar-overview.png)
 

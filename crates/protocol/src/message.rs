@@ -1,6 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::{Error as DeError, SeqAccess, Visitor};
-use crate::herdr::{HerdrAgent, HerdrOp, HerdrServerStatus};
+use crate::ai_agents::{AiAgent, AiAgentOp, AiAgentBackendStatus};
 use crate::resources::{
     Capabilities, CollectionConfig, FileStat, FsEntry, RootConfig, SysStats, TempRootInfo,
 };
@@ -151,24 +151,23 @@ pub enum AgentMessage {
         freed_bytes: u64,
         error: Option<String>,
     },
-    HerdrSettingsApplied {
+    AiAgentSettingsApplied {
         req_id: String,
-        settings: crate::resources::HerdrSettings,
-        available: bool,
+        ai_agents: crate::resources::AiAgentsCapability,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// Result of a Herdr CLI command (status/list, read, prompt, send-keys).
-    HerdrResponse {
+    /// Result of an AI agent operation.
+    AiAgentResponse {
         req_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        status: Option<HerdrServerStatus>,
+        status: Option<AiAgentBackendStatus>,
         #[serde(default)]
-        agents: Vec<HerdrAgent>,
+        agents: Vec<AiAgent>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        agent: Option<HerdrAgent>,
+        agent: Option<AiAgent>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<String>,
     },
@@ -245,9 +244,11 @@ pub enum HubMessage {
         desired_revision: u64,
         collections: Vec<CollectionConfig>,
     },
-    HerdrSettingsSet {
+    AiAgentSettingsSet {
         req_id: String,
         enabled: bool,
+        #[serde(default)]
+        backend: Option<String>,
     },
     FsListRequest {
         req_id: String,
@@ -348,10 +349,12 @@ pub enum HubMessage {
     TempCleanupRequest {
         req_id: String,
     },
-    /// Drive the agent's local Herdr CLI. Gated by `capabilities.herdr`.
-    HerdrRequest {
+    /// Drive the configured AI agent backend.
+    AiAgentRequest {
         req_id: String,
-        op: HerdrOp,
+        op: AiAgentOp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        backend: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -361,7 +364,7 @@ pub enum HubMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lines: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        read_source: Option<crate::herdr::HerdrReadSource>,
+        read_source: Option<crate::ai_agents::AiAgentReadSource>,
         #[serde(default)]
         wait: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1001,10 +1004,22 @@ mod tests {
     }
 
     #[test]
-    fn herdr_messages_round_trip_and_tags_are_frozen() {
-        let req = HubMessage::HerdrRequest {
+    fn ai_agents_messages_round_trip_and_tags_are_frozen() {
+        let old_backend: crate::resources::AiAgentBackendInfo = serde_json::from_value(
+            serde_json::json!({"kind": "legacy", "version": "1.0"}),
+        ).unwrap();
+        assert_eq!(old_backend.features, crate::resources::AiAgentFeatures::default());
+        assert_eq!(
+            serde_json::from_value::<crate::resources::AiAgentBackendInfo>(
+                serde_json::to_value(&old_backend).unwrap(),
+            ).unwrap(),
+            old_backend,
+        );
+
+        let req = HubMessage::AiAgentRequest {
             req_id: "h1".into(),
-            op: crate::herdr::HerdrOp::Status,
+            op: crate::ai_agents::AiAgentOp::Status,
+            backend: None,
             target: None,
             text: None,
             keys: Vec::new(),
@@ -1013,33 +1028,54 @@ mod tests {
             wait: false,
             timeout_ms: None,
         };
-        assert_eq!(serde_json::to_value(&req).unwrap()["type"], "herdr_request");
+        assert_eq!(serde_json::to_value(&req).unwrap()["type"], "ai_agent_request");
+        assert!(serde_json::to_value(&req).unwrap().get("backend").is_none());
         match round_trip_hub(&req) {
-            HubMessage::HerdrRequest { req_id, op, .. } => {
+            HubMessage::AiAgentRequest { req_id, op, backend, .. } => {
                 assert_eq!(req_id, "h1");
-                assert_eq!(op, crate::herdr::HerdrOp::Status);
+                assert_eq!(op, crate::ai_agents::AiAgentOp::Status);
+                assert!(backend.is_none());
             }
             _ => panic!("wrong variant"),
         }
 
-        let resp = AgentMessage::HerdrResponse {
+        let bound_req = HubMessage::AiAgentRequest {
+            req_id: "h2".into(),
+            op: crate::ai_agents::AiAgentOp::Status,
+            backend: Some("herdr".into()),
+            target: None,
+            text: None,
+            keys: Vec::new(),
+            lines: None,
+            read_source: None,
+            wait: false,
+            timeout_ms: None,
+        };
+        assert_eq!(serde_json::to_value(&bound_req).unwrap()["backend"], "herdr");
+        match round_trip_hub(&bound_req) {
+            HubMessage::AiAgentRequest { backend, .. } => {
+                assert_eq!(backend.as_deref(), Some("herdr"));
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let resp = AgentMessage::AiAgentResponse {
             req_id: "h1".into(),
             error: None,
-            status: Some(crate::herdr::HerdrServerStatus {
+            status: Some(crate::ai_agents::AiAgentBackendStatus {
                 installed: true,
                 reachable: true,
                 version: Some("1.2.3".into()),
                 message: None,
             }),
-            agents: vec![crate::herdr::HerdrAgent {
+            agents: vec![crate::ai_agents::AiAgent {
                 target: "reviewer".into(),
                 name: Some("reviewer".into()),
                 kind: Some("codex".into()),
-                status: crate::herdr::HerdrAgentStatus::Working,
+                status: crate::ai_agents::AiAgentStatus::Working,
                 completion_seq: None,
-                pane_id: "w1:p2".into(),
-                workspace_id: "w1".into(),
-                tab_id: "w1:t1".into(),
+                id: "w1:p2".into(),
+                scope: "w1".into(),
                 cwd: Some("/repo".into()),
                 title: None,
                 focused: false,
@@ -1047,9 +1083,9 @@ mod tests {
             agent: None,
             output: None,
         };
-        assert_eq!(serde_json::to_value(&resp).unwrap()["type"], "herdr_response");
+        assert_eq!(serde_json::to_value(&resp).unwrap()["type"], "ai_agent_response");
         match round_trip_agent(&resp) {
-            AgentMessage::HerdrResponse { req_id, agents, status, .. } => {
+            AgentMessage::AiAgentResponse { req_id, agents, status, .. } => {
                 assert_eq!(req_id, "h1");
                 assert_eq!(agents.len(), 1);
                 assert_eq!(agents[0].target, "reviewer");
@@ -1069,7 +1105,7 @@ mod tests {
             "sys_stats": true
         });
         let caps: Capabilities = serde_json::from_value(legacy).unwrap();
-        assert!(!caps.herdr);
+        assert!(caps.ai_agents.is_none());
     }
 
     #[test]
@@ -1103,14 +1139,19 @@ mod tests {
     }
 
     #[test]
-    fn legacy_terminal_capabilities_are_ignored_without_losing_herdr() {
+    fn legacy_terminal_capabilities_are_ignored_without_losing_ai_agents() {
         let mut value = serde_json::to_value(Capabilities::default()).unwrap();
         for key in ["terminal", "terminal_agent_2fa", "terminal_manage", "terminal_persistent"] {
             value[key] = true.into();
         }
-        value["herdr"] = true.into();
+        value["ai_agents"] = serde_json::json!({
+            "available": true,
+            "backend": "herdr",
+            "version": "1.2.3",
+            "settings": { "enabled": true, "environment_override": null }
+        });
         let caps: Capabilities = serde_json::from_value(value).unwrap();
-        assert!(caps.herdr);
+        assert!(caps.ai_agents.as_ref().unwrap().available);
         let encoded = serde_json::to_value(caps).unwrap();
         assert!(!encoded.as_object().unwrap().keys().any(|key| key.starts_with("terminal")));
     }
@@ -1357,21 +1398,43 @@ mod tests {
     }
 
     #[test]
-    fn herdr_settings_messages_round_trip_with_legacy_capability_default() {
+    fn ai_agents_messages_round_trip_with_legacy_capability_default() {
         let mut capabilities = Capabilities::default();
-        assert!(capabilities.herdr_settings.is_none());
+        assert!(capabilities.ai_agents.is_none());
         let mut legacy_capabilities = serde_json::to_value(Capabilities::default()).unwrap();
         legacy_capabilities
             .as_object_mut()
             .unwrap()
-            .remove("herdr_settings");
+            .remove("ai_agents");
         let legacy_capabilities: Capabilities =
             serde_json::from_value(legacy_capabilities).unwrap();
-        assert!(legacy_capabilities.herdr_settings.is_none());
+        assert!(legacy_capabilities.ai_agents.is_none());
+        let legacy_capability: crate::resources::AiAgentsCapability =
+            serde_json::from_value(serde_json::json!({
+                "available": true,
+                "backend": "herdr",
+                "version": "1.0",
+                "settings": { "enabled": true, "environment_override": null }
+            })).unwrap();
+        assert!(legacy_capability.backends.is_empty());
+        assert!(legacy_capability.settings.backend.is_none());
+        assert!(legacy_capability.settings.backend_environment_override.is_none());
 
-        capabilities.herdr_settings = Some(crate::resources::HerdrSettings {
-            enabled: false,
-            environment_override: Some(false),
+        capabilities.ai_agents = Some(crate::resources::AiAgentsCapability {
+            available: false,
+            backend: Some("herdr".into()),
+            version: Some("1.0".into()),
+            backends: vec![crate::resources::AiAgentBackendInfo {
+                kind: "herdr".into(),
+                version: "1.0".into(),
+                features: crate::resources::AiAgentFeatures::default(),
+            }],
+            settings: crate::resources::AiAgentSettings {
+                enabled: false,
+                environment_override: Some(false),
+                backend: Some("herdr".into()),
+                backend_environment_override: None,
+            },
         });
         let register = AgentMessage::Register {
             agent_id: Some("agent".into()),
@@ -1386,47 +1449,69 @@ mod tests {
         match round_trip_agent(&register) {
             AgentMessage::Register { capabilities, .. } => {
                 assert_eq!(
-                    capabilities.herdr_settings,
-                    Some(crate::resources::HerdrSettings {
-                        enabled: false,
-                        environment_override: Some(false),
+                    capabilities.ai_agents,
+                    Some(crate::resources::AiAgentsCapability {
+                        available: false,
+                        backend: Some("herdr".into()),
+                        version: Some("1.0".into()),
+                        backends: vec![crate::resources::AiAgentBackendInfo {
+                            kind: "herdr".into(),
+                            version: "1.0".into(),
+                            features: crate::resources::AiAgentFeatures::default(),
+                        }],
+                        settings: crate::resources::AiAgentSettings {
+                            enabled: false,
+                            environment_override: Some(false),
+                            backend: Some("herdr".into()),
+                            backend_environment_override: None,
+                        },
                     })
                 );
             }
             _ => panic!("wrong variant"),
         }
 
-        let set = HubMessage::HerdrSettingsSet {
+        let set = HubMessage::AiAgentSettingsSet {
             req_id: "settings-1".into(),
             enabled: true,
+            backend: Some("herdr".into()),
         };
         match round_trip_hub(&set) {
-            HubMessage::HerdrSettingsSet { req_id, enabled } => {
+            HubMessage::AiAgentSettingsSet { req_id, enabled, backend } => {
                 assert_eq!(req_id, "settings-1");
                 assert!(enabled);
+                assert_eq!(backend.as_deref(), Some("herdr"));
             }
             _ => panic!("wrong variant"),
         }
 
-        let applied = AgentMessage::HerdrSettingsApplied {
+        let applied = AgentMessage::AiAgentSettingsApplied {
             req_id: "settings-1".into(),
-            settings: crate::resources::HerdrSettings {
-                enabled: true,
-                environment_override: None,
+            ai_agents: crate::resources::AiAgentsCapability {
+                available: false,
+                backend: None,
+                version: None,
+                backends: Vec::new(),
+                settings: crate::resources::AiAgentSettings {
+                    enabled: true,
+                    environment_override: None,
+                    backend: None,
+                    backend_environment_override: None,
+                },
             },
-            available: false,
             error: None,
         };
         match round_trip_agent(&applied) {
-            AgentMessage::HerdrSettingsApplied {
-                settings,
-                available,
+            AgentMessage::AiAgentSettingsApplied {
+                ai_agents,
                 error,
                 ..
             } => {
-                assert!(settings.enabled);
-                assert!(settings.environment_override.is_none());
-                assert!(!available);
+                assert!(ai_agents.settings.enabled);
+                assert!(ai_agents.settings.environment_override.is_none());
+                assert!(ai_agents.settings.backend.is_none());
+                assert!(ai_agents.settings.backend_environment_override.is_none());
+                assert!(!ai_agents.available);
                 assert!(error.is_none());
             }
             _ => panic!("wrong variant"),

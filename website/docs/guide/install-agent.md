@@ -27,6 +27,8 @@ Useful for systemd, containers, or orchestration:
 | `FILEBOX_AGENT_TOKEN` | Token printed at Hub init |
 | `FILEBOX_AGENT_NAME` | Sidebar display name (default `default-agent`) |
 | `FILEBOX_AGENT_DATA_DIR` | State directory (roots, collections, temp transfer, agent_id, …) |
+| `FILEBOX_AGENT_AI_AGENTS_ENABLED` | Enable or disable AI Agents on this Agent |
+| `FILEBOX_AGENT_AI_AGENTS_BACKEND` | Lock AI Agents to a backend kind |
 | `FILEBOX_ALLOW_INSECURE_HUB` | Allow plaintext `ws://` / `http://` (dev only) |
 | `FILEBOX_AGENT_SOFFICE` | Path to LibreOffice `soffice` (optional Office preview) |
 | `FILEBOX_AGENT_SOFFICE_DIR` | Directory containing `soffice` |

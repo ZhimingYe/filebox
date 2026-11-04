@@ -143,7 +143,7 @@ mod tests {
     fn state() -> AppState {
         AppState::new(&crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
-            herdr_prompt_review: None,
+            prompt_review: None,
             listen_addr: "127.0.0.1:0".parse().unwrap(), agent_token_hash: "fake".into(), users: vec![],
         }, false)
     }

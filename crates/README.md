@@ -18,7 +18,7 @@ talk only to the Hub.
 |---|---|---|---|
 | [`protocol/`](protocol/) | `filebox-protocol` | library | Shared WS/JSON types, capabilities, denylist |
 | [`hub/`](hub/) | `filebox-hub` | binary `hub` | Auth, agent registry, HTTP/SSE API, static UI |
-| [`agent/`](agent/) | `filebox-agent` | binary `agent` | Outbound WS client; read-only FS, search, stats, temp uploads and optional Herdr CLI |
+| [`agent/`](agent/) | `filebox-agent` | binary `agent` | Outbound WS client; read-only FS, search, stats, temp uploads and optional AI Agents backend |
 | [`updater/`](updater/) | `filebox-updater` | library | Shared `--init-config` / `--update` CLI helpers |
 
 Dependency graph (compile-time):
@@ -73,15 +73,14 @@ and free of I/O.
 | `agent.rs` | Agent identity / info shapes used at register time |
 | `denylist.rs` | Default-deny sensitive paths even inside allowed roots |
 | `temp.rs` | Shared temp-upload name validation (single path component) |
-| `herdr.rs` | Herdr CLI whitelist types (`status`/`read`/`prompt`/`send_keys`) |
+| `ai_agents.rs` | Backend-neutral AI Agents protocol types (`status`/`read`/`prompt`/`send_keys`) |
 
-Herdr settings use `HerdrSettingsSet` / `HerdrSettingsApplied` with
-generation-owned acknowledgements. `Capabilities.herdr_settings` exposes
-effective enablement and the environment lock separately from CLI availability
-(`herdr`).
+AI Agents settings use `AiAgentSettingsSet` / `AiAgentSettingsApplied` with
+generation-owned acknowledgements. `Capabilities.ai_agents` exposes
+effective availability, backend identity/version, and settings separately.
 
 **Capability flags that matter:** `pinned_folders`, `collections`,
-`workspace_search`, `temp_upload`, `herdr`. Older agents omit them; the Hub returns
+`workspace_search`, `temp_upload`, and `ai_agents`. Older agents omit them; the Hub returns
 unsupported rather than silently no-op'ing. Vestigial flags
 (`image_preview`, `pdf_preview`, `serve_dir`) default `false` and are not
 gated on.
@@ -104,8 +103,8 @@ agent WebSocket.
 | `fs_proxy.rs` | List / stat / raw file proxy to agent WS |
 | `search_proxy.rs` | Workspace Search proxy (long timeout, cancel binding) |
 | `temp_proxy.rs` | Temp-folder upload relay (streams body → WS chunks) + one-click cleanup |
-| `herdr_proxy.rs` | Herdr CLI relay (`POST /api/agents/{id}/herdr`); prompts pass the mandatory review choke point with Hub-read window context |
-| `prompt_review.rs` | Herdr prompt LLM review: file-only config, DeepSeek chat-completions / responses / messages, strict verdict parsing |
+| `ai_agents_proxy.rs` | AI Agents relay (`POST /api/agents/{id}/ai-agents`); prompts pass the mandatory review choke point with Hub-read window context |
+| `prompt_review.rs` | AI Agents prompt LLM review: file-only config, DeepSeek chat-completions / responses / messages, strict verdict parsing |
 | `preview_doc.rs` | Sandboxed HTML/notebook navigation, locked base/CSP, relative links and 64 MiB document cap |
 | `ipynb_preview.rs` | Read-only nbformat-to-HTML washer; sanitized Markdown, escaped code/text and bounded image outputs; no kernel/widgets/HTML output execution |
 | `audit.rs` | Login audit trail |
@@ -145,18 +144,18 @@ Persists identity and desired config under `data_dir` (`agent_state.json`).
 | Module | Responsibility |
 |---|---|
 | `connection.rs` | Reconnect/backoff, fair bounded writer, shared filesystem job admission |
-| `connection/runtime.rs` | Resource state, caches, Herdr settings and worker limits that survive reconnects |
+| `connection/runtime.rs` | Resource state, caches, AI Agents settings and worker limits that survive reconnects |
 | `connection/handshake.rs` | Bounded connect/auth/register and capability advertisement |
 | `connection/session.rs` | Transport queues, liveness, dispatch, shutdown/Drop cancellation |
-| `connection/{resources,filesystem,search,office,uploads,herdr,control}.rs` | Business handlers borrowing the connection context |
+| `connection/{resources,filesystem,search,office,uploads,ai_agents,control}.rs` | Business handlers borrowing the connection context |
 | `resources.rs` | Validate + atomically apply roots / pins / collections |
-| `config_store.rs` | Persist `agent_id`, roots, pins, collections, revisions and `herdr_enabled` |
+| `config_store.rs` | Persist `agent_id`, roots, pins, collections, revisions and `ai_agents_enabled` |
 | `fs.rs` | Read-only list/stat/read with path safety + denylist |
 | `dir_cache.rs` | mtime-keyed directory listing cache (capped; cleared on root apply) |
 | `search.rs` | In-process fd/rg-like Workspace Search (`ignore` + `regex`) |
 | `sysinfo.rs` | TTL-cached system stats (HPC-safe refresh) |
 | `temp_store.rs` | Dedicated file-upload write path (staging, quotas, no-clobber publish, symlink-safe cleanup); also used by Transfer image paste |
-| `herdr.rs` | Optional local Herdr CLI probe (`FILEBOX_AGENT_HERDR` / PATH) and argv-only whitelist |
+| `ai_agents/herdr.rs` | Herdr backend adapter probe (`FILEBOX_AGENT_HERDR` / PATH) and argv-only whitelist |
 | `config.rs` | TOML / env bootstrap |
 
 The receive loop reserves two control reply slots before accepting a request,
@@ -174,7 +173,7 @@ snapshot lock and cold requests share one collection. This is not CPU affinity
 or a process/child CPU quota; blocking filesystem I/O has its own pool. There
 is no CPU-limit config field or environment variable for this fixed policy.
 
-### Herdr configuration and settings
+### AI Agents configuration and settings
 
 Install a matching Herdr CLI/server on the Agent host (tested with v0.9.5).
 Discovery uses `FILEBOX_AGENT_HERDR` or PATH. The Agent only invokes list, read,
@@ -182,19 +181,19 @@ prompt and allowlisted send-keys as argv, never shell commands. Requests have
 bounded output, deadlines and cancellation; disabling Filebox integration does
 not stop Herdr or its coding agents.
 
-`herdr_enabled` defaults to `true` in `agent_state.json` under `data_dir`.
-The per-Agent web switch sends `POST /api/agents/{id}/herdr-settings` through
+`ai_agents_enabled` defaults to `true` in `agent_state.json` under `data_dir`.
+The per-Agent web switch sends `POST /api/agents/{id}/ai-agents/settings` through
 the Hub to the Agent, which persists using the existing state store before
 acknowledging and updating capabilities/SSE. It is not an `agent.toml` field.
-`FILEBOX_AGENT_HERDR_ENABLED` is a startup override: `0`/`false` disables
+`FILEBOX_AGENT_AI_AGENTS_ENABLED` is a startup override: `0`/`false` disables
 discovery/probing and requests, `1`/`true` enables, and invalid values disable.
 Any explicit override locks the web switch; unset it and restart to use saved
 settings. New installations show onboarding and Check installation can reprobe
 the current executable search path. Offline/legacy Agents cannot save settings.
 
 Prompt review is separate from this Agent switch. By default the Hub refuses
-prompts without `herdr_prompt_review` in `hub.json` or on provider failure.
-Only `FILEBOX_HUB_HERDR_PROMPT_REVIEW_ENABLED=0`/`false` at startup restores
+prompts without `prompt_review` in `hub.json` or on provider failure.
+Only `FILEBOX_HUB_PROMPT_REVIEW_ENABLED=0`/`false` at startup restores
 unreviewed relay; no runtime endpoint changes provider configuration. The Hub
 reads target-window context itself before review and relays exactly the reviewed
 prompt through one choke point. Status/read/keys are not reviewed. See

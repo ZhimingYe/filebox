@@ -6,7 +6,7 @@ mod connection;
 mod content_cache;
 mod dir_cache;
 mod fs;
-mod herdr;
+mod ai_agents;
 mod office_convert;
 mod resources;
 mod search;

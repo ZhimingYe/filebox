@@ -8,14 +8,13 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
-use filebox_protocol::herdr::{
-    clamp_lines, clamp_wait_timeout_ms, validate_keys, validate_prompt_text, validate_target,
-    HerdrAgent, HerdrAgentStatus, HerdrOp, HerdrReadSource, HerdrServerStatus, HERDR_OUTPUT_MAX_BYTES,
+use filebox_protocol::ai_agents::{
+    AiAgent, AiAgentStatus, AiAgentOp, AiAgentReadSource, AiAgentBackendStatus,
+    AI_AGENT_OUTPUT_MAX_BYTES, validate_target,
 };
-use filebox_protocol::message::AgentMessage;
+use filebox_protocol::resources::AiAgentFeatures;
 use serde_json::Value;
 use tokio::process::Command;
 
@@ -25,22 +24,13 @@ const PROMPT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEYS_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
-pub struct HerdrClient {
+pub struct HerdrBackend {
     pub bin: PathBuf,
     pub version: String,
 }
 
-impl HerdrClient {
+impl HerdrBackend {
     pub async fn probe() -> Option<Self> {
-        // Operator-owned hard switch. Check before path discovery or --version;
-        // a disabled integration never creates a client or advertises capability.
-        match Self::environment_override() {
-            Some(false) => {
-                tracing::info!("Herdr integration disabled by FILEBOX_AGENT_HERDR_ENABLED");
-                return None;
-            }
-            None | Some(true) => {}
-        }
         let bin = resolve_herdr_path()?;
         match probe_version(&bin).await {
             Ok(version) => {
@@ -62,80 +52,28 @@ impl HerdrClient {
         }
     }
 
-    pub fn environment_override() -> Option<bool> {
-        let value = std::env::var_os("FILEBOX_AGENT_HERDR_ENABLED");
-        if value
-            .as_deref()
-            .is_some_and(|value| herdr_enabled(Some(value)).is_err())
-        {
-            tracing::warn!("Invalid FILEBOX_AGENT_HERDR_ENABLED; Herdr integration disabled (use 0 or 1)");
-        }
-        parsed_environment_override(value.as_deref())
-    }
-
-    pub async fn handle(
-        &self,
-        req_id: String,
-        op: HerdrOp,
-        target: Option<String>,
-        text: Option<String>,
-        keys: Vec<String>,
-        lines: Option<u32>,
-        read_source: Option<HerdrReadSource>,
-        wait: bool,
-        timeout_ms: Option<u64>,
-        cancel: Arc<AtomicBool>,
-    ) -> AgentMessage {
-        match self
-            .run_op(op, target, text, keys, lines, read_source, wait, timeout_ms, &cancel)
-            .await
-        {
-            Ok(msg) => AgentMessage::HerdrResponse {
-                req_id,
-                error: msg.error,
-                status: msg.status,
-                agents: msg.agents,
-                agent: msg.agent,
-                output: msg.output,
-            },
-            Err(error) => AgentMessage::HerdrResponse {
-                req_id,
-                error: Some(error),
-                status: Some(HerdrServerStatus {
-                    installed: true,
-                    reachable: false,
-                    version: Some(self.version.clone()),
-                    message: None,
-                }),
-                agents: Vec::new(),
-                agent: None,
-                output: None,
-            },
-        }
-    }
-
     async fn run_op(
         &self,
-        op: HerdrOp,
+        op: AiAgentOp,
         target: Option<String>,
         text: Option<String>,
         keys: Vec<String>,
         lines: Option<u32>,
-        read_source: Option<HerdrReadSource>,
+        read_source: Option<AiAgentReadSource>,
         wait: bool,
         timeout_ms: Option<u64>,
         cancel: &AtomicBool,
     ) -> Result<OpResult, String> {
         match op {
-            HerdrOp::Status => self.status(cancel).await,
-            HerdrOp::Read => {
-                let target = required_target(target)?;
-                let n = clamp_lines(lines);
+            AiAgentOp::Status => self.status(cancel).await,
+            AiAgentOp::Read => {
+                let target = target.ok_or_else(|| "invalid_request".to_string())?;
+                let n = lines.unwrap_or_default();
                 // Full-screen agents refuse scrolled history (`agent_not_idle`)
                 // while working, blocked, or unknown. Fall back to the visible
                 // screen so "latest output" still works during a turn.
                 let history = if let Some(source) = read_source {
-                    let source = match source { HerdrReadSource::Visible => "visible", HerdrReadSource::Detection => "detection" };
+                    let source = match source { AiAgentReadSource::Visible => "visible", AiAgentReadSource::Bottom => "detection" };
                     vec!["agent".into(), "read".into(), target.clone(), "--source".into(), source.into(), "--lines".into(), n.to_string()]
                 } else { vec![
                     "agent".into(),
@@ -172,15 +110,14 @@ impl HerdrClient {
                     output: Some(read_output_text(&out)),
                 })
             }
-            HerdrOp::Prompt => {
-                let target = required_target(target)?;
+            AiAgentOp::Prompt => {
+                let target = target.ok_or_else(|| "invalid_request".to_string())?;
                 let text = text.unwrap_or_default();
-                validate_prompt_text(&text).map_err(|e| e.to_string())?;
                 // Herdr 0.9.5 consumes target and text positionally before
                 // parsing flags. It does not accept a `--` separator here.
                 let mut args = vec!["agent".into(), "prompt".into(), target, text];
                 let timeout = if wait {
-                    let ms = clamp_wait_timeout_ms(timeout_ms);
+                    let ms = timeout_ms.unwrap_or(30_000);
                     args.push("--wait".into());
                     args.push("--timeout".into());
                     args.push(ms.to_string());
@@ -201,9 +138,8 @@ impl HerdrClient {
                     output: None,
                 })
             }
-            HerdrOp::SendKeys => {
-                let target = required_target(target)?;
-                let keys = validate_keys(&keys).map_err(|e| e.to_string())?;
+            AiAgentOp::SendKeys => {
+                let target = target.ok_or_else(|| "invalid_request".to_string())?;
                 let mut args = vec!["agent".into(), "send-keys".into(), target];
                 args.extend(keys);
                 let out = run_cli(&self.bin, &args, KEYS_TIMEOUT, cancel).await?;
@@ -228,13 +164,13 @@ impl HerdrClient {
             Ok(out) if out.ok => {
                 let parsed = parse_json_blob(&out.stdout)
                     .or_else(|| parse_json_blob(&out.stderr))
-                    .ok_or_else(|| "herdr_incompatible".to_string())?;
+                    .ok_or_else(|| "ai_agent_backend_incompatible".to_string())?;
                 if !result_object(&parsed).get("agents").is_some_and(Value::is_array) {
-                    return Err("herdr_incompatible".to_string());
+                    return Err("ai_agent_backend_incompatible".to_string());
                 }
                 Ok(OpResult {
                     error: None,
-                    status: Some(HerdrServerStatus {
+                    status: Some(AiAgentBackendStatus {
                         installed: true,
                         reachable: true,
                         version: Some(self.version.clone()),
@@ -247,7 +183,7 @@ impl HerdrClient {
             }
             Ok(out) => Ok(OpResult {
                 error: Some(map_cli_error(&out)),
-                status: Some(HerdrServerStatus {
+                status: Some(AiAgentBackendStatus {
                     installed: true,
                     reachable: false,
                     version: Some(self.version.clone()),
@@ -259,7 +195,7 @@ impl HerdrClient {
             }),
             Err(error) => Ok(OpResult {
                 error: Some(error.clone()),
-                status: Some(HerdrServerStatus {
+                status: Some(AiAgentBackendStatus {
                     installed: true,
                     reachable: false,
                     version: Some(self.version.clone()),
@@ -273,11 +209,132 @@ impl HerdrClient {
     }
 }
 
+impl crate::ai_agents::AiAgentBackend for HerdrBackend {
+    fn kind(&self) -> &'static str {
+        "herdr"
+    }
+
+    fn version(&self) -> &str {
+        &self.version
+    }
+
+    fn features(&self) -> AiAgentFeatures {
+        AiAgentFeatures::default()
+    }
+
+    fn list<'a>(
+        &'a self,
+        cancel: &'a AtomicBool,
+    ) -> crate::ai_agents::BackendFuture<'a, Result<crate::ai_agents::AiAgentList, String>> {
+        Box::pin(async move {
+            let result = self
+                .run_op(AiAgentOp::Status, None, None, Vec::new(), None, None, false, None, cancel)
+                .await;
+            match result {
+                Ok(result) => Ok(crate::ai_agents::AiAgentList {
+                    status: result.status.unwrap_or(AiAgentBackendStatus {
+                        installed: true,
+                        reachable: true,
+                        version: Some(self.version.clone()),
+                        message: None,
+                    }),
+                    error: result.error,
+                    agents: result.agents,
+                }),
+                Err(error) => Ok(crate::ai_agents::AiAgentList {
+                    status: AiAgentBackendStatus {
+                        installed: true,
+                        reachable: false,
+                        version: Some(self.version.clone()),
+                        message: None,
+                    },
+                    error: Some(error),
+                    agents: Vec::new(),
+                }),
+            }
+        })
+    }
+
+    fn read<'a>(
+        &'a self,
+        target: &'a str,
+        lines: u32,
+        source: Option<AiAgentReadSource>,
+        cancel: &'a AtomicBool,
+    ) -> crate::ai_agents::BackendFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            let result = self
+                .run_op(
+                    AiAgentOp::Read,
+                    Some(target.to_string()),
+                    None,
+                    Vec::new(),
+                    Some(lines),
+                    source,
+                    false,
+                    None,
+                    cancel,
+                )
+                .await?;
+            result.output.ok_or_else(|| "ai_agent_failed".to_string())
+        })
+    }
+
+    fn prompt<'a>(
+        &'a self,
+        target: &'a str,
+        text: &'a str,
+        wait_timeout_ms: Option<u64>,
+        cancel: &'a AtomicBool,
+    ) -> crate::ai_agents::BackendFuture<'a, Result<Option<AiAgent>, String>> {
+        Box::pin(async move {
+            let result = self
+                .run_op(
+                    AiAgentOp::Prompt,
+                    Some(target.to_string()),
+                    Some(text.to_string()),
+                    Vec::new(),
+                    None,
+                    None,
+                    wait_timeout_ms.is_some(),
+                    wait_timeout_ms,
+                    cancel,
+                )
+                .await?;
+            Ok(result.agent)
+        })
+    }
+
+    fn send_keys<'a>(
+        &'a self,
+        target: &'a str,
+        keys: &'a [String],
+        cancel: &'a AtomicBool,
+    ) -> crate::ai_agents::BackendFuture<'a, Result<Option<AiAgent>, String>> {
+        Box::pin(async move {
+            let result = self
+                .run_op(
+                    AiAgentOp::SendKeys,
+                    Some(target.to_string()),
+                    None,
+                    keys.to_vec(),
+                    None,
+                    None,
+                    false,
+                    None,
+                    cancel,
+                )
+                .await?;
+            Ok(result.agent)
+        })
+    }
+}
+
 struct OpResult {
     error: Option<String>,
-    status: Option<HerdrServerStatus>,
-    agents: Vec<HerdrAgent>,
-    agent: Option<HerdrAgent>,
+    status: Option<AiAgentBackendStatus>,
+    agents: Vec<AiAgent>,
+    agent: Option<AiAgent>,
     output: Option<String>,
 }
 
@@ -296,32 +353,6 @@ impl CliOutput {
             self.stdout.clone()
         }
     }
-}
-
-fn required_target(target: Option<String>) -> Result<String, String> {
-    let Some(raw) = target else {
-        return Err("invalid_request".to_string());
-    };
-    let trimmed = raw.trim().to_string();
-    validate_target(&trimmed).map_err(|e| e.to_string())?;
-    Ok(trimmed)
-}
-
-fn herdr_enabled(value: Option<&std::ffi::OsStr>) -> Result<bool, ()> {
-    let Some(value) = value else { return Ok(true); };
-    match value.to_str().ok_or(())?.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "on" | "yes" => Ok(true),
-        "0" | "false" | "off" | "no" => Ok(false),
-        _ => Err(()),
-    }
-}
-
-fn parsed_environment_override(value: Option<&std::ffi::OsStr>) -> Option<bool> {
-    value.map(|value| herdr_enabled(Some(value)).unwrap_or(false))
-}
-
-pub fn effective_enabled(persisted: bool, environment_override: Option<bool>) -> bool {
-    environment_override.unwrap_or(persisted)
 }
 
 fn resolve_herdr_path() -> Option<PathBuf> {
@@ -369,7 +400,7 @@ async fn probe_version_timeout(bin: &Path, timeout: Duration) -> Result<String, 
     // child. A wrapper may exit while a helper still holds either pipe open.
     let out = run_cli(bin, &["--version".into()], timeout, &AtomicBool::new(false))
         .await
-        .map_err(|error| if error == "herdr_timeout" {
+        .map_err(|error| if error == "ai_agent_timeout" {
             "herdr --version timed out".to_string()
         } else {
             error
@@ -423,7 +454,7 @@ async fn run_cli(
     }
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("herdr_unavailable: failed to spawn herdr: {e}"))?;
+        .map_err(|e| format!("ai_agent_backend_unavailable: failed to spawn herdr: {e}"))?;
     let pid = child.id().unwrap_or(0);
     // Connection teardown aborts the entire future, bypassing the select arms.
     // kill_on_drop only kills the direct child; also reap its helper group.
@@ -431,7 +462,7 @@ async fn run_cli(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     // One overflow byte distinguishes truncated output from an exact fit.
-    let out_fut = drain_capped(stdout, HERDR_OUTPUT_MAX_BYTES + 1);
+    let out_fut = drain_capped(stdout, AI_AGENT_OUTPUT_MAX_BYTES + 1);
     let err_fut = drain_capped(stderr, 16 * 1024);
     tokio::pin!(out_fut);
     tokio::pin!(err_fut);
@@ -445,7 +476,7 @@ async fn run_cli(
         tokio::select! {
             biased;
             res = child.wait(), if status.is_none() => {
-                status = Some(res.map_err(|e| format!("herdr_unavailable: wait failed: {e}"))?);
+                status = Some(res.map_err(|e| format!("ai_agent_backend_unavailable: wait failed: {e}"))?);
             }
             buf = &mut out_fut, if stdout_buf.is_none() => {
                 stdout_buf = Some(buf);
@@ -454,7 +485,7 @@ async fn run_cli(
                 stderr_buf = Some(buf);
             }
             _ = &mut deadline, if status.is_none() || stdout_buf.is_none() || stderr_buf.is_none() => {
-                return Err("herdr_timeout".to_string());
+                return Err("ai_agent_timeout".to_string());
             }
             _ = wait_until_cancel(cancel) => {
                 return Err("cancelled".to_string());
@@ -528,10 +559,10 @@ fn read_output_text(out: &CliOutput) -> String {
 }
 
 fn truncate_output(text: &str) -> String {
-    if text.len() <= HERDR_OUTPUT_MAX_BYTES {
+    if text.len() <= AI_AGENT_OUTPUT_MAX_BYTES {
         return text.trim_end().to_string();
     }
-    let mut end = HERDR_OUTPUT_MAX_BYTES;
+    let mut end = AI_AGENT_OUTPUT_MAX_BYTES;
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
@@ -555,42 +586,42 @@ fn map_cli_error(out: &CliOutput) -> String {
         || blob.contains("unavailable")
         || blob.contains("socket")
     {
-        return "herdr_unavailable".to_string();
+        return "ai_agent_backend_unavailable".to_string();
     }
     if blob.contains("timeout") {
-        return "herdr_timeout".to_string();
+        return "ai_agent_timeout".to_string();
     }
     if blob.contains("blocked") {
-        return "herdr_blocked".to_string();
+        return "ai_agent_blocked".to_string();
     }
     if blob.contains("not_idle") || blob.contains("not idle") {
-        return "herdr_not_idle".to_string();
+        return "ai_agent_not_idle".to_string();
     }
     if blob.contains("not found") {
-        return "herdr_agent_missing".to_string();
+        return "ai_agent_missing".to_string();
     }
-    "herdr_failed".to_string()
+    "ai_agent_failed".to_string()
 }
 
 fn is_not_idle(out: &CliOutput) -> bool {
-    map_cli_error(out) == "herdr_not_idle"
+    map_cli_error(out) == "ai_agent_not_idle"
 }
 
 fn normalize_herdr_code(code: &str) -> String {
     match code {
-        "server_not_running" => "herdr_unavailable".to_string(),
-        "invalid_key" => "herdr_key_unsupported".to_string(),
-        "protocol_mismatch" => "herdr_incompatible".to_string(),
-        "agent_blocked" => "herdr_blocked".to_string(),
-        "agent_not_found" | "agent_not_running" | "agent_name_not_found" | "pane_not_found" => "herdr_agent_missing".to_string(),
-        "agent_not_ready" | "agent_prompt_stalled" => "herdr_not_ready".to_string(),
-        "agent_not_idle" => "herdr_not_idle".to_string(),
-        "timeout" => "herdr_timeout".to_string(),
+        "server_not_running" => "ai_agent_backend_unavailable".to_string(),
+        "invalid_key" => "ai_agent_key_unsupported".to_string(),
+        "protocol_mismatch" => "ai_agent_backend_incompatible".to_string(),
+        "agent_blocked" => "ai_agent_blocked".to_string(),
+        "agent_not_found" | "agent_not_running" | "agent_name_not_found" | "pane_not_found" => "ai_agent_missing".to_string(),
+        "agent_not_ready" | "agent_prompt_stalled" => "ai_agent_not_ready".to_string(),
+        "agent_not_idle" => "ai_agent_not_idle".to_string(),
+        "timeout" => "ai_agent_timeout".to_string(),
         other => {
-            if other.starts_with("herdr_") {
+            if other.starts_with("ai_agent_") {
                 other.to_string()
             } else {
-                "herdr_failed".to_string()
+                "ai_agent_failed".to_string()
             }
         }
     }
@@ -625,14 +656,14 @@ fn result_object(v: &Value) -> &Value {
     v.get("result").unwrap_or(v)
 }
 
-fn extract_agents(v: &Value) -> Vec<HerdrAgent> {
+fn extract_agents(v: &Value) -> Vec<AiAgent> {
     let root = result_object(v);
     let list = root
         .get("agents")
         .and_then(|a| a.as_array())
         .cloned()
         .unwrap_or_default();
-    let mut agents: Vec<HerdrAgent> = list.iter().filter_map(parse_agent).collect();
+    let mut agents: Vec<AiAgent> = list.iter().filter_map(parse_agent).collect();
     let mut seen = std::collections::HashSet::new();
     agents.retain(|agent| seen.insert(agent.target.clone()));
     agents
@@ -654,12 +685,12 @@ fn address_target(name: Option<&str>, pane_id: &str) -> Option<String> {
     }
 }
 
-fn extract_agent(v: &Value) -> Option<HerdrAgent> {
+fn extract_agent(v: &Value) -> Option<AiAgent> {
     let root = result_object(v);
     root.get("agent").and_then(parse_agent).or_else(|| parse_agent(root))
 }
 
-fn parse_agent(v: &Value) -> Option<HerdrAgent> {
+fn parse_agent(v: &Value) -> Option<AiAgent> {
     let pane_id = v.get("pane_id")?.as_str()?.to_string();
     let name = v
         .get("name")
@@ -681,23 +712,18 @@ fn parse_agent(v: &Value) -> Option<HerdrAgent> {
         .get("agent_status")
         .or_else(|| v.get("status"))
         .and_then(|x| x.as_str())
-        .map(HerdrAgentStatus::parse_label)
+        .map(AiAgentStatus::parse_label)
         .unwrap_or_default();
     let target = address_target(name.as_deref(), &pane_id)?;
-    Some(HerdrAgent {
+    Some(AiAgent {
         target,
         name,
         kind,
         status,
         completion_seq: v.get("completion_seq").and_then(Value::as_u64),
-        pane_id,
-        workspace_id: v
+        id: pane_id,
+        scope: v
             .get("workspace_id")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string(),
-        tab_id: v
-            .get("tab_id")
             .and_then(|x| x.as_str())
             .unwrap_or("")
             .to_string(),
@@ -722,66 +748,8 @@ fn parse_agent(v: &Value) -> Option<HerdrAgent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn explicit_herdr_switch_accepts_boolean_values_and_rejects_typos() {
-        use std::ffi::OsStr;
-        assert_eq!(herdr_enabled(None), Ok(true));
-        for value in ["0", "false", "OFF", " no "] {
-            assert_eq!(herdr_enabled(Some(OsStr::new(value))), Ok(false));
-        }
-        for value in ["1", "true", "ON", " yes "] {
-            assert_eq!(herdr_enabled(Some(OsStr::new(value))), Ok(true));
-        }
-        for value in ["", "flase", "2"] {
-            assert_eq!(herdr_enabled(Some(OsStr::new(value))), Err(()));
-        }
-        assert_eq!(parsed_environment_override(Some(OsStr::new("true"))), Some(true));
-        assert_eq!(parsed_environment_override(Some(OsStr::new("false"))), Some(false));
-        assert_eq!(parsed_environment_override(Some(OsStr::new("invalid"))), Some(false));
-        assert!(effective_enabled(false, Some(true)));
-        assert!(!effective_enabled(true, Some(false)));
-        assert!(!effective_enabled(false, None));
-        assert!(effective_enabled(true, None));
-    }
-
-    // Run probe in a separate test process so environment overrides cannot race
-    // with other tests. Both explicit binary and PATH discovery are covered.
-    #[cfg(unix)]
-    #[test]
-    fn disabled_probe_never_executes_an_installed_binary() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("herdr");
-        let marker = dir.path().join("invoked");
-        std::fs::write(&bin, r#"#!/bin/sh
-printf x >> "$FILEBOX_TEST_HERDR_MARKER"
-echo 'herdr 9.9.9'
-"#).unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        for explicit in [false, true] {
-            for (value, expect_client) in [("0", false), ("false", false), ("flase", false), ("1", true)] {
-                let _ = std::fs::remove_file(&marker);
-                let mut child = std::process::Command::new(std::env::current_exe().unwrap());
-                child.args(["--exact", "herdr::tests::probe_environment_child"])
-                    .env("FILEBOX_TEST_HERDR_CHILD", if expect_client { "enabled" } else { "disabled" })
-                    .env("FILEBOX_AGENT_HERDR_ENABLED", value)
-                    .env("FILEBOX_TEST_HERDR_MARKER", &marker).env("PATH", dir.path());
-                if explicit { child.env("FILEBOX_AGENT_HERDR", &bin); }
-                else { child.env_remove("FILEBOX_AGENT_HERDR"); }
-                let output = child.output().unwrap();
-                assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-                assert_eq!(marker.exists(), expect_client, "explicit={explicit}, value={value}");
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn probe_environment_child() {
-        let Ok(expected) = std::env::var("FILEBOX_TEST_HERDR_CHILD") else { return; };
-        assert_eq!(HerdrClient::probe().await.is_some(), expected == "enabled");
-    }
+    use filebox_protocol::message::AgentMessage;
+    use std::sync::Arc;
 
     #[test]
     fn parse_agent_list_json() {
@@ -795,7 +763,6 @@ echo 'herdr 9.9.9'
                     "agent_status": "working",
                     "pane_id": "w1:p2",
                     "workspace_id": "w1",
-                    "tab_id": "w1:t1",
                     "cwd": "/repo",
                     "focused": false
                 }]
@@ -805,8 +772,9 @@ echo 'herdr 9.9.9'
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].target, "reviewer");
         assert_eq!(agents[0].kind.as_deref(), Some("codex"));
-        assert_eq!(agents[0].status, HerdrAgentStatus::Working);
-        assert_eq!(agents[0].pane_id, "w1:p2");
+        assert_eq!(agents[0].status, AiAgentStatus::Working);
+        assert_eq!(agents[0].id, "w1:p2");
+        assert_eq!(agents[0].scope, "w1");
     }
 
     #[test]
@@ -832,13 +800,13 @@ echo 'herdr 9.9.9'
             stdout: String::new(),
             stderr: "Error: failed to connect to herdr socket".into(),
         };
-        assert_eq!(map_cli_error(&out), "herdr_unavailable");
+        assert_eq!(map_cli_error(&out), "ai_agent_backend_unavailable");
         let json = CliOutput {
             ok: false,
             stdout: String::new(),
             stderr: r#"{"id":"x","error":{"code":"agent_blocked","message":"needs input"}}"#.into(),
         };
-        assert_eq!(map_cli_error(&json), "herdr_blocked");
+        assert_eq!(map_cli_error(&json), "ai_agent_blocked");
     }
 
     #[test]
@@ -867,7 +835,7 @@ exit 1
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let client = HerdrClient {
+        let client = HerdrBackend {
             bin,
             version: "9.9.9".into(),
         };
@@ -958,21 +926,21 @@ exit 1
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let client = HerdrClient { bin: bin.clone(), version: "0.9.5".into() };
+        let client = HerdrBackend { bin: bin.clone(), version: "0.9.5".into() };
         let cancel = AtomicBool::new(false);
-        let result = client.run_op(HerdrOp::Read, Some("reviewer".into()), None,
-            vec![], Some(120), Some(HerdrReadSource::Visible), false, None, &cancel).await;
+        let result = client.run_op(AiAgentOp::Read, Some("reviewer".into()), None,
+            vec![], Some(120), Some(AiAgentReadSource::Visible), false, None, &cancel).await;
         assert!(result.is_ok());
         assert_eq!(std::fs::read(dir.path().join("herdr.args")).unwrap(),
             b"agent\0read\0reviewer\0--source\0visible\0--lines\0120\0");
-        let result = client.run_op(HerdrOp::SendKeys, Some("reviewer".into()), None,
-            vec!["Ctrl+End".into(), "Ctrl+Shift+P".into()], None, None, false, None, &cancel).await;
+        let result = client.run_op(AiAgentOp::SendKeys, Some("reviewer".into()), None,
+            vec!["ctrl+end".into(), "ctrl+shift+p".into()], None, None, false, None, &cancel).await;
         assert!(result.is_ok());
         assert_eq!(std::fs::read(dir.path().join("herdr.args")).unwrap(),
             b"agent\0send-keys\0reviewer\0ctrl+end\0ctrl+shift+p\0");
         assert_eq!(map_cli_error(&CliOutput { ok: false, stdout: String::new(),
             stderr: r#"{"error":{"code":"invalid_key","message":"unsupported key ctrl+end"}}"#.into() }),
-            "herdr_key_unsupported");
+            "ai_agent_key_unsupported");
     }
 
     #[cfg(unix)]
@@ -983,8 +951,8 @@ exit 1
         let bin = dir.path().join("herdr");
         std::fs::write(&bin, "#!/bin/sh\ncat \"$0.output\"\n").unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let client = HerdrClient { bin, version: "0.9.5".into() };
-        let cap = HERDR_OUTPUT_MAX_BYTES;
+        let client = HerdrBackend { bin, version: "0.9.5".into() };
+        let cap = AI_AGENT_OUTPUT_MAX_BYTES;
         for (input, expected) in [
             ("small output\n\n".to_string(), "small output".to_string()),
             ("x".repeat(cap), "x".repeat(cap)),
@@ -996,8 +964,8 @@ exit 1
             (format!("{}😀tail", "x".repeat(cap - 2)), format!("{}\n… truncated", "x".repeat(cap - 2))),
         ] {
             std::fs::write(dir.path().join("herdr.output"), input).unwrap();
-            let result = client.run_op(HerdrOp::Read, Some("w1:p2".into()), None,
-                Vec::new(), Some(120), Some(HerdrReadSource::Detection), false, None,
+            let result = client.run_op(AiAgentOp::Read, Some("w1:p2".into()), None,
+                Vec::new(), Some(120), Some(AiAgentReadSource::Bottom), false, None,
                 &AtomicBool::new(false)).await.unwrap();
             let output = result.output.unwrap();
             assert!(output == expected, "length={}, expected={}, marker={}",
@@ -1044,12 +1012,12 @@ exit 1
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let client = HerdrClient { bin, version: "1".into() };
+        let client = HerdrBackend { bin, version: "1".into() };
         let cancel = AtomicBool::new(false);
-        let msg = client
-            .handle(
+        let msg = crate::ai_agents::handle_request(
+                &client,
                 "r1".into(),
-                HerdrOp::Read,
+                AiAgentOp::Read,
                 Some("reviewer".into()),
                 None,
                 Vec::new(),
@@ -1061,7 +1029,7 @@ exit 1
             )
             .await;
         match msg {
-            AgentMessage::HerdrResponse { output, error, .. } => {
+            AgentMessage::AiAgentResponse { output, error, .. } => {
                 assert!(error.is_none(), "{error:?}");
                 assert_eq!(output.as_deref(), Some("visible screen"));
             }
@@ -1079,16 +1047,17 @@ exit 1
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let client = HerdrClient { bin, version: "0.9.5".into() };
+        let client = HerdrBackend { bin, version: "0.9.5".into() };
         for text in ["--help", "--", "--check the diff\n中文"] {
             for wait in [false, true] {
-                let msg = client.handle(
-                    "p1".into(), HerdrOp::Prompt, Some("reviewer".into()),
+                let msg = crate::ai_agents::handle_request(
+                    &client,
+                    "p1".into(), AiAgentOp::Prompt, Some("reviewer".into()),
                     Some(text.into()), Vec::new(), None, None, wait, Some(60_000),
                     Arc::new(AtomicBool::new(false)),
                 ).await;
                 match msg {
-                    AgentMessage::HerdrResponse { error, .. } => assert!(error.is_none(), "{error:?}"),
+                    AgentMessage::AiAgentResponse { error, .. } => assert!(error.is_none(), "{error:?}"),
                     _ => panic!("unexpected response"),
                 }
                 let logged = std::fs::read(dir.path().join("herdr.args")).unwrap();
@@ -1104,10 +1073,10 @@ exit 1
     #[test]
     fn maps_current_herdr_error_codes() {
         for (code, expected) in [
-            ("server_not_running", "herdr_unavailable"),
-            ("protocol_mismatch", "herdr_incompatible"),
-            ("agent_name_not_found", "herdr_agent_missing"),
-            ("pane_not_found", "herdr_agent_missing"),
+            ("server_not_running", "ai_agent_backend_unavailable"),
+            ("protocol_mismatch", "ai_agent_backend_incompatible"),
+            ("agent_name_not_found", "ai_agent_missing"),
+            ("pane_not_found", "ai_agent_missing"),
         ] {
             let out = CliOutput { ok: false, stdout: String::new(),
                 stderr: serde_json::json!({"id": "cli", "error": {"code": code, "message": "test"}}).to_string() };
@@ -1136,9 +1105,9 @@ exit 1
         let bin = dir.path().join("herdr");
         std::fs::write(&bin, "#!/bin/sh\necho 'unexpected CLI output'\n").unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let client = HerdrClient { bin, version: "unknown".into() };
+        let client = HerdrBackend { bin, version: "unknown".into() };
         let result = client.status(&AtomicBool::new(false)).await;
-        assert!(matches!(result, Err(error) if error == "herdr_incompatible"));
+        assert!(matches!(result, Err(error) if error == "ai_agent_backend_incompatible"));
     }
 
     #[tokio::test]
@@ -1161,7 +1130,7 @@ exit 1
         )
         .await
         .unwrap_err();
-        assert_eq!(err, "herdr_timeout");
+        assert_eq!(err, "ai_agent_timeout");
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 

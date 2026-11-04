@@ -29,7 +29,7 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
         | AgentMessage::CollectionsApplied { .. }
         | AgentMessage::CollectionsRejected { .. }
         | AgentMessage::CollectionsUpdated { .. }
-        | AgentMessage::HerdrSettingsApplied { .. }) => updates::dispatch(context, message).await,
+        | AgentMessage::AiAgentSettingsApplied { .. }) => updates::dispatch(context, message).await,
         AgentMessage::FsListResponse { .. }
         | AgentMessage::FsStatResponse { .. }
         | AgentMessage::SysStatsResponse { .. }
@@ -37,7 +37,7 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
         | AgentMessage::OfficeConvertResponse { .. }
         | AgentMessage::TempUploadResponse { .. }
         | AgentMessage::TempCleanupResponse { .. }
-        | AgentMessage::HerdrResponse { .. } => deliver_response(context, value).await,
+        | AgentMessage::AiAgentResponse { .. } => deliver_response(context, value).await,
         AgentMessage::Progress { req_id, phase, processed, total, message } => {
             let inner = context.state.inner.write().await;
             if !inner.agents.is_current_connection(&context.agent_id, context.connection_id) {

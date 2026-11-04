@@ -1,6 +1,6 @@
 # 安全与敏感文件
 
-filebox 的默认姿态是：**浏览只读、路径牢笼、敏感文件拒绝**。Transfer 仅写入专用临时目录。Herdr 通过独立的白名单 CLI 集成管理编码代理。
+filebox 的默认姿态是：**浏览只读、路径牢笼、敏感文件拒绝**。Transfer 仅写入专用临时目录。AI Agents 通过独立的白名单后端管理编码代理。
 
 ![侧栏能力入口](/screenshots/00-sidebar-overview.png)
 

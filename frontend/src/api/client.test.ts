@@ -6,12 +6,24 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it.each(['herdr_unavailable', 'herdr_blocked', 'herdr_timeout', 'herdr_not_idle'] as const)(
-  'explains Herdr errors for %s',
+it.each(['ai_agent_backend_unavailable', 'ai_agent_blocked', 'ai_agent_timeout', 'ai_agent_not_idle'] as const)(
+  'explains AI agent errors for %s',
   (error) => {
     expect(friendlyMessage({ error })).not.toBe('An unexpected error occurred.');
   },
 );
+
+it('explains backend changes and undetected selections', () => {
+  expect(friendlyMessage({ error: 'ai_agent_backend_changed' }))
+    .toBe('The AI agent backend changed on this Agent. Refresh and retry.');
+  expect(friendlyMessage({ error: 'ai_agent_backend_not_detected' }))
+    .toBe('The selected AI agent backend is not detected on this Agent. Install it or choose another backend in Settings.');
+});
+
+it('explains operations unsupported by the selected AI agent backend', () => {
+  expect(friendlyMessage({ error: 'ai_agent_unsupported_operation' }))
+    .toBe('This AI agent backend does not support that operation.');
+});
 
 it.each(['temp_upload_stalled', 'temp_upload_stalled: upload queue is full; retry upload'])(
   'explains upload congestion and retry for %s', (error) => {
@@ -48,13 +60,15 @@ const mutations = [
   { name: 'delete collection', fallback: 'collection_rejected', run: () => api.deleteCollection('a1', 'work') },
 ];
 
-it('sends the per-Agent Herdr preference through the authenticated API', async () => {
-  const settings = { enabled: false, environment_override: null };
+it('sends the per-Agent AI Agents preference through the authenticated API', async () => {
+  const settings = { available: false, backend: null, version: null, backends: [], settings: {
+    enabled: false, environment_override: null, backend: 'herdr', backend_environment_override: null,
+  } };
   const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(settings)));
   vi.stubGlobal('fetch', fetchMock);
-  await expect(api.setHerdrEnabled('agent/a', false)).resolves.toEqual(settings);
-  expect(fetchMock).toHaveBeenCalledWith('/api/agents/agent%2Fa/herdr-settings', expect.objectContaining({
-    method: 'POST', body: JSON.stringify({ enabled: false }), credentials: 'include',
+  await expect(api.setAiAgentsSettings('agent/a', { enabled: false, backend: 'herdr' })).resolves.toEqual(settings);
+  expect(fetchMock).toHaveBeenCalledWith('/api/agents/agent%2Fa/ai-agents/settings', expect.objectContaining({
+    method: 'POST', body: JSON.stringify({ enabled: false, backend: 'herdr' }), credentials: 'include',
   }));
 });
 

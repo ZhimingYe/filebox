@@ -16,7 +16,7 @@ Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ l
 
 Researchers, analysts, and data scientists whose results live as files on shared servers and who need to **glance at figures, tables, and logs** from a phone or laptop without `scp`-ing an entire archive for a quick look.
 
-filebox is not a sync/drive product and not a full remote desktop — it is the “front door” to result files: open, preview, search, occasionally upload a small scratch file, or manage coding agents through Herdr.
+filebox is not a sync/drive product and not a full remote desktop — it is the “front door” to result files: open, preview, search, occasionally upload a small scratch file, or manage coding agents through AI Agents.
 
 ## What you can do (v2.5.0)
 

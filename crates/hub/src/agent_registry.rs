@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, Notify};
 
 use filebox_protocol::resources::{
     Capabilities, CollectionConfig, CollectionInfo, DesiredCollections, DesiredResources,
-    HerdrSettings, ResourceRevision, RootConfig, RootInfo, TempRootInfo,
+    AiAgentsCapability, ResourceRevision, RootConfig, RootInfo, TempRootInfo,
 };
 use filebox_protocol::message::HubMessage;
 
@@ -135,8 +135,7 @@ impl AgentConnection {
                 office_max_pdf_bytes: self.capabilities.office_max_pdf_bytes,
                 office_timeout_secs: self.capabilities.office_timeout_secs,
                 temp_upload: self.capabilities.temp_upload,
-                herdr: self.capabilities.herdr,
-                herdr_settings: self.capabilities.herdr_settings.clone(),
+                ai_agents: self.capabilities.ai_agents.clone(),
             },
         }
     }
@@ -181,8 +180,7 @@ pub struct AgentCapabilitiesInfo {
     pub pinned_folders: bool,
     pub collections: bool,
     pub temp_upload: bool,
-    pub herdr: bool,
-    pub herdr_settings: Option<HerdrSettings>,
+    pub ai_agents: Option<AiAgentsCapability>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -448,19 +446,17 @@ impl AgentRegistry {
         true
     }
 
-    pub fn update_herdr_settings_for_connection(
+    pub fn update_ai_agents_for_connection(
         &mut self,
         agent_id: &str,
         connection_id: u64,
-        settings: HerdrSettings,
-        available: bool,
+        capability: AiAgentsCapability,
     ) -> bool {
         if !self.is_current_connection(agent_id, connection_id) {
             return false;
         }
         if let Some(agent) = self.agents.get_mut(agent_id) {
-            agent.capabilities.herdr_settings = Some(settings);
-            agent.capabilities.herdr = available;
+            agent.capabilities.ai_agents = Some(capability);
         }
         true
     }

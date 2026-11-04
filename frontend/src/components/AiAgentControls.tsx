@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react';
 import { c, font, radius, shadow } from '../theme';
 
-type HerdrButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+type AiAgentButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   touch?: boolean;
   variant?: 'primary' | 'secondary' | 'quiet';
   /** Square, icon-only control. */
@@ -9,8 +9,8 @@ type HerdrButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   size?: 'sm' | 'md';
 };
 
-/** Shared action hierarchy for Herdr onboarding, toolbars and remote input. */
-export function HerdrButton({ children, style, touch, variant = 'secondary', icon = false, size = 'md', ...props }: HerdrButtonProps) {
+/** Shared action hierarchy for AI Agents onboarding, toolbars and remote input. */
+export function AiAgentButton({ children, style, touch, variant = 'secondary', icon = false, size = 'md', ...props }: AiAgentButtonProps) {
   const [hovered, setHovered] = useState(false);
   const hot = hovered && !props.disabled;
   const height = touch ? (size === 'sm' ? 28 : 32) : (size === 'sm' ? 26 : 30);
@@ -35,7 +35,7 @@ export function HerdrButton({ children, style, touch, variant = 'secondary', ico
 }
 
 /** Inline status line: one visual language for info, warnings and errors. */
-export function HerdrCallout({ tone = 'info', children, onDismiss, dismissLabel = 'Dismiss', touch, role, style }: {
+export function AiAgentCallout({ tone = 'info', children, onDismiss, dismissLabel = 'Dismiss', touch, role, style }: {
   tone?: 'info' | 'warning' | 'danger'; children: ReactNode; onDismiss?: () => void; dismissLabel?: string;
   touch?: boolean; role?: 'status' | 'alert'; style?: CSSProperties;
 }) {
@@ -50,16 +50,16 @@ export function HerdrCallout({ tone = 'info', children, onDismiss, dismissLabel 
   }}>
     <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: radius.pill, background: accent, flexShrink: 0 }} />
     <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{children}</span>
-    {onDismiss && <HerdrButton variant="quiet" icon size="sm" touch={touch} aria-label={dismissLabel} title={dismissLabel}
+    {onDismiss && <AiAgentButton variant="quiet" icon size="sm" touch={touch} aria-label={dismissLabel} title={dismissLabel}
       onClick={onDismiss} style={{ color: tone === 'danger' ? c.danger : c.textMuted }}>
       <svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"
         strokeWidth="1.6" strokeLinecap="round"><path d="M4 4l8 8M12 4l-8 8" /></svg>
-    </HerdrButton>}
+    </AiAgentButton>}
   </div>;
 }
 
 /** Non-modal disclosure: pointer dismissal, Escape, and keyboard focus return. */
-export function HerdrPopover({ label, trigger, children, above = false, touch = false, closeOnAction = false, triggerVariant = 'quiet', icon = true, size = 'md' }: {
+export function AiAgentPopover({ label, trigger, children, above = false, touch = false, closeOnAction = false, triggerVariant = 'quiet', icon = true, size = 'md' }: {
   label: string; trigger: ReactNode; children: ReactNode; above?: boolean; touch?: boolean; closeOnAction?: boolean;
   triggerVariant?: 'secondary' | 'quiet'; icon?: boolean; size?: 'sm' | 'md';
 }) {
@@ -125,9 +125,9 @@ export function HerdrPopover({ label, trigger, children, above = false, touch = 
         root.current?.querySelector<HTMLButtonElement>('button')?.focus();
       }
     }}>
-    <HerdrButton touch={touch} variant={triggerVariant} icon={icon} size={size} aria-label={label} title={label} aria-expanded={open}
+    <AiAgentButton touch={touch} variant={triggerVariant} icon={icon} size={size} aria-label={label} title={label} aria-expanded={open}
       aria-controls={open ? id : undefined} onClick={() => setOpen((value) => !value)}
-      style={open ? { background: c.bgMuted, color: c.text } : undefined}>{trigger}</HerdrButton>
+      style={open ? { background: c.bgMuted, color: c.text } : undefined}>{trigger}</AiAgentButton>
     {open && <div id={id} ref={panel} role="dialog" aria-label={label} tabIndex={-1} onClick={(event) => {
       if (closeOnAction && (event.target as Element).closest('button')) {
         setOpen(false);

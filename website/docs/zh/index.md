@@ -34,7 +34,7 @@ features:
     link: /zh/features/search
     linkText: 搜索与合集
   - title: 安全默认
-    details: 协议只读；敏感文件默认拒绝；可选 Transfer 只写入专用临时目录；Herdr 通过独立 CLI 集成。
+    details: 协议只读；敏感文件默认拒绝；可选 Transfer 只写入专用临时目录；AI Agents 通过独立的 Herdr backend 集成。
     link: /zh/features/security
     linkText: 安全模型
 ---

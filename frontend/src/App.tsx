@@ -23,7 +23,7 @@ import { PreviewHeaderActions } from './components/PreviewHeaderActions';
 import { parentDir } from './components/parentDir';
 import { usePreviewTabs } from './hooks/usePreviewTabs';
 import { AgentSettings } from './components/AgentSettings';
-import { HerdrIntroduction, HerdrSetup } from './components/HerdrSetup';
+import { AiAgentsIntroduction, AiAgentsSetup } from './components/AiAgentsSetup';
 import { AboutDialog } from './components/AboutDialog';
 import { SystemStats } from './components/SystemStats';
 import { LoginAudit } from './components/LoginAudit';
@@ -35,9 +35,9 @@ import { WorkspaceSplit } from './components/WorkspaceSplit';
 import { CollectionPicker } from './components/CollectionPicker';
 import { NoAgentSelected } from './components/NoAgentSelected';
 import { TempTransferView } from './components/TempTransferView';
-import { HerdrView } from './components/HerdrView';
-import { HerdrAttention } from './components/HerdrAttention';
-import { useHerdrAttention, type HerdrAttention as HerdrNotice } from './hooks/useHerdrAttention';
+import { AiAgentsView } from './components/AiAgentsView';
+import { AiAgentAttention } from './components/AiAgentAttention';
+import { aiAgentBackendKey, useAiAgentAttention, type AiAgentAttention as AiAgentNotice } from './hooks/useAiAgentAttention';
 import {
   IconChevronLeft,
   IconFolder,
@@ -52,7 +52,7 @@ import {
   IconBrandMark,
   IconAudit,
   IconUpload,
-  IconHerd,
+  IconAiAgents,
 } from './components/icons';
 import type { FsEntry } from './api/client';
 import * as api from './api/client';
@@ -82,7 +82,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'explorer' | 'transfer' | 'herdr' | 'collections' | 'settings' | 'stats' | 'audit';
+type View = 'files' | 'explorer' | 'transfer' | 'ai-agents' | 'collections' | 'settings' | 'stats' | 'audit';
 
 interface ProgressEvent {
   req_id: string;
@@ -544,19 +544,23 @@ export default function App() {
   // and hands the files to TempTransferView via `uploadRequest`.
   const tempRootName = selectedAgent?.temp_root_name ?? null;
   const tempCapable = !!selectedAgent?.capabilities?.temp_upload && !!tempRootName;
-  const herdrCapable = !!selectedAgent?.capabilities?.herdr;
-  const herdrVisible = herdrCapable || !!selectedAgent?.capabilities?.herdr_settings?.enabled;
-  const herdrAttention = useHerdrAttention(agents, loggedIn === true,
-    view === 'herdr' && herdrCapable ? selectedAgentId : null);
-  const [herdrFocus, setHerdrFocus] = useState<{ backendId: string; target: string; nonce: number } | null>(null);
-  const openHerdrNotice = (notice: HerdrNotice) => {
+  const aiAgentsCapable = !!selectedAgent?.capabilities?.ai_agents?.available;
+  const aiAgentsVisible = !!selectedAgent && (!selectedAgent.capabilities?.ai_agents
+    || aiAgentsCapable || !!selectedAgent.capabilities.ai_agents.settings.enabled);
+  const currentAiAgentBackendKey = selectedAgent
+    ? aiAgentBackendKey(selectedAgent.id, selectedAgent.capabilities?.ai_agents?.backend)
+    : null;
+  const aiAgentsAttention = useAiAgentAttention(agents, loggedIn === true,
+    view === 'ai-agents' && aiAgentsCapable ? currentAiAgentBackendKey : null);
+  const [aiAgentsFocus, setAiAgentFocus] = useState<{ backendKey: string; target: string; nonce: number } | null>(null);
+  const openAiAgentNotice = (notice: AiAgentNotice) => {
     // Navigation happens only on this explicit click; keep the current files intact.
     if (selectedAgentId !== notice.backendId) previewTabs.closeAll();
     setSelectedAgentId(notice.backendId);
-    setView('herdr');
+    setView('ai-agents');
     setSearchOpen(false);
     if (isMobile) setSidebarOpen(false);
-    setHerdrFocus(notice.target ? { backendId: notice.backendId, target: notice.target, nonce: Date.now() } : null);
+    setAiAgentFocus(notice.target ? { backendKey: notice.backendKey, target: notice.target, nonce: Date.now() } : null);
   };
   useEffect(() => {
     if (!tempCapable) return;
@@ -707,7 +711,7 @@ export default function App() {
       evt.event === 'agent_disconnected' ||
       evt.event === 'resources_updated' ||
       evt.event === 'collections_updated' ||
-      evt.event === 'herdr_settings_updated' ||
+      evt.event === 'ai_agent_settings_updated' ||
       evt.event === 'sync_required'
     ) {
       refresh();
@@ -824,7 +828,7 @@ export default function App() {
     // Transfer is only meaningful on a temp-capable agent.
     { v: 'transfer' as const, label: 'Transfer', Icon: IconUpload },
     // Keep setup reachable before installation, but hide disabled integrations.
-    { v: 'herdr' as const, label: 'Herdr', Icon: IconHerd },
+    { v: 'ai-agents' as const, label: 'AI Agents', Icon: IconAiAgents },
     { v: 'search' as const, label: 'Search', Icon: IconSearch },
     { v: 'settings' as const, label: 'Settings', Icon: IconSettings },
     { v: 'stats' as const, label: 'System', Icon: IconStats },
@@ -909,7 +913,7 @@ export default function App() {
               <div style={collapsed ? styles.navCollapsed : styles.nav}>
                 {navItems.filter((n) =>
                   (n.v !== 'transfer' || tempCapable)
-                  && (n.v !== 'herdr' || herdrVisible),
+                  && (n.v !== 'ai-agents' || aiAgentsVisible),
                 ).map(({ v, label, Icon }) => (
                   <SidebarNavButton
                     key={v}
@@ -1161,10 +1165,10 @@ export default function App() {
         )}
 
         {/* Content area */}
-        <HerdrAttention notices={herdrAttention.notices} agents={agents}
-          onAcknowledge={herdrAttention.acknowledge} onOpen={openHerdrNotice} isMobile={isMobile} />
-        {selectedAgent && view !== 'herdr' && <HerdrIntroduction key={selectedAgent.id}
-          agent={selectedAgent} onOpen={() => navigate('herdr')} />}
+        <AiAgentAttention notices={aiAgentsAttention.notices} agents={agents}
+          onAcknowledge={aiAgentsAttention.acknowledge} onOpen={openAiAgentNotice} isMobile={isMobile} />
+        {selectedAgent && view !== 'ai-agents' && <AiAgentsIntroduction key={selectedAgent.id}
+          agent={selectedAgent} onOpen={() => navigate('ai-agents')} />}
         <div style={styles.contentArea}>
           {!selectedAgent ? (
             view === 'audit' ? (
@@ -1373,15 +1377,15 @@ export default function App() {
                   )}
                 </div>
               )}
-              {view === 'herdr' && (
+              {view === 'ai-agents' && (
                 <div style={styles.secondaryView}>
-                  {herdrCapable ? (
-                    <HerdrView key={selectedAgent.id} agent={selectedAgent}
-                      onStatus={herdrAttention.reportStatus}
-                      onStatusError={herdrAttention.reportFailure}
-                      focusRequest={herdrFocus?.backendId === selectedAgent.id ? herdrFocus : null} />
+                  {aiAgentsCapable ? (
+                    <AiAgentsView key={currentAiAgentBackendKey ?? selectedAgent.id} agent={selectedAgent}
+                      onStatus={aiAgentsAttention.reportStatus}
+                      onStatusError={aiAgentsAttention.reportFailure}
+                      focusRequest={aiAgentsFocus?.backendKey === currentAiAgentBackendKey ? aiAgentsFocus : null} />
                   ) : (
-                    <HerdrSetup key={selectedAgent.id} agent={selectedAgent} onRefresh={refresh} />
+                    <AiAgentsSetup key={selectedAgent.id} agent={selectedAgent} onRefresh={refresh} />
                   )}
                 </div>
               )}
