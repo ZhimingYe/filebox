@@ -303,6 +303,7 @@ mod tests {
         let config = HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
             prompt_review: None,
+            llm_providers: Default::default(),
             listen_addr: "0.0.0.0:3000".parse().unwrap(),
             agent_token_hash: agent_hash.to_string(),
             users: users

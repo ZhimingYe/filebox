@@ -33,6 +33,13 @@ Add one of these fields alongside the existing Hub configuration:
 {"prompt_review":{"protocol":"messages","base_url":"https://api.deepseek.com","model":"deepseek-flash","api_key_env":"PROMPT_REVIEW_API_KEY"}}
 ```
 
+Alternatively, define a named provider under `llm_providers` and set
+`"prompt_review":{"provider":"deepseek"}`. The Hub resolves and validates the
+reference at startup; the existing inline forms above remain supported. Run
+`hub --init-llm` to configure a provider interactively. See
+[LLM provider configuration](llm-providers.md) for provider formats, protocol
+details, and the wizard walkthrough.
+
 `api_key` may instead
 contain the key directly in the private config file; it takes precedence over
 `api_key_env`. A configuration without a nonempty key fails startup.

@@ -748,6 +748,7 @@ mod tests {
             &crate::config::HubConfig {
                 prompt_review_mode: crate::prompt_review::ReviewMode::Disabled,
                 prompt_review: None,
+                llm_providers: Default::default(),
                 listen_addr: "127.0.0.1:0".parse().unwrap(),
                 agent_token_hash: "fake".into(),
                 users: vec![],
@@ -1056,6 +1057,7 @@ mod tests {
             &crate::config::HubConfig {
                 prompt_review_mode: crate::prompt_review::ReviewMode::Disabled,
                 prompt_review: None,
+                llm_providers: Default::default(),
                 listen_addr: "127.0.0.1:0".parse().unwrap(),
                 agent_token_hash: "fake".into(),
                 users: vec![],
@@ -1142,13 +1144,15 @@ mod tests {
                 Json(serde_json::json!({"choices":[{"message":{"content":serde_json::json!({"decision":verdict,"category":"test","reason":"Review reason."}).to_string()}}]})).into_response()
             }));
             let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-            let mut review: crate::prompt_review::PromptReviewConfig = serde_json::from_value(serde_json::json!({
+            let mut review: crate::prompt_review::ProviderConfig = serde_json::from_value(serde_json::json!({
                 "protocol":"chat_completions", "base_url":format!("http://{addr}"), "api_key":"test-key"
             })).unwrap();
             review.validate().unwrap();
             let state = AppState::new(&crate::config::HubConfig {
                 prompt_review_mode: if decision == "off" { crate::prompt_review::ReviewMode::Disabled } else { crate::prompt_review::ReviewMode::Mandatory },
-                prompt_review: if decision == "unconfigured" { None } else { Some(review) }, listen_addr: "127.0.0.1:0".parse().unwrap(),
+                prompt_review: if decision == "unconfigured" { None } else { Some(crate::config::PromptReviewConfig::Inline(review)) },
+                llm_providers: Default::default(),
+                listen_addr: "127.0.0.1:0".parse().unwrap(),
                 agent_token_hash: "fake".into(), users: vec![],
             }, false);
             let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
@@ -1245,7 +1249,7 @@ mod tests {
                 axum::serve(listener, app).await.unwrap();
             });
 
-            let mut review: crate::prompt_review::PromptReviewConfig =
+            let mut review: crate::prompt_review::ProviderConfig =
                 serde_json::from_value(serde_json::json!({
                     "protocol": "chat_completions",
                     "base_url": format!("http://{addr}"),
@@ -1256,7 +1260,8 @@ mod tests {
             let state = AppState::new(
                 &crate::config::HubConfig {
                     prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
-                    prompt_review: Some(review),
+                    prompt_review: Some(crate::config::PromptReviewConfig::Inline(review)),
+                    llm_providers: Default::default(),
                     listen_addr: "127.0.0.1:0".parse().unwrap(),
                     agent_token_hash: "fake".into(),
                     users: vec![],
@@ -1421,13 +1426,15 @@ mod tests {
             (crate::prompt_review::ReviewMode::Mandatory, false, serde_json::json!({"state":"not_configured"})),
             (crate::prompt_review::ReviewMode::Disabled, true, serde_json::json!({"state":"off"})),
         ] {
-            let mut review: crate::prompt_review::PromptReviewConfig = serde_json::from_value(serde_json::json!({
+            let mut review: crate::prompt_review::ProviderConfig = serde_json::from_value(serde_json::json!({
                 "protocol":"chat_completions", "base_url":"http://127.0.0.1:9", "api_key":"test-key"
             })).unwrap();
             review.validate().unwrap();
             let state = AppState::new(&crate::config::HubConfig {
                 prompt_review_mode: mode,
-                prompt_review: configured.then_some(review), listen_addr: "127.0.0.1:0".parse().unwrap(),
+                prompt_review: configured.then_some(crate::config::PromptReviewConfig::Inline(review)),
+                llm_providers: Default::default(),
+                listen_addr: "127.0.0.1:0".parse().unwrap(),
                 agent_token_hash: "fake".into(), users: vec![],
             }, false);
             let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
@@ -1474,6 +1481,7 @@ mod tests {
         let config = crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
             prompt_review: None,
+            llm_providers: Default::default(),
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             agent_token_hash: "fake-hash".to_string(),
             users: vec![],

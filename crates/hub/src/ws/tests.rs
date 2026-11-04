@@ -64,6 +64,7 @@ fn test_state() -> AppState {
     AppState::new(&crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
             prompt_review: None,
+            llm_providers: Default::default(),
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         agent_token_hash: "not-a-hash".into(), users: vec![],
     }, false)
@@ -239,6 +240,7 @@ async fn test_server() -> (AppState, String, tokio::task::JoinHandle<()>) {
     let state = AppState::new(&crate::config::HubConfig {
             prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
             prompt_review: None,
+            llm_providers: Default::default(),
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         agent_token_hash: bcrypt::hash("test-token", 4).unwrap(), users: vec![],
     }, false);

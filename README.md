@@ -145,8 +145,8 @@ on its own, with no duplicate entries and no lost configuration.
   commands, permanent deletion and secret extraction are blocked; normal data
   analysis and development go through. The reviewer sees the prompt and the
   window's recent output. Configured only in `hub.json`
-  (`prompt_review`), never in the web UI; if it is missing or the
-  review fails, the prompt is refused. Start the Hub with
+  (`prompt_review`), never in the web UI. `hub --init-llm` sets it up. If
+  it is missing or the review fails, the prompt is refused. Start the Hub with
   `FILEBOX_HUB_PROMPT_REVIEW_ENABLED=0` to turn review off. The AI Agents
   view shows the review state (on with its model, off, or not configured). See
   [Herdr compatibility and prompt review](docs/herdr-compatibility.md).
@@ -279,7 +279,8 @@ Most users never need this — see [`docs/`](docs/) for development details.
 | `listen_addr` | Address the hub listens on | `0.0.0.0:3000` |
 | `agent_token_hash` | Hash of the agent token (set during init) | required |
 | `users` | Login accounts | required |
-| `prompt_review` | LLM security review for AI agent prompts (`protocol`: `chat_completions` / `responses` / `messages`; `base_url`, HTTPS required except loopback; `model`; `api_key` or `api_key_env`; `timeout_secs`, max 60). File-only, no web setting. While review is on, prompts are rejected if this is missing or the review fails. See [docs/herdr-compatibility.md](docs/herdr-compatibility.md). | unset (prompts rejected) |
+| `llm_providers` | Named LLM providers (`protocol`, `base_url`, `model`, optional `path`, `api_key` or `api_key_env`, `timeout_secs`). See [docs/llm-providers.md](docs/llm-providers.md). | unset |
+| `prompt_review` | LLM security review for AI agent prompts; use `{"provider":"<name>"}` to reference `llm_providers` or keep the legacy inline provider config. File-only; `hub --init-llm` configures it. While review is on, prompts are rejected if this is missing or the review fails. See [docs/herdr-compatibility.md](docs/herdr-compatibility.md). | unset (prompts rejected) |
 
 | Environment variable | Description | Default |
 |---------------------|-------------|---------|
