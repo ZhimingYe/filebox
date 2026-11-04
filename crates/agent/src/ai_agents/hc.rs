@@ -53,7 +53,7 @@ impl HcBackend {
             let hello = rpc.call("hello", json!({"generation": 1})).await?;
             let core_id = check_hello(&hello)?;
             if matches!(op, Operation::List) {
-                let result = rpc.call("terminal.list", json!({"labels": {"filebox": "ai-agent"}})).await?;
+                let result = rpc.call("terminal.list", json!({})).await?;
                 let terminals = result["terminals"].as_array().ok_or_else(incompatible)?;
                 let mut agents = Vec::new();
                 for terminal in terminals {
@@ -180,7 +180,8 @@ fn check_hello(hello: &Value) -> Result<&str, String> {
 }
 
 fn allowed(terminal: &Value) -> bool {
-    terminal["labels"]["filebox"] == "ai-agent" && terminal["state"] == "live"
+    (terminal["labels"]["filebox"] == "ai-agent" || terminal["labels"]["fb"] == "1")
+        && terminal["state"] == "live"
         && terminal["address"].as_str().is_some_and(|address| validate_target(address).is_ok())
 }
 

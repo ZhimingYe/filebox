@@ -17,15 +17,18 @@ use **Check installation**. An explicit invalid path does not fall back to PATH.
 Start a coding agent with an explicit opt-in label:
 
 ```sh
-hc run --bg --label filebox=ai-agent -- claude
+hc run --bg --label fb=1 -- claude
 # Or opt in an existing coding-agent terminal, using its actual address:
-hc label t7 filebox=ai-agent
+hc label t7 fb=1
 # Revoke future Filebox access:
-hc label t7 filebox=
+hc label t7 fb= filebox=
 ```
 
 Replace `claude` with the coding agent you use; Filebox does not detect brands.
-Only **local, live** terminals labelled exactly `filebox=ai-agent` are exposed.
+Only **local, live** terminals labelled `fb=1` or `filebox=ai-agent` are
+exposed; either label grants access, so remove both to revoke it. The original
+long form remains supported. hc requires `key=value`, so bare `--label fb` is
+not valid. Filebox filters one terminal-list snapshot locally for both labels.
 Unlabelled shells, finished terminals and remote `machine/t7` terminals are
 excluded. Filebox checks the label again with `terminal.get` before every
 read, prompt and key operation; a revoked or finished target returns

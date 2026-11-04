@@ -32,12 +32,12 @@ Office-related limits: [Office preview](./office).
 
 Install [herdr-core](https://github.com/herdrdev/herdr-core#install) on the
 Agent machine and make `hc` available to the Filebox Agent. Only local live
-terminals explicitly labelled `filebox=ai-agent` are included:
+terminals explicitly labelled `fb=1` or `filebox=ai-agent` are included:
 
 ```sh
-hc run --bg --label filebox=ai-agent -- claude
-hc label t7 filebox=ai-agent  # opt in an existing coding-agent terminal
-hc label t7 filebox=          # revoke future Filebox access
+hc run --bg --label fb=1 -- claude
+hc label t7 fb=1            # opt in an existing coding-agent terminal
+hc label t7 fb= filebox=     # revoke both supported opt-in labels
 ```
 
 Use the actual terminal address instead of `t7`, and your coding agent instead

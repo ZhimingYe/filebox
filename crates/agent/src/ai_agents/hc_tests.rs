@@ -35,9 +35,21 @@ fn requires_generation_one_and_the_complete_api() {
 
 #[test]
 fn only_labelled_local_live_terminals_are_allowed() {
-    assert!(allowed(&terminal()));
+    for labels in [json!({"filebox": "ai-agent"}), json!({"fb": "1"}),
+        json!({"filebox": "ai-agent", "fb": "1"})] {
+        let mut terminal = terminal();
+        terminal["labels"] = labels;
+        assert!(allowed(&terminal));
+        terminal["state"] = json!("finished");
+        assert!(!allowed(&terminal));
+        terminal["state"] = json!("live");
+        terminal["address"] = json!("remote/t7");
+        assert!(!allowed(&terminal));
+    }
     for (field, value) in [
         ("labels", json!({})), ("labels", json!({"filebox": "shell"})),
+        ("labels", json!({"fb": "shell"})), ("labels", json!({"fb": ""})),
+        ("labels", json!({"fb": "ai-agent"})),
         ("state", json!("finished")), ("address", json!("remote/t7")),
         ("address", json!("-t7")), ("address", json!("")),
     ] {
@@ -182,18 +194,24 @@ time.sleep(30)
     }
 
     #[tokio::test]
-    async fn list_filters_again_even_if_server_ignores_labels() {
+    async fn lists_both_opt_in_labels_without_duplicates() {
         let mut unlabelled = terminal();
         unlabelled["labels"] = json!({});
         let mut remote = terminal();
         remote["address"] = json!("machine/t7");
+        let mut short = terminal();
+        short["address"] = json!("t8");
+        short["labels"] = json!({"fb": "1"});
+        let mut both = terminal();
+        both["address"] = json!("t9");
+        both["labels"] = json!({"filebox": "ai-agent", "fb": "1"});
         let fixture = Fixture::new(vec![handshake(), step("terminal.list", json!({
-            "terminals": [terminal(), unlabelled, remote],
+            "terminals": [terminal(), short, both, unlabelled, remote],
         }))]);
         let result = fixture.backend.list(&AtomicBool::new(false)).await.unwrap();
         assert!(result.status.reachable);
-        assert_eq!(result.agents.len(), 1);
-        assert_eq!(fixture.requests()[1]["params"], json!({"labels": {"filebox": "ai-agent"}}));
+        assert_eq!(result.agents.iter().map(|agent| agent.target.as_str()).collect::<Vec<_>>(), ["t7", "t8", "t9"]);
+        assert_eq!(fixture.requests()[1]["params"], json!({}));
     }
 
     #[tokio::test]
@@ -359,7 +377,12 @@ for line in sys.stdin:
         assert_eq!(after.agents[0].status, AiAgentStatus::Done);
         assert_eq!(after.agents[0].completion_seq, Some(1));
         backend.send_keys(target, &["y".into(), "enter".into()], &cancel).await.unwrap();
-        setup.call("terminal.label", json!({"terminal": target, "labels": {"filebox": ""}})).await.unwrap();
+        setup.call("terminal.label", json!({"terminal": target, "labels": {"filebox": "", "fb": "1"}})).await.unwrap();
+        assert_eq!(backend.list(&cancel).await.unwrap().agents[0].target, target);
+        assert!(backend.read(target, 80, None, &cancel).await.unwrap().contains("READY"));
+        backend.prompt(target, "short label", Some(5000), &cancel).await.unwrap();
+        backend.send_keys(target, &["enter".into()], &cancel).await.unwrap();
+        setup.call("terminal.label", json!({"terminal": target, "labels": {"fb": ""}})).await.unwrap();
         assert!(backend.list(&cancel).await.unwrap().agents.is_empty());
         assert_eq!(backend.read(target, 80, None, &cancel).await.unwrap_err(), "ai_agent_missing");
         assert_eq!(backend.prompt(target, "must not send", None, &cancel).await.unwrap_err(), "ai_agent_missing");

@@ -31,12 +31,12 @@ Office 相关上限见 [Office 预览](./office)。
 ## 试验性 hc 后端
 
 在 Agent 机器安装 [herdr-core](https://github.com/herdrdev/herdr-core#install)，
-让 Filebox Agent 能找到 `hc`。只接入显式标记 `filebox=ai-agent` 的本地运行中终端：
+让 Filebox Agent 能找到 `hc`。只接入显式标记 `fb=1` 或 `filebox=ai-agent` 的本地运行中终端：
 
 ```sh
-hc run --bg --label filebox=ai-agent -- claude
-hc label t7 filebox=ai-agent  # 接入已有的编码代理终端
-hc label t7 filebox=          # 撤销后续 Filebox 访问
+hc run --bg --label fb=1 -- claude
+hc label t7 fb=1            # 接入已有的编码代理终端
+hc label t7 fb= filebox=     # 撤销两种标签的后续 Filebox 访问
 ```
 
 将 `t7` 换成实际终端地址，`claude` 换成使用的编码代理。
