@@ -1150,9 +1150,8 @@ mod tests {
             review.validate().unwrap();
             let state = AppState::new(&crate::config::HubConfig {
                 prompt_review_mode: if decision == "off" { crate::prompt_review::ReviewMode::Disabled } else { crate::prompt_review::ReviewMode::Mandatory },
-                prompt_review: if decision == "unconfigured" { None } else { Some(crate::config::PromptReviewConfig::Inline(review)) },
+                prompt_review: if decision == "unconfigured" { None } else { Some(crate::config::PromptReviewConfig::Inline(review)) }, listen_addr: "127.0.0.1:0".parse().unwrap(),
                 llm_providers: Default::default(),
-                listen_addr: "127.0.0.1:0".parse().unwrap(),
                 agent_token_hash: "fake".into(), users: vec![],
             }, false);
             let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
@@ -1432,9 +1431,8 @@ mod tests {
             review.validate().unwrap();
             let state = AppState::new(&crate::config::HubConfig {
                 prompt_review_mode: mode,
-                prompt_review: configured.then_some(crate::config::PromptReviewConfig::Inline(review)),
+                prompt_review: configured.then_some(crate::config::PromptReviewConfig::Inline(review)), listen_addr: "127.0.0.1:0".parse().unwrap(),
                 llm_providers: Default::default(),
-                listen_addr: "127.0.0.1:0".parse().unwrap(),
                 agent_token_hash: "fake".into(), users: vec![],
             }, false);
             let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
