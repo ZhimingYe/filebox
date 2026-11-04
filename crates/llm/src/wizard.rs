@@ -277,7 +277,7 @@ pub async fn probe(client: &LlmClient) -> ProbeReport {
             &ChatRequest {
                 messages: vec![
                     Message::System {
-                        content: "Return valid json containing exactly {\"ok\":true}, with no other text.".into(),
+                        content: "Reply with a json object with one boolean field named ok set to true.".into(),
                     },
                     Message::User {
                         content: "Answer in json.".into(),
