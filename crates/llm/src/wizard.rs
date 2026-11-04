@@ -185,7 +185,7 @@ pub async fn run(
         timeout_secs: 20,
         path,
     };
-    if let Err(error) = provider.validate() {
+    if let Err(error) = provider.validate_before_model_selection() {
         return Err(error.to_owned());
     }
     let client = LlmClient::new(provider.clone());
@@ -370,6 +370,8 @@ mod tests {
         secrets: VecDeque<String>,
         base_url: Option<String>,
         save_anyway: bool,
+        stop_at_model: bool,
+        model_prompted: bool,
     }
 
     impl Prompter for ScriptedPrompter {
@@ -382,6 +384,10 @@ mod tests {
                     .unwrap_or_default());
             }
             if label == "Model" {
+                self.model_prompted = true;
+                if self.stop_at_model {
+                    return Err("model prompt reached".into());
+                }
                 return Ok(default.unwrap_or("manual-model").to_owned());
             }
             Ok(default.unwrap_or_default().to_owned())
@@ -454,6 +460,8 @@ mod tests {
             secrets: VecDeque::from(["test-secret".to_owned()]),
             base_url: Some(base_url),
             save_anyway: false,
+            stop_at_model: false,
+            model_prompted: false,
         };
         let outcome = run(&mut prompter, &[]).await.unwrap();
         assert_eq!(outcome.name, "deepseek");
@@ -485,9 +493,31 @@ mod tests {
             secrets: VecDeque::from(["test-secret".to_owned()]),
             base_url: Some(base_url),
             save_anyway: false,
+            stop_at_model: false,
+            model_prompted: false,
         };
         let error = run(&mut prompter, &[]).await.unwrap_err();
         assert!(error.contains("probes failed"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn openai_preset_reaches_model_prompt_before_validation_requires_model() {
+        async fn models() -> Json<Value> {
+            Json(json!({"data": []}))
+        }
+        let (base_url, server) = serve(Router::new().route("/models", get(models))).await;
+        let mut prompter = ScriptedPrompter {
+            choices: VecDeque::from([3, 0]),
+            secrets: VecDeque::from(["test-secret".to_owned()]),
+            base_url: Some(base_url),
+            save_anyway: false,
+            stop_at_model: true,
+            model_prompted: false,
+        };
+        let error = run(&mut prompter, &[]).await.unwrap_err();
+        assert_eq!(error, "model prompt reached");
+        assert!(prompter.model_prompted);
         server.abort();
     }
 

@@ -524,6 +524,36 @@ mod tests {
     }
 
     #[test]
+    fn responses_output_text_is_replayed_in_the_next_request() {
+        let parsed = parse_response(
+            Protocol::Responses,
+            json!({"status":"completed","output_text":"assistant answer"}),
+        )
+        .unwrap();
+        let body = build_body(
+            &config(Protocol::Responses),
+            &ChatRequest {
+                messages: vec![
+                    Message::User {
+                        content: "continue".into(),
+                    },
+                    parsed.into_message(),
+                ],
+                ..ChatRequest::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            body["input"][1],
+            json!({
+                "type":"message",
+                "role":"assistant",
+                "content":[{"type":"output_text","text":"assistant answer"}]
+            })
+        );
+    }
+
+    #[test]
     fn effort_aliases_and_config_validation() {
         for (name, expected) in [
             ("minimal", Effort::Low),

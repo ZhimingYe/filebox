@@ -18,7 +18,7 @@ talk only to the Hub.
 | Crate | Package | Kind | Role |
 |---|---|---|---|
 | [`protocol/`](protocol/) | `filebox-protocol` | library | Shared WS/JSON types, capabilities, denylist |
-| [`llm/`](llm/) | `filebox-llm` | library | Protocol-neutral LLM client, tool calling, and provider wizard |
+| [`llm/`](llm/) | `filebox-llm` | library | Protocol-neutral LLM client and reusable CLI wizard (`cli` feature) |
 | [`hub/`](hub/) | `filebox-hub` | binary `hub` | Auth, agent registry, HTTP/SSE API, static UI |
 | [`agent/`](agent/) | `filebox-agent` | binary `agent` | Outbound WS client; read-only FS, search, stats, temp uploads and optional AI Agents backend |
 | [`updater/`](updater/) | `filebox-updater` | library | Shared `--init-config` / `--update` CLI helpers |

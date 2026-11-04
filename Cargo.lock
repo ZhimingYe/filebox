@@ -518,8 +518,10 @@ version = "2.7.1"
 dependencies = [
  "axum",
  "reqwest",
+ "rpassword",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

@@ -9,7 +9,13 @@ reqwest = { workspace = true, features = ["json", "stream"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+rpassword = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 axum = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+default = []
+cli = ["dep:rpassword"]

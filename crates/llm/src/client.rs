@@ -7,8 +7,8 @@ use serde_json::Value;
 
 use crate::wire;
 use crate::{
-    ChatRequest, ChatResponse, ErrorKind, LlmError, Message, Protocol, ProviderConfig,
-    ResponseFormat, ToolCall,
+    ChatRequest, ChatResponse, ErrorKind, FinishReason, LlmError, Message, Protocol,
+    ProviderConfig, ResponseFormat, ToolCall, ToolChoice,
 };
 
 const DEFAULT_RESPONSE_LIMIT: usize = 1024 * 1024;
@@ -107,6 +107,15 @@ impl LlmClient {
                 let response = self.chat(&request).await?;
                 request.messages.push(response.clone().into_message());
                 if response.tool_calls.is_empty() {
+                    if matches!(
+                        &response.finish_reason,
+                        FinishReason::Length | FinishReason::ContentFilter
+                    ) {
+                        return Err(LlmError::new(
+                            ErrorKind::Incomplete,
+                            "LLM response ended before completion",
+                        ));
+                    }
                     return Ok(ToolLoopOutcome {
                         response,
                         messages: request.messages,
@@ -127,6 +136,12 @@ impl LlmClient {
                         tool_call_id,
                         content,
                     });
+                }
+                if matches!(
+                    request.tool_choice.as_ref(),
+                    Some(ToolChoice::Required | ToolChoice::Function(_))
+                ) {
+                    request.tool_choice = Some(ToolChoice::Auto);
                 }
             }
         };
@@ -521,6 +536,99 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.kind, ErrorKind::ToolRounds);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn run_tools_changes_required_choice_to_auto_after_tool_round() {
+        let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+        async fn respond(
+            State(bodies): State<Arc<Mutex<Vec<Value>>>>,
+            Json(body): Json<Value>,
+        ) -> Json<Value> {
+            let mut bodies = bodies.lock().unwrap();
+            bodies.push(body);
+            if bodies.len() == 1 {
+                Json(json!({"choices":[{"message":{
+                    "role":"assistant",
+                    "content":"",
+                    "tool_calls":[{"id":"call","type":"function","function":{"name":"get_weather","arguments":"{}"}}]
+                },"finish_reason":"tool_calls"}]}))
+            } else {
+                Json(json!({"choices":[{"message":{
+                    "role":"assistant",
+                    "content":"Done."
+                },"finish_reason":"stop"}]}))
+            }
+        }
+        let (base, server) = serve(
+            Router::new()
+                .route("/chat/completions", post(respond))
+                .with_state(bodies.clone()),
+        )
+        .await;
+        let client = LlmClient::new(provider(Protocol::ChatCompletions, base, None));
+        client
+            .run_tools(
+                ChatRequest {
+                    messages: vec![Message::User {
+                        content: "get weather".into(),
+                    }],
+                    tools: vec![ToolSpec {
+                        name: "get_weather".into(),
+                        description: "get weather".into(),
+                        parameters: json!({"type":"object","properties":{}}),
+                        strict: false,
+                    }],
+                    tool_choice: Some(ToolChoice::Required),
+                    ..ChatRequest::default()
+                },
+                ToolLoopLimits {
+                    max_rounds: 2,
+                    deadline: Duration::from_secs(5),
+                },
+                |_| async { "sunny".into() },
+            )
+            .await
+            .unwrap();
+
+        let requests = bodies.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["tool_choice"], "required");
+        assert_eq!(requests[1]["tool_choice"], "auto");
+        assert_eq!(requests[1]["tools"].as_array().unwrap().len(), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn run_tools_rejects_incomplete_tool_free_responses() {
+        async fn incomplete(State(reason): State<String>) -> Json<Value> {
+            Json(json!({"choices":[{"message":{
+                "role":"assistant",
+                "content":"partial"
+            },"finish_reason":reason}]}))
+        }
+        for reason in ["length", "content_filter"] {
+            let (base, server) = serve(
+                Router::new()
+                    .route("/chat/completions", post(incomplete))
+                    .with_state(reason.to_owned()),
+            )
+            .await;
+            let client = LlmClient::new(provider(Protocol::ChatCompletions, base, None));
+            let error = client
+                .run_tools(
+                    ChatRequest::default(),
+                    ToolLoopLimits {
+                        max_rounds: 1,
+                        deadline: Duration::from_secs(5),
+                    },
+                    |_| async { String::new() },
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Incomplete, "{reason}");
+            server.abort();
+        }
     }
 
     #[tokio::test]

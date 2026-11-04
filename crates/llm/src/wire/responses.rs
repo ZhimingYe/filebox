@@ -132,9 +132,16 @@ pub(super) fn parse(value: Value) -> Result<ChatResponse, LlmError> {
             "Responses API response was not completed",
         ));
     }
+    let output_text = value["output_text"].as_str();
     let output = match value["output"].as_array() {
         Some(output) => output.clone(),
-        None if value["output_text"].is_string() => Vec::new(),
+        None if let Some(text) = output_text => {
+            vec![json!({
+                "type":"message",
+                "role":"assistant",
+                "content":[{"type":"output_text","text":text}]
+            })]
+        }
         None => {
             return Err(LlmError::new(
                 ErrorKind::Malformed,
@@ -142,7 +149,7 @@ pub(super) fn parse(value: Value) -> Result<ChatResponse, LlmError> {
             ))
         }
     };
-    let content = if let Some(text) = value["output_text"].as_str() {
+    let content = if let Some(text) = output_text {
         text.to_owned()
     } else {
         let mut text = String::new();
@@ -198,7 +205,7 @@ pub(super) fn parse(value: Value) -> Result<ChatResponse, LlmError> {
             _ => {}
         }
     }
-    if content.is_empty() && calls.is_empty() && value["output_text"].as_str().is_none() {
+    if content.is_empty() && calls.is_empty() && output_text.is_none() {
         return Err(LlmError::new(
             ErrorKind::Malformed,
             "missing Responses output text",

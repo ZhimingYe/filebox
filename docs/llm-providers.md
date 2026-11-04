@@ -90,7 +90,9 @@ a query, fragment, `..`, or whitespace.
 
 ## `hub --init-llm` walkthrough
 
-Run `hub --init-llm` after creating a Hub configuration with
+The reusable interactive wizard is `filebox_llm::cli`, behind the crate's
+non-default `cli` feature; Hub enables it and exposes it as
+`hub --init-llm`. Run the command after creating a Hub configuration with
 `hub --init-config`. The wizard edits the existing config, preserving other
 fields. Use `--output <path>` to select a different existing Hub config.
 
@@ -104,8 +106,15 @@ fields. Use `--output <path>` to select a different existing Hub config.
 5. The wizard probes chat, JSON output, and a thinking-enabled tool call. If a
    probe fails, you can choose whether to save anyway.
 6. Choose whether the provider should be used for AI Agents prompt review.
-   Saving writes the configuration privately (`0600` on Unix); restart the Hub
-   to apply it.
+   The wizard validates the merged config and saves it atomically by syncing a
+   same-directory temporary file before replacing the config; the file is
+   private (`0600` on Unix). Restart the Hub to apply it.
+
+### Reusing in another binary
+
+Enable the `filebox-llm` `cli` feature, implement `ProviderStore` for the
+consumer's config format, and pass that store plus the relevant
+`FeatureBinding`s to `filebox_llm::cli::init_interactive`.
 
 The wizard does not turn off prompt review. In mandatory mode, the Hub fails
 closed when review is not configured or the provider is unavailable. The only

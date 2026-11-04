@@ -5,6 +5,9 @@ mod types;
 pub mod wizard;
 mod wire;
 
+#[cfg(feature = "cli")]
+pub mod cli;
+
 pub use client::{LlmClient, ToolLoopLimits, ToolLoopOutcome};
 pub use config::{ProviderConfig, Protocol};
 pub use error::{ErrorKind, LlmError};

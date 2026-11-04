@@ -78,6 +78,14 @@ impl ProviderConfig {
     }
 
     pub fn validate(&mut self) -> Result<(), &'static str> {
+        self.validate_internal(true)
+    }
+
+    pub(crate) fn validate_before_model_selection(&mut self) -> Result<(), &'static str> {
+        self.validate_internal(false)
+    }
+
+    fn validate_internal(&mut self, require_model: bool) -> Result<(), &'static str> {
         self.timeout_secs = self.timeout_secs.clamp(1, 300);
         let url = reqwest::Url::parse(&self.base_url).map_err(|_| "invalid base_url")?;
         if !matches!(url.scheme(), "http" | "https")
@@ -99,7 +107,7 @@ impl ProviderConfig {
         if url.scheme() == "http" && !loopback {
             return Err("base_url requires HTTPS except for loopback hosts");
         }
-        if self.model.trim().is_empty() {
+        if require_model && self.model.trim().is_empty() {
             return Err("model is required");
         }
         if self.path.as_ref().is_some_and(|path| {
