@@ -41,6 +41,7 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 async function render(open = true) {
@@ -83,7 +84,10 @@ describe('AboutDialog licenses', () => {
     await openLicenses();
     expect(container.textContent).toContain('Open source licenses');
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith('/third-party-licenses.json');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/third-party-licenses.json',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('renders the project and third-party package rows', async () => {
@@ -130,6 +134,32 @@ describe('AboutDialog licenses', () => {
     await render();
     await openLicenses();
     expect(container.textContent).toContain('Could not load the license list.');
+    await act(async () => {
+      button('Retry').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(rows().some((row) => row.includes('react'))).toBe(true);
+  });
+
+  it('times out an unresponsive fetch and retries', async () => {
+    vi.useFakeTimers();
+    fetchMock
+      .mockImplementationOnce((_url: RequestInfo | URL, options?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        }),
+      )
+      .mockResolvedValueOnce({ ok: true, json: async () => fixture });
+    await render();
+    await openLicenses();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    expect(container.textContent).toContain('Could not load the license list.');
+
     await act(async () => {
       button('Retry').click();
       await Promise.resolve();

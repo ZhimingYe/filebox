@@ -185,6 +185,7 @@ gen_frontend() {
 gen_about() {
   [ -f "frontend/package-lock.json" ] || { echo "gen_notice: frontend/package-lock.json not found" >&2; exit 1; }
   [ -f "LICENSE" ] || { echo "gen_notice: LICENSE not found" >&2; exit 1; }
+  [ -d "frontend/node_modules" ] || { echo "gen_notice: frontend/node_modules is missing; run 'npm --prefix frontend install' first" >&2; exit 1; }
 
   python3 - <<'PY'
 import gzip
@@ -300,6 +301,7 @@ def cargo_packages():
 def npm_packages():
     lock = json.loads((ROOT / "frontend/package-lock.json").read_text(encoding="utf-8"))
     grouped = {}
+    missing_packages = []
     for path, package in sorted(lock.get("packages", {}).items()):
         if not path or package.get("dev") or package.get("optional"):
             continue
@@ -310,11 +312,14 @@ def npm_packages():
         if not name:
             continue
         package_dir = ROOT / "frontend" / path
-        package_json = {}
+        package_json_path = package_dir / "package.json"
+        if not package_dir.is_dir() or not package_json_path.is_file():
+            missing_packages.append(name)
+            continue
         try:
-            package_json = json.loads((package_dir / "package.json").read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            pass
+            package_json = json.loads(package_json_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            package_json = {}
         repository = package_json.get("repository")
         if isinstance(repository, dict):
             repository = repository.get("url")
@@ -328,6 +333,12 @@ def npm_packages():
             "components": {"frontend"},
             "files": license_files(package_dir),
         })
+    if missing_packages:
+        examples = ", ".join(missing_packages[:5])
+        raise SystemExit(
+            f"gen_notice: frontend/node_modules is missing {len(missing_packages)} locked packages "
+            f"(e.g. {examples}); run 'npm --prefix frontend install' first"
+        )
     return grouped
 
 rust = cargo_packages()

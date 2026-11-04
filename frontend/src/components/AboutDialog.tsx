@@ -33,15 +33,24 @@ interface LicenseManifest {
   texts: Record<string, string>;
 }
 
+const LICENSE_FETCH_TIMEOUT_MS = 15_000;
 let licenseManifestPromise: Promise<LicenseManifest> | null = null;
 
 function loadLicenseManifest(): Promise<LicenseManifest> {
   if (!licenseManifestPromise) {
-    licenseManifestPromise = fetch(`${import.meta.env.BASE_URL}third-party-licenses.json`)
-      .then((response) => {
+    const controller = new AbortController();
+    licenseManifestPromise = (async () => {
+      const timeout = setTimeout(() => controller.abort(), LICENSE_FETCH_TIMEOUT_MS);
+      try {
+        const response = await fetch(`${import.meta.env.BASE_URL}third-party-licenses.json`, {
+          signal: controller.signal,
+        });
         if (!response.ok) throw new Error('License list request failed');
-        return response.json() as Promise<LicenseManifest>;
-      })
+        return await response.json() as LicenseManifest;
+      } finally {
+        clearTimeout(timeout);
+      }
+    })()
       .catch((error: unknown) => {
         licenseManifestPromise = null;
         throw error;
