@@ -139,10 +139,10 @@ on its own, with no duplicate entries and no lost configuration.
   machine, or set `FILEBOX_AGENT_HERDR`, then use **Check installation**.
   Turn it on or off per backend in Agent Settings;
   `FILEBOX_AGENT_AI_AGENTS_ENABLED=0`/`1` at Agent startup overrides and locks
-  that switch. Not a general-purpose remote shell; reminders need an open
+  that switch. Reminders need an open
   page. See [the shortcut guide](docs/herdr-shortcuts.md).
 - **Experimental hc backend**: select **hc (experimental)** in Agent Settings
-  to list and control herdr-core coding agents named with `fb=<name>` or
+  to list and control herdr-core terminals named with `fb=<name>` or
   `filebox=<name>` (case-insensitive keys).
   Only local live terminals are included; the existing Herdr backend is unchanged.
   See [hc setup and compatibility](docs/hc-compatibility.md).

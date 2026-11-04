@@ -14,18 +14,19 @@ Filebox Agent process's PATH, or set `FILEBOX_AGENT_HC` to the executable path
 (`herdr-core` is also valid as an explicit path). Restart the Filebox Agent or
 use **Check installation**. An explicit invalid path does not fall back to PATH.
 
-Start agents from their project directories, choosing their names in Filebox:
+Start hc terminals from their working directories, choosing their names in Filebox:
 
 ```sh
 hc run --bg --label fb=frontend -- claude
 hc run --bg --label Filebox=backend -- claude
-# Or opt in an existing coding-agent terminal, using its actual address:
+# Or opt in an existing terminal, using its actual address:
 hc label t7 fb=review
 # Revoke future Filebox access:
 hc label t7 fb=
 ```
 
-Replace `claude` with the coding agent you use; Filebox does not detect brands.
+Replace `claude` with the program you want to run, including a shell.
+The label opts in the terminal; Filebox does not restrict its program type.
 The label key is `fb` or `filebox`, matched case-insensitively: `FB`, `Filebox`,
 `FILEBOX` and mixed-case spellings also work. The value is your chosen display
 name, not a fixed activation code. Names preserve their case and can include
@@ -51,8 +52,8 @@ terminal-list snapshot locally for the supported labels.
 Unlabelled shells, finished terminals and remote `machine/t7` terminals are
 excluded. Filebox checks the label again with `terminal.get` before every
 read, prompt and key operation; a revoked or finished target returns
-`ai_agent_missing`. This is opt-in filtering, not a sandbox: do not label a
-shell unless you intend it to be controlled as an AI Agent.
+`ai_agent_missing`. A labelled terminal may run a coding agent, a shell or
+another program; the same terminal operations apply to each.
 
 Choose the backend in the existing Settings selector. For process-managed
 deployments, `FILEBOX_AGENT_AI_AGENTS_BACKEND=hc` locks that choice;
@@ -92,11 +93,8 @@ as `ai_agent_backend_incompatible` rather than falling back to a shell.
   mutations; delivery metadata is not presented as an updated agent record.
 - Keys use `terminal.keys` and the existing Filebox key allowlist. As with
   Herdr, key actions are **not LLM-reviewed**; only prompts are. The local
-  opt-in label grants that access, not proof that a program is a coding agent.
-  Labelling a shell could expose shell history/menu actions through these keys:
-  never label a general-purpose shell. OSC reports are status facts, not an
-  authentication mechanism. No arbitrary command-line argument or shell command
-  is constructed from browser input.
+  opt-in label grants access to the terminal regardless of its running program.
+  Inputs are passed as JSON, not interpolated into hc command-line arguments.
 - Local subprocess deadlines match the existing backend budgets: list 8s,
   read 20s, keys 10s, prompt 15s (or requested wait + 5s). Cancellation kills
   the local transport process, not the hc core or terminal. A send already

@@ -33,17 +33,19 @@ Office-related limits: [Office preview](./office).
 Install [herdr-core](https://github.com/herdrdev/herdr-core#install) on the
 Agent machine and make `hc` available to the Filebox Agent. Only local live
 terminals explicitly labelled `fb=<name>` or `filebox=<name>` are included.
-Choose the name shown in Filebox for each agent:
+Choose the name shown in Filebox for each terminal:
 
 ```sh
 hc run --bg --label fb=frontend -- claude
 hc run --bg --label Filebox=backend -- claude
-hc label t7 fb=review       # connect or rename an existing coding-agent terminal
+hc label t7 fb=review       # connect or rename an existing terminal
 hc label t7 fb=             # remove this label to revoke access
 ```
 
-Use the actual terminal address instead of `t7`, and your coding agent instead
-of `claude`, starting each agent in its project directory. Label keys are
+Use the actual terminal address instead of `t7`, and your program instead
+of `claude`, starting each terminal in its working directory. A labelled terminal
+may run a coding agent, a shell or another program; Filebox does not classify it.
+Label keys are
 case-insensitive in Filebox (`fb`, `FB`, `filebox`, `Filebox`, `FILEBOX`); values
 are user-chosen names, not fixed codes. Empty/blank values do not opt in.
 The original `filebox=ai-agent` marker keeps the hc terminal name. If both keys

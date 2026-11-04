@@ -31,7 +31,7 @@ Office 相关上限见 [Office 预览](./office)。
 ## 试验性 hc 后端
 
 在 Agent 机器安装 [herdr-core](https://github.com/herdrdev/herdr-core#install)，
-让 Filebox Agent 能找到 `hc`。在各自项目目录启动代理，用 `fb=名称` 或 `filebox=名称`
+让 Filebox Agent 能找到 `hc`。在各自工作目录启动终端，用 `fb=名称` 或 `filebox=名称`
 指定它在 Filebox 中的显示名称；只接入带这些标记的本地运行中终端：
 
 ```sh
@@ -41,7 +41,8 @@ hc label t7 fb=review       # 接入已有终端，或修改它在 Filebox 中�
 hc label t7 fb=             # 移除此标签，撤销接入
 ```
 
-将 `t7` 换成实际终端地址，`claude` 换成使用的编码代理。
+将 `t7` 换成实际终端地址，`claude` 换成要运行的程序。
+标签决定终端是否接入，里面运行编码代理、shell 或其他程序均可，不额外判断程序类型。
 标签键不区分大小写：`fb`、`FB`、`filebox`、`Filebox`、`FILEBOX` 及混合大小写均可；
 值是客户自定的名称，不是固定口令，空值或纯空白不接入。名称可包含中文或空格，
 含空格时给整个标签加引号，例如 `--label 'fb=Code review'`。
