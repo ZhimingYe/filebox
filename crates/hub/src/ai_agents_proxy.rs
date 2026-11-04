@@ -1214,6 +1214,207 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unsupported_context_read_skips_reviewer_and_prompt_relay() {
+        for (context_error, expected_status) in [
+            (
+                "ai_agent_unsupported_operation",
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            ("ai_agent_target_not_found", StatusCode::OK),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .unwrap();
+            let addr = listener.local_addr().unwrap();
+            let reviewer_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mock_calls = reviewer_calls.clone();
+            let expected_content = "<<<CONTEXT\n[Window context unavailable]\nCONTEXT>>>\n\n<<<PROMPT\nAnalyze the data\nPROMPT>>>".to_string();
+            let app = axum::Router::new().route(
+                "/chat/completions",
+                axum::routing::post(
+                    move |Json(body): Json<serde_json::Value>| async move {
+                        mock_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        assert_eq!(body["messages"][1]["content"], expected_content);
+                        Json(serde_json::json!({"choices":[{"message":{"content":serde_json::json!({
+                            "decision":"allow","category":"test","reason":"Safe to proceed."
+                        }).to_string()}}]}))
+                    },
+                ),
+            );
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+
+            let mut review: crate::prompt_review::PromptReviewConfig =
+                serde_json::from_value(serde_json::json!({
+                    "protocol": "chat_completions",
+                    "base_url": format!("http://{addr}"),
+                    "api_key": "test-key",
+                }))
+                .unwrap();
+            review.validate().unwrap();
+            let state = AppState::new(
+                &crate::config::HubConfig {
+                    prompt_review_mode: crate::prompt_review::ReviewMode::Mandatory,
+                    prompt_review: Some(review),
+                    listen_addr: "127.0.0.1:0".parse().unwrap(),
+                    agent_token_hash: "fake".into(),
+                    users: vec![],
+                },
+                false,
+            );
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+            let capabilities = filebox_protocol::resources::Capabilities {
+                ai_agents: Some(filebox_protocol::resources::AiAgentsCapability {
+                    available: true,
+                    backend: Some("herdr".into()),
+                    version: Some("0.9.5".into()),
+                    backends: vec![filebox_protocol::resources::AiAgentBackendInfo {
+                        kind: "herdr".into(),
+                        version: "0.9.5".into(),
+                        features: Default::default(),
+                    }],
+                    settings: filebox_protocol::resources::AiAgentSettings {
+                        enabled: true,
+                        environment_override: None,
+                        backend: None,
+                        backend_environment_override: None,
+                    },
+                }),
+                ..Default::default()
+            };
+            state.inner.write().await.agents.register(
+                "a".into(),
+                "agent".into(),
+                sender,
+                std::sync::Arc::new(tokio::sync::Notify::new()),
+                0,
+                vec![],
+                0,
+                vec![],
+                capabilities,
+                None,
+            );
+
+            let request_state = state.clone();
+            let request = tokio::spawn(async move {
+                ai_agents_handler(
+                    State(request_state),
+                    Extension(AuthenticatedSession {
+                        id: "session".into(),
+                        principal_id: "principal".into(),
+                    }),
+                    Path("a".into()),
+                    Json(
+                        serde_json::from_value(serde_json::json!({
+                            "op": "prompt",
+                            "target": "reviewer",
+                            "text": "  Analyze the data  ",
+                        }))
+                        .unwrap(),
+                    ),
+                )
+                .await
+            });
+
+            let message = tokio::time::timeout(Duration::from_secs(3), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let HubMessage::AiAgentRequest {
+                req_id,
+                op,
+                backend,
+                target,
+                text,
+                keys,
+                lines,
+                read_source,
+                wait,
+                ..
+            } = message
+            else {
+                panic!("expected prompt-review context Read");
+            };
+            assert_eq!(op, AiAgentOp::Read);
+            assert_eq!(backend.as_deref(), Some("herdr"));
+            assert_eq!(target.as_deref(), Some("reviewer"));
+            assert!(text.is_none() && keys.is_empty() && !wait);
+            assert_eq!(lines, Some(120));
+            assert_eq!(read_source, Some(AiAgentReadSource::Bottom));
+            state
+                .inner
+                .read()
+                .await
+                .pending_responses
+                .write()
+                .await
+                .remove(&req_id)
+                .unwrap()
+                .deliver(serde_json::json!({"error": context_error}));
+
+            if context_error == "ai_agent_unsupported_operation" {
+                let response = request.await.unwrap();
+                assert_eq!(response.status(), expected_status);
+                let body: serde_json::Value = serde_json::from_slice(
+                    &axum::body::to_bytes(response.into_body(), 4096)
+                        .await
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(body["error"], "ai_agent_unsupported_operation");
+                assert_eq!(
+                    body["message"],
+                    "This AI agent backend cannot provide output for prompt review, so prompts are disabled."
+                );
+                assert_eq!(
+                    reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+                    0
+                );
+                assert!(receiver.try_recv().is_err());
+            } else {
+                let message = tokio::time::timeout(Duration::from_secs(3), receiver.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let HubMessage::AiAgentRequest {
+                    req_id,
+                    op,
+                    backend,
+                    target,
+                    text,
+                    ..
+                } = message
+                else {
+                    panic!("expected reviewed Prompt");
+                };
+                assert_eq!(op, AiAgentOp::Prompt);
+                assert_eq!(backend.as_deref(), Some("herdr"));
+                assert_eq!(target.as_deref(), Some("reviewer"));
+                assert_eq!(text.as_deref(), Some("Analyze the data"));
+                assert_eq!(
+                    reviewer_calls.load(std::sync::atomic::Ordering::SeqCst),
+                    1
+                );
+                state
+                    .inner
+                    .read()
+                    .await
+                    .pending_responses
+                    .write()
+                    .await
+                    .remove(&req_id)
+                    .unwrap()
+                    .deliver(serde_json::json!({"ok": true}));
+                assert_eq!(request.await.unwrap().status(), expected_status);
+                assert!(receiver.try_recv().is_err());
+            }
+
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
     async fn status_reports_prompt_review_state() {
         for (mode, configured, expected) in [
             (crate::prompt_review::ReviewMode::Mandatory, true, serde_json::json!({"state":"on","model":"deepseek-flash"})),
