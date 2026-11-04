@@ -57,8 +57,8 @@ afterEach(() => {
   window.innerWidth = 1024;
 });
 
-async function render() {
-  await act(async () => root.render(<AiAgentsView agent={agent} />));
+async function render(agentInfo: api.AgentInfo = agent) {
+  await act(async () => root.render(<AiAgentsView agent={agentInfo} />));
 }
 
 async function toggleSetting(label: string) {
@@ -407,6 +407,39 @@ describe('AiAgentsView', () => {
       expect.any(AbortSignal),
       15_000,
     );
+  });
+
+  it('hides unsupported controls, filters keys and uses Bottom reads', async () => {
+    const limitedAgent = {
+      ...agent,
+      capabilities: { ai_agents: {
+        available: true, backend: 'limited', version: '1.0',
+        backends: [{ kind: 'limited', version: '1.0', features: {
+          prompt_wait: false, read_visible: false, keys: ['enter', 'esc'], status_detection: false,
+        } }],
+        settings: { enabled: true, environment_override: null, backend: 'limited', backend_environment_override: null },
+      } },
+    } as api.AgentInfo;
+    await render(limitedAgent);
+    expect(container.querySelector('[aria-label="Wait for result after sending"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Filter agents by status"]')).toBeNull();
+    expect(container.textContent).not.toContain('Working');
+    expect(container.querySelector('[aria-label="More shortcuts"]')).not.toBeNull();
+    expect([...container.querySelectorAll('button')].some((item) => item.textContent === 'Up')).toBe(false);
+    const card = container.querySelector<HTMLButtonElement>('aside button[aria-pressed]')!;
+    await act(async () => card.click());
+    await act(async () => button('Esc').click());
+    expect(vi.mocked(api.aiAgentCommand).mock.calls.some(([, body]) =>
+      body.op === 'read' && body.read_source === 'bottom')).toBe(true);
+  });
+
+  it('shows the descriptor version note for Herdr 0.9.5', async () => {
+    vi.mocked(api.aiAgentCommand).mockImplementation(async (_id, body) => body.op === 'status'
+      ? { ...listed, status: { ...listed.status, version: '0.9.5' } }
+      : { req_id: 'r', output: 'output' });
+    await render();
+    await act(async () => button('AI Agents settings').click());
+    expect(container.textContent).toContain('Herdr 0.9.5 lacks Home, End, PageUp, PageDown, and Delete key support.');
   });
 
   it('explains an unavailable AI agent backend', async () => {

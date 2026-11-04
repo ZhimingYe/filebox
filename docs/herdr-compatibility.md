@@ -85,7 +85,9 @@ gate is defense in depth, not a shell sandbox or a guarantee of safety.
   errors. A detected backend whose server is stopped reports
   `ai_agent_backend_unavailable`; a selected backend that is not detected
   reports `ai_agent_backend_not_detected` (HTTP 503). Malformed list responses
-  are incompatible, not empty lists.
+  are incompatible, not empty lists. Unsupported feature operations report
+  `ai_agent_unsupported_operation`; unsupported keys report
+  `ai_agent_key_unsupported`.
 - `POST /api/agents/{agent_id}/ai-agents` accepts an optional `backend` kind,
   for example `{"op":"status","backend":"herdr"}`; callers omitting it remain
   supported. The view pins status, read, prompt, and key requests to the active capability backend; the
@@ -214,7 +216,7 @@ Agents ignore the optional read mode and retain their old reading behavior.
 
 ## Adding another AI agent backend
 
-Implement `AiAgentBackend` in `crates/agent/src/ai_agents/<name>.rs`, add its kind to `BACKEND_KINDS` and its probe to `probe_all()` in `crates/agent/src/ai_agents/mod.rs`, and add a frontend descriptor in `frontend/src/lib/aiAgentBackends.ts`. Keep backend-specific CLI/protocol behavior in that adapter; request validation, generic response construction and capability/settings handling belong to the shared layer.
+Implement `AiAgentBackend` in `crates/agent/src/ai_agents/<name>.rs`, including `features()`, add its kind to `BACKEND_KINDS` and its probe to `probe_all()` in `crates/agent/src/ai_agents/mod.rs`, and add a frontend descriptor in `frontend/src/lib/aiAgentBackends.ts`. Keep backend-specific CLI/protocol behavior in that adapter; request validation, generic response construction and capability/settings handling belong to the shared layer. Every backend must support a Bottom read. Prompt review depends on it; if a backend explicitly rejects the context read, prompts are disabled. Targets must map to Filebox's 1–64 character rule: start with an ASCII alphanumeric and then use only `[A-Za-z0-9_-:.]`; adapters map other backend ID formats into this form.
 
 ## Verification
 

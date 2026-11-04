@@ -1005,6 +1005,17 @@ mod tests {
 
     #[test]
     fn ai_agents_messages_round_trip_and_tags_are_frozen() {
+        let old_backend: crate::resources::AiAgentBackendInfo = serde_json::from_value(
+            serde_json::json!({"kind": "legacy", "version": "1.0"}),
+        ).unwrap();
+        assert_eq!(old_backend.features, crate::resources::AiAgentFeatures::default());
+        assert_eq!(
+            serde_json::from_value::<crate::resources::AiAgentBackendInfo>(
+                serde_json::to_value(&old_backend).unwrap(),
+            ).unwrap(),
+            old_backend,
+        );
+
         let req = HubMessage::AiAgentRequest {
             req_id: "h1".into(),
             op: crate::ai_agents::AiAgentOp::Status,
@@ -1416,6 +1427,7 @@ mod tests {
             backends: vec![crate::resources::AiAgentBackendInfo {
                 kind: "herdr".into(),
                 version: "1.0".into(),
+                features: crate::resources::AiAgentFeatures::default(),
             }],
             settings: crate::resources::AiAgentSettings {
                 enabled: false,
@@ -1445,6 +1457,7 @@ mod tests {
                         backends: vec![crate::resources::AiAgentBackendInfo {
                             kind: "herdr".into(),
                             version: "1.0".into(),
+                            features: crate::resources::AiAgentFeatures::default(),
                         }],
                         settings: crate::resources::AiAgentSettings {
                             enabled: false,

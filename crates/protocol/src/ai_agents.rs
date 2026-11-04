@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AiAgentOp {
-    /// Probe the CLI + running server and list live coding agents.
+    /// Report backend status and list live coding agents.
     Status,
     /// Latest terminal snapshot for one live agent (name or pane id).
     Read,
@@ -116,7 +116,9 @@ const ALLOWED_KEYS: &[&str] = &[
     "alt+enter", "alt+up", "alt+down", "shift+up", "shift+down",
 ];
 
-/// Pane ids (`w1:p2`) or live agent names (`reviewer`).
+/// Validate a Filebox target id: 1–64 characters, starting with an
+/// alphanumeric character and containing only `[A-Za-z0-9_-:.]`. Adapters
+/// must map other backend id formats into this rule.
 pub fn validate_target(target: &str) -> Result<(), &'static str> {
     let t = target.trim();
     if t.is_empty() {
@@ -163,7 +165,7 @@ pub fn normalize_key(raw: &str) -> Result<String, &'static str> {
         return Err("empty key");
     }
     if ALLOWED_KEYS.contains(&key.as_str()) {
-        // The AI agent uses `esc` canonically; `escape` is an alias.
+        // Filebox uses `esc` canonically; `escape` is an alias.
         if key == "escape" {
             return Ok("esc".to_string());
         }

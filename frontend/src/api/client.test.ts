@@ -20,6 +20,11 @@ it('explains backend changes and undetected selections', () => {
     .toBe('The selected AI agent backend is not detected on this Agent. Install it or choose another backend in Settings.');
 });
 
+it('explains operations unsupported by the selected AI agent backend', () => {
+  expect(friendlyMessage({ error: 'ai_agent_unsupported_operation' }))
+    .toBe('This AI agent backend does not support that operation.');
+});
+
 it.each(['temp_upload_stalled', 'temp_upload_stalled: upload queue is full; retry upload'])(
   'explains upload congestion and retry for %s', (error) => {
     const message = friendlyMessage({ error, retryable: true });

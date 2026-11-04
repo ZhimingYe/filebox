@@ -170,9 +170,40 @@ pub struct AiAgentsCapability {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiAgentFeatures {
+    #[serde(default = "default_true")]
+    pub prompt_wait: bool,
+    /// Bottom reads are mandatory for every backend.
+    #[serde(default = "default_true")]
+    pub read_visible: bool,
+    /// `None` allows the full Filebox key allowlist.
+    #[serde(default)]
+    pub keys: Option<Vec<String>>,
+    #[serde(default = "default_true")]
+    pub status_detection: bool,
+}
+
+impl Default for AiAgentFeatures {
+    fn default() -> Self {
+        Self {
+            prompt_wait: true,
+            read_visible: true,
+            keys: None,
+            status_detection: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AiAgentBackendInfo {
     pub kind: String,
     pub version: String,
+    #[serde(default)]
+    pub features: AiAgentFeatures,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

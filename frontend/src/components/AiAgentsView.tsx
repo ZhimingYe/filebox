@@ -8,7 +8,7 @@ import { AiAgentButton, AiAgentCallout, AiAgentPopover } from './AiAgentControls
 import { AiAgentQueue } from '../lib/aiAgentQueue';
 import { useIsMobile } from '../state/useIsMobile';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
-import { aiAgentBackend, aiAgentBackendLabel } from '../lib/aiAgentBackends';
+import { aiAgentBackend, aiAgentBackendLabel, aiAgentFeatures } from '../lib/aiAgentBackends';
 import { aiAgentBackendKey } from '../hooks/useAiAgentAttention';
 import { IconChevronLeft, IconRefresh, IconSettings, IconClose, IconSearch, IconClipboard, IconCheck } from './icons';
 
@@ -103,6 +103,8 @@ function aiAgentFailureMessage(error: unknown, backendKind?: string | null): str
 export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: Props) {
   const capability = agent.capabilities?.ai_agents;
   const backendKind = capability?.backend;
+  const features = aiAgentFeatures(capability);
+  const statusDetection = features.status_detection;
   const backendKey = aiAgentBackendKey(agent.id, backendKind);
   const backend = aiAgentBackend(backendKind);
   const isMobile = useIsMobile();
@@ -111,7 +113,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
   const [status, setStatus] = useState<api.AiAgentBackendStatus | null>(null);
   const backendVersion = status?.version ?? capability?.version;
   const backendLabel = aiAgentBackendLabel(backendKind, backendVersion);
-  const backendVersionNote = backendVersion === '0.9.5' ? backend.versionNote : null;
+  const backendVersionNote = backend.versionNote?.(backendVersion) ?? null;
   const [promptReview, setPromptReview] = useState<api.AiAgentPromptReview | null>(null);
   const [agents, setAgents] = useState<api.AiAgent[]>([]);
   const [agentQuery, setAgentQuery] = useState('');
@@ -120,6 +122,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
   const [output, setOutput] = useState<string>('');
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [wait, setWait] = useState(false);
+  const waitEnabled = features.prompt_wait && wait;
   const [listError, setListError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [outputError, setOutputError] = useState<string | null>(null);
@@ -193,9 +196,9 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
   const promptBytes = new TextEncoder().encode(prompt.trim()).length;
   const filteredAgents = useMemo(() => {
     const query = agentQuery.trim().toLocaleLowerCase();
-    return agents.filter((item) => (statusFilter === 'all' || item.status === statusFilter)
+    return agents.filter((item) => (!statusDetection || statusFilter === 'all' || item.status === statusFilter)
       && [displayName(item), item.kind, item.cwd, item.id, item.target].join(' ').toLocaleLowerCase().includes(query));
-  }, [agents, agentQuery, statusFilter]);
+  }, [agents, agentQuery, statusFilter, statusDetection]);
 
   const loadList = useCallback(async (silent = false, parentSignal?: AbortSignal) => {
     if (!mountedRef.current || parentSignal?.aborted || (silent && abortList.current)) return;
@@ -271,7 +274,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
       parentSignal?.removeEventListener('abort', abort);
       if (genRef.current === gen) { abortList.current = null; if (mountedRef.current) setLoadingList(false); }
     }
-  }, [backendKey, backendKind, command]);
+  }, [backendKey, backendKind, command, setStatus]);
 
   const loadOutput = useCallback(async (target: string, silent = false, visible = false, parentSignal?: AbortSignal) => {
     if (!mountedRef.current || parentSignal?.aborted || selectedRef.current !== target || (silent && abortOutput.current)) return;
@@ -297,7 +300,8 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
       if (!itemAtStart) return;
       const identity = paneIdentity(itemAtStart);
       const res = await command(
-        { op: 'read', target: itemAtStart.id || target, lines: 120, read_source: visible ? 'visible' : 'bottom' },
+        { op: 'read', target: itemAtStart.id || target, lines: 120,
+          read_source: visible && features.read_visible ? 'visible' : 'bottom' },
         controller.signal,
         25_000,
         silent ? 0 : 2,
@@ -332,7 +336,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
       parentSignal?.removeEventListener('abort', abort);
       if (outputGenRef.current === gen) { abortOutput.current = null; if (mountedRef.current) setLoadingOutput(false); }
     }
-  }, [backendKind, command]);
+  }, [backendKind, command, features.read_visible]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -492,11 +496,11 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
             op: 'prompt',
             target: selectedAgent.id || target,
             text,
-            wait,
-            timeout_ms: wait ? 60_000 : undefined,
+            wait: waitEnabled,
+            timeout_ms: waitEnabled ? 60_000 : undefined,
           },
           controller.signal,
-          (wait ? 80_000 : 25_000) + PROMPT_REVIEW_ALLOWANCE_MS,
+          (waitEnabled ? 80_000 : 25_000) + PROMPT_REVIEW_ALLOWANCE_MS,
           valid,
         );
         if (controller.signal.aborted || !mountedRef.current || !valid()) return;
@@ -504,7 +508,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
         if (selectedRef.current === target) {
           setActionNotice(res.agent?.status === 'blocked'
             ? 'The agent needs your input. Read the output, then use the keys below.'
-            : wait ? 'Finished waiting. Review the latest output below.' : 'Prompt sent. Refresh this window to see further output.');
+            : waitEnabled ? 'Finished waiting. Review the latest output below.' : 'Prompt sent. Refresh this window to see further output.');
         }
         await loadOutput(target, true, false, controller.signal);
         if (!controller.signal.aborted) await loadList(true, controller.signal);
@@ -563,7 +567,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
   const showList = !isMobile || !selectedAgent;
   const promptDisabled = sending || !reachable || !prompt.trim()
     || promptBytes > PROMPT_MAX_BYTES || selectedAgent?.status === 'blocked' || promptReview?.state === 'not_configured';
-  const outputChanged = selectedAgent && seenSignature !== null && seenSignature !== outputSignature(selectedAgent);
+  const outputChanged = features.status_detection && selectedAgent && seenSignature !== null && seenSignature !== outputSignature(selectedAgent);
   const copyLabel = JSON.stringify([selectedIdentity, updatedAt]);
   const copied = copiedPath === copyLabel;
   const promptHint = promptBytes > PROMPT_MAX_BYTES ? 'Prompt exceeds the 32 KiB limit. Shorten it before sending.'
@@ -571,19 +575,19 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
     : !reachable ? 'AI agent backend is unavailable. Your draft is kept here.'
     : promptReview?.state === 'not_configured' ? (isMobile || compactHeight ? 'Prompt review not configured' : 'Prompts disabled: configure prompt_review in hub.json')
     : selectedAgent?.status === 'blocked' ? 'Waiting for approval. Use the remote keys before sending a message.'
-    : wait ? 'Wait for result is on · up to 60 seconds'
+    : waitEnabled ? 'Wait for result is on · up to 60 seconds'
     : isMobile ? 'Enter for new line' : compactHeight && promptReview?.state ? 'Ctrl / ⌘ + Enter to send' : 'Ctrl / ⌘ + Enter to send · Enter for new line';
 
   const inlineNotice = compactHeight && !isMobile;
   const inlineError = inlineNotice && !sending ? actionError : null;
-  const statusWarning = sending || !selectedAgent ? null
+  const statusWarning = !features.status_detection || sending || !selectedAgent ? null
     : selectedAgent.status === 'blocked' ? 'Needs your input. Use the remote keys below to respond.'
     : selectedAgent.status === 'unknown' ? 'Status unavailable. Check the output before continuing.' : null;
   const noticeActive = sending || (loadingOutput && outputElapsed >= 8) || !!actionNotice;
   const reviewing = promptReview?.state === 'on';
   const reviewLabel = promptReview?.state === 'on' ? `Reviewed by ${promptReview.model || 'LLM'}`
     : promptReview?.state === 'off' ? 'Prompt review off' : null;
-  const noticeText = sending ? `${reviewing ? (wait ? 'Reviewing, then waiting for' : 'Reviewing and sending to') : wait ? 'Waiting for' : 'Sending to'} ${actionTarget} · ${elapsed}s`
+  const noticeText = sending ? `${reviewing ? (waitEnabled ? 'Reviewing, then waiting for' : 'Reviewing and sending to') : waitEnabled ? 'Waiting for' : 'Sending to'} ${actionTarget} · ${elapsed}s`
     : loadingOutput ? (outputElapsed >= 8 ? `Taking longer than usual · ${outputElapsed}s` : 'Refreshing…')
     : actionNotice;
   const stopWaitingButton = sending && <AiAgentButton variant="quiet" size="sm" touch={isMobile} onClick={stopWaiting}
@@ -640,10 +644,10 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
         <label style={styles.settingRow}><span>Wrap output</span>
           <SettingsSwitch aria-label="Wrap output" checked={wrapOutput} onClick={() => setWrapOutput((value) => !value)} />
         </label>
-        <label style={styles.settingRow} title="Wait up to 60 seconds for completion or a request for input.">
+        {features.prompt_wait && <label style={styles.settingRow} title="Wait up to 60 seconds for completion or a request for input.">
           <span>Wait for result after sending</span>
-          <SettingsSwitch aria-label="Wait for result after sending" checked={wait} disabled={sending} onClick={() => setWait((value) => !value)} />
-        </label>
+          <SettingsSwitch aria-label="Wait for result after sending" checked={waitEnabled} disabled={sending} onClick={() => setWait((value) => !value)} />
+        </label>}
       </>}
       <p style={styles.menuNote}>{updatedAt ? `Output updated ${new Date(updatedAt).toLocaleTimeString()}. ` : ''}Status checks every 30 seconds. {backendLabel}.{backendVersionNote ? ` ${backendVersionNote}` : ''}{promptReview?.state === 'on' ? ` Prompt review on · ${promptReview.model || 'LLM'}.` : promptReview?.state === 'off' ? ' Prompt review off.' : promptReview?.state === 'not_configured' ? ' Prompt review not configured; prompts are disabled.' : ''}</p>
     </AiAgentPopover>
@@ -673,7 +677,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
             {agents.length > 0 && <div style={styles.listHeading}>
               <span>Coding agents</span><span style={styles.countChip}>{agents.length}</span>
             </div>}
-            {reachable && (agents.length > 1 || agentQuery || statusFilter !== 'all') && <div style={{ ...styles.listTools, flexDirection: 'row' }}>
+            {reachable && (agents.length > 1 || agentQuery || (features.status_detection && statusFilter !== 'all')) && <div style={{ ...styles.listTools, flexDirection: 'row' }}>
               <label style={{ ...styles.searchBox, ...(searchFocused ? styles.fieldFocused : null) }}>
                 <IconSearch style={{ width: 14, height: 14, flexShrink: 0 }} />
                 <input type="text" role="searchbox" aria-label="Search agents" placeholder="Search…" value={agentQuery}
@@ -686,7 +690,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
                   <IconClose style={{ width: 12, height: 12 }} />
                 </AiAgentButton>}
               </label>
-              <select aria-label="Filter agents by status" value={statusFilter}
+              {features.status_detection && <select aria-label="Filter agents by status" value={statusFilter}
                 onFocus={() => setFilterFocused(true)} onBlur={() => setFilterFocused(false)}
                 onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
                 style={{ ...styles.filterSelect, fontSize: isMobile ? 13 : 12, minHeight: isMobile ? 32 : 30, width: 'auto', maxWidth: isMobile ? 128 : 96, flexShrink: 0, ...(filterFocused ? styles.fieldFocused : null) }}>
@@ -694,7 +698,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
                 {(['blocked', 'working', 'done', 'idle', 'unknown'] as const).map((value) => <option key={value} value={value}>
                   {value === 'blocked' ? 'Needs input' : statusMeta(value).label} · {agents.filter((item) => item.status === value).length}
                 </option>)}
-              </select>
+              </select>}
             </div>}
             {loadingList && agents.length === 0 && !listError ? (
               <div style={styles.empty}>Looking for agents…</div>
@@ -724,7 +728,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
             ) : (
               filteredAgents.length === 0 ? <div style={styles.noMatch}>
                 <div style={{ ...styles.emptyTitle, fontSize: 13 }}>No matching agents</div>
-                <p style={{ ...styles.emptyText, fontSize: 12.5 }}>Try another name, folder, or status.</p>
+              <p style={{ ...styles.emptyText, fontSize: 12.5 }}>{features.status_detection ? 'Try another name, folder, or status.' : 'Try another name or folder.'}</p>
                 <AiAgentButton size="sm" onClick={() => { setAgentQuery(''); setStatusFilter('all'); }} touch={isMobile}>Clear filters</AiAgentButton>
               </div> : filteredAgents.map((item) => {
                 const meta = statusMeta(item.status);
@@ -747,9 +751,9 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
                       <span style={styles.cardTop}>
                         <span style={{ ...styles.cardName, ...(active ? { color: c.accent } : null) }}>{displayName(item)}</span>
                         {drafts[paneIdentity(item)]?.trim() && <span style={styles.draftBadge}>Draft</span>}
-                        <span style={{ ...styles.badge, color: meta.color, background: active ? c.surface : meta.bg }}>
+                        {features.status_detection && <span style={{ ...styles.badge, color: meta.color, background: active ? c.surface : meta.bg }}>
                           <span style={{ ...styles.dot, background: meta.color }} />{meta.label}
-                        </span>
+                        </span>}
                       </span>
                       <span style={styles.cardMeta}>
                         {item.kind || 'agent'}
@@ -770,9 +774,9 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={styles.titleRow}>
                   <div style={styles.detailName} title={`${displayName(selectedAgent)}${selectedAgent.cwd ? ` · ${selectedAgent.cwd}` : ''}`}>{displayName(selectedAgent)}</div>
-                  <span style={{ ...styles.badge, color: statusMeta(selectedAgent.status).color, background: statusMeta(selectedAgent.status).bg }}>
+                  {features.status_detection && <span style={{ ...styles.badge, color: statusMeta(selectedAgent.status).color, background: statusMeta(selectedAgent.status).bg }}>
                     <span style={{ ...styles.dot, background: statusMeta(selectedAgent.status).color }} />{statusMeta(selectedAgent.status).label}
-                  </span>
+                  </span>}
                 </div>
                 {!inlineNotice && <div style={styles.detailMeta} title={selectedAgent.cwd ?? undefined}>
                   {selectedAgent.kind || 'agent'}{selectedAgent.cwd ? ` · ${selectedAgent.cwd}` : ''}
@@ -856,7 +860,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
 
             <div style={{ ...styles.composer, ...(isMobile ? { padding: '4px 8px max(8px, env(safe-area-inset-bottom))' } : compactHeight ? { padding: '8px 12px 10px', gap: 8 } : null) }}>
               <AiAgentShortcuts key={JSON.stringify([selectedIdentity, selectedAgent.kind])} kind={selectedAgent.kind}
-                disabled={sending || !reachable} onSend={sendKeys} compact={compactHeight} />
+                disabled={sending || !reachable} onSend={sendKeys} compact={compactHeight} allowedKeys={features.keys} />
               <div style={{ ...styles.inputCard, ...(composerFocused ? styles.inputCardFocused : null) }}
                 onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)}>
                 <textarea
@@ -891,7 +895,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
                     disabled={promptDisabled}
                     title={promptDisabled ? promptHint : `Send to ${displayName(selectedAgent)}`}
                   >
-                    {sending ? (wait ? 'Waiting…' : reviewing ? 'Reviewing…' : 'Sending…') : 'Send'}
+                {sending ? (waitEnabled ? 'Waiting…' : reviewing ? 'Reviewing…' : 'Sending…') : 'Send'}
                   </AiAgentButton>
                 </div>
               </div>

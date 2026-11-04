@@ -24,8 +24,8 @@ interface BackendState {
 interface State { nextId: number; backends: Record<string, BackendState> }
 type Issue = Pick<AiAgentAttention, 'target' | 'kind' | 'name' | 'message'>;
 type Action =
-  | { type: 'sync'; backends: { key: string; backendId: string; name: string; status: string }[] }
-  | { type: 'status'; id: string; agents: api.AiAgent[] }
+  | { type: 'sync'; backends: { key: string; backendId: string; name: string; status: string; statusDetection: boolean }[] }
+  | { type: 'status'; id: string; agents: api.AiAgent[]; statusDetection: boolean }
   | { type: 'failure'; id: string; message: string }
   | { type: 'inactive'; id: string }
   | { type: 'ack'; ids: number[] }
@@ -53,7 +53,10 @@ function reducer(state: State, action: Action): State {
     const ids = new Set(action.backends.map((b) => b.key));
     let next = { ...state, backends: Object.fromEntries(Object.entries(state.backends).filter(([id]) => ids.has(id))) };
     for (const b of action.backends) {
-      const old = next.backends[b.key] ?? emptyBackend(b.backendId);
+      const stored = next.backends[b.key] ?? emptyBackend(b.backendId);
+      const old = b.statusDetection ? stored : {
+        ...stored, notices: stored.notices.filter((notice) => notice.kind !== 'unknown'), unknown: {},
+      };
       if (b.status === 'offline' && old.observedAgents) next = reconcile(next, b.key, b.backendId, old, [{
         kind: 'unavailable', name: 'Backend offline',
         message: 'Cannot check AI Agents while this backend is offline. Checks resume after it reconnects.',
@@ -83,7 +86,7 @@ function reducer(state: State, action: Action): State {
     const name = agent.name?.trim() || agent.title?.trim() || agent.target;
     if (agent.status === 'blocked') issues.push({ target: agent.target, name, kind: 'blocked',
       message: 'Waiting for your input. Inspect the screen; use the backend directly if this panel cannot answer the question.' });
-    if (agent.status === 'unknown') {
+    if (action.statusDetection && agent.status === 'unknown') {
       unknown[agent.target] = (backend.identities[agent.target] === identities[agent.target]
         ? backend.unknown[agent.target] ?? 0 : 0) + 1;
       if (unknown[agent.target] >= 2) issues.push({ target: agent.target, name, kind: 'unknown',
@@ -107,25 +110,28 @@ export function useAiAgentAttention(agents: api.AgentInfo[], enabled: boolean, a
       key: aiAgentBackendKey(agent.id, agent.capabilities?.ai_agents?.backend),
       backendId: agent.id,
       backendKind: agent.capabilities?.ai_agents?.backend,
+      statusDetection: agent.capabilities?.ai_agents?.backends
+        ?.find((backend) => backend.kind === agent.capabilities?.ai_agents?.backend)
+        ?.features?.status_detection ?? true,
       name: agent.name,
       status: agent.status,
     })));
   const backends = useMemo(() => JSON.parse(backendKey) as {
-    key: string; backendId: string; backendKind: string | null | undefined; name: string; status: string;
+    key: string; backendId: string; backendKind: string | null | undefined; name: string; status: string; statusDetection: boolean;
   }[], [backendKey]);
   const allowed = useMemo(() => new Set(backends.map((backend) => backend.key)), [backends]);
   // Health updates (RTT, stats, etc.) must not restart the polling loop.
   const enabledRef = useRef({
     enabled,
     allowed,
-    backendRequests: new Map<string, { agentId: string; backendKind: string | null | undefined }>(),
+    backendRequests: new Map<string, { agentId: string; backendKind: string | null | undefined; statusDetection: boolean }>(),
   });
   enabledRef.current = {
     enabled,
     allowed,
     backendRequests: new Map(backends.map((backend) => [
       backend.key,
-      { agentId: backend.backendId, backendKind: backend.backendKind },
+      { agentId: backend.backendId, backendKind: backend.backendKind, statusDetection: backend.statusDetection },
     ] as const)),
   };
   const reportFailure = useCallback((id: string, error: unknown) => {
@@ -144,7 +150,8 @@ export function useAiAgentAttention(agents: api.AgentInfo[], enabled: boolean, a
     if (!enabledRef.current.enabled || !enabledRef.current.allowed.has(id)) return;
     if (response.error || response.status?.reachable === false) {
       reportFailure(id, { error: response.error || 'ai_agent_backend_unavailable' });
-    } else dispatch({ type: 'status', id, agents: response.agents ?? [] });
+    } else dispatch({ type: 'status', id, agents: response.agents ?? [],
+      statusDetection: enabledRef.current.backendRequests.get(id)?.statusDetection ?? true });
   }, [reportFailure]);
 
   const monitor = useRef<ReturnType<typeof createAiAgentMonitor> | null>(null);

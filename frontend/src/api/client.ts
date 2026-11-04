@@ -190,6 +190,7 @@ export function friendlyMessage(error: unknown): string {
     ai_agent_backend_unavailable: 'The AI agent backend is installed but the server is not running on this backend. Start it, then refresh.',
     ai_agent_timeout: 'The AI agent command timed out. Read the latest output before retrying.',
     ai_agent_key_unsupported: 'This shortcut is unavailable on this backend. Use the backend directly instead.',
+    ai_agent_unsupported_operation: 'This AI agent backend does not support that operation.',
     ai_agent_backend_incompatible: 'The AI agent backend returned an incompatible response. Update its CLI and restart the backend with a matching version.',
     ai_agent_blocked: 'That agent is waiting for an approval. Inspect the output, then tap a key.',
     ai_agent_missing: 'That AI agent is no longer running.',
@@ -408,6 +409,14 @@ export interface AiAgentsCapability {
 export interface AiAgentBackendInfo {
   kind: string;
   version: string;
+  features?: AiAgentFeatures;
+}
+
+export interface AiAgentFeatures {
+  prompt_wait: boolean;
+  read_visible: boolean;
+  keys: string[] | null;
+  status_detection: boolean;
 }
 
 export interface AiAgentSettings {

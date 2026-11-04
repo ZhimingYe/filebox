@@ -4,8 +4,8 @@ import { useIsMobile } from '../state/useIsMobile';
 import { AiAgentButton, AiAgentPopover } from './AiAgentControls';
 import { QUICK_KEYS, COMMON_KEYS, PROFILE_KEYS, shortcutProfile, type Profile } from '../lib/aiAgentShortcuts';
 
-export function AiAgentShortcuts({ kind, disabled, onSend, compact = false }: {
-  kind?: string | null; disabled: boolean; onSend: (keys: string[]) => void; compact?: boolean;
+export function AiAgentShortcuts({ kind, disabled, onSend, compact = false, allowedKeys }: {
+  kind?: string | null; disabled: boolean; onSend: (keys: string[]) => void; compact?: boolean; allowedKeys?: string[] | null;
 }) {
   const [profile, setProfile] = useState<Profile>(() => shortcutProfile(kind));
   const [query, setQuery] = useState('');
@@ -17,7 +17,10 @@ export function AiAgentShortcuts({ kind, disabled, onSend, compact = false }: {
   });
   const ring = (name: 'profile' | 'search') => focusedField === name ? { borderColor: c.accent, boxShadow: `0 0 0 3px ${c.accentBg}` } : null;
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  const shortcuts = [...PROFILE_KEYS[profile], ...COMMON_KEYS]
+  const supports = (keys: string[]) => !allowedKeys || keys.every((key) => allowedKeys.includes(key));
+  const quickKeys = QUICK_KEYS.filter((item) => supports(item.keys));
+  const allMoreKeys = [...Object.values(PROFILE_KEYS).flat(), ...COMMON_KEYS].filter((item) => supports(item.keys));
+  const shortcuts = [...PROFILE_KEYS[profile], ...COMMON_KEYS].filter((item) => supports(item.keys))
     .filter((item) => `${item.label} ${item.description}`.toLocaleLowerCase().includes(normalizedQuery));
   const field = { width: '100%', height: isMobile ? 32 : 30, boxSizing: 'border-box' as const, borderWidth: 1, borderStyle: 'solid', borderColor: c.border,
     outline: 'none', transition: 'border-color 0.12s, box-shadow 0.12s',
@@ -25,7 +28,7 @@ export function AiAgentShortcuts({ kind, disabled, onSend, compact = false }: {
   return <div style={{ display: 'flex', flexShrink: 0, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
     <div role="group" aria-label="Remote input keys" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
       <span style={{ fontSize: 11, color: c.textMuted, marginRight: 4 }}>Remote</span>
-      {QUICK_KEYS.map((item) => <AiAgentButton key={item.label} disabled={disabled} touch={isMobile} size="sm" variant="quiet"
+      {quickKeys.map((item) => <AiAgentButton key={item.label} disabled={disabled} touch={isMobile} size="sm" variant="quiet"
         aria-label={item.label} aria-description={item.description} title={item.description} onClick={() => onSend(item.keys)}
         style={{ minWidth: isMobile ? 32 : 30, padding: '0 8px', background: c.bgMuted, fontSize: 11.5, color: c.textSecondary }}>
         {item.label === 'Up' || item.label === 'Down' ? <svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16"
@@ -34,7 +37,7 @@ export function AiAgentShortcuts({ kind, disabled, onSend, compact = false }: {
         </svg> : item.label}
       </AiAgentButton>)}
     </div>
-    <AiAgentPopover label="More shortcuts" icon={false} size="sm" trigger={<>More keys <svg aria-hidden="true" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m4 10 4-4 4 4" /></svg></>} above touch={isMobile} closeOnAction>
+    {allMoreKeys.length > 0 && <AiAgentPopover label="More shortcuts" icon={false} size="sm" trigger={<>More keys <svg aria-hidden="true" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m4 10 4-4 4 4" /></svg></>} above touch={isMobile} closeOnAction>
       {!compact && <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Remote keyboard</div>}
       <div style={compact ? { display: 'flex', gap: 6, marginBottom: 6 } : undefined}>
       <select aria-label="Shortcut profile" value={profile} style={{ ...field, ...(compact ? { width: 116, flexShrink: 0 } : null), ...ring('profile') }} {...focus('profile')} onChange={(event) => { setProfile(event.target.value as Profile); setQuery(''); }}>
@@ -57,6 +60,6 @@ export function AiAgentShortcuts({ kind, disabled, onSend, compact = false }: {
             background: c.bgSubtle, border: `1px solid ${c.border}`, borderBottomWidth: 2, borderRadius: radius.sm, padding: '1px 5px' }}>{item.label}</kbd>
         </AiAgentButton>)}
       </div>
-    </AiAgentPopover>
+    </AiAgentPopover>}
   </div>;
 }

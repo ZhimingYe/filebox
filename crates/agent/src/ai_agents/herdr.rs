@@ -14,6 +14,7 @@ use filebox_protocol::ai_agents::{
     AiAgent, AiAgentStatus, AiAgentOp, AiAgentReadSource, AiAgentBackendStatus,
     AI_AGENT_OUTPUT_MAX_BYTES, validate_target,
 };
+use filebox_protocol::resources::AiAgentFeatures;
 use serde_json::Value;
 use tokio::process::Command;
 
@@ -215,6 +216,10 @@ impl crate::ai_agents::AiAgentBackend for HerdrBackend {
 
     fn version(&self) -> &str {
         &self.version
+    }
+
+    fn features(&self) -> AiAgentFeatures {
+        AiAgentFeatures::default()
     }
 
     fn list<'a>(

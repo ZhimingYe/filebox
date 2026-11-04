@@ -58,6 +58,23 @@ describe('AI Agent attention monitoring', () => {
     await tick(); expect(current.notices).toEqual([]);
   });
 
+  it('does not create unknown reminders when status detection is unsupported', async () => {
+    vi.mocked(api.aiAgentCommand).mockResolvedValue(response('unknown'));
+    const limited = {
+      ...backend,
+      capabilities: { ai_agents: {
+        available: true, backend: 'herdr', version: '0.9.5',
+        backends: [{ kind: 'herdr', version: '0.9.5', features: {
+          prompt_wait: true, read_visible: true, keys: null, status_detection: false,
+        } }],
+        settings: { enabled: true, environment_override: null },
+      } },
+    } as api.AgentInfo;
+    await render({ agents: [limited] });
+    await tick(); await tick();
+    expect(current.notices).toEqual([]);
+  });
+
   it('does not transfer an acknowledgement to a replacement pane with the same name', async () => {
     await render();
     const oldId = current.notices[0].id;

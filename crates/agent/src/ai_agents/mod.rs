@@ -9,7 +9,7 @@ use filebox_protocol::ai_agents::{
 };
 use filebox_protocol::message::AgentMessage;
 use filebox_protocol::resources::{
-    AiAgentBackendInfo, AiAgentSettings, AiAgentsCapability,
+    AiAgentBackendInfo, AiAgentFeatures, AiAgentSettings, AiAgentsCapability,
 };
 
 pub mod herdr;
@@ -28,6 +28,7 @@ pub struct AiAgentList {
 pub trait AiAgentBackend: Send + Sync {
     fn kind(&self) -> &'static str;
     fn version(&self) -> &str;
+    fn features(&self) -> AiAgentFeatures;
     fn list<'a>(&'a self, cancel: &'a AtomicBool) -> BackendFuture<'a, Result<AiAgentList, String>>;
     fn read<'a>(
         &'a self,
@@ -137,6 +138,7 @@ pub fn capability(
             .map(|backend| AiAgentBackendInfo {
                 kind: backend.kind().to_string(),
                 version: backend.version().to_string(),
+                features: backend.features(),
             })
             .collect(),
         settings: AiAgentSettings {
@@ -161,6 +163,7 @@ pub async fn handle_request(
     timeout_ms: Option<u64>,
     cancel: Arc<AtomicBool>,
 ) -> AgentMessage {
+    let features = backend.features();
     let response = match op {
         AiAgentOp::Status => match backend.list(&cancel).await {
             Ok(result) => AgentMessage::AiAgentResponse {
@@ -174,6 +177,9 @@ pub async fn handle_request(
             Err(error) => failure(req_id, error, backend),
         },
         AiAgentOp::Read => {
+            if read_source == Some(AiAgentReadSource::Visible) && !features.read_visible {
+                return rejected(req_id, "ai_agent_unsupported_operation");
+            }
             let target = match required_target(target) {
                 Ok(target) => target,
                 Err(error) => return invalid(req_id, error),
@@ -194,6 +200,9 @@ pub async fn handle_request(
             }
         }
         AiAgentOp::Prompt => {
+            if wait && !features.prompt_wait {
+                return rejected(req_id, "ai_agent_unsupported_operation");
+            }
             let target = match required_target(target) {
                 Ok(target) => target,
                 Err(error) => return invalid(req_id, error),
@@ -227,6 +236,13 @@ pub async fn handle_request(
                 Ok(keys) => keys,
                 Err(error) => return invalid(req_id, error.to_string()),
             };
+            if features
+                .keys
+                .as_ref()
+                .is_some_and(|allowed| keys.iter().any(|key| !allowed.contains(key)))
+            {
+                return rejected(req_id, "ai_agent_key_unsupported");
+            }
             match backend.send_keys(&target, &keys, &cancel).await {
                 Ok(agent) => AgentMessage::AiAgentResponse {
                     req_id,
@@ -254,6 +270,17 @@ fn invalid(req_id: String, error: String) -> AgentMessage {
     AgentMessage::AiAgentResponse {
         req_id,
         error: Some(format!("invalid_request: {error}")),
+        status: None,
+        agents: Vec::new(),
+        agent: None,
+        output: None,
+    }
+}
+
+fn rejected(req_id: String, error: &str) -> AgentMessage {
+    AgentMessage::AiAgentResponse {
+        req_id,
+        error: Some(error.to_string()),
         status: None,
         agents: Vec::new(),
         agent: None,
@@ -290,6 +317,10 @@ mod tests {
 
         fn version(&self) -> &str {
             "test"
+        }
+
+        fn features(&self) -> AiAgentFeatures {
+            AiAgentFeatures::default()
         }
 
         fn list<'a>(
@@ -389,6 +420,7 @@ mod tests {
         impl AiAgentBackend for NamedBackend {
             fn kind(&self) -> &'static str { self.0 }
             fn version(&self) -> &str { "test" }
+            fn features(&self) -> AiAgentFeatures { AiAgentFeatures::default() }
             fn list<'a>(&'a self, _cancel: &'a AtomicBool) -> BackendFuture<'a, Result<AiAgentList, String>> {
                 unreachable!()
             }
@@ -436,6 +468,7 @@ mod tests {
         impl AiAgentBackend for WaitingBackend {
             fn kind(&self) -> &'static str { "a" }
             fn version(&self) -> &str { "test" }
+            fn features(&self) -> AiAgentFeatures { AiAgentFeatures::default() }
             fn list<'a>(&'a self, _: &'a AtomicBool) -> BackendFuture<'a, Result<AiAgentList, String>> {
                 Box::pin(async { Err("unused".into()) })
             }
@@ -516,5 +549,97 @@ mod tests {
         assert!(matches!(keys, AgentMessage::AiAgentResponse {
             agent: Some(_), ..
         }));
+    }
+
+    #[tokio::test]
+    async fn limited_backend_features_are_enforced_before_dispatch() {
+        use std::sync::Mutex;
+
+        struct LimitedBackend(Arc<Mutex<Vec<&'static str>>>);
+
+        impl AiAgentBackend for LimitedBackend {
+            fn kind(&self) -> &'static str { "limited" }
+            fn version(&self) -> &str { "test" }
+            fn features(&self) -> AiAgentFeatures {
+                AiAgentFeatures {
+                    prompt_wait: false,
+                    read_visible: false,
+                    keys: Some(vec!["enter".into(), "esc".into()]),
+                    status_detection: false,
+                }
+            }
+            fn list<'a>(&'a self, _: &'a AtomicBool) -> BackendFuture<'a, Result<AiAgentList, String>> {
+                self.0.lock().unwrap().push("status");
+                Box::pin(async { unreachable!() })
+            }
+            fn read<'a>(&'a self, target: &'a str, _: u32, _: Option<AiAgentReadSource>, _: &'a AtomicBool) -> BackendFuture<'a, Result<String, String>> {
+                self.0.lock().unwrap().push("read");
+                Box::pin(async move { Ok(target.into()) })
+            }
+            fn prompt<'a>(&'a self, _: &'a str, _: &'a str, _: Option<u64>, _: &'a AtomicBool) -> BackendFuture<'a, Result<Option<AiAgent>, String>> {
+                self.0.lock().unwrap().push("prompt");
+                Box::pin(async { Ok(Some(agent())) })
+            }
+            fn send_keys<'a>(&'a self, _: &'a str, _: &'a [String], _: &'a AtomicBool) -> BackendFuture<'a, Result<Option<AiAgent>, String>> {
+                self.0.lock().unwrap().push("keys");
+                Box::pin(async { Ok(Some(agent())) })
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let backend = LimitedBackend(calls.clone());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let rejected_wait = handle_request(
+            &backend, "wait".into(), AiAgentOp::Prompt, Some("reviewer".into()),
+            Some("prompt".into()), Vec::new(), None, None, true, None, cancel.clone(),
+        ).await;
+        assert!(matches!(rejected_wait, AgentMessage::AiAgentResponse {
+            error: Some(error), status: None, .. } if error == "ai_agent_unsupported_operation"));
+        assert!(calls.lock().unwrap().is_empty());
+
+        let prompt = handle_request(
+            &backend, "prompt".into(), AiAgentOp::Prompt, Some("reviewer".into()),
+            Some("prompt".into()), Vec::new(), None, None, false, None, cancel.clone(),
+        ).await;
+        assert!(matches!(prompt, AgentMessage::AiAgentResponse { agent: Some(_), .. }));
+        let rejected_visible = handle_request(
+            &backend, "visible".into(), AiAgentOp::Read, Some("reviewer".into()),
+            None, Vec::new(), None, Some(AiAgentReadSource::Visible), false, None, cancel.clone(),
+        ).await;
+        assert!(matches!(rejected_visible, AgentMessage::AiAgentResponse {
+            error: Some(error), status: None, .. } if error == "ai_agent_unsupported_operation"));
+        assert_eq!(*calls.lock().unwrap(), ["prompt"]);
+
+        let bottom = handle_request(
+            &backend, "bottom".into(), AiAgentOp::Read, Some("reviewer".into()),
+            None, Vec::new(), None, Some(AiAgentReadSource::Bottom), false, None, cancel.clone(),
+        ).await;
+        assert!(matches!(bottom, AgentMessage::AiAgentResponse { output: Some(output), .. }
+            if output == "reviewer"));
+        let rejected_keys = handle_request(
+            &backend, "ctrl-c".into(), AiAgentOp::SendKeys, Some("reviewer".into()),
+            None, vec!["ctrl+c".into()], None, None, false, None, cancel.clone(),
+        ).await;
+        assert!(matches!(rejected_keys, AgentMessage::AiAgentResponse {
+            error: Some(error), status: None, .. } if error == "ai_agent_key_unsupported"));
+        assert_eq!(*calls.lock().unwrap(), ["prompt", "read"]);
+
+        let enter = handle_request(
+            &backend, "enter".into(), AiAgentOp::SendKeys, Some("reviewer".into()),
+            None, vec!["ENTER".into()], None, None, false, None, cancel,
+        ).await;
+        assert!(matches!(enter, AgentMessage::AiAgentResponse { agent: Some(_), .. }));
+        assert_eq!(*calls.lock().unwrap(), ["prompt", "read", "keys"]);
+        let capability = capability(true, None, &[Arc::new(LimitedBackend(calls))], None, None);
+        assert_eq!(capability.backends[0].features, backend.features());
+    }
+
+    #[test]
+    fn herdr_declares_default_features() {
+        let backend = herdr::HerdrBackend {
+            bin: std::path::PathBuf::new(),
+            version: "test".into(),
+        };
+        assert_eq!(backend.features(), AiAgentFeatures::default());
     }
 }

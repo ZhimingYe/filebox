@@ -30,6 +30,9 @@ struct CountingAiAgentBackend {
 impl crate::ai_agents::AiAgentBackend for CountingAiAgentBackend {
     fn kind(&self) -> &'static str { self.kind }
     fn version(&self) -> &str { "test" }
+    fn features(&self) -> filebox_protocol::resources::AiAgentFeatures {
+        filebox_protocol::resources::AiAgentFeatures::default()
+    }
 
     fn list<'a>(
         &'a self,

@@ -110,4 +110,14 @@ describe('AI agent shortcut profiles', () => {
       expect(send).not.toHaveBeenCalled();
     } finally { act(() => root.unmount()); container.remove(); }
   });
+
+  it('filters quick and expanded keys and hides an empty More keys menu', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<AiAgentShortcuts kind="limited" disabled={false} onSend={vi.fn()} allowedKeys={[]} />));
+      expect(container.querySelectorAll('[aria-label="Remote input keys"] button')).toHaveLength(0);
+      expect(container.querySelector('[aria-label="More shortcuts"]')).toBeNull();
+    } finally { act(() => root.unmount()); }
+  });
 });

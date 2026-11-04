@@ -298,6 +298,35 @@ pub async fn ai_agents_handler(
         );
     }
     let bound_backend = validated.backend.clone().unwrap_or(active_backend);
+    let features = capability
+        .backends
+        .iter()
+        .find(|backend| backend.kind == bound_backend)
+        .map(|backend| backend.features.clone())
+        .unwrap_or_default();
+    let unsupported = match validated.op {
+        AiAgentOp::Prompt if validated.wait && !features.prompt_wait => {
+            Some("ai_agent_unsupported_operation")
+        }
+        AiAgentOp::Read
+            if validated.read_source == Some(AiAgentReadSource::Visible)
+                && !features.read_visible =>
+        {
+            Some("ai_agent_unsupported_operation")
+        }
+        AiAgentOp::SendKeys
+            if features.keys.as_ref().is_some_and(|allowed| {
+                validated.keys.iter().any(|key| !allowed.contains(key))
+            }) =>
+        {
+            Some("ai_agent_key_unsupported")
+        }
+        _ => None,
+    };
+    if let Some(code) = unsupported {
+        let (status, _) = http_for_ai_agents_error(code);
+        return error_response(status, code, human_ai_agents_error(code), false);
+    }
 
     drop(inner);
     let req_id = format!("ai_agents_{}", Uuid::new_v4());
@@ -435,7 +464,7 @@ async fn review_context(
     agent_id: &str,
     backend: &str,
     target: Option<String>,
-) -> Option<String> {
+) -> Result<Option<String>, Response> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     for attempt in 0..2 {
         let req_id = format!("ai_agents_context_{}", Uuid::new_v4());
@@ -446,14 +475,35 @@ async fn review_context(
         };
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         match relay_ai_agents(state, principal_id, agent_id, &req_id, msg, remaining).await {
-            Ok(value) => return value["output"].as_str().and_then(clean_context),
+            Ok(value) => return Ok(value["output"].as_str().and_then(clean_context)),
             Err(response) if attempt == 0 && response.status() == StatusCode::TOO_MANY_REQUESTS => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            Err(_) => return None,
+            Err(response) => {
+                if response_error_code(response).await.as_deref()
+                    == Some("ai_agent_unsupported_operation")
+                {
+                    return Err(error_response(
+                        http_for_ai_agents_error("ai_agent_unsupported_operation").0,
+                        "ai_agent_unsupported_operation",
+                        "This AI agent backend cannot provide output for prompt review, so prompts are disabled.",
+                        false,
+                    ));
+                }
+                return Ok(None);
+            }
         }
     }
-    None
+    Ok(None)
+}
+
+async fn response_error_code(response: Response) -> Option<String> {
+    let bytes = axum::body::to_bytes(response.into_body(), 4096).await.ok()?;
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()?
+        .get("error")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 fn clean_context(text: &str) -> Option<String> {
@@ -496,8 +546,14 @@ async fn reviewed_message(
 ) -> Result<HubMessage, Response> {
     if matches!(validated.op, AiAgentOp::Prompt) && state.prompt_review_mode == crate::prompt_review::ReviewMode::Mandatory {
         if let Some(reviewer) = &state.prompt_reviewer {
-            let context =
-                review_context(state, principal_id, agent_id, &backend, validated.target.clone()).await;
+            let context = review_context(
+                state,
+                principal_id,
+                agent_id,
+                &backend,
+                validated.target.clone(),
+            )
+            .await?;
             match reviewer.review(validated.text.as_deref().unwrap_or_default(), context.as_deref()).await {
                 Ok(verdict) if matches!(verdict.decision, crate::prompt_review::Decision::Block) => {
                     tracing::warn!(agent_id = %agent_id, target = ?validated.target,
@@ -630,6 +686,9 @@ fn http_for_ai_agents_error(error: &str) -> (StatusCode, &'static str) {
         }
         "ai_agent_backend_unavailable" => (StatusCode::SERVICE_UNAVAILABLE, "ai_agent_backend_unavailable"),
         "ai_agent_key_unsupported" => (StatusCode::UNPROCESSABLE_ENTITY, "ai_agent_key_unsupported"),
+        "ai_agent_unsupported_operation" => {
+            (StatusCode::UNPROCESSABLE_ENTITY, "ai_agent_unsupported_operation")
+        }
         "ai_agent_backend_incompatible" => (StatusCode::BAD_GATEWAY, "ai_agent_backend_incompatible"),
         "ai_agent_timeout" => (StatusCode::GATEWAY_TIMEOUT, "ai_agent_timeout"),
         "ai_agent_blocked" => (StatusCode::CONFLICT, "ai_agent_blocked"),
@@ -649,6 +708,9 @@ fn human_ai_agents_error(error: &str) -> &'static str {
         "ai_agent_backend_not_detected" => "The selected AI agent backend is not detected on this Agent. Install it or choose another backend in Settings.",
         "ai_agent_backend_unavailable" => "The AI agent backend is installed but the server is not running on this backend",
         "ai_agent_key_unsupported" => "This AI agent backend does not support that key.",
+        "ai_agent_unsupported_operation" => {
+            "This AI agent backend does not support that operation."
+        }
         "ai_agent_backend_incompatible" => "The AI agent backend returned an incompatible response. Update its CLI and restart the AI agent backend with a matching version.",
         "ai_agent_timeout" => "The AI agent command timed out",
         "ai_agent_blocked" => "That agent is waiting for an approval. Inspect the output, then send a key.",
@@ -701,6 +763,7 @@ mod tests {
             backends: vec![filebox_protocol::resources::AiAgentBackendInfo {
                 kind: "herdr".into(),
                 version: "0.9.5".into(),
+                features: Default::default(),
             }],
             settings,
         });
@@ -721,6 +784,46 @@ mod tests {
             inner.agents.get("agent").unwrap().connection_id
         };
         (state, receiver, connection_id)
+    }
+
+    #[tokio::test]
+    async fn backend_features_reject_unsupported_requests_before_relay() {
+        let settings = filebox_protocol::resources::AiAgentSettings {
+            enabled: true,
+            environment_override: None,
+            backend: Some("herdr".into()),
+            backend_environment_override: None,
+        };
+        let (state, mut receiver, _) = state_with_ai_agents_settings(settings, "herdr").await;
+        {
+            let mut inner = state.inner.write().await;
+            inner.agents.get_mut("agent").unwrap()
+                .capabilities.ai_agents.as_mut().unwrap()
+                .backends[0].features = filebox_protocol::resources::AiAgentFeatures {
+                    prompt_wait: false,
+                    read_visible: false,
+                    keys: Some(vec!["enter".into(), "esc".into()]),
+                    status_detection: false,
+                };
+        }
+        for (body, expected) in [
+            (serde_json::json!({"op":"prompt","target":"reviewer","text":"hello","wait":true}), "ai_agent_unsupported_operation"),
+            (serde_json::json!({"op":"read","target":"reviewer","read_source":"visible"}), "ai_agent_unsupported_operation"),
+            (serde_json::json!({"op":"send_keys","target":"reviewer","keys":["ctrl+c"]}), "ai_agent_key_unsupported"),
+        ] {
+            let response = ai_agents_handler(
+                State(state.clone()),
+                Extension(AuthenticatedSession { id: "s".into(), principal_id: "p".into() }),
+                Path("agent".into()),
+                Json(serde_json::from_value(body).unwrap()),
+            ).await;
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let value: serde_json::Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), 4096).await.unwrap(),
+            ).unwrap();
+            assert_eq!(value["error"], expected);
+            assert!(receiver.try_recv().is_err());
+        }
     }
 
     #[test]
@@ -968,6 +1071,7 @@ mod tests {
             backends: vec![filebox_protocol::resources::AiAgentBackendInfo {
                 kind: "herdr".into(),
                 version: "0.9.5".into(),
+                features: Default::default(),
             }],
             settings: filebox_protocol::resources::AiAgentSettings {
                 enabled: true,
@@ -1013,6 +1117,7 @@ mod tests {
             ("unconfigured", StatusCode::SERVICE_UNAVAILABLE, false),
             ("off", StatusCode::OK, true),
             ("read_error", StatusCode::OK, true),
+            ("read_unsupported", StatusCode::UNPROCESSABLE_ENTITY, false),
             ("read_empty", StatusCode::OK, true),
             ("read_busy", StatusCode::OK, true),
             ("yes", StatusCode::FORBIDDEN, false),
@@ -1047,7 +1152,7 @@ mod tests {
                 agent_token_hash: "fake".into(), users: vec![],
             }, false);
             let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
-            let capabilities = filebox_protocol::resources::Capabilities { ai_agents: Some(filebox_protocol::resources::AiAgentsCapability { available: true, backend: Some("herdr".into()), version: None, backends: vec![filebox_protocol::resources::AiAgentBackendInfo { kind: "herdr".into(), version: "0.9.5".into() }], settings: filebox_protocol::resources::AiAgentSettings { enabled: true, environment_override: None, backend: None, backend_environment_override: None } }), ..Default::default() };
+            let capabilities = filebox_protocol::resources::Capabilities { ai_agents: Some(filebox_protocol::resources::AiAgentsCapability { available: true, backend: Some("herdr".into()), version: None, backends: vec![filebox_protocol::resources::AiAgentBackendInfo { kind: "herdr".into(), version: "0.9.5".into(), features: Default::default() }], settings: filebox_protocol::resources::AiAgentSettings { enabled: true, environment_override: None, backend: None, backend_environment_override: None } }), ..Default::default() };
             state.inner.write().await.agents.register("a".into(), "agent".into(), sender,
                 std::sync::Arc::new(tokio::sync::Notify::new()), 0, vec![], 0, vec![], capabilities, None);
             let request_state = state.clone();
@@ -1072,6 +1177,7 @@ mod tests {
                     assert_eq!(read_source, Some(AiAgentReadSource::Bottom));
                     let value = match decision {
                         "read_busy" if attempt == 0 => serde_json::json!({"error":"agent_busy"}),
+                        "read_unsupported" => serde_json::json!({"error":"ai_agent_unsupported_operation"}),
                         "read_error" => serde_json::json!({"error":"ai_agent_timeout"}),
                         "read_empty" => serde_json::json!({"output":"\u{1b}[0m\n"}),
                         "yes" => serde_json::json!({"output":"Shall I run rm -rf /home/data?"}),
@@ -1090,14 +1196,17 @@ mod tests {
                 inner.pending_responses.write().await.remove(&req_id).unwrap().deliver(serde_json::json!({"ok":true}));
             }
             let response = request.await.unwrap();
-            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), usize::from(!matches!(decision, "off" | "unconfigured")));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), usize::from(!matches!(decision, "off" | "unconfigured" | "read_unsupported")));
             assert_eq!(response.status(), expected);
             if !relay {
                 assert!(receiver.try_recv().is_err());
                 let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
                 let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                assert_eq!(body["retryable"], !matches!(decision, "block" | "yes"));
-                assert_eq!(body["error"], match decision { "block" | "yes" => "ai_agent_prompt_blocked", "unconfigured" => "prompt_review_not_configured", _ => "prompt_review_unavailable" });
+                assert_eq!(body["retryable"], !matches!(decision, "block" | "yes" | "read_unsupported"));
+                assert_eq!(body["error"], match decision { "block" | "yes" => "ai_agent_prompt_blocked", "unconfigured" => "prompt_review_not_configured", "read_unsupported" => "ai_agent_unsupported_operation", _ => "prompt_review_unavailable" });
+                if decision == "read_unsupported" {
+                    assert_eq!(body["message"], "This AI agent backend cannot provide output for prompt review, so prompts are disabled.");
+                }
                 if matches!(decision, "block" | "yes") { assert!(body["message"].as_str().unwrap().contains("Review reason.")); }
             }
             server.abort();
@@ -1121,7 +1230,7 @@ mod tests {
                 agent_token_hash: "fake".into(), users: vec![],
             }, false);
             let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
-            let capabilities = filebox_protocol::resources::Capabilities { ai_agents: Some(filebox_protocol::resources::AiAgentsCapability { available: true, backend: Some("herdr".into()), version: None, backends: vec![filebox_protocol::resources::AiAgentBackendInfo { kind: "herdr".into(), version: "0.9.5".into() }], settings: filebox_protocol::resources::AiAgentSettings { enabled: true, environment_override: None, backend: None, backend_environment_override: None } }), ..Default::default() };
+            let capabilities = filebox_protocol::resources::Capabilities { ai_agents: Some(filebox_protocol::resources::AiAgentsCapability { available: true, backend: Some("herdr".into()), version: None, backends: vec![filebox_protocol::resources::AiAgentBackendInfo { kind: "herdr".into(), version: "0.9.5".into(), features: Default::default() }], settings: filebox_protocol::resources::AiAgentSettings { enabled: true, environment_override: None, backend: None, backend_environment_override: None } }), ..Default::default() };
             state.inner.write().await.agents.register("a".into(), "agent".into(), sender,
                 std::sync::Arc::new(tokio::sync::Notify::new()), 0, vec![], 0, vec![], capabilities, None);
             let request_state = state.clone();
@@ -1178,6 +1287,7 @@ mod tests {
             backends: vec![filebox_protocol::resources::AiAgentBackendInfo {
                 kind: "herdr".into(),
                 version: "0.9.5".into(),
+                features: Default::default(),
             }],
             settings: filebox_protocol::resources::AiAgentSettings {
                 enabled: true,
