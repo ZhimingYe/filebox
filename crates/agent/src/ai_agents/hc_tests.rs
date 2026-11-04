@@ -169,6 +169,18 @@ time.sleep(30)
         assert!(!fixture.log.exists());
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn retries_an_executable_temporarily_open_for_writing() {
+        let fixture = Fixture::new(Vec::new());
+        let writer = std::fs::OpenOptions::new().write(true).open(&fixture.backend.bin).unwrap();
+        let (_, result) = tokio::join!(async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(writer);
+        }, probe_version(&fixture.backend.bin));
+        assert_eq!(result.unwrap(), "0.1.17");
+    }
+
     #[tokio::test]
     async fn list_filters_again_even_if_server_ignores_labels() {
         let mut unlabelled = terminal();
@@ -209,6 +221,14 @@ time.sleep(30)
             assert_eq!(fixture.backend.read("t7", 2, source, &AtomicBool::new(false)).await.unwrap(), "visible1\nvisible2");
             assert_eq!(fixture.requests()[2]["params"], json!({"terminal": "t7", "lines": history}));
         }
+    }
+
+    #[tokio::test]
+    async fn caps_the_selected_tail_not_discarded_history() {
+        let text = format!("{}\nrecent1\nrecent2\n", "x".repeat(AI_AGENT_OUTPUT_MAX_BYTES + 1));
+        let fixture = Fixture::new(vec![handshake(), step("terminal.get", terminal()),
+            step("terminal.read", json!({"text": text}))]);
+        assert_eq!(fixture.backend.read("t7", 2, None, &AtomicBool::new(false)).await.unwrap(), "recent1\nrecent2");
     }
 
     #[tokio::test]
@@ -268,7 +288,7 @@ time.sleep(30)
         let (result, ()) = tokio::join!(work, trigger);
         assert_eq!(result.unwrap_err(), "cancelled");
         let result = bounded(Duration::from_millis(100), &AtomicBool::new(false), async {
-            let mut rpc = RpcClient::start(&fixture.backend.bin)?;
+            let mut rpc = RpcClient::start(&fixture.backend.bin).await?;
             rpc.call("hello", json!({"generation": 1})).await
         }).await;
         assert_eq!(result.unwrap_err(), "ai_agent_timeout");
@@ -299,7 +319,7 @@ time.sleep(30)
         let _cleanup = Cleanup(wrapper.clone());
         let backend = HcBackend { version: probe_version(&wrapper).await.unwrap(), bin: wrapper.clone() };
         let cancel = AtomicBool::new(false);
-        let mut setup = RpcClient::start(&wrapper).unwrap();
+        let mut setup = RpcClient::start(&wrapper).await.unwrap();
         check_hello(&setup.call("hello", json!({"generation": 1})).await.unwrap()).unwrap();
         let program = r#"import sys,time
 def report(state):

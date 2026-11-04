@@ -68,8 +68,13 @@ as `ai_agent_backend_incompatible` rather than falling back to a shell.
   from Filebox milliseconds to hc seconds. Wait results are hc check-ins, not
   promises that a task finished. Polling supplies fresh terminal state after
   mutations; delivery metadata is not presented as an updated agent record.
-- Keys use `terminal.keys` and the existing Filebox key allowlist. No arbitrary
-  command-line arguments or shell command is constructed from browser input.
+- Keys use `terminal.keys` and the existing Filebox key allowlist. As with
+  Herdr, key actions are **not LLM-reviewed**; only prompts are. The local
+  opt-in label grants that access, not proof that a program is a coding agent.
+  Labelling a shell could expose shell history/menu actions through these keys:
+  never label a general-purpose shell. OSC reports are status facts, not an
+  authentication mechanism. No arbitrary command-line argument or shell command
+  is constructed from browser input.
 - Local subprocess deadlines match the existing backend budgets: list 8s,
   read 20s, keys 10s, prompt 15s (or requested wait + 5s). Cancellation kills
   the local transport process, not the hc core or terminal. A send already

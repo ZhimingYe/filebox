@@ -49,7 +49,7 @@ impl HcBackend {
             Operation::Keys { .. } => Duration::from_secs(10),
         };
         bounded(budget, cancel, async {
-            let mut rpc = RpcClient::start(&self.bin)?;
+            let mut rpc = RpcClient::start(&self.bin).await?;
             let hello = rpc.call("hello", json!({"generation": 1})).await?;
             let core_id = check_hello(&hello)?;
             if matches!(op, Operation::List) {
@@ -83,12 +83,12 @@ impl HcBackend {
                     let history = if source == Some(AiAgentReadSource::Visible) { 0 } else { lines };
                     let result = rpc.call("terminal.read", json!({"terminal": target, "lines": history})).await?;
                     let text = result["text"].as_str().ok_or_else(incompatible)?;
-                    if text.len() > AI_AGENT_OUTPUT_MAX_BYTES {
-                        return Err("ai_agent_failed: hc read exceeds output limit".into());
-                    }
                     // hc counts history above the screen; Filebox caps the entire snapshot.
                     let tail = text.lines().rev().take(lines as usize).collect::<Vec<_>>()
                         .into_iter().rev().collect::<Vec<_>>().join("\n");
+                    if tail.len() > AI_AGENT_OUTPUT_MAX_BYTES {
+                        return Err("ai_agent_failed: hc read exceeds output limit".into());
+                    }
                     Ok(json!(tail))
                 }
                 Operation::Prompt { text, wait_ms, .. } => {
@@ -228,10 +228,10 @@ struct RpcClient {
 }
 
 impl RpcClient {
-    fn start(bin: &Path) -> Result<Self, String> {
+    async fn start(bin: &Path) -> Result<Self, String> {
         let mut command = command(bin);
         command.arg("connect").stdin(Stdio::piped());
-        let mut child = command.spawn().map_err(unavailable)?;
+        let mut child = spawn(&mut command).await?;
         let group = ProcessGroup(child.id().unwrap_or(0));
         let stdin = child.stdin.take().ok_or_else(incompatible)?;
         let stdout = BufReader::new(child.stdout.take().ok_or_else(incompatible)?);
@@ -265,6 +265,20 @@ fn command(bin: &Path) -> Command {
     command
 }
 
+async fn spawn(command: &mut Command) -> Result<Child, String> {
+    for attempt in 0..10 {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            // A concurrently written executable can briefly remain busy after close.
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 9 => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(error) => return Err(unavailable(error)),
+        }
+    }
+    unreachable!()
+}
+
 struct ProcessGroup(u32);
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
@@ -287,7 +301,7 @@ async fn bounded<T>(budget: Duration, cancel: &AtomicBool, future: impl std::fut
 
 async fn probe_version(bin: &Path) -> Result<String, String> {
     bounded(Duration::from_secs(3), &AtomicBool::new(false), async {
-        let mut child = command(bin).arg("--version").spawn().map_err(unavailable)?;
+        let mut child = spawn(command(bin).arg("--version")).await?;
         let _group = ProcessGroup(child.id().unwrap_or(0));
         let mut bytes = Vec::new();
         child.stdout.take().ok_or_else(incompatible)?.take(129).read_to_end(&mut bytes).await.map_err(unavailable)?;
