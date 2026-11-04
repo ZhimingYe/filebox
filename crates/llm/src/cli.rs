@@ -97,6 +97,7 @@ pub trait ProviderStore {
 pub struct JsonProviderStore {
     path: PathBuf,
     target: PathBuf,
+    original: Vec<u8>,
     root: Value,
     validate: Box<ConfigValidator>,
     validation_provider: Option<(String, Option<String>)>,
@@ -116,14 +117,17 @@ impl JsonProviderStore {
         })?;
         let target = fs::canonicalize(path)
             .map_err(|error| format!("failed to resolve '{}': {error}", path.display()))?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)
+        let mut original = Vec::new();
+        file.read_to_end(&mut original)
             .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
-        let root = serde_json::from_str(&contents)
+        let contents = std::str::from_utf8(&original)
+            .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
+        let root = serde_json::from_str(contents)
             .map_err(|error| format!("failed to parse '{}': {error}", path.display()))?;
         Ok(Self {
             path: path.to_owned(),
             target,
+            original,
             root,
             validate: Box::new(validate),
             validation_provider: None,
@@ -200,7 +204,7 @@ impl ProviderStore for JsonProviderStore {
         let mut contents = serde_json::to_vec_pretty(&self.root)
             .map_err(|error| format!("failed to serialize merged config: {error}"))?;
         contents.push(b'\n');
-        write_config_atomic(&self.path, &self.target, &contents)
+        write_config_atomic(&self.path, &self.target, &self.original, &contents)
     }
 }
 
@@ -251,8 +255,33 @@ pub async fn init_interactive(
     Ok(())
 }
 
-fn write_config_atomic(path: &Path, target: &Path, contents: &[u8]) -> Result<(), String> {
+fn write_config_atomic(
+    path: &Path,
+    target: &Path,
+    original: &[u8],
+    contents: &[u8],
+) -> Result<(), String> {
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+    let current_target = fs::canonicalize(path).map_err(|_| {
+        format!(
+            "'{}' now points to a different file than when the wizard started; rerun the wizard",
+            path.display()
+        )
+    })?;
+    if current_target != target {
+        return Err(format!(
+            "'{}' now points to a different file than when the wizard started; rerun the wizard",
+            path.display()
+        ));
+    }
+    let current = fs::read(target)
+        .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
+    if current != original {
+        return Err(format!(
+            "'{}' changed while the wizard was running; rerun the wizard",
+            path.display()
+        ));
+    }
     let parent = target
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -512,6 +541,63 @@ mod tests {
         );
         assert_eq!(fs::read_dir(&target_dir).unwrap().count(), 1);
         assert_eq!(fs::read_dir(&link_dir).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn json_store_rejects_repointed_symlink_without_modifying_targets() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let first_target = dir.path().join("first.json");
+        let second_target = dir.path().join("second.json");
+        let link = dir.path().join("hub.json");
+        let first_original = br#"{"agent_token_hash":"first","users":[]}"#;
+        let second_original = br#"{"agent_token_hash":"second","users":[]}"#;
+        fs::write(&first_target, first_original).unwrap();
+        fs::write(&second_target, second_original).unwrap();
+        symlink(&first_target, &link).unwrap();
+
+        let mut store = open_store(&link, |_| Ok(()));
+        store
+            .insert_provider("deepseek", &provider(), None)
+            .unwrap();
+        fs::remove_file(&link).unwrap();
+        symlink(&second_target, &link).unwrap();
+
+        assert_eq!(
+            store.save().unwrap_err(),
+            format!(
+                "'{}' now points to a different file than when the wizard started; rerun the wizard",
+                link.display()
+            )
+        );
+        assert_eq!(fs::read(&first_target).unwrap(), first_original);
+        assert_eq!(fs::read(&second_target).unwrap(), second_original);
+    }
+
+    #[test]
+    fn json_store_rejects_concurrent_config_edit_without_overwriting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.json");
+        let original = br#"{"agent_token_hash":"hash","users":[]}"#;
+        let changed = br#"{"agent_token_hash":"changed","users":[]}"#;
+        fs::write(&path, original).unwrap();
+
+        let mut store = open_store(&path, |_| Ok(()));
+        store
+            .insert_provider("deepseek", &provider(), None)
+            .unwrap();
+        fs::write(&path, changed).unwrap();
+
+        assert_eq!(
+            store.save().unwrap_err(),
+            format!(
+                "'{}' changed while the wizard was running; rerun the wizard",
+                path.display()
+            )
+        );
+        assert_eq!(fs::read(&path).unwrap(), changed);
     }
 
     #[cfg(unix)]
