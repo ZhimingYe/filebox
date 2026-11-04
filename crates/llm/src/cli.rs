@@ -96,6 +96,7 @@ pub trait ProviderStore {
 
 pub struct JsonProviderStore {
     path: PathBuf,
+    target: PathBuf,
     root: Value,
     validate: Box<ConfigValidator>,
     validation_provider: Option<(String, Option<String>)>,
@@ -113,6 +114,8 @@ impl JsonProviderStore {
                 format!("failed to read '{}': {error}", path.display())
             }
         })?;
+        let target = fs::canonicalize(path)
+            .map_err(|error| format!("failed to resolve '{}': {error}", path.display()))?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)
             .map_err(|error| format!("failed to read '{}': {error}", path.display()))?;
@@ -120,6 +123,7 @@ impl JsonProviderStore {
             .map_err(|error| format!("failed to parse '{}': {error}", path.display()))?;
         Ok(Self {
             path: path.to_owned(),
+            target,
             root,
             validate: Box::new(validate),
             validation_provider: None,
@@ -196,7 +200,7 @@ impl ProviderStore for JsonProviderStore {
         let mut contents = serde_json::to_vec_pretty(&self.root)
             .map_err(|error| format!("failed to serialize merged config: {error}"))?;
         contents.push(b'\n');
-        write_config_atomic(&self.path, &contents)
+        write_config_atomic(&self.path, &self.target, &contents)
     }
 }
 
@@ -247,16 +251,19 @@ pub async fn init_interactive(
     Ok(())
 }
 
-fn write_config_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
+fn write_config_atomic(path: &Path, target: &Path, contents: &[u8]) -> Result<(), String> {
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
-    let parent = path
+    let parent = target
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let name = path
+    let name = target
         .file_name()
         .ok_or_else(|| format!("invalid config path '{}'", path.display()))?
         .to_string_lossy();
+    #[cfg(unix)]
+    let target_metadata = fs::metadata(target)
+        .map_err(|error| format!("failed to read metadata for '{}': {error}", path.display()))?;
 
     let mut temp = None;
     for _ in 0..128 {
@@ -290,11 +297,36 @@ fn write_config_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
         ));
     };
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let owner = (target_metadata.uid(), target_metadata.gid());
+        let temp_owner = file.metadata().map(|metadata| (metadata.uid(), metadata.gid()));
+        let result = temp_owner.and_then(|temp_owner| {
+            if temp_owner == owner {
+                Ok(())
+            } else {
+                std::os::unix::fs::fchown(&file, Some(owner.0), Some(owner.1))
+            }
+        });
+        if let Err(error) = result {
+            drop(file);
+            let _ = fs::remove_file(&temp_path);
+            return Err(format!(
+                "failed to preserve owner {}:{} of '{}': {error}; run the wizard as the config owner or root",
+                owner.0,
+                owner.1,
+                path.display()
+            ));
+        }
+    }
+
     let result = file
         .write_all(contents)
         .and_then(|()| file.sync_all());
     drop(file);
-    let result = result.and_then(|()| fs::rename(&temp_path, path));
+    let result = result.and_then(|()| fs::rename(&temp_path, target));
     if let Err(error) = result {
         let cleanup_error = fs::remove_file(&temp_path).err();
         return Err(match cleanup_error {
@@ -436,5 +468,70 @@ mod tests {
         .unwrap();
         let store = open_store(&path, |_| Ok(()));
         assert!(!store.has_inline_binding("prompt_review"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn json_store_follows_symlink_and_keeps_target_private_without_temp_files() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let target_dir = dir.path().join("target");
+        let link_dir = dir.path().join("links");
+        fs::create_dir(&target_dir).unwrap();
+        fs::create_dir(&link_dir).unwrap();
+        let target = target_dir.join("hub.json");
+        let link = link_dir.join("hub.json");
+        fs::write(
+            &target,
+            r#"{"agent_token_hash":"hash","users":[]}"#,
+        )
+        .unwrap();
+        symlink(&target, &link).unwrap();
+        let original_link_target = fs::read_link(&link).unwrap();
+
+        let mut store = open_store(&link, |_| Ok(()));
+        store
+            .insert_provider("deepseek", &provider(), None)
+            .unwrap();
+        store.save().unwrap();
+
+        let saved: Value = serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+        assert_eq!(
+            saved["llm_providers"]["deepseek"]["model"],
+            "deepseek-flash"
+        );
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_link(&link).unwrap(), original_link_target);
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(fs::read_dir(&target_dir).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&link_dir).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn json_store_preserves_existing_config_owner() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.json");
+        fs::write(&path, r#"{"agent_token_hash":"hash","users":[]}"#).unwrap();
+        let original_metadata = fs::metadata(&path).unwrap();
+
+        let mut store = open_store(&path, |_| Ok(()));
+        store
+            .insert_provider("deepseek", &provider(), None)
+            .unwrap();
+        store.save().unwrap();
+
+        let saved_metadata = fs::metadata(&path).unwrap();
+        assert_eq!(saved_metadata.uid(), original_metadata.uid());
+        assert_eq!(saved_metadata.gid(), original_metadata.gid());
     }
 }

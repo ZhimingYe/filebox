@@ -107,8 +107,9 @@ fields. Use `--output <path>` to select a different existing Hub config.
    probe fails, you can choose whether to save anyway.
 6. Choose whether the provider should be used for AI Agents prompt review.
    The wizard validates the merged config and saves it atomically by syncing a
-   same-directory temporary file before replacing the config; the file is
-   private (`0600` on Unix). Restart the Hub to apply it.
+   same-directory temporary file before replacing the config; it follows
+   symlinks and preserves the existing owner, and the file is private
+   (`0600` on Unix). Restart the Hub to apply it.
 
 ### Reusing in another binary
 
