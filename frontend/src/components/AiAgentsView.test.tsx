@@ -137,6 +137,49 @@ describe('AiAgentsView', () => {
     expect(container.querySelector('textarea')!.value).toBe('review draft');
   });
 
+  it('distinguishes same-name hc agents and keeps drafts and actions bound to terminal IDs through renames', async () => {
+    const hc = { ...agent, capabilities: { ai_agents: {
+      ...agent.capabilities!.ai_agents!, backend: 'hc', version: '0.1.17',
+    } } } as api.AgentInfo;
+    let firstName = 'Review';
+    vi.mocked(api.aiAgentCommand).mockImplementation(async (_id, body) => {
+      if (body.op === 'status') return { ...listed, agents: [
+        { ...listed.agents[0], target: 't7', id: 't7', scope: 'core:123', name: firstName },
+        { ...listed.agents[0], target: 't8', id: 't8', scope: 'core:456', name: 'Review' },
+      ] };
+      return { req_id: 'r', output: `Output from ${body.target}` };
+    });
+    await render(hc);
+    const card = (target: string) => [...container.querySelectorAll<HTMLButtonElement>('aside button[aria-pressed]')]
+      .find((b) => b.textContent?.includes(`${target} · `))!;
+    expect(card('t7').textContent).toContain('Review');
+    expect(card('t8').textContent).toContain('Review');
+    await act(async () => card('t7').click());
+    await typePrompt('first draft');
+    await act(async () => card('t8').click());
+    expect(container.querySelector('textarea')!.value).toBe('');
+    expect(container.querySelector('pre')!.textContent).toBe('Output from t8');
+    await typePrompt('second task');
+    await act(async () => button('Send').click());
+    expect(api.aiAgentCommand).toHaveBeenCalledWith(agent.id,
+      expect.objectContaining({ backend: 'hc', op: 'prompt', target: 't8', text: 'second task' }),
+      expect.any(AbortSignal), expect.any(Number));
+    await act(async () => button('Enter').click());
+    expect(api.aiAgentCommand).toHaveBeenCalledWith(agent.id,
+      expect.objectContaining({ backend: 'hc', op: 'send_keys', target: 't8', keys: ['enter'] }),
+      expect.any(AbortSignal), expect.any(Number));
+    await act(async () => card('t7').click());
+    firstName = '前端';
+    await act(async () => button('Refresh agent list').click());
+    expect(card('t7').textContent).toContain('前端');
+    expect(container.querySelector('textarea')!.getAttribute('aria-label')).toBe('Prompt for 前端');
+    expect(container.querySelector('textarea')!.value).toBe('first draft');
+    await act(async () => button('Send').click());
+    expect(api.aiAgentCommand).toHaveBeenCalledWith(agent.id,
+      expect.objectContaining({ backend: 'hc', op: 'prompt', target: 't7', text: 'first draft' }),
+      expect.any(AbortSignal), expect.any(Number));
+  });
+
   it('shows a completion hint without refreshing output on status polls', async () => {
     vi.useFakeTimers();
     let seq = 1;

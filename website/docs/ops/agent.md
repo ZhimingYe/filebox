@@ -32,16 +32,27 @@ Office-related limits: [Office preview](./office).
 
 Install [herdr-core](https://github.com/herdrdev/herdr-core#install) on the
 Agent machine and make `hc` available to the Filebox Agent. Only local live
-terminals explicitly labelled `fb=1` or `filebox=ai-agent` are included:
+terminals explicitly labelled `fb=<name>` or `filebox=<name>` are included.
+Choose the name shown in Filebox for each agent:
 
 ```sh
-hc run --bg --label fb=1 -- claude
-hc label t7 fb=1            # opt in an existing coding-agent terminal
-hc label t7 fb= filebox=     # revoke both supported opt-in labels
+hc run --bg --label fb=frontend -- claude
+hc run --bg --label Filebox=backend -- claude
+hc label t7 fb=review       # connect or rename an existing coding-agent terminal
+hc label t7 fb=             # remove this label to revoke access
 ```
 
 Use the actual terminal address instead of `t7`, and your coding agent instead
-of `claude`. Select **hc (experimental)** in Agent Settings; automatic selection
+of `claude`, starting each agent in its project directory. Label keys are
+case-insensitive in Filebox (`fb`, `FB`, `filebox`, `Filebox`, `FILEBOX`); values
+are user-chosen names, not fixed codes. Empty/blank values do not opt in.
+The original `filebox=ai-agent` marker keeps the hc terminal name. If both keys
+exist, `fb` supplies the display name. IDs remain visible and identify all
+operations, even for duplicate or changed names. To revoke access, remove all
+supported labels using their exact original capitalization, e.g.
+`hc label t7 Filebox=` for `Filebox=backend`.
+
+Select **hc (experimental)** in Agent Settings; automatic selection
 still prefers Herdr when both are installed. `FILEBOX_AGENT_AI_AGENTS_BACKEND=hc`
 locks the selection. hc uses the Agent process's hc session/config environment;
 `hc connect` can start its local core automatically. Status requires the

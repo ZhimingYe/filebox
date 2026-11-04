@@ -35,8 +35,9 @@ fn requires_generation_one_and_the_complete_api() {
 
 #[test]
 fn only_labelled_local_live_terminals_are_allowed() {
-    for labels in [json!({"filebox": "ai-agent"}), json!({"fb": "1"}),
-        json!({"filebox": "ai-agent", "fb": "1"})] {
+    for labels in [json!({"filebox": "ai-agent"}), json!({"fb": "frontend"}),
+        json!({"Filebox": "backend"}), json!({"FILEBOX": "review"}),
+        json!({"filebox": "ai-agent", "FB": "frontend"})] {
         let mut terminal = terminal();
         terminal["labels"] = labels;
         assert!(allowed(&terminal));
@@ -47,9 +48,9 @@ fn only_labelled_local_live_terminals_are_allowed() {
         assert!(!allowed(&terminal));
     }
     for (field, value) in [
-        ("labels", json!({})), ("labels", json!({"filebox": "shell"})),
-        ("labels", json!({"fb": "shell"})), ("labels", json!({"fb": ""})),
-        ("labels", json!({"fb": "ai-agent"})),
+        ("labels", json!({})), ("labels", json!({"other": "frontend"})),
+        ("labels", json!({"fb": ""})), ("labels", json!({"Filebox": " \t\n"})),
+        ("labels", json!({"FB": true})), ("labels", json!({"FILEBOX": 1})),
         ("state", json!("finished")), ("address", json!("remote/t7")),
         ("address", json!("-t7")), ("address", json!("")),
     ] {
@@ -57,6 +58,29 @@ fn only_labelled_local_live_terminals_are_allowed() {
         terminal[field] = value;
         assert!(!allowed(&terminal));
     }
+}
+
+#[test]
+fn labels_supply_custom_names_case_insensitively_without_changing_identity() {
+    let original = to_agent(&terminal(), "core-1").unwrap();
+    for key in ["fb", "FB", "fB", "filebox", "Filebox", "FILEBOX", "fIlEbOx"] {
+        for name in ["frontend", "后端", "Review agent", "1"] {
+            let mut terminal = terminal();
+            terminal["labels"] = json!({key: format!(" {name} ")});
+            assert!(allowed(&terminal), "{key}={name}");
+            let agent = to_agent(&terminal, "core-1").unwrap();
+            assert_eq!(agent.name.as_deref(), Some(name), "{key}={name}");
+            assert_eq!(agent.target, original.target);
+            assert_eq!(agent.id, original.id);
+            assert_eq!(agent.scope, original.scope);
+        }
+    }
+    let mut terminal = terminal();
+    terminal["labels"] = json!({"FB": "frontend", "Filebox": "backend"});
+    assert_eq!(to_agent(&terminal, "core-1").unwrap().name.as_deref(), Some("frontend"));
+    terminal["labels"] = json!({"FILEBOX": "ai-agent", "fb": " "});
+    assert!(allowed(&terminal));
+    assert_eq!(to_agent(&terminal, "core-1").unwrap().name, original.name);
 }
 
 #[test]
@@ -201,16 +225,21 @@ time.sleep(30)
         remote["address"] = json!("machine/t7");
         let mut short = terminal();
         short["address"] = json!("t8");
-        short["labels"] = json!({"fb": "1"});
+        short["labels"] = json!({"fb": "frontend"});
         let mut both = terminal();
         both["address"] = json!("t9");
-        both["labels"] = json!({"filebox": "ai-agent", "fb": "1"});
+        both["labels"] = json!({"filebox": "ai-agent", "FB": "backend"});
+        let mut long = terminal();
+        long["address"] = json!("t10");
+        long["labels"] = json!({"Filebox": "backend"});
         let fixture = Fixture::new(vec![handshake(), step("terminal.list", json!({
-            "terminals": [terminal(), short, both, unlabelled, remote],
+            "terminals": [terminal(), short, both, long, unlabelled, remote],
         }))]);
         let result = fixture.backend.list(&AtomicBool::new(false)).await.unwrap();
         assert!(result.status.reachable);
-        assert_eq!(result.agents.iter().map(|agent| agent.target.as_str()).collect::<Vec<_>>(), ["t7", "t8", "t9"]);
+        assert_eq!(result.agents.iter().map(|agent| agent.target.as_str()).collect::<Vec<_>>(), ["t7", "t8", "t9", "t10"]);
+        assert_eq!(result.agents.iter().map(|agent| agent.name.as_deref().unwrap()).collect::<Vec<_>>(),
+            ["worker", "frontend", "backend", "backend"]);
         assert_eq!(fixture.requests()[1]["params"], json!({}));
     }
 
@@ -355,37 +384,70 @@ for line in sys.stdin:
             "name": "filebox-fixture", "wait": false, "no_parent": true,
         })).await.unwrap();
         let target = run["address"].as_str().unwrap();
+        let started = tokio::time::timeout(Duration::from_secs(10), Command::new(&wrapper)
+            .args(["run", "--bg", "--label", "Filebox=frontend", "--", "python3", "-u", "-c", program])
+            .kill_on_drop(true).output()).await.unwrap().unwrap();
+        assert!(started.status.success(), "{}", String::from_utf8_lossy(&started.stderr));
         setup.call("terminal.run", json!({"argv": ["python3", "-c", "import time; time.sleep(60)"], "wait": false, "no_parent": true})).await.unwrap();
         let listed = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let listed = backend.list(&cancel).await.unwrap();
-                if listed.agents.first().is_some_and(|agent| agent.status == AiAgentStatus::Idle) {
+                if listed.agents.len() == 2 && listed.agents.iter().all(|agent| agent.status == AiAgentStatus::Idle) {
                     break listed;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }).await.expect("fixture should report idle through OSC 7501");
         assert!(listed.status.reachable, "{:?}", listed.error);
-        assert_eq!(listed.agents.len(), 1);
-        assert_eq!(listed.agents[0].target, target);
-        assert_eq!(listed.agents[0].status, AiAgentStatus::Idle);
+        let original = listed.agents.iter().find(|agent| agent.target == target).unwrap();
+        assert_eq!(original.name.as_deref(), Some("filebox-fixture"));
+        let second = listed.agents.iter().find(|agent| agent.name.as_deref() == Some("frontend")).unwrap();
+        assert_ne!(second.target, target);
         assert!(backend.read(target, 80, Some(AiAgentReadSource::Visible), &cancel).await.unwrap().contains("READY"));
         backend.prompt(target, "filebox literal \"prompt\"", Some(5000), &cancel).await.unwrap();
         let output = backend.read(target, 80, None, &cancel).await.unwrap();
         assert!(output.contains("RECEIVED: filebox literal \"prompt\""), "{output}");
         let after = backend.list(&cancel).await.unwrap();
-        assert_eq!(after.agents[0].status, AiAgentStatus::Done);
-        assert_eq!(after.agents[0].completion_seq, Some(1));
-        backend.send_keys(target, &["y".into(), "enter".into()], &cancel).await.unwrap();
-        setup.call("terminal.label", json!({"terminal": target, "labels": {"filebox": "", "fb": "1"}})).await.unwrap();
-        assert_eq!(backend.list(&cancel).await.unwrap().agents[0].target, target);
-        assert!(backend.read(target, 80, None, &cancel).await.unwrap().contains("READY"));
-        backend.prompt(target, "short label", Some(5000), &cancel).await.unwrap();
+        let first = after.agents.iter().find(|agent| agent.target == target).unwrap();
+        assert_eq!(first.status, AiAgentStatus::Done);
+        assert_eq!(first.completion_seq, Some(1));
+        let other_output = backend.read(&second.target, 80, None, &cancel).await.unwrap();
+        assert!(other_output.contains("READY"));
+        assert!(!other_output.contains("filebox literal"), "{other_output}");
+        backend.prompt(&second.target, "second terminal", Some(5000), &cancel).await.unwrap();
+        assert!(backend.read(&second.target, 80, None, &cancel).await.unwrap().contains("RECEIVED: second terminal"));
+        assert!(!backend.read(target, 80, None, &cancel).await.unwrap().contains("second terminal"));
+
+        setup.call("terminal.label", json!({"terminal": target,
+            "labels": {"filebox": "", "fB": "frontend", "FILEBOX": "ai-agent"}})).await.unwrap();
+        let same_names = backend.list(&cancel).await.unwrap();
+        assert_eq!(same_names.agents.len(), 2);
+        assert!(same_names.agents.iter().all(|agent| agent.name.as_deref() == Some("frontend")));
+        backend.prompt(target, "same name, first terminal", Some(5000), &cancel).await.unwrap();
+        assert!(backend.read(target, 80, None, &cancel).await.unwrap().contains("RECEIVED: same name, first terminal"));
+        assert!(!backend.read(&second.target, 80, None, &cancel).await.unwrap().contains("same name, first terminal"));
         backend.send_keys(target, &["enter".into()], &cancel).await.unwrap();
-        setup.call("terminal.label", json!({"terminal": target, "labels": {"fb": ""}})).await.unwrap();
-        assert!(backend.list(&cancel).await.unwrap().agents.is_empty());
+
+        let renamed = tokio::time::timeout(Duration::from_secs(10), Command::new(&wrapper)
+            .args(["label", target, "fB=前端"]).kill_on_drop(true).output()).await.unwrap().unwrap();
+        assert!(renamed.status.success(), "{}", String::from_utf8_lossy(&renamed.stderr));
+        let renamed_list = backend.list(&cancel).await.unwrap();
+        let renamed = renamed_list.agents.iter().find(|agent| agent.target == target).unwrap();
+        assert_eq!(renamed.name.as_deref(), Some("前端"));
+        assert_eq!(renamed.id, original.id);
+        assert_eq!(renamed.scope, original.scope);
+
+        setup.call("terminal.label", json!({"terminal": target, "labels": {"fB": ""}})).await.unwrap();
+        let legacy = backend.list(&cancel).await.unwrap();
+        assert_eq!(legacy.agents.iter().find(|agent| agent.target == target).unwrap().name, original.name);
+        assert!(backend.read(target, 80, None, &cancel).await.unwrap().contains("READY"));
+        setup.call("terminal.label", json!({"terminal": target, "labels": {"FILEBOX": ""}})).await.unwrap();
+        let remaining = backend.list(&cancel).await.unwrap();
+        assert_eq!(remaining.agents.len(), 1);
+        assert_eq!(remaining.agents[0].target, second.target);
         assert_eq!(backend.read(target, 80, None, &cancel).await.unwrap_err(), "ai_agent_missing");
         assert_eq!(backend.prompt(target, "must not send", None, &cancel).await.unwrap_err(), "ai_agent_missing");
         assert_eq!(backend.send_keys(target, &["enter".into()], &cancel).await.unwrap_err(), "ai_agent_missing");
+        assert!(backend.read(&second.target, 80, None, &cancel).await.unwrap().contains("READY"));
     }
 }

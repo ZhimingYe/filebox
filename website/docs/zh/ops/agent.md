@@ -31,15 +31,25 @@ Office 相关上限见 [Office 预览](./office)。
 ## 试验性 hc 后端
 
 在 Agent 机器安装 [herdr-core](https://github.com/herdrdev/herdr-core#install)，
-让 Filebox Agent 能找到 `hc`。只接入显式标记 `fb=1` 或 `filebox=ai-agent` 的本地运行中终端：
+让 Filebox Agent 能找到 `hc`。在各自项目目录启动代理，用 `fb=名称` 或 `filebox=名称`
+指定它在 Filebox 中的显示名称；只接入带这些标记的本地运行中终端：
 
 ```sh
-hc run --bg --label fb=1 -- claude
-hc label t7 fb=1            # 接入已有的编码代理终端
-hc label t7 fb= filebox=     # 撤销两种标签的后续 Filebox 访问
+hc run --bg --label fb=frontend -- claude
+hc run --bg --label Filebox=backend -- claude
+hc label t7 fb=review       # 接入已有终端，或修改它在 Filebox 中的名称
+hc label t7 fb=             # 移除此标签，撤销接入
 ```
 
 将 `t7` 换成实际终端地址，`claude` 换成使用的编码代理。
+标签键不区分大小写：`fb`、`FB`、`filebox`、`Filebox`、`FILEBOX` 及混合大小写均可；
+值是客户自定的名称，不是固定口令，空值或纯空白不接入。名称可包含中文或空格，
+含空格时给整个标签加引号，例如 `--label 'fb=Code review'`。
+原来的 `filebox=ai-agent` 仍可接入，并保留 hc 终端原名；同时有两种标签时，优先使用 `fb` 的名称。
+列表和详情保留终端 ID，同名或改名不会改变操作目标；刷新列表后更新名称，选中项和草稿不变。
+这些名称不修改 hc 自身的终端名。撤销接入时，需删除所有受支持的标签，删除命令保留原键名大小写，
+例如 `hc label t7 Filebox=` 删除 `Filebox=backend`，不会删除另一个 `fb` 或 `FILEBOX` 标签。
+
 在 Agent Settings 选择 **hc (experimental)**；同时安装两种后端时，自动选择仍优先 Herdr。
 `FILEBOX_AGENT_AI_AGENTS_BACKEND=hc` 可锁定选择。hc 沿用 Agent 进程的 hc session/config 环境，
 `hc connect` 可自动启动本地 core。状态只来自程序的 OSC 7501 报告，没有报告则显示 Unknown；

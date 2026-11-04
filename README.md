@@ -142,7 +142,8 @@ on its own, with no duplicate entries and no lost configuration.
   that switch. Not a general-purpose remote shell; reminders need an open
   page. See [the shortcut guide](docs/herdr-shortcuts.md).
 - **Experimental hc backend**: select **hc (experimental)** in Agent Settings
-  to list and control herdr-core coding agents labelled `fb=1` or `filebox=ai-agent`.
+  to list and control herdr-core coding agents named with `fb=<name>` or
+  `filebox=<name>` (case-insensitive keys).
   Only local live terminals are included; the existing Herdr backend is unchanged.
   See [hc setup and compatibility](docs/hc-compatibility.md).
 - Every prompt passes a Hub-side LLM security review first: destructive

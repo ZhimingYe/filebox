@@ -14,21 +14,40 @@ Filebox Agent process's PATH, or set `FILEBOX_AGENT_HC` to the executable path
 (`herdr-core` is also valid as an explicit path). Restart the Filebox Agent or
 use **Check installation**. An explicit invalid path does not fall back to PATH.
 
-Start a coding agent with an explicit opt-in label:
+Start agents from their project directories, choosing their names in Filebox:
 
 ```sh
-hc run --bg --label fb=1 -- claude
+hc run --bg --label fb=frontend -- claude
+hc run --bg --label Filebox=backend -- claude
 # Or opt in an existing coding-agent terminal, using its actual address:
-hc label t7 fb=1
+hc label t7 fb=review
 # Revoke future Filebox access:
-hc label t7 fb= filebox=
+hc label t7 fb=
 ```
 
 Replace `claude` with the coding agent you use; Filebox does not detect brands.
-Only **local, live** terminals labelled `fb=1` or `filebox=ai-agent` are
-exposed; either label grants access, so remove both to revoke it. The original
-long form remains supported. hc requires `key=value`, so bare `--label fb` is
-not valid. Filebox filters one terminal-list snapshot locally for both labels.
+The label key is `fb` or `filebox`, matched case-insensitively: `FB`, `Filebox`,
+`FILEBOX` and mixed-case spellings also work. The value is your chosen display
+name, not a fixed activation code. Names preserve their case and can include
+Unicode or spaces (quote the whole label, e.g. `--label 'fb=Code review'`).
+Empty or whitespace-only values do not opt in a terminal. hc requires
+`key=value`; bare `--label fb` is not valid.
+
+Updating the label renames the agent in Filebox on the next list refresh,
+without changing its terminal ID, selected pane or draft. Names need not be
+unique: the list and detail show hc terminal IDs, and reads, prompts and keys
+always target those IDs, never the display name. These labels do not rename
+the terminal inside hc itself.
+
+The original `filebox=ai-agent` marker remains supported and keeps the hc
+terminal's original name. A named `fb` label takes precedence over a `filebox`
+label when both exist; each terminal is listed once. To revoke access, remove
+**every** supported label on that terminal, using the exact key spellings you
+added: for example, `hc label t7 Filebox=` removes `Filebox`, not `fb` or
+`FILEBOX`. hc itself treats label keys as case-sensitive.
+
+Only **local, live** opted-in terminals are exposed. Filebox filters one
+terminal-list snapshot locally for the supported labels.
 Unlabelled shells, finished terminals and remote `machine/t7` terminals are
 excluded. Filebox checks the label again with `terminal.get` before every
 read, prompt and key operation; a revoked or finished target returns

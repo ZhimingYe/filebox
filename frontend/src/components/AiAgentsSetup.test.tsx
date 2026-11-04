@@ -169,7 +169,7 @@ it('explains the experimental hc binary and explicit terminal opt-in', async () 
   await act(async () => root.render(<AiAgentsSetup agent={hc} onRefresh={refresh} />));
   expect(container.textContent).toContain('hc (experimental)');
   expect(container.textContent).toContain('FILEBOX_AGENT_HC');
-  expect(container.textContent).toContain('hc run --bg --label fb=1 -- claude');
+  expect(container.textContent).toContain('hc run --bg --label fb=frontend -- claude');
   expect(container.querySelector('a')?.href).toBe('https://github.com/herdrdev/herdr-core#install');
   expect(container.textContent).not.toContain('herdr server');
 });

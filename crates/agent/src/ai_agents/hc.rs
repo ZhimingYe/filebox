@@ -179,9 +179,18 @@ fn check_hello(hello: &Value) -> Result<&str, String> {
     hello["core"]["id"].as_str().filter(|id| !id.is_empty()).ok_or_else(incompatible)
 }
 
+fn filebox_label(terminal: &Value) -> Option<(&str, &str)> {
+    let labels = terminal["labels"].as_object()?;
+    ["fb", "filebox"].into_iter().find_map(|alias| {
+        labels.iter().find_map(|(key, value)| {
+            let name = value.as_str()?.trim();
+            (key.eq_ignore_ascii_case(alias) && !name.is_empty()).then_some((alias, name))
+        })
+    })
+}
+
 fn allowed(terminal: &Value) -> bool {
-    (terminal["labels"]["filebox"] == "ai-agent" || terminal["labels"]["fb"] == "1")
-        && terminal["state"] == "live"
+    filebox_label(terminal).is_some() && terminal["state"] == "live"
         && terminal["address"].as_str().is_some_and(|address| validate_target(address).is_ok())
 }
 
@@ -192,7 +201,10 @@ fn to_agent(terminal: &Value, core: &str) -> Result<AiAgent, String> {
     let string = |value: &Value| value.as_str().filter(|s| !s.is_empty()).map(str::to_string);
     Ok(AiAgent {
         target: target.clone(),
-        name: string(&terminal["name"]),
+        name: match filebox_label(terminal) {
+            Some(("filebox", "ai-agent")) | None => string(&terminal["name"]),
+            Some((_, name)) => Some(name.to_string()),
+        },
         kind: status.and_then(|s| string(&s["app"])).or_else(|| string(&terminal["template"])),
         status: status.and_then(|s| s["state"].as_str()).map(AiAgentStatus::parse_label).unwrap_or_default(),
         completion_seq: terminal["turn"].as_u64(),
