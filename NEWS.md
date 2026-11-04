@@ -24,6 +24,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ### Fixed
 - **Transfer scrolling** — the Transfer view scrolls when the temp folder lists more files than fit on one screen; the file list no longer shrinks and clips its rows.
+- **Transfer download** — the download button in Transfer works again; the Hub now mints file download tokens for the Transfer folder instead of rejecting it as an unavailable root.
 
 ## v2.7.1
 

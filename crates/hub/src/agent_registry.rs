@@ -62,6 +62,12 @@ pub struct AgentConnection {
 }
 
 impl AgentConnection {
+    pub fn visible_temp_root_name(&self) -> Option<&str> {
+        let temp_root = self.temp_root.as_ref()?;
+        (!self.roots.iter().any(|root| root.name == temp_root.name))
+            .then_some(temp_root.name.as_str())
+    }
+
     pub fn to_info(&self) -> AgentInfoResponse {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -70,10 +76,7 @@ impl AgentConnection {
 
         // The synthetic temp root is only usable (and only shown) when no
         // user root shadows its name — user roots take precedence everywhere.
-        let temp_visible = self
-            .temp_root
-            .as_ref()
-            .is_some_and(|temp| !self.roots.iter().any(|r| r.name == temp.name));
+        let temp_visible = self.visible_temp_root_name().is_some();
 
         AgentInfoResponse {
             id: self.agent_id.clone(),
