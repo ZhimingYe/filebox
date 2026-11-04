@@ -5,7 +5,7 @@ use super::*;
 use super::{middleware::*, preview::*, resources::*};
 use crate::state::{AuthenticatedSession, GetAccessPurpose, GetAccessToken, PreviewSession, PREVIEW_SESSION_MAX_TOTAL, PREVIEW_SESSION_TTL, GET_ACCESS_TOKEN_TTL_EVENTS, GET_ACCESS_TOKEN_TTL_FILE};
 use filebox_protocol::message::HubMessage;
-use filebox_protocol::resources::{RootConfig, FileStat, FsEntryType, DesiredResources};
+use filebox_protocol::resources::{RootConfig, FileStat, FsEntryType, DesiredResources, TempRootInfo};
 use tokio::sync::mpsc;
 use filebox_protocol::message::AgentMessage;
 use filebox_protocol::resources::Capabilities;
@@ -92,6 +92,87 @@ async fn register_preview_agent(
         Capabilities::default(),
         None,
     );
+}
+
+fn access_token_test_root(name: &str, enabled: bool) -> RootConfig {
+    RootConfig {
+        name: name.to_string(),
+        path: "/tmp".to_string(),
+        enabled,
+        pinned_folders: vec![],
+    }
+}
+
+fn access_token_test_temp_root() -> TempRootInfo {
+    TempRootInfo {
+        name: "agent-temp-copied-file".to_string(),
+        path: "/tmp/agent-temp-copied-file".to_string(),
+        max_file_bytes: 1024,
+        max_total_bytes: 4096,
+    }
+}
+
+async fn register_access_token_agent(
+    state: &AppState,
+    roots: Vec<RootConfig>,
+    temp_root: Option<TempRootInfo>,
+) {
+    let (tx, _rx) = mpsc::channel(256);
+    let mut capabilities = Capabilities::default();
+    capabilities.temp_upload = temp_root.is_some();
+    let mut inner = state.inner.write().await;
+    inner.agents.register(
+        "agent".to_string(),
+        "MockAgent".to_string(),
+        tx,
+        Arc::new(Notify::new()),
+        0,
+        roots,
+        0,
+        vec![],
+        capabilities,
+        temp_root,
+    );
+}
+
+async fn mint_file_raw_access_token(
+    state: &AppState,
+    root: &str,
+) -> (StatusCode, serde_json::Value) {
+    let (session, _) = {
+        let mut inner = state.inner.write().await;
+        inner.sessions.create_session("admin", false)
+    };
+    let app = create_router(state.clone());
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method(Method::POST)
+                .uri("/api/access-tokens")
+                .header(
+                    header::COOKIE,
+                    format!("filebox_session_92701c7f={}", session.session_id),
+                )
+                .header("x-csrf-token", session.csrf_token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({
+                        "purpose": "file_raw",
+                        "agent_id": "agent",
+                        "root": root,
+                        "path": "/file.txt",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&body).unwrap())
 }
 
 async fn send_agent_value(state: &AppState, req_id: &str, value: serde_json::Value) {
@@ -497,6 +578,71 @@ async fn access_token_mint_and_use_for_events() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn file_raw_access_token_accepts_visible_temp_root() {
+    let state = AppState::new(&test_config(), false);
+    register_access_token_agent(&state, vec![], Some(access_token_test_temp_root())).await;
+
+    let (status, body) = mint_file_raw_access_token(&state, "agent-temp-copied-file").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["token"].as_str().map(str::len), Some(64));
+}
+
+#[tokio::test]
+async fn file_raw_access_token_uses_enabled_user_root_that_shadows_temp_root() {
+    let state = AppState::new(&test_config(), false);
+    register_access_token_agent(
+        &state,
+        vec![access_token_test_root("agent-temp-copied-file", true)],
+        Some(access_token_test_temp_root()),
+    )
+    .await;
+
+    let (status, body) = mint_file_raw_access_token(&state, "agent-temp-copied-file").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["token"].as_str().map(str::len), Some(64));
+}
+
+#[tokio::test]
+async fn file_raw_access_token_rejects_disabled_user_root_that_shadows_temp_root() {
+    let state = AppState::new(&test_config(), false);
+    register_access_token_agent(
+        &state,
+        vec![access_token_test_root("agent-temp-copied-file", false)],
+        Some(access_token_test_temp_root()),
+    )
+    .await;
+
+    let (status, body) = mint_file_raw_access_token(&state, "agent-temp-copied-file").await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "root_unavailable");
+}
+
+#[tokio::test]
+async fn file_raw_access_token_rejects_unknown_root() {
+    let state = AppState::new(&test_config(), false);
+    register_access_token_agent(&state, vec![], Some(access_token_test_temp_root())).await;
+
+    let (status, body) = mint_file_raw_access_token(&state, "unknown").await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "root_unavailable");
+}
+
+#[tokio::test]
+async fn file_raw_access_token_rejects_temp_name_without_temp_root() {
+    let state = AppState::new(&test_config(), false);
+    register_access_token_agent(&state, vec![], None).await;
+
+    let (status, body) = mint_file_raw_access_token(&state, "agent-temp-copied-file").await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "root_unavailable");
 }
 
 #[tokio::test]

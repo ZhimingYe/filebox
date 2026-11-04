@@ -88,7 +88,9 @@ pub(super) async fn access_token_create_handler(
                     )
                         .into_response();
                 }
-                if !agent.roots.iter().any(|r| r.name == root && r.enabled) {
+                if !agent.roots.iter().any(|r| r.name == root && r.enabled)
+                    && agent.visible_temp_root_name() != Some(root.as_str())
+                {
                     return (
                         StatusCode::NOT_FOUND,
                         Json(serde_json::json!({
