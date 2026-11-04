@@ -204,7 +204,9 @@ impl ProviderStore for JsonProviderStore {
         let mut contents = serde_json::to_vec_pretty(&self.root)
             .map_err(|error| format!("failed to serialize merged config: {error}"))?;
         contents.push(b'\n');
-        write_config_atomic(&self.path, &self.target, &self.original, &contents)
+        write_config_atomic(&self.path, &self.target, &self.original, &contents)?;
+        self.original = contents;
+        Ok(())
     }
 }
 
@@ -437,6 +439,31 @@ mod tests {
             );
         }
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn json_store_saves_provider_then_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hub.json");
+        fs::write(
+            &path,
+            r#"{"agent_token_hash":"hash","users":[]}"#,
+        )
+        .unwrap();
+        let mut store = open_store(&path, |_| Ok(()));
+        store
+            .insert_provider("deepseek", &provider(), None)
+            .unwrap();
+        store.save().unwrap();
+        store.bind("prompt_review", "deepseek").unwrap();
+        store.save().unwrap();
+
+        let written: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            written["llm_providers"]["deepseek"]["model"],
+            "deepseek-flash"
+        );
+        assert_eq!(written["prompt_review"], json!({"provider":"deepseek"}));
     }
 
     #[test]
