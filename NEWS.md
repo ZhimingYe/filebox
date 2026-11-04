@@ -2,15 +2,24 @@
 
 All notable changes to filebox are listed here. Dates are UTC.
 
-## Unreleased
+## v3.0.0
 
 ### Added
+- **Experimental hc backend** — select **hc (experimental)** in Agent Settings to list and control local, live herdr-core terminals opted in with `fb=<name>` or `filebox=<name>` labels (case-insensitive keys; the value is the display name; legacy `filebox=ai-agent` still works). Operations target hc terminal IDs, and every read, prompt and key re-checks the label. The Herdr backend is unchanged. See `docs/hc-compatibility.md`.
+- **AI Agents settings and onboarding** — per-Agent enable switch in Agent Settings, persisted in `agent_state.json`, with Setup, Intro and not-running states; `FILEBOX_AGENT_AI_AGENTS_ENABLED=0`/`1` at Agent startup overrides and locks the switch.
+- **Prompt review state** — the AI Agents view shows whether Hub prompt review is on (with its model), off, or not configured.
+- **Markdown math** — Markdown previews render math locally with KaTeX (no CDN): `$...$`, `$$...$$`, `\(...\)`, `\[...\]`, GitHub `` $`...`$ ``, fenced `math`/`latex`/`tex`/`katex` blocks and standalone LaTeX environments. Invalid TeX stays readable.
+- **Third-party licenses in About** — browse the full license texts of bundled Rust and frontend dependencies (`scripts/gen_notice.sh about`).
 - **LLM provider crate and reusable CLI wizard (`hub --init-llm`)** — add protocol-neutral Chat Completions, Responses, and Anthropic Messages support with multi-round tool calling, thinking, JSON mode, and named Hub providers.
 - **AI Agents review context** — the Hub supplies recent target-window output to the review provider along with the prompt, so short confirmations can be judged against the proposed action. Context is bounded, sanitized, and treated as untrusted; unavailable output never bypasses review.
 - **AI Agents prompt review** — hub.json LLM security review with Chat Completions, Responses, or Anthropic Messages protocols. By default, AI Agents prompts are disabled until review is configured and always fail closed on review errors; blocked prompts retain their browser drafts and show the review reason. A startup-only `FILEBOX_HUB_PROMPT_REVIEW_ENABLED=0` opt-out restores unreviewed relay. Status, reads and keys remain available.
 - **Per-Agent AI Agents backend selection and features** — choose an automatically detected or explicit backend in Agent settings, or lock selection with `FILEBOX_AGENT_AI_AGENTS_BACKEND`. Capabilities advertise backend features, and commands plus prompt-review context are bound to the active backend so stale requests cannot be rerouted after a switch.
 
+### Removed
+- **Remote Terminal** — the TOTP-guarded Terminal view, `agent --setup-terminal-2fa`, `terminal_totp_secret` / `FILEBOX_AGENT_TERMINAL_TOTP_SECRET`, and the terminal routes and WebSocket messages are gone. A leftover `terminal_totp_secret` in `agent.toml` is ignored.
+
 ### Changed
+- **AI Agents UI refinement** — quiet icon controls, unified inline callouts, a compact list and composer, and short-viewport layouts that keep popovers and Send reachable.
 - **AI Agents hard rename** — Herdr is now the first backend for the backend-neutral AI Agents view. Breaking interface changes: `FILEBOX_AGENT_HERDR_ENABLED` → `FILEBOX_AGENT_AI_AGENTS_ENABLED`; `agent_state.json` `herdr_enabled` → `ai_agents_enabled` (a saved `herdr_enabled: false` is carried over once as `ai_agents_enabled: false`; no other old names are read); `/api/agents/{id}/herdr[-settings]` → `/api/agents/{id}/ai-agents[/settings]`; WebSocket messages and the capability field are renamed. Upgrade Hub and Agent together.
 
 ### Fixed
