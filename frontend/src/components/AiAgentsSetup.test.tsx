@@ -161,6 +161,39 @@ it('shows the backend selector only when needed and preserves the selection on c
   expect(api.setAiAgentsSettings).toHaveBeenLastCalledWith('a1', { enabled: false, backend: 'other' });
 });
 
+it('explains the experimental hc binary and explicit terminal opt-in', async () => {
+  const hc = { ...agent, capabilities: { ...agent.capabilities, ai_agents: {
+    ...agent.capabilities!.ai_agents!, backend: 'hc',
+    settings: { ...agent.capabilities!.ai_agents!.settings, backend: 'hc' },
+  } } } as api.AgentInfo;
+  await act(async () => root.render(<AiAgentsSetup agent={hc} onRefresh={refresh} />));
+  expect(container.textContent).toContain('hc (experimental)');
+  expect(container.textContent).toContain('FILEBOX_AGENT_HC');
+  expect(container.textContent).toContain('hc run --bg --label fb=frontend -- claude');
+  expect(container.querySelector('a')?.href).toBe('https://github.com/herdrdev/herdr-core#install');
+  expect(container.textContent).not.toContain('herdr server');
+});
+
+it('selects hc using the existing persisted backend setting', async () => {
+  const capability = { ...agent.capabilities!.ai_agents!, available: true, backend: 'herdr',
+    backends: [{ kind: 'herdr', version: '0.9.5' }, { kind: 'hc', version: '0.1.17' }] };
+  const multi = { ...agent, capabilities: { ...agent.capabilities, ai_agents: capability } } as api.AgentInfo;
+  vi.mocked(api.setAiAgentsSettings).mockResolvedValue({ ...capability,
+    settings: { ...capability.settings, backend: 'hc' } });
+  await act(async () => root.render(<AiAgentsToggle agent={multi} onRefresh={refresh} />));
+  const select = container.querySelector('select')!;
+  expect([...select.options].map((option) => option.textContent)).toEqual([
+    'Automatic', 'Herdr 0.9.5', 'hc (experimental) 0.1.17',
+  ]);
+  await act(async () => {
+    select.value = 'hc';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  expect(api.setAiAgentsSettings).toHaveBeenCalledWith('a1', { enabled: true, backend: 'hc' });
+  await act(async () => button('AI Agents').click());
+  expect(api.setAiAgentsSettings).toHaveBeenLastCalledWith('a1', { enabled: false, backend: 'hc' });
+});
+
 it('keeps an undetected backend option readable on desktop', async () => {
   await act(async () => root.render(<AiAgentsToggle agent={agentWithMissingBackend()} onRefresh={refresh} />));
   const select = container.querySelector('select')!;

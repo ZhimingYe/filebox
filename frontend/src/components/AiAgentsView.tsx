@@ -738,7 +738,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
                     key={item.target}
                     type="button"
                     aria-pressed={active}
-                    title={`${displayName(item)}${item.cwd ? ` · ${item.cwd}` : ''}`}
+                    title={`${displayName(item)}${backendKind === 'hc' ? ` · ${item.target}` : ''}${item.cwd ? ` · ${item.cwd}` : ''}`}
                     onClick={() => selectAgent(item.target)}
                     onMouseEnter={() => setHoveredCard(item.target)}
                     onMouseLeave={() => setHoveredCard((value) => value === item.target ? null : value)}
@@ -756,8 +756,8 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
                         </span>}
                       </span>
                       <span style={styles.cardMeta}>
-                        {item.kind || 'agent'}
-                        {item.cwd ? ` · ${item.cwd}` : item.id ? ` · ${item.id}` : ''}
+                        {backendKind === 'hc' ? `${item.target} · ` : ''}{item.kind || 'agent'}
+                        {item.cwd ? ` · ${item.cwd}` : backendKind !== 'hc' && item.id ? ` · ${item.id}` : ''}
                       </span>
                     </span>
                   </button>
@@ -773,13 +773,13 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
               {isMobile && <AiAgentButton touch variant="quiet" icon aria-label="Back to agent list" onClick={() => setSelected(null)}><IconChevronLeft /></AiAgentButton>}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={styles.titleRow}>
-                  <div style={styles.detailName} title={`${displayName(selectedAgent)}${selectedAgent.cwd ? ` · ${selectedAgent.cwd}` : ''}`}>{displayName(selectedAgent)}</div>
+                  <div style={styles.detailName} title={`${displayName(selectedAgent)}${backendKind === 'hc' ? ` · ${selectedAgent.target}` : ''}${selectedAgent.cwd ? ` · ${selectedAgent.cwd}` : ''}`}>{displayName(selectedAgent)}</div>
                   {features.status_detection && <span style={{ ...styles.badge, color: statusMeta(selectedAgent.status).color, background: statusMeta(selectedAgent.status).bg }}>
                     <span style={{ ...styles.dot, background: statusMeta(selectedAgent.status).color }} />{statusMeta(selectedAgent.status).label}
                   </span>}
                 </div>
                 {!inlineNotice && <div style={styles.detailMeta} title={selectedAgent.cwd ?? undefined}>
-                  {selectedAgent.kind || 'agent'}{selectedAgent.cwd ? ` · ${selectedAgent.cwd}` : ''}
+                  {backendKind === 'hc' ? `${selectedAgent.target} · ` : ''}{selectedAgent.kind || 'agent'}{selectedAgent.cwd ? ` · ${selectedAgent.cwd}` : ''}
                 </div>}
               </div>
               <div style={styles.headActions}>

@@ -30,8 +30,22 @@ const herdr: AiAgentBackendDescriptor = {
   noAgentsMessage: 'Start a coding agent inside Herdr on this machine. Filebox will list it here so you can read output and send a prompt from your phone.',
 };
 
+const hc: AiAgentBackendDescriptor = {
+  kind: 'hc',
+  label: 'hc (experimental)',
+  installUrl: 'https://github.com/herdrdev/herdr-core#install',
+  installGuide: 'herdr-core installation guide',
+  binaryName: 'hc',
+  binaryEnvironment: 'FILEBOX_AGENT_HC',
+  serverCommand: 'hc run --bg --label fb=frontend -- claude',
+  versionNote: () => 'Experimental hc generation-1 API. Use fb=<name> or filebox=<name>; keys are case-insensitive and the value is the agent name in Filebox.',
+  noServerMessage: 'Check hc on the Agent machine. Filebox uses hc connect, which can start the local core automatically; the API must support generation 1.',
+  noAgentsMessage: 'Start with hc run --bg --label fb=frontend -- claude. Choose a name after fb= for each agent, such as frontend or backend. Connect or rename an existing terminal with hc label t7 fb=frontend. fb and filebox are case-insensitive. Only local live terminals with a non-empty name are listed; the legacy filebox=ai-agent marker still works.',
+};
+
 export const aiAgentBackends: Record<string, AiAgentBackendDescriptor> = {
   herdr,
+  hc,
 };
 
 export const supportedAiAgentBackends = Object.values(aiAgentBackends);

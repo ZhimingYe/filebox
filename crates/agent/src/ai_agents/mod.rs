@@ -12,9 +12,10 @@ use filebox_protocol::resources::{
     AiAgentBackendInfo, AiAgentFeatures, AiAgentSettings, AiAgentsCapability,
 };
 
+pub mod hc;
 pub mod herdr;
 
-pub const BACKEND_KINDS: &[&str] = &["herdr"];
+pub const BACKEND_KINDS: &[&str] = &["herdr", "hc"];
 
 pub type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -98,6 +99,11 @@ pub async fn probe_all() -> Vec<Arc<dyn AiAgentBackend>> {
         match *kind {
             "herdr" => {
                 if let Some(backend) = herdr::HerdrBackend::probe().await {
+                    backends.push(Arc::new(backend) as Arc<dyn AiAgentBackend>);
+                }
+            }
+            "hc" => {
+                if let Some(backend) = hc::HcBackend::probe().await {
                     backends.push(Arc::new(backend) as Arc<dyn AiAgentBackend>);
                 }
             }
