@@ -2,6 +2,11 @@ import { expect, it } from 'vitest';
 import type { AiAgentsCapability } from '../api/client';
 import { aiAgentBackend, aiAgentBackendLabel, aiAgentFeatures } from './aiAgentBackends';
 
+it.each(['toString', '__proto__', 'constructor'])('uses the generic backend for inherited key %j', kind => {
+  expect(aiAgentBackend(kind)).toBe(aiAgentBackend('unknown'));
+  expect(aiAgentBackendLabel(kind)).toBe('AI agent backend');
+});
+
 it.each([null, undefined, '', 'unknown'])('uses generic backend for %j', kind => {
   expect(aiAgentBackend(kind).kind).toBe('generic');
   expect(aiAgentBackendLabel(kind, '1.2')).toBe('AI agent backend 1.2');

@@ -24,6 +24,19 @@ function respond(body: unknown) {
 const convert = () => api.officeConvert('agent', 'root', '/表.xlsx', 'req', 'nonce', true);
 
 describe('officeConvert', () => {
+  it.each([
+    { cache_key: 'not-a-cache-hash', size: 1 },
+    { cache_key: 'z'.repeat(64), size: 1 },
+    { cache_key: 123, size: 1 },
+    { cache_key: hash, size: '12' },
+    { cache_key: hash, size: NaN },
+    { cache_key: hash, size: Infinity },
+    { cache_key: hash, size: -1 },
+    { cache_key: hash, size: 0 },
+  ])('rejects invalid legacy output %j', async legacy => {
+    respond(legacy);
+    await expect(convert()).rejects.toMatchObject({ status: 502, error: 'office_convert_failed' });
+  });
   it('retains valid PDF and zero-byte CSV outputs and sends nonce/force', async () => {
     const csv = { label: '空表', format: 'csv', cache_key: hash.toUpperCase(), size: 0 };
     respond({ req_id: 'req', cache_key: null, size: null, outputs: [pdf, csv] });

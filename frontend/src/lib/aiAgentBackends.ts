@@ -59,7 +59,7 @@ const fallback: AiAgentBackendDescriptor = {
 };
 
 export function aiAgentBackend(kind?: string | null): AiAgentBackendDescriptor {
-  return (kind && aiAgentBackends[kind]) || fallback;
+  return kind && Object.hasOwn(aiAgentBackends, kind) ? aiAgentBackends[kind] : fallback;
 }
 
 const defaultFeatures: AiAgentFeatures = {

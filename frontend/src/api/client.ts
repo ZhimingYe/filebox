@@ -970,7 +970,13 @@ export async function officeConvert(
     }];
   });
   if (outputs.length === 0) {
-    if (!raw.cache_key || raw.size == null || raw.size <= 0) {
+    if (
+      typeof raw.cache_key !== 'string'
+      || !/^[0-9a-f]{64}$/i.test(raw.cache_key)
+      || typeof raw.size !== 'number'
+      || !Number.isFinite(raw.size)
+      || raw.size <= 0
+    ) {
       throw { status: 502, error: 'office_convert_failed', message: 'office_convert_failed' };
     }
     outputs.push({
@@ -1017,6 +1023,10 @@ export function uploadTempFile(
 ): Promise<TempUploadResult> {
   return new Promise((resolve, reject) => {
     const attempt = (retried: boolean) => {
+      if (signal?.aborted) {
+        reject({ error: 'cancelled', message: 'Upload cancelled.' });
+        return;
+      }
       const xhr = new XMLHttpRequest();
       const name = file.name.trim();
       const url = `/api/agents/${encodeURIComponent(agentId)}/temp-upload?name=${encodeURIComponent(name)}`;

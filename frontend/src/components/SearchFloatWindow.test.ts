@@ -47,6 +47,19 @@ describe('clampRect', () => {
 });
 
 describe('loadRect', () => {
+  it.each(['absent', 'corrupt', 'blocked'])('clamps default geometry with %s storage', mode => {
+    vi.stubGlobal('innerWidth', 100);
+    vi.stubGlobal('innerHeight', 80);
+    if (mode === 'corrupt') localStorage.setItem('filebox.searchWindow', '{broken');
+    if (mode === 'blocked') vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+    const rect = loadRect();
+    expect(rect.y).toBeGreaterThanOrEqual(0);
+    expect(rect.y + 40).toBeLessThanOrEqual(80);
+    expect(rect.x).toBeLessThan(100);
+    expect(rect.x + rect.w).toBeGreaterThan(0);
+  });
   it('uses the default when storage is absent', () => {
     expect(loadRect()).toEqual({ x: 632, y: 72, w: 560, h: 600 });
   });

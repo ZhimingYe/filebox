@@ -780,7 +780,7 @@ export function cmpUsers(
   })();
   if (primary !== 0) return primary;
   // Stable tiebreak: distinct secondary key, then uid (unique) — never recurses.
-  if (key !== 'cpu_usage') return b.cpu_usage - a.cpu_usage;
+  if (key !== 'cpu_usage' && b.cpu_usage !== a.cpu_usage) return b.cpu_usage - a.cpu_usage;
   return b.uid - a.uid;
 }
 

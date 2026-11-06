@@ -3,6 +3,16 @@ import type { ProcessInfo, UserAgg } from '../api/client';
 import { barColor, cmpProcs, cmpUsers, formatAgo, formatBoot, formatBytes, formatCount, formatCpuMs, formatDuration, isKernelThread, stateLabel } from './SystemStats';
 
 const user: UserAgg = { user: 'alice', uid: 1, cpu_usage: 10, mem_bytes: 100, accumulated_cpu_ms: 1000, process_count: 2 };
+it.each([
+  'cpu_usage', 'cpu_share', 'mem_bytes', 'mem_share',
+  'accumulated_cpu_ms', 'process_count', 'user',
+] as const)('uses UID as the final tiebreak for user key %s', key => {
+  const other = { ...user, uid: 2 };
+  expect(cmpUsers(user, other, key, {}, {})).toBeGreaterThan(0);
+  expect(cmpUsers(other, user, key, {}, {})).toBeLessThan(0);
+  expect(cmpUsers(user, user, key, {}, {})).toBe(0);
+});
+
 const proc: ProcessInfo = { ...user, pid: 1, name: 'alpha', state: 'S', start_time: 0, run_time_secs: 10, parent_pid: null, command: '', nproc: null };
 it.each(['cpu_usage', 'mem_bytes', 'accumulated_cpu_ms', 'process_count'] as const)('orders users descending by %s without mutation', key => {
   const higher = { ...user, [key]: user[key] + 1 };

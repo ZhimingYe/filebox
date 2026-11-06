@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../api/client';
 import { friendlyMessage } from '../api/client';
 import { c, radius, font } from '../theme';
@@ -26,6 +26,11 @@ interface UploadItem {
   message?: string;
 }
 
+interface TransferDestination {
+  agentId: string;
+  root: string | null;
+}
+
 /**
  * Dedicated temp-folder transfer view: drop files onto the agent's scratch
  * folder, see what is already there, download it back, or clear it. This is
@@ -35,6 +40,8 @@ interface UploadItem {
  */
 export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempRefreshNonce }: Props) {
   const root = agent.temp_root_name ?? null;
+  const destination = useMemo<TransferDestination>(() => ({ agentId: agent.id, root }), [agent.id, root]);
+  const activeDestination = useRef<TransferDestination | null>(null);
   const isMobile = useIsMobile();
   const { copiedPath, copyToClipboard } = useCopyToClipboard();
 
@@ -52,7 +59,16 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const uploadQueue = useRef<{
+    file: File;
+    item: UploadItem;
+    destination: TransferDestination;
+    maxFileBytes: number | null | undefined;
+  }[]>([]);
+  const uploading = useRef(false);
+  const nextUploadId = useRef(0);
   const cleanupDismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const listRequest = useRef(0);
 
   // Never setState after unmount (agent switch / view teardown).
   useEffect(() => () => {
@@ -60,26 +76,40 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
     if (cleanupDismissTimer.current) clearTimeout(cleanupDismissTimer.current);
   }, []);
 
-  const loadFiles = useCallback(async () => {
-    if (!root) return;
+  const loadFiles = useCallback(async (target = destination) => {
+    if (!target.root || activeDestination.current !== target) return;
+    const request = ++listRequest.current;
+    const isCurrent = () => activeDestination.current === target && listRequest.current === request;
     setLoading(true);
     setListError(null);
     try {
-      const data = await api.fsList(agent.id, root, '/', 1000, undefined, false);
+      const data = await api.fsList(target.agentId, target.root, '/', 1000, undefined, false);
+      if (!isCurrent()) return;
       // Uploads only ever produce flat files; ignore anything else that a
       // local actor may have dropped in manually.
       setFiles(data.items.filter((i) => i.entry_type === 'file'));
       setNextCursor(data.next_cursor ?? null);
     } catch (e) {
-      setListError(friendlyMessage(e));
+      if (isCurrent()) setListError(friendlyMessage(e));
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, [agent.id, root]);
+  }, [destination]);
 
   useEffect(() => {
+    activeDestination.current = destination;
+    setFiles([]);
+    setNextCursor(null);
+    setLoading(false);
+    setListError(null);
+    setUploads([]);
+    setCleanupState({ busy: false });
+    setDragOver(false);
+    dragDepthRef.current = 0;
+    if (uploadClearTimer.current) clearTimeout(uploadClearTimer.current);
     void loadFiles();
-  }, [loadFiles]);
+    return () => { activeDestination.current = null; };
+  }, [destination, loadFiles]);
 
   // A remote temp update (other tab, or the folder changed on the agent)
   // re-lists.
@@ -89,7 +119,8 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tempRefreshNonce]);
 
-  const patchUpload = useCallback((id: number, patch: Partial<UploadItem>) => {
+  const patchUpload = useCallback((target: TransferDestination, id: number, patch: Partial<UploadItem>) => {
+    if (activeDestination.current !== target) return;
     setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
   }, []);
 
@@ -97,7 +128,8 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
   // success/error state, and the list re-loads after each completed upload.
   const runUploads = useCallback(async (incoming: File[]) => {
     if (!root || incoming.length === 0) return;
-    const base = Date.now();
+    const base = nextUploadId.current;
+    nextUploadId.current += incoming.length;
     const items: UploadItem[] = incoming.map((file, i) => ({
       id: base + i,
       name: file.name,
@@ -105,11 +137,15 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
       pct: 0,
     }));
     setUploads((prev) => [...prev, ...items]);
-    for (let i = 0; i < incoming.length; i++) {
-      const file = incoming[i];
-      const item = items[i];
-      if (agent.temp_max_file_bytes != null && file.size > agent.temp_max_file_bytes) {
-        patchUpload(item.id, {
+    uploadQueue.current.push(...incoming.map((file, i) => ({
+      file, item: items[i], destination, maxFileBytes: agent.temp_max_file_bytes,
+    })));
+    if (uploading.current) return;
+    uploading.current = true;
+    while (uploadQueue.current.length > 0) {
+      const { file, item, destination: target, maxFileBytes } = uploadQueue.current.shift()!;
+      if (maxFileBytes != null && file.size > maxFileBytes) {
+        patchUpload(target, item.id, {
           state: 'error',
           pct: null,
           message: friendlyMessage({ error: 'temp_file_too_large' }),
@@ -117,23 +153,27 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
         continue;
       }
       try {
-        await api.uploadTempFile(agent.id, file, (loaded, total) => {
+        await api.uploadTempFile(target.agentId, file, (loaded, total) => {
           if (total > 0) {
-            patchUpload(item.id, { pct: Math.min(99, Math.round((loaded / total) * 100)) });
+            patchUpload(target, item.id, { pct: Math.min(99, Math.round((loaded / total) * 100)) });
           }
         });
-        patchUpload(item.id, { state: 'done', pct: 100 });
-        await loadFiles();
+        patchUpload(target, item.id, { state: 'done', pct: 100 });
+        void loadFiles(target);
       } catch (e) {
-        patchUpload(item.id, { state: 'error', pct: null, message: friendlyMessage(e) });
+        patchUpload(target, item.id, { state: 'error', pct: null, message: friendlyMessage(e) });
       }
     }
+    uploading.current = false;
+    const completedDestination = activeDestination.current;
+    if (!completedDestination) return;
     // Completed/errored rows stay visible briefly, then fade out.
     if (uploadClearTimer.current) clearTimeout(uploadClearTimer.current);
     uploadClearTimer.current = setTimeout(() => {
+      if (activeDestination.current !== completedDestination) return;
       setUploads((prev) => prev.filter((u) => u.state === 'uploading'));
     }, 8000);
-  }, [agent.id, agent.temp_max_file_bytes, root, loadFiles, patchUpload]);
+  }, [destination, agent.temp_max_file_bytes, root, loadFiles, patchUpload]);
 
   // App-level drop zone hands files over via this nonce.
   useEffect(() => {
@@ -149,6 +189,7 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
     setCleanupState({ busy: true });
     try {
       const res = await api.cleanupTempFolder(agent.id);
+      if (activeDestination.current !== destination) return;
       const items = `${res.removed} item${res.removed === 1 ? '' : 's'}`;
       setCleanupState({
         busy: false,
@@ -156,9 +197,10 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
       });
       void loadFiles();
     } catch (e) {
+      if (activeDestination.current !== destination) return;
       setCleanupState({ busy: false, error: friendlyMessage(e) });
     }
-  }, [agent.id, cleanupState.busy, loadFiles]);
+  }, [agent.id, cleanupState.busy, destination, loadFiles]);
 
   // Auto-dismiss the cleanup banner.
   useEffect(() => {
