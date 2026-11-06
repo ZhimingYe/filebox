@@ -54,6 +54,28 @@ afterEach(() => {
 });
 
 describe('TempTransferView queue', () => {
+  it('starts the next upload without waiting for the completed upload folder refresh', async () => {
+    const first = deferred<api.TempUploadResult>();
+    const second = deferred<api.TempUploadResult>();
+    const refresh = deferred<Awaited<ReturnType<typeof api.fsList>>>();
+    vi.mocked(api.uploadTempFile).mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    vi.mocked(api.fsList).mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockReturnValueOnce(refresh.promise);
+    const files = [file('first'), file('second')];
+    render(files);
+    await act(async () => {});
+    expect(api.uploadTempFile).toHaveBeenCalledTimes(1);
+    await act(async () => { first.resolve({ ok: true, name: 'first', size: 3 }); });
+    expect(api.fsList).toHaveBeenCalledTimes(2);
+    expect(api.uploadTempFile).toHaveBeenNthCalledWith(2, 'a', files[1], expect.any(Function));
+    expect(uploadText()).toBe('firstUploadedsecond0%');
+    await act(async () => { second.resolve({ ok: true, name: 'second', size: 3 }); });
+    expect(uploadText()).toBe('firstUploadedsecondUploaded');
+    await act(async () => { refresh.resolve({ items: [], next_cursor: null }); });
+    expect(uploadText()).toBe('firstUploadedsecondUploaded');
+  });
+
   it.each([3, 6])('binds a %i-byte queued upload to its agent across a switch', async size => {
     const first = deferred<api.TempUploadResult>();
     const second = deferred<api.TempUploadResult>();

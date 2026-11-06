@@ -156,7 +156,7 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
           }
         });
         patchUpload(target, item.id, { state: 'done', pct: 100 });
-        await loadFiles(target);
+        void loadFiles(target);
       } catch (e) {
         patchUpload(target, item.id, { state: 'error', pct: null, message: friendlyMessage(e) });
       }
