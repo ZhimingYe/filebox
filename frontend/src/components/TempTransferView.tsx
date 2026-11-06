@@ -68,6 +68,7 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
   const uploading = useRef(false);
   const nextUploadId = useRef(0);
   const cleanupDismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const listRequest = useRef(0);
 
   // Never setState after unmount (agent switch / view teardown).
   useEffect(() => () => {
@@ -77,19 +78,21 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
 
   const loadFiles = useCallback(async (target = destination) => {
     if (!target.root || activeDestination.current !== target) return;
+    const request = ++listRequest.current;
+    const isCurrent = () => activeDestination.current === target && listRequest.current === request;
     setLoading(true);
     setListError(null);
     try {
       const data = await api.fsList(target.agentId, target.root, '/', 1000, undefined, false);
-      if (activeDestination.current !== target) return;
+      if (!isCurrent()) return;
       // Uploads only ever produce flat files; ignore anything else that a
       // local actor may have dropped in manually.
       setFiles(data.items.filter((i) => i.entry_type === 'file'));
       setNextCursor(data.next_cursor ?? null);
     } catch (e) {
-      if (activeDestination.current === target) setListError(friendlyMessage(e));
+      if (isCurrent()) setListError(friendlyMessage(e));
     } finally {
-      if (activeDestination.current === target) setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [destination]);
 

@@ -54,6 +54,45 @@ afterEach(() => {
 });
 
 describe('TempTransferView queue', () => {
+  it.each(['success', 'failure'])('ignores stale listing %s while the latest listing is pending', async outcome => {
+    const older = deferred<Awaited<ReturnType<typeof api.fsList>>>();
+    const newer = deferred<Awaited<ReturnType<typeof api.fsList>>>();
+    vi.mocked(api.fsList).mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    render();
+    await act(async () => {
+      root.render(<TempTransferView agent={agent} tempRefreshNonce={1} />);
+    });
+    expect(api.fsList).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      if (outcome === 'success') older.resolve({ items: [], next_cursor: null });
+      else older.reject({ error: 'stale-list-error' });
+    });
+    expect(host.textContent).toContain('Loading…');
+    expect(host.textContent).not.toContain('stale-list-error');
+    await act(async () => { newer.reject({ error: 'current-list-error' }); });
+    expect(host.textContent).not.toContain('Loading…');
+    expect(host.textContent).toContain('current-list-error');
+  });
+
+  it('retains both uploaded files when an older folder refresh resolves last', async () => {
+    const older = deferred<Awaited<ReturnType<typeof api.fsList>>>();
+    const newer = deferred<Awaited<ReturnType<typeof api.fsList>>>();
+    vi.mocked(api.fsList).mockResolvedValueOnce({ items: [], next_cursor: null })
+      .mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    const firstEntry = { name: 'first-upload', entry_type: 'file', size: 3 } as api.FsEntry;
+    const secondEntry = { name: 'second-upload', entry_type: 'file', size: 3 } as api.FsEntry;
+    render([file('first-upload'), file('second-upload')]);
+    await act(async () => {});
+    expect(api.fsList).toHaveBeenCalledTimes(3);
+    await act(async () => { newer.resolve({ items: [firstEntry, secondEntry], next_cursor: null }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(host.textContent).toContain('first-upload');
+    expect(host.textContent).toContain('second-upload');
+    await act(async () => { older.resolve({ items: [firstEntry], next_cursor: null }); });
+    expect(host.textContent).toContain('first-upload');
+    expect(host.textContent).toContain('second-upload');
+  });
+
   it('starts the next upload without waiting for the completed upload folder refresh', async () => {
     const first = deferred<api.TempUploadResult>();
     const second = deferred<api.TempUploadResult>();
