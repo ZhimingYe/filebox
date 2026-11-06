@@ -22,23 +22,23 @@ heroShot:
   linkText: See multi-tab preview
 features:
   - title: Browse & preview
-    details: Smooth large-directory listing, breadcrumbs, pins; preview images / PDF / code / Markdown / Quarto·Rmd / HTML / Jupyter notebooks / CSV / Office in place — no need to scp an entire tree first.
+    details: Browse large directories with breadcrumbs and pins. Preview images, documents, code, notebooks and tables in place.
     link: /features/preview
     linkText: Preview types
   - title: Multi-tab workspace
-    details: Keep reports, figures, code and tables open together; switch, pin and bulk-close them like browser tabs. Esc closes, ← / → steps through the folder.
+    details: Keep reports, figures, code and tables open together. Switch, pin and close previews with familiar tab controls.
     link: /features/tabs
     linkText: Using tabs
   - title: Search & collections
-    details: Search by filename or content regex; group files across scattered paths into virtual collections without copying or moving them.
+    details: Search by filename or content regex. Group files across paths into collections without copying or moving them.
     link: /features/search
     linkText: Search & collections
   - title: AI Agents
-    details: List coding-agent windows, read output, send reviewed prompts and use shortcut profiles; manage the integration per Agent.
+    details: Read coding-agent output, send reviewed prompts and use shortcut profiles. Manage the integration per Agent.
     link: /features/ai-agents
     linkText: Coding agents
   - title: Secure by default
-    details: Read-only protocol; sensitive paths denied by default; optional Transfer writes only to a dedicated scratch folder; AI Agents uses a separate backend integration.
+    details: Browse read-only with sensitive paths denied by default. Transfer uses a dedicated scratch folder; AI Agents is a separate integration.
     link: /features/security
     linkText: Security model
 ---

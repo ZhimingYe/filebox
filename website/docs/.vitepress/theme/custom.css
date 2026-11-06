@@ -1,11 +1,18 @@
 /* filebox docs theme tweaks */
 
 :root {
-  --vp-home-hero-name-color: transparent;
-  --vp-home-hero-name-background: linear-gradient(120deg, #4f46e5 20%, #a855f7 80%);
+  --vp-c-brand-1: #38618c;
+  --vp-c-brand-2: #31577f;
+  --vp-c-brand-3: #3b628a;
+  --vp-c-brand-soft: rgba(59, 98, 138, 0.1);
+  --vp-home-hero-name-color: var(--vp-c-text-1);
+  --vp-home-hero-name-background: none;
 }
 .dark {
-  --vp-home-hero-name-background: linear-gradient(120deg, #818cf8 20%, #c084fc 80%);
+  --vp-c-brand-1: #9ab4d0;
+  --vp-c-brand-2: #50779f;
+  --vp-c-brand-3: #42678f;
+  --vp-c-brand-soft: rgba(154, 180, 208, 0.14);
 }
 
 /* Home hero without side image (HeroShot renders the screenshot below):
@@ -15,16 +22,51 @@
 .VPHome .VPHero:not(.has-image) .name,
 .VPHome .VPHero:not(.has-image) .text,
 .VPHome .VPHero:not(.has-image) .tagline { margin-left: auto; margin-right: auto; }
-.VPHome .VPHero:not(.has-image) .text { max-width: 920px; text-wrap: balance; }
-.VPHome .VPHero:not(.has-image) .tagline { max-width: 760px; text-wrap: balance; }
+.VPHome .VPHero:not(.has-image) .name {
+  margin-bottom: 16px;
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+}
+.VPHome .VPHero:not(.has-image) .text {
+  max-width: 920px;
+  font-size: 34px;
+  line-height: 1.18;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+.VPHome .VPHero:not(.has-image) .tagline {
+  max-width: 680px;
+  padding-top: 20px;
+  font-size: 16px;
+  line-height: 26px;
+  font-weight: 400;
+  text-wrap: balance;
+}
 .VPHome .VPHero:not(.has-image) .actions { justify-content: center; }
 /* Tighter gap between hero copy and the screenshot. */
 .VPHome .VPHero:not(.has-image) { padding-bottom: 32px !important; }
 @media (min-width: 640px) {
+  .VPHome .VPHero:not(.has-image) .text { font-size: 52px; }
+  .VPHome .VPHero:not(.has-image) .tagline { font-size: 18px; line-height: 30px; }
   .VPHome .VPHero:not(.has-image) { padding-bottom: 40px !important; }
 }
 /* Breathing room between screenshot and feature cards. */
 .VPHome .VPFeatures { padding-top: 40px; }
+.VPHome .VPFeature {
+  border-color: var(--vp-c-divider);
+  border-radius: 10px;
+  background-color: transparent;
+}
+.VPHome .VPFeature.link:hover { border-color: var(--vp-c-text-3); }
+.VPHome .VPFeature .box { padding: 24px; }
+.VPHome .VPFeature .details { padding-top: 12px; font-weight: 400; }
+.VPHome .VPFeature .link-text { padding-top: 20px; }
+@media (min-width: 960px) {
+  .VPHome .VPFeatures .item { width: calc(100% / 3); }
+}
 
 /* Screenshots inside docs pages: subtle frame so white UI doesn't bleed into the page. */
 .vp-doc img[src*='/screenshots/'] {
