@@ -130,6 +130,8 @@ export function PinnedFolders({ agent, collapsed, onNavigate, onUnpin }: Props) 
           const v = res.value;
           if (v === 'exists') return; // from the cache fast-path
           const stat = (v as { stat?: api.FsEntry | null })?.stat;
+          const error = (v as { error?: string | null })?.error;
+          if (!stat && error && !/no such file|os error 2\b|not found/i.test(error)) return;
           // Missing (stat null) OR exists but isn't a directory (got deleted and
           // replaced by a file) both count as "not a usable folder".
           if (!stat || stat.entry_type !== 'directory') {

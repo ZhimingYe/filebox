@@ -53,6 +53,30 @@ afterEach(() => {
 });
 
 describe('TempTransferView queue', () => {
+  it('queues new nonce batches behind every previously arrived file', async () => {
+    const first = deferred<api.TempUploadResult>();
+    const second = deferred<api.TempUploadResult>();
+    const third = deferred<api.TempUploadResult>();
+    vi.mocked(api.uploadTempFile).mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise).mockReturnValueOnce(third.promise);
+    const files = [file('first'), file('second'), file('third'), file('fourth')];
+    render(files.slice(0, 2));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    act(() => {
+      root.render(<TempTransferView agent={agent}
+        uploadRequest={{ files: files.slice(2), nonce: 2 }} />);
+    });
+    expect(api.uploadTempFile).toHaveBeenCalledTimes(1);
+    await act(async () => { first.resolve({ ok: true, name: 'first', size: 3 }); });
+    expect(api.uploadTempFile).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.uploadTempFile).mock.calls[1][1]).toBe(files[1]);
+    await act(async () => { second.resolve({ ok: true, name: 'second', size: 3 }); });
+    expect(api.uploadTempFile).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(api.uploadTempFile).mock.calls[2][1]).toBe(files[2]);
+    await act(async () => { third.resolve({ ok: true, name: 'third', size: 3 }); });
+    expect(vi.mocked(api.uploadTempFile).mock.calls.map(call => call[1])).toEqual(files);
+    expect(uploadText()).toBe('firstUploadedsecondUploadedthirdUploadedfourthUploaded');
+  });
   it('uploads sequentially and caps progress below completion until the upload resolves', async () => {
     const first = deferred<api.TempUploadResult>();
     vi.mocked(api.uploadTempFile).mockReturnValueOnce(first.promise);

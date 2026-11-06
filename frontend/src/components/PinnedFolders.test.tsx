@@ -49,6 +49,22 @@ afterEach(() => {
 });
 
 describe('PinnedFolders', () => {
+  it.each([
+    ['Failed to stat file: No such file or directory (os error 2)', true],
+    ['Path not found or outside root', true],
+    ['Failed to stat file: Permission denied (os error 13)', false],
+    ['Access denied: sensitive file', false],
+    ['agent_internal_error', false],
+  ])('classifies agent stat error %j as missing=%s without caching it', async (error, missing) => {
+    vi.mocked(fsStat).mockResolvedValueOnce({ stat: null, error });
+    render();
+    await act(async () => {});
+    expect(pinButton().title.includes('Folder not found')).toBe(missing);
+    render({ ...agent, roots: [...agent.roots] });
+    await act(async () => {});
+    expect(fsStat).toHaveBeenCalledTimes(2);
+    expect(pinButton().title).not.toContain('Folder not found');
+  });
   it('hides disabled groups without deleting their pins and restores them when enabled', async () => {
     render({ ...agent, roots: agent.roots.map(r => ({ ...r, enabled: false })) });
     expect(host.textContent).not.toContain('reports');

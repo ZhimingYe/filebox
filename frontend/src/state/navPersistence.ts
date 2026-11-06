@@ -28,6 +28,7 @@ function loadJson<T>(key: string): T | null {
 export function loadNavPosMap(): Map<string, { root: string; path: string }> {
   const saved = loadJson<Record<string, unknown>>(NAV_POS_STORAGE) ?? {};
   const map = new Map<string, { root: string; path: string }>();
+  if (Array.isArray(saved)) return map;
   for (const [agentId, pos] of Object.entries(saved)) {
     const p = pos as { root?: unknown; path?: unknown } | null;
     if (p && typeof p.root === 'string' && typeof p.path === 'string') {
@@ -41,6 +42,7 @@ export function loadNavPosMap(): Map<string, { root: string; path: string }> {
 export function loadPathMemoryMap(): Map<string, string> {
   const saved = loadJson<Record<string, unknown>>(PATH_MEM_STORAGE) ?? {};
   const map = new Map<string, string>();
+  if (Array.isArray(saved)) return map;
   for (const [key, path] of Object.entries(saved)) {
     if (typeof path === 'string') map.set(key, path);
   }
@@ -75,6 +77,7 @@ export async function findNearestExistingDir(
     if (signal?.aborted) return null;
     try {
       const res = await fsStat(agentId, root, candidate, signal);
+      if (signal?.aborted) return null;
       if (res.stat && res.stat.entry_type === 'directory') return candidate;
     } catch {
       return null;

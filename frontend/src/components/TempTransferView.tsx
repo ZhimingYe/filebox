@@ -52,6 +52,9 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const uploadQueue = useRef<{ file: File; item: UploadItem }[]>([]);
+  const uploading = useRef(false);
+  const nextUploadId = useRef(0);
   const cleanupDismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Never setState after unmount (agent switch / view teardown).
@@ -97,7 +100,8 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
   // success/error state, and the list re-loads after each completed upload.
   const runUploads = useCallback(async (incoming: File[]) => {
     if (!root || incoming.length === 0) return;
-    const base = Date.now();
+    const base = nextUploadId.current;
+    nextUploadId.current += incoming.length;
     const items: UploadItem[] = incoming.map((file, i) => ({
       id: base + i,
       name: file.name,
@@ -105,9 +109,11 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
       pct: 0,
     }));
     setUploads((prev) => [...prev, ...items]);
-    for (let i = 0; i < incoming.length; i++) {
-      const file = incoming[i];
-      const item = items[i];
+    uploadQueue.current.push(...incoming.map((file, i) => ({ file, item: items[i] })));
+    if (uploading.current) return;
+    uploading.current = true;
+    while (uploadQueue.current.length > 0) {
+      const { file, item } = uploadQueue.current.shift()!;
       if (agent.temp_max_file_bytes != null && file.size > agent.temp_max_file_bytes) {
         patchUpload(item.id, {
           state: 'error',
@@ -128,6 +134,7 @@ export function TempTransferView({ agent, uploadRequest, onUploadsHandled, tempR
         patchUpload(item.id, { state: 'error', pct: null, message: friendlyMessage(e) });
       }
     }
+    uploading.current = false;
     // Completed/errored rows stay visible briefly, then fade out.
     if (uploadClearTimer.current) clearTimeout(uploadClearTimer.current);
     uploadClearTimer.current = setTimeout(() => {

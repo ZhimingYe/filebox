@@ -14,6 +14,12 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('navigation storage', () => {
+  it('rejects populated arrays instead of treating their indexes as map keys', () => {
+    localStorage.setItem(NAV_POS_STORAGE, '[{"root":"r","path":"/"}]');
+    localStorage.setItem(PATH_MEM_STORAGE, '["/unexpected"]');
+    expect(loadNavPosMap()).toEqual(new Map());
+    expect(loadPathMemoryMap()).toEqual(new Map());
+  });
   it('round-trips agent positions and independent per-root memories', () => {
     const positions = new Map([
       ['a', { root: 'data', path: '/one' }],
@@ -81,6 +87,15 @@ const file = { stat: { entry_type: 'file' } } as Awaited<ReturnType<typeof fsSta
 const missing = { stat: null } as Awaited<ReturnType<typeof fsStat>>;
 
 describe('findNearestExistingDir', () => {
+  it('ignores a successful directory result if aborted while the probe was pending', async () => {
+    const controller = new AbortController();
+    vi.mocked(fsStat).mockImplementation(async () => {
+      controller.abort();
+      return directory;
+    });
+    await expect(findNearestExistingDir('a', 'r', '/gone', controller.signal)).resolves.toBeNull();
+    expect(fsStat).toHaveBeenCalledTimes(1);
+  });
   it('returns an existing directory without probing parents', async () => {
     vi.mocked(fsStat).mockResolvedValue(directory);
     await expect(findNearestExistingDir('agent', 'root', '/目录')).resolves.toBe('/目录');

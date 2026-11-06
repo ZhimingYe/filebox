@@ -56,6 +56,15 @@ afterEach(() => {
 });
 
 describe('uploadTempFile', () => {
+  it('rejects a pre-aborted signal without constructing or sending an XHR', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const outcome = api.uploadTempFile('a', file(), undefined, controller.signal)
+      .then(() => 'resolved', error => error);
+    if (FakeXhr.instances.length) lastXhr().finish(200, { ok: true });
+    expect(await outcome).toEqual({ error: 'cancelled', message: 'Upload cancelled.' });
+    expect(FakeXhr.instances).toHaveLength(0);
+  });
   it('sends trimmed encoded names, credentials, raw file bytes and CSRF headers', async () => {
     api.setCsrfToken('csrf-secret');
     const input = file();

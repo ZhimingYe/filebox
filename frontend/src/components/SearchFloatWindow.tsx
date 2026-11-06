@@ -72,7 +72,7 @@ export function loadRect(): Rect {
   } catch {
     /* private mode / corrupt storage */
   }
-  return fallback;
+  return clampRect(fallback, window.innerWidth, window.innerHeight);
 }
 
 /**
