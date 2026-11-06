@@ -16,6 +16,14 @@ Markdown is rendered; plain text and code use a syntax-highlighted editor (read-
 
 ![Code preview hello.py](/screenshots/08c-preview-code.png)
 
+## Markdown math
+
+Markdown renders math locally with KaTeX, without a CDN. Supported forms: `$...$`, `$$...$$` (inline or multiline), `\(...\)`, `\[...\]`, GitHub’s `` $`...`$ ``, and fenced `math`, `latex`, `tex` or `katex` blocks. Standalone `math`, `displaymath`, `equation`, `align`, `alignat`, `gather`, `aligned` and `gathered` LaTeX environments are recognized, including supported starred variants. Matrices, cases and other KaTeX commands work inside math delimiters.
+
+Ordinary code stays literal. To avoid currency ambiguity, single-dollar inline math must not start or end with whitespace, or end immediately before a digit; write literal dollars as `\$`. Use double dollars or LaTeX delimiters for display math. Wide formulas scroll horizontally. Invalid or unsupported TeX stays readable rather than breaking the preview; this is not a full LaTeX engine with arbitrary packages.
+
+![Markdown math](/screenshots/08j-preview-math.png)
+
 ## Quarto / R Markdown
 
 `.qmd`, `.rmd`, and `.rmarkdown` open in the same read-only Monaco viewer with a custom `quarto` language — not download-only. Highlighting covers YAML / Quarto front matter, fenced chunks such as `{r}` / `{python}` (and plain fence language tags), optional `:::` fenced divs, and inline `` `r …` `` / `` `python …` ``. Chunk bodies reuse Monaco’s built-in highlighters for R, Python, Julia, SQL, shell, YAML, and similar. Plain `.md` still uses the rendered Markdown preview. A rich knitr-aware rendered Rmd view is a follow-up — this release is source highlighting only. File-list badges use the R colour category (RMD / QMD).
@@ -60,7 +68,7 @@ Notebooks open through Filebox’s sandboxed HTML preview: the Hub washes nbform
 |------|----------|
 | Images | Zoom / pan (including TIFF) |
 | PDF | Built-in viewer |
-| Markdown | Rendered |
+| Markdown | Rendered, with local KaTeX math |
 | Code / text / logs | Monaco read-only |
 | Quarto / R Markdown (`.qmd` / `.rmd` / `.rmarkdown`) | Monaco source view (`quarto` language; YAML + chunks; not rendered) |
 | HTML (`.html` / `.htm`) | Sandboxed session (locked `<base>` + CSP; relative / `#fragment` links; `data:` CSS/JS for self-contained Quarto/Pandoc; 64 MiB hard cap; 2 MiB confirm) |

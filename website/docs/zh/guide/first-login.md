@@ -58,7 +58,8 @@
 | Search | 工作区文件名 / 内容搜索（桌面浮窗 / 手机底部 sheet） | [搜索](/zh/features/search) |
 | Collections | 跨目录的虚拟文件合集 | [合集](/zh/features/collections) |
 | Transfer | 唯一可写的临时上传目录 | [Transfer](/zh/features/transfer) |
-| Settings | 管理根目录、Office 预览开关 | 本文 |
+| AI Agents | 编码代理窗口与输入 | [AI Agents](/zh/features/ai-agents) |
+| Settings | 管理根目录、Office 预览开关、AI Agents 开关与后端 | 本文 |
 | System | CPU / 内存 / 进程 | [系统监控](/zh/features/stats) |
 | Audit | 登录审计（不依赖选中 Agent） | [Hub 运维](/zh/ops/hub) |
 | 版本号 | 点击打开 About / Diagnostics | — |
@@ -76,3 +77,9 @@
 ![手机侧栏抽屉](/screenshots/13b-mobile-drawer.png)
 
 常见问题见 [FAQ](/zh/ops/faq)。
+
+## 第三方许可证
+
+点击侧栏版本号打开 **About / Diagnostics**，再点 **Open source licenses**。可按包名或许可证筛选，并展开查看随产品捆绑的 Rust 与前端依赖的完整许可证文本。
+
+![第三方许可证](/screenshots/07b-about-licenses.png)

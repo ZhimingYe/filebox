@@ -5,6 +5,8 @@
 脚本：`node scripts/capture-real-screenshots.mjs`（通用）· `node scripts/capture-tabs.mjs`（多标签 + 首页 hero + 08d）  
 演示数据：`/tmp/pdfvenv/bin/python scripts/gen-demo-report-pdf.py`（PDF + figures）· `python3 scripts/gen-demo-extras.py`（代码 / CSV / Markdown）
 
+截图前等待 Agent 在线且实时 RTT ≤250 ms；脚本最多等待 60 秒，不修改指标。 / Before capture, wait for an online Agent with live RTT ≤250 ms; scripts wait up to 60 seconds without rewriting the metric.
+
 | 文件 | 说明 |
 |------|------|
 | 00-sidebar-overview.png | Files + 侧栏总览 |
@@ -31,3 +33,15 @@
 | hero-tabs-pdf-mobile-{800,1200}.webp | 首页 hero（手机：预览区裁切，标签与表格更易读） |
 
 **零 demo-mock 截图。** 旧的静态演示页及其截图脚本已移除。
+
+## v3.0.0 新截图 / New screenshots
+
+AI Agents 使用合成 Herdr CLI 输出；15/15c 仅覆盖显示的审核状态为 on / deepseek-flash，不发送提示。 / AI Agents uses synthetic Herdr CLI output; 15/15c override only the displayed review state to on / deepseek-flash, without sending prompts.
+
+| 文件 / File | 内容 / Content |
+|------|------|
+| 07b-about-licenses.png | 第三方许可证浏览器 / Third-party licenses browser |
+| 08j-preview-math.png | Markdown 数学公式 / Markdown math |
+| 15-ai-agents.png | 桌面列表与详情 / Desktop list and detail |
+| 15b-ai-agents-settings.png | Agent Settings 的 AI Agents 区域 / AI Agents section |
+| 15c-ai-agents-mobile.png | 手机 AI Agents / Mobile AI Agents |

@@ -18,7 +18,7 @@ filebox 是面向实验室 / HPC / 自建服务器的**只读远程文件浏览�
 
 filebox 不是网盘同步工具，也不是完整的远程桌面——它是「结果文件的前门」：打开、预览、搜索、偶尔传一个小临时文件或通过 AI Agents 管理编码代理。
 
-## 能做什么（v2.5.0）
+## 能做什么（v3.0.0）
 
 | 能力 | 说明 | 文档 |
 |------|------|------|
@@ -27,7 +27,8 @@ filebox 不是网盘同步工具，也不是完整的远程桌面——它是「
 | **Search** | 文件名或内容正则；浮窗 / 底部 sheet | [搜索](/zh/features/search) |
 | **Collections** | 跨目录的虚拟文件合集，不复制、不移动 | [合集](/zh/features/collections) |
 | **Transfer** | 唯一可写的临时上传目录（配额、禁覆盖） | [Transfer](/zh/features/transfer) |
-| **Settings** | 管理根目录、Office 预览开关 | [首次登录](/zh/guide/first-login) |
+| **AI Agents** | 编码代理窗口、输出、提示词与白名单按键 | [AI Agents](/zh/features/ai-agents) |
+| **Settings** | 管理根目录、Office 预览开关、AI Agents 开关与后端 | [首次登录](/zh/guide/first-login) |
 | **System** | CPU / 内存 / 负载 / 按用户占用 / 进程表 | [系统监控](/zh/features/stats) |
 | **Audit** | 登录审计（Hub 级，不依赖选中 Agent） | [Hub 运维](/zh/ops/hub) |
 
@@ -36,8 +37,9 @@ filebox 不是网盘同步工具，也不是完整的远程桌面——它是「
 - 浏览协议**只读**：不能改、删、重命名远端文件。
 - 敏感路径（`.ssh/`、`.env*`、`*.pem` 等）默认拒绝，即使在允许的根目录内。
 - 浏览严格限制在已添加的 root 内；`..`、符号链接逃逸等会被挡住。
-- 两个显式例外（需能力开启 / 本地配置）：
+- 显式集成（需能力开启 / 本地配置）：
   - **Transfer**：仅写入 Agent 专用临时目录。
+  - **AI Agents**：通过独立后端发送提示词与白名单按键；编码代理可修改文件，不受浏览 root 限制。提示词默认必须通过 Hub 审核，按键不经 LLM 审核。
 
 详见 [安全与敏感文件](/zh/features/security)。
 

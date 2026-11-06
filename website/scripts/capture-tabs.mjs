@@ -27,6 +27,7 @@ import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { waitForLocalRtt } from './capture-rtt.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const outDir = path.resolve(__dirname, '../docs/public/screenshots')
@@ -37,10 +38,11 @@ const DIVIDER_X = Number(process.env.HERO_DIVIDER_X || 600)
 function loadPuppeteer() {
   const require = createRequire(import.meta.url)
   for (const c of [
+    process.env.PUPPETEER_PATH,
     '/tmp/shot-tools/node_modules/puppeteer-core',
     path.resolve(__dirname, '../node_modules/puppeteer-core'),
   ]) {
-    try { return require(c) } catch { /* next */ }
+    try { if (c) return require(c) } catch { /* next */ }
   }
   throw new Error('puppeteer-core not found')
 }
@@ -49,18 +51,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const out = (f) => (f.startsWith('hero-') ? path.join(os.tmpdir(), f) : path.join(outDir, f))
 
 async function shot(page, file, opts = {}) {
+  const rtt = await waitForLocalRtt(page)
   await page.mouse.move(2, (page.viewport()?.height || 900) - 2) // park pointer (no hover chrome)
   await page.evaluate(() => document.activeElement?.blur?.()) // no focus rings
   await sleep(250)
   await page.screenshot({ path: out(file), type: 'png', ...opts })
-  console.log('saved', file)
+  console.log('saved', file, `(RTT ${rtt} ms)`)
 }
 
 /** Click a file-list entry by exact name (never a tab chip with the same title). */
 async function openEntry(page, name, wait = 1100) {
   await page.evaluate((n) => {
-    const el = [...document.querySelectorAll('*')].find((e) =>
-      e.children.length <= 3 && e.textContent?.trim() === n && !e.closest('[role="tablist"]') && !e.closest('[role="listbox"]'))
+    const el = n === '..' ? [...document.querySelectorAll('span')].find((e) => e.textContent?.trim() === '..')
+      : [...document.querySelectorAll('span[title]')].find((e) =>
+        e.textContent?.trim() === n && e.getAttribute('title')?.startsWith('/tmp/fbx_demo'))
     if (!el) throw new Error('entry not found: ' + n)
     el.click()
   }, name)
@@ -138,11 +142,14 @@ async function login(page) {
   await page.waitForFunction(() => [...document.querySelectorAll('button')].some((b) => b.getAttribute('title') === 'Files'))
   await page.evaluate(() => [...document.querySelectorAll('button')].find((b) => b.getAttribute('title') === 'Files').click())
   await sleep(1200)
+  await page.click('span[title="Go to root"]')
+  await sleep(800)
 }
 
 async function main() {
   const puppeteer = loadPuppeteer()
-  const browser = await puppeteer.launch({
+  const browser = process.env.CDP_URL ? await puppeteer.connect({ browserURL: process.env.CDP_URL,
+    defaultViewport: { width: 1440, height: 900, deviceScaleFactor: DPR } }) : await puppeteer.launch({
     executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome',
     headless: 'new',
     args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--hide-scrollbars'],
@@ -232,7 +239,8 @@ async function main() {
     captureBeyondViewport: false,
   })
 
-  await browser.close()
+  if (process.env.CDP_URL) await browser.disconnect()
+  else await browser.close()
 
   // Responsive WebP variants for the homepage hero (<picture> in HeroShot.vue).
   const py = `

@@ -33,8 +33,12 @@ features:
     details: 按文件名或内容正则搜索；用合集把分散路径里的文件虚拟编组，无需复制或移动。
     link: /zh/features/search
     linkText: 搜索与合集
+  - title: AI Agents 编码代理
+    details: 列出编码代理窗口、读取输出、发送经审核的提示词、使用快捷键配置；按 Agent 管理集成。
+    link: /zh/features/ai-agents
+    linkText: 使用编码代理
   - title: 安全默认
-    details: 协议只读；敏感文件默认拒绝；可选 Transfer 只写入专用临时目录；AI Agents 通过独立的 Herdr backend 集成。
+    details: 协议只读；敏感文件默认拒绝；可选 Transfer 只写入专用临时目录；AI Agents 通过独立的后端集成。
     link: /zh/features/security
     linkText: 安全模型
 ---
@@ -59,4 +63,4 @@ features:
 4. [怎么用](/zh/features/browse) — 带真实界面截图的功能说明  
 5. [运维](/zh/ops/hub) — HTTPS、更新、Office、FAQ  
 
-当前版本对齐 **v2.5.0**（Hub + Agent）。本站截图全部来自本地真实运行的 Hub + Agent 界面，与你部署后看到的产品一致。
+当前版本对齐 **v3.0.0**（Hub + Agent）。本站截图全部来自本地真实运行的 Hub + Agent 界面，与你部署后看到的产品一致。

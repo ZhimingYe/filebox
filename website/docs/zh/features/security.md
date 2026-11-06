@@ -41,3 +41,7 @@ filebox 的默认姿态是：**浏览只读、路径牢笼、敏感文件拒绝*
 
 更底层的 Hub↔Agent 信任边界、token、限流等见仓库内开发文档
 [`docs/hub-agent-security-model.md`](https://github.com/ZhimingYe/filebox/blob/main/docs/hub-agent-security-model.md)（中文）。
+
+## AI Agents 与提示词审核
+
+AI Agents 不是只读文件预览：编码代理可执行操作、修改文件，不受浏览 root 限制。提示词默认先由 Hub 的 LLM 审核，阻止破坏性命令、永久删除和提取密钥，允许正常数据分析与开发。审核器会看到提示词及目标窗口近期输出；未配置或审核失败时拒绝发送，草稿保留。状态、读取输出与白名单按键仍可用，按键不经 LLM 审核。管理员可在 Hub 启动时显式关闭审核。见 [提示词审核](/zh/ops/hub#prompt-review-ai-agents)。

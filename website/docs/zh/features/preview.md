@@ -16,6 +16,14 @@ Markdown 渲染；纯文本与代码走语法高亮编辑器（只读：查找�
 
 ![代码预览 hello.py](/screenshots/08c-preview-code.png)
 
+## Markdown 数学公式
+
+Markdown 使用本地 KaTeX 渲染，无需 CDN。支持 `$...$`、`$$...$$`（行内或多行）、`\(...\)`、`\[...\]`、GitHub 的 `` $`...`$ ``，以及 `math`、`latex`、`tex`、`katex` 围栏代码块。独立的 `math`、`displaymath`、`equation`、`align`、`alignat`、`gather`、`aligned`、`gathered` LaTeX 环境也可识别（含受支持的星号变体）。矩阵、分段函数等 KaTeX 命令可放在数学定界符内。
+
+普通代码保持原样。为避免货币歧义，单美元行内公式首尾不能是空白，结束符后不能紧跟数字；字面美元写作 `\$`。展示公式可用双美元或 LaTeX 定界符，宽公式可横向滚动。无效或不支持的 TeX 保持可读，不会破坏预览；这不是支持任意宏包的完整 LaTeX 引擎。
+
+![Markdown 数学公式](/screenshots/08j-preview-math.png)
+
 ## Quarto / R Markdown
 
 `.qmd`、`.rmd`、`.rmarkdown` 走同一只读 Monaco 查看器，并使用自定义 `quarto` 语言高亮——不再只能下载。高亮覆盖 YAML / Quarto front matter、形如 `{r}` / `{python}` 的代码块（以及普通 fence 语言标签）、可选的 `:::` fenced div，以及行内 `` `r …` `` / `` `python …` ``。块内代码复用 Monaco 内置的 R、Python、Julia、SQL、shell、YAML 等语言。普通 `.md` 仍走渲染型 Markdown 预览。带 knitr 语义的富文本 Rmd 预览仍是后续项——本版仅源码高亮。文件列表徽章使用 R 色系（RMD / QMD）。
@@ -60,7 +68,7 @@ Settings 里有 **Office preview** 开关（浏览器本地偏好，默认开）
 |------|------|
 | 图片 | 缩放平移（含 TIFF） |
 | PDF | 内置查看器 |
-| Markdown | 渲染 |
+| Markdown | 渲染，含本地 KaTeX 数学公式 |
 | 代码 / 文本 / 日志 | Monaco 只读 |
 | Quarto / R Markdown（`.qmd` / `.rmd` / `.rmarkdown`） | Monaco 源码视图（`quarto` 语言；YAML + 代码块；非渲染） |
 | HTML（`.html` / `.htm`） | 沙箱会话（锁定 `<base>` + CSP；相对 / `#fragment` 链接；自包含 Quarto/Pandoc 的 `data:` CSS/JS；64 MiB 硬上限；2 MiB 确认） |
