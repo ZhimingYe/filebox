@@ -136,4 +136,4 @@ curl -s http://127.0.0.1:3000/api/health
 
 会下载最新 release、校验校验和并原地替换。Hub / Agent / 前端大版本建议一起升。
 
-下一篇：[部署 Agent](./install-agent)
+下一篇：若使用 AI Agents，请先[配置 LLM 审核](./llm-review)，再[部署 Agent](./install-agent)。

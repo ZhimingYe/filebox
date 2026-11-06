@@ -33,4 +33,4 @@ Agent 启动时的 `FILEBOX_AGENT_AI_AGENTS_ENABLED=0` / `1` 会覆盖并锁定�
 
 视图显示审核**已开启及模型**、**已关闭**或**未配置**（禁用提示词）。未配置或审核失败时拒绝发送，不会绕过审核。读取输出、状态与白名单按键仍可用；按键不经 LLM 审核。编码代理可以修改浏览 root 之外的文件，请谨慎操作。
 
-审核仅由管理员在 Hub 配置，不能在浏览器中配置。见 [提示词审核（AI Agents）](/zh/ops/hub#prompt-review-ai-agents)。
+审核仅由管理员在 Hub 配置，不能在浏览器中配置。见 [提示词审核（AI Agents）](/zh/guide/llm-review)。

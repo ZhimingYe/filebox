@@ -136,4 +136,4 @@ Sidebar **Audit** records success / failure / rate-limit and logout events; logs
 
 Downloads the latest release, verifies checksums, and replaces in place. Prefer upgrading Hub / Agent / frontend major versions together.
 
-Next: [Install Agent](./install-agent)
+Next: [Configure LLM review](./llm-review) if you use AI Agents, then [Install Agent](./install-agent).

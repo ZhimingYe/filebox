@@ -25,10 +25,13 @@ cargo build --release
 tar xzf filebox-hub-*-x86_64-musl.tar.gz
 cd filebox-hub-*
 ./bin/hub --init-config   # listen address, admin account, Agent token (printed once)
+./bin/hub --init-llm      # if using AI Agents: configure mandatory prompt review
 ./bin/hub                 # default :3000, ships with frontend static assets
 ```
 
 `--init-config` writes `config/hub.json` and **prints the Agent token once** (Hub stores only a bcrypt hash). Save the token immediately — you cannot recover plaintext from the Hub later.
+
+For AI Agents, follow [Configure LLM review](./llm-review) and supply the provider API key to the Hub process before starting it.
 
 In production put nginx / Caddy / Traefik in front to terminate TLS. See [Install Hub](./install-hub) and [Hub config & HTTPS](/ops/hub).
 

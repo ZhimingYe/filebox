@@ -69,37 +69,7 @@ Sidebar **Audit**: success / failure / rate-limit and logout events in a rolling
 
 ## Prompt review (AI Agents)
 
-AI Agents prompts require Hub-side LLM security review by default. The reviewer sees the prompt and recent target-window output. Missing configuration, provider unavailability or review failure refuses delivery. Status, output reads and allowlisted keys remain available; keys are not LLM-reviewed.
-
-Create the config with `./bin/hub --init-config` first, then run the interactive wizard (edits `config/hub.json` by default; `--output` selects another existing config):
-
-```bash
-./bin/hub --init-llm
-./bin/hub --init-llm --output /path/to/hub.json
-```
-
-Choose a preset or Custom, confirm the URL / optional endpoint path and provider name, choose an environment-variable key (recommended) or inline key, then select or enter a model. The wizard probes chat, JSON and a thinking-enabled tool call; failed probes offer a choice to save anyway. Finally choose to use the provider for AI Agents review. Other config fields are preserved; restart the Hub after saving. Make the API-key environment variable available to the Hub service process too.
-
-Merge these fields into the existing `hub.json` (do not replace authentication settings):
-
-```json
-{
-  "llm_providers": {
-    "deepseek": {
-      "protocol": "chat_completions",
-      "base_url": "https://api.deepseek.com",
-      "model": "deepseek-flash",
-      "api_key_env": "DEEPSEEK_API_KEY",
-      "timeout_secs": 20
-    }
-  },
-  "prompt_review": {"provider": "deepseek"}
-}
-```
-
-Protocols: `chat_completions`, `responses`, `messages`. For official Anthropic Messages use `path: "/v1/messages"`; the default Messages path is `/anthropic/v1/messages`. Review timeouts are capped at 60 seconds.
-
-Only the startup variable `FILEBOX_HUB_PROMPT_REVIEW_ENABLED=0` (or `false`) explicitly turns review off; the wizard does not disable it. The view shows the review model, off, or not configured. See [AI Agents](/features/ai-agents).
+AI Agents prompts require Hub-side LLM security review by default; missing configuration, provider unavailability or review failure refuses delivery. Status, output reads and allowlisted keys remain available; keys are not LLM-reviewed. For deployment steps, provider fields, service environment variables and opting out, see [Configure LLM review](/guide/llm-review).
 
 ## Third-party licenses
 
