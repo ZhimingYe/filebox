@@ -18,12 +18,7 @@ const fullSize = computed(() => img('14-tabs-pdf.png'))
 
 <template>
   <section v-if="shot" class="HeroShot" aria-label="Product screenshot">
-    <div class="glow" aria-hidden="true" />
     <a class="frame" :href="fullSize" target="_blank" rel="noopener" :title="shot.alt">
-      <div class="chrome" aria-hidden="true">
-        <span class="dot red" /><span class="dot amber" /><span class="dot green" />
-        <span class="url">filebox · lab-server</span>
-      </div>
       <picture>
         <!-- Phones: tighter crop of the preview pane so tabs, heatmap and table stay legible. -->
         <source
@@ -71,78 +66,21 @@ const fullSize = computed(() => img('14-tabs-pdf.png'))
   .HeroShot { padding: 0 32px 16px; }
 }
 
-.glow {
-  position: absolute;
-  inset: 6% 10% auto;
-  height: 70%;
-  border-radius: 50%;
-  background: linear-gradient(120deg, rgba(99, 102, 241, 0.45), rgba(168, 85, 247, 0.35) 55%, rgba(14, 165, 233, 0.3));
-  filter: blur(72px);
-  opacity: 0.55;
-  z-index: 0;
-  pointer-events: none;
-}
-.dark .glow { opacity: 0.35; }
-
 .frame {
-  position: relative;
-  z-index: 1;
   display: block;
   overflow: hidden;
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid var(--vp-c-divider);
   background: var(--vp-c-bg);
-  box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.06),
-    0 12px 28px -8px rgba(15, 23, 42, 0.18),
-    0 32px 64px -24px rgba(79, 70, 229, 0.28);
-  transition: transform 0.25s ease, box-shadow 0.25s ease;
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.08);
 }
-@media (min-width: 960px) {
-  .frame { border-radius: 14px; }
-  .frame:hover {
-    transform: translateY(-2px);
-    box-shadow:
-      0 1px 2px rgba(15, 23, 42, 0.06),
-      0 18px 36px -10px rgba(15, 23, 42, 0.22),
-      0 40px 80px -28px rgba(79, 70, 229, 0.34);
-  }
+:global(.dark) .frame {
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.04);
 }
-
-.chrome {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 12px;
-  background: var(--vp-c-bg-soft);
-  border-bottom: 1px solid var(--vp-c-divider);
+.frame:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 4px;
 }
-@media (min-width: 640px) {
-  .chrome { height: 34px; gap: 7px; padding: 0 14px; }
-}
-.dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-@media (min-width: 640px) { .dot { width: 11px; height: 11px; } }
-.red { background: #ff5f57; }
-.amber { background: #febc2e; }
-.green { background: #28c840; }
-.url {
-  flex: 1;
-  margin: 0 auto;
-  max-width: 280px;
-  margin-left: 12px;
-  padding: 2px 10px;
-  border-radius: 6px;
-  background: var(--vp-c-bg);
-  color: var(--vp-c-text-3);
-  font-size: 11px;
-  line-height: 18px;
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-@media (max-width: 639px) { .url { max-width: 180px; } }
 
 picture, img {
   display: block;
@@ -151,20 +89,18 @@ picture, img {
 }
 
 .caption {
-  position: relative;
-  z-index: 1;
   margin: 14px auto 0;
   max-width: 720px;
   text-align: center;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 20px;
-  color: var(--vp-c-text-2);
+  color: var(--vp-c-text-3);
 }
 .caption a {
-  color: var(--vp-c-brand-1);
-  font-weight: 500;
-  text-decoration: none;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
   white-space: nowrap;
 }
-.caption a:hover { text-decoration: underline; }
+.caption a:hover { color: var(--vp-c-brand-1); }
 </style>

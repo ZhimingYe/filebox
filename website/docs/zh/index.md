@@ -22,23 +22,23 @@ heroShot:
   linkText: 了解多标签预览
 features:
   - title: 浏览与预览
-    details: 大目录流畅列表、面包屑、钉选；图 / PDF / 代码 / Markdown / Quarto·Rmd / HTML / Jupyter 笔记本 / CSV / Office 就地预览，不必先 scp 一整份。
+    details: 通过面包屑与钉选浏览大目录，就地预览图片、文档、代码、笔记本与表格。
     link: /zh/features/preview
     linkText: 预览类型
   - title: 多标签工作区
-    details: 报告、图、代码、表格同时打开，像浏览器标签一样切换、固定、批量关闭；Esc 关闭、← / → 切同目录文件。
+    details: 同时打开报告、图、代码与表格，使用熟悉的标签操作切换、固定和关闭预览。
     link: /zh/features/tabs
     linkText: 多标签用法
   - title: 搜索与合集
-    details: 按文件名或内容正则搜索；用合集把分散路径里的文件虚拟编组，无需复制或移动。
+    details: 按文件名或内容正则搜索，将不同路径的文件归入合集，无需复制或移动。
     link: /zh/features/search
     linkText: 搜索与合集
   - title: AI Agents 编码代理
-    details: 列出编码代理窗口、读取输出、发送经审核的提示词、使用快捷键配置；按 Agent 管理集成。
+    details: 读取编码代理输出、发送经审核的提示词、使用快捷键配置，按 Agent 管理集成。
     link: /zh/features/ai-agents
     linkText: 使用编码代理
   - title: 安全默认
-    details: 协议只读；敏感文件默认拒绝；可选 Transfer 只写入专用临时目录；AI Agents 通过独立的后端集成。
+    details: 只读浏览，敏感路径默认拒绝访问。Transfer 使用专用临时目录；AI Agents 为独立的后端集成。
     link: /zh/features/security
     linkText: 安全模型
 ---
