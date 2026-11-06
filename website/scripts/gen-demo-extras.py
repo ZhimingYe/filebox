@@ -115,6 +115,36 @@ EXPERIMENT_LOG = """# Experiment log — adaptive recovery assay
 > Reviewed on the train home from a phone — no laptop, no scp.
 """
 
+MATH_NOTES = r"""# Recovery model — math notes
+
+Inline estimates use $R = 100\,c_{out}/c_{in}$ with uncertainty $\sigma_R = 1.8\%$.
+
+## Batch kinetics
+
+The fitted response approaches its asymptote as time increases:
+
+$$
+R(t) = R_{\infty}\left(1-e^{-kt}\right), \qquad k = 0.11\;\mathrm{h}^{-1}
+$$
+
+## Correlated measurements
+
+The covariance matrix captures the relationship between yield and purity:
+
+$$
+\Sigma = \begin{pmatrix} 1.00 & 0.42 & -0.18 \\ 0.42 & 1.00 & 0.31 \\ -0.18 & 0.31 & 1.00 \end{pmatrix}
+$$
+
+## Acceptance criteria
+
+\begin{align}
+\bar{R} &= \frac{1}{n}\sum_{i=1}^{n}R_i \\
+\mathrm{RSD} &= 100\frac{s_R}{\bar{R}} \leq 5\%
+\end{align}
+
+**Decision:** accept batches with mean recovery $\bar{R}\geq 80\%$ and RSD at most 5%.
+"""
+
 
 def write_csv(path: str) -> None:
     rng = random.Random(42)
@@ -144,6 +174,8 @@ def main() -> None:
     write_csv(os.path.join(ROOT, "datasets", "qc_runs.csv"))
     with open(os.path.join(ROOT, "notes", "run-log.md"), "w") as fh:
         fh.write(EXPERIMENT_LOG)
+    with open(os.path.join(ROOT, "notes", "recovery-math.md"), "w") as fh:
+        fh.write(MATH_NOTES)
     print("seeded extras under", ROOT)
 
 

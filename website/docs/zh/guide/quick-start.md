@@ -6,7 +6,7 @@
 
 ## 1. 下载
 
-从 [Releases](https://github.com/ZhimingYe/filebox/releases/latest) 取最新 musl 静态包（当前文档对齐 **v2.5.0**）：
+从 [Releases](https://github.com/ZhimingYe/filebox/releases/latest) 取最新 musl 静态包（当前文档对齐 **v3.0.0**）：
 
 - `filebox-hub-<ver>-x86_64-musl.tar.gz` — 放在你能暴露 HTTPS 的机器上
 - `filebox-agent-<ver>-x86_64-musl.tar.gz` — 放在每台要浏览的后端机上
@@ -89,5 +89,5 @@ Agent **只出站**；防火墙无需为它开入站。连上后侧栏会出现�
 | 更细的 Hub / HTTPS | [部署 Hub](./install-hub) · [Hub 运维](/zh/ops/hub) |
 | 多机 Agent、环境变量 | [部署 Agent](./install-agent) · [Agent 运维](/zh/ops/agent) |
 | 首次登录与各视图 | [首次登录与添加目录](./first-login) |
-| 搜索 / 合集 / 传输 / 终端 | [功能导览](/zh/features/browse) |
+| 搜索 / 合集 / 传输 / AI Agents | [功能导览](/zh/features/browse) |
 | Word / PPT / Excel 预览 | [Office 预览](/zh/ops/office) |

@@ -39,6 +39,7 @@ const enSidebar = {
         { text: 'Workspace search', link: '/features/search' },
         { text: 'Collections', link: '/features/collections' },
         { text: 'Transfer', link: '/features/transfer' },
+        { text: 'AI Agents', link: '/features/ai-agents' },
         { text: 'System monitor', link: '/features/stats' },
         { text: 'Security & sensitive files', link: '/features/security' },
       ],
@@ -88,6 +89,7 @@ const zhSidebar = {
         { text: '工作区搜索', link: '/zh/features/search' },
         { text: '合集 Collections', link: '/zh/features/collections' },
         { text: '临时传输 Transfer', link: '/zh/features/transfer' },
+        { text: 'AI Agents 编码代理', link: '/zh/features/ai-agents' },
         { text: '系统监控', link: '/zh/features/stats' },
         { text: '安全与敏感文件', link: '/zh/features/security' },
       ],
@@ -135,7 +137,7 @@ export default defineConfig({
       lang: 'en-US',
       title: 'filebox Docs',
       description:
-        'Lab / HPC read-only remote file browser — install Hub & Agent; browse, search, collections, transfer, Herdr, and system monitor',
+        'Lab / HPC read-only remote file browser — install Hub & Agent; browse, search, collections, transfer, AI Agents, and system monitor',
       head: [
         ['meta', { property: 'og:title', content: 'filebox Docs' }],
         [
@@ -179,7 +181,7 @@ export default defineConfig({
       link: '/zh/',
       title: 'filebox 文档',
       description:
-        '实验室 / HPC 只读远程文件浏览器 — 安装 Hub 与 Agent，浏览、搜索、合集、传输、终端与系统监控',
+        '实验室 / HPC 只读远程文件浏览器 — 安装 Hub 与 Agent，浏览、搜索、合集、传输、AI Agents 与系统监控',
       head: [
         ['meta', { property: 'og:title', content: 'filebox 文档' }],
         [

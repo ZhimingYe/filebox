@@ -58,7 +58,8 @@ Go back to **Files**, switch roots with the dropdown, enter directories, and cli
 | Search | Workspace filename / content search (desktop float / mobile sheet) | [Search](/features/search) |
 | Collections | Virtual file groups across directories | [Collections](/features/collections) |
 | Transfer | The only writable scratch upload folder | [Transfer](/features/transfer) |
-| Settings | Manage roots, Office preview toggle | This page |
+| AI Agents | Coding-agent windows and input | [AI Agents](/features/ai-agents) |
+| Settings | Manage roots, Office preview toggle, AI Agents switch and backend | This page |
 | System | CPU / memory / processes | [System monitor](/features/stats) |
 | Audit | Login audit (no selected Agent required) | [Hub ops](/ops/hub) |
 | Version | Click for About / Diagnostics | — |
@@ -76,3 +77,9 @@ Below ~768px viewport width the sidebar becomes a drawer; list and preview swap 
 ![Mobile sidebar drawer](/screenshots/13b-mobile-drawer.png)
 
 Common issues: [FAQ](/ops/faq).
+
+## Third-party licenses
+
+Click the sidebar version to open **About / Diagnostics**, then **Open source licenses**. Filter by package name or license and expand entries to read the full license texts of bundled Rust and frontend dependencies.
+
+![Third-party licenses](/screenshots/07b-about-licenses.png)

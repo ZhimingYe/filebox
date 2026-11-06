@@ -28,7 +28,7 @@ Agent 装在每台要浏览的机器上，主动出站连 Hub。安装步骤见 
 
 Office 相关上限见 [Office 预览](./office)。
 
-## 试验性 hc 后端
+## 试验性 hc 后端 {#experimental-hc-backend}
 
 在 Agent 机器安装 [herdr-core](https://github.com/herdrdev/herdr-core#install)，
 让 Filebox Agent 能找到 `hc`。在各自工作目录启动终端，用 `fb=名称` 或 `filebox=名称`

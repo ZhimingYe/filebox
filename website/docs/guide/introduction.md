@@ -18,7 +18,7 @@ Researchers, analysts, and data scientists whose results live as files on shared
 
 filebox is not a sync/drive product and not a full remote desktop — it is the “front door” to result files: open, preview, search, occasionally upload a small scratch file, or manage coding agents through AI Agents.
 
-## What you can do (v2.5.0)
+## What you can do (v3.0.0)
 
 | Capability | Notes | Docs |
 |------------|-------|------|
@@ -27,7 +27,8 @@ filebox is not a sync/drive product and not a full remote desktop — it is the 
 | **Search** | Filename or content regex; floating panel / bottom sheet | [Search](/features/search) |
 | **Collections** | Virtual file groups across directories — no copy, no move | [Collections](/features/collections) |
 | **Transfer** | The only writable scratch upload folder (quota, no overwrite) | [Transfer](/features/transfer) |
-| **Settings** | Manage roots, Office preview toggle | [First login](/guide/first-login) |
+| **AI Agents** | Coding-agent windows, output, prompts and allowlisted keys | [AI Agents](/features/ai-agents) |
+| **Settings** | Manage roots, Office preview toggle, AI Agents switch and backend | [First login](/guide/first-login) |
 | **System** | CPU / memory / load / per-user usage / process table | [System monitor](/features/stats) |
 | **Audit** | Login audit (Hub-level; does not require a selected Agent) | [Hub ops](/ops/hub) |
 
@@ -38,6 +39,7 @@ filebox is not a sync/drive product and not a full remote desktop — it is the 
 - Browse is strictly confined to added roots; `..` and symlink escapes are blocked.
 - Explicit integrations (capability / local config required):
   - **Transfer**: writes only into the Agent’s dedicated scratch directory.
+  - **AI Agents**: sends prompts and allowlisted keys through a separate backend. Coding agents can modify files outside browse roots. Prompts require Hub review by default; keys are not LLM-reviewed.
 
 See [Security & sensitive files](/features/security).
 

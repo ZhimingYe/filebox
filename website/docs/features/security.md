@@ -41,3 +41,7 @@ Browse is strictly limited to added roots; `..` and symlink escapes are blocked.
 
 Deeper Hub↔Agent trust boundaries, tokens, and rate limits live in the repo developer doc
 [`docs/hub-agent-security-model.md`](https://github.com/ZhimingYe/filebox/blob/main/docs/hub-agent-security-model.md) (Chinese).
+
+## AI Agents and prompt review
+
+AI Agents is not a read-only file preview: coding agents can run actions and modify files outside browse roots. By default, the Hub reviews prompts with an LLM, blocking destructive commands, permanent deletion and secret extraction while allowing normal data analysis and development. The reviewer sees the prompt and recent target-window output. Missing configuration or review failure refuses delivery and keeps the draft. Status, output reads and allowlisted keys remain available; keys are not LLM-reviewed. Administrators can explicitly disable review at Hub startup. See [prompt review](/ops/hub#prompt-review-ai-agents).

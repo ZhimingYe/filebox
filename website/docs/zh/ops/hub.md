@@ -17,9 +17,11 @@ Hub 是唯一需要被浏览器与 Agent 都可达的中心服务。生产环境
 |------|------|------|
 | `listen_addr` | 监听地址 | `0.0.0.0:3000` |
 | `agent_token_hash` | Agent token 的 bcrypt hash | 初始化时写入 |
+| `llm_providers` | 命名 LLM 提供商：协议、URL、模型及密钥来源 | 未设置 |
+| `prompt_review` | 审核提供商引用（或旧式内联配置），仅配置文件设置 | 未设置（拒绝提示词） |
 | `users` | 登录账号 | 初始化时写入 |
 
-环境变量：`FILEBOX_DEV_MODE`、`FILEBOX_LISTEN_ADDR`、`FILEBOX_FRONTEND_DIR`、`FILEBOX_CONFIG_PATH`、`FILEBOX_TRUST_XFF`。
+环境变量：`FILEBOX_DEV_MODE`、`FILEBOX_LISTEN_ADDR`、`FILEBOX_FRONTEND_DIR`、`FILEBOX_CONFIG_PATH`、`FILEBOX_TRUST_XFF`、`FILEBOX_HUB_PROMPT_REVIEW_ENABLED`。
 
 ## HTTPS 与 WebSocket
 
@@ -49,7 +51,7 @@ location / {
 curl -s https://filebox.example.com/api/health
 ```
 
-UI：点击侧栏底部 **v2.x.x** 打开 About / Diagnostics（Hub status、uptime、Agents）。
+UI：点击侧栏底部 **v3.x.x** 打开 About / Diagnostics（Hub status、uptime、Agents）。
 
 ![About / Diagnostics](/screenshots/07-health.png)
 
@@ -64,3 +66,43 @@ UI：点击侧栏底部 **v2.x.x** 打开 About / Diagnostics（Hub status、upt
 ```bash
 ./bin/hub --update
 ```
+
+## 提示词审核（AI Agents） {#prompt-review-ai-agents}
+
+默认 AI Agents 提示词必须通过 Hub 的 LLM 安全审核。审核器看到提示词及目标窗口近期输出；未配置、提供商不可用或审核失败均拒绝发送。状态、读取输出与白名单按键不受影响；按键不经 LLM 审核。
+
+先用 `./bin/hub --init-config` 创建配置，再运行交互向导（默认编辑 `config/hub.json`；`--output` 指向其他已有配置）：
+
+```bash
+./bin/hub --init-llm
+./bin/hub --init-llm --output /path/to/hub.json
+```
+
+选择预设或 Custom、确认 URL / 可选端点路径及提供商名称，选择环境变量密钥（推荐）或内联密钥，再选择或输入模型。向导测试聊天、JSON 和带 thinking 的工具调用；失败时会询问是否仍保存。最后选择将提供商用于 AI Agents 审核。保留其他配置字段；保存后重启 Hub。使用环境变量密钥时，需让 Hub 服务进程也能读取它。
+
+以下字段合并到已有 `hub.json`（不要替换认证配置）：
+
+```json
+{
+  "llm_providers": {
+    "deepseek": {
+      "protocol": "chat_completions",
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-flash",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "timeout_secs": 20
+    }
+  },
+  "prompt_review": {"provider": "deepseek"}
+}
+```
+
+协议支持 `chat_completions`、`responses`、`messages`。官方 Anthropic Messages 使用 `path: "/v1/messages"`；默认 Messages 路径是 `/anthropic/v1/messages`。审核超时最多 60 秒。
+
+只有启动时设置 `FILEBOX_HUB_PROMPT_REVIEW_ENABLED=0`（或 `false`）才显式关闭审核；向导不会关闭它。网页显示审核模型、关闭或未配置状态。见 [AI Agents](/zh/features/ai-agents)。
+
+## 第三方许可证
+
+点击侧栏版本号打开 **About / Diagnostics** → **Open source licenses**，按包名或许可证筛选，展开查看捆绑的 Rust 与前端依赖完整许可证文本。
+
+![第三方许可证](/screenshots/07b-about-licenses.png)

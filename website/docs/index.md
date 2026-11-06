@@ -33,6 +33,10 @@ features:
     details: Search by filename or content regex; group files across scattered paths into virtual collections without copying or moving them.
     link: /features/search
     linkText: Search & collections
+  - title: AI Agents
+    details: List coding-agent windows, read output, send reviewed prompts and use shortcut profiles; manage the integration per Agent.
+    link: /features/ai-agents
+    linkText: Coding agents
   - title: Secure by default
     details: Read-only protocol; sensitive paths denied by default; optional Transfer writes only to a dedicated scratch folder; AI Agents uses a separate backend integration.
     link: /features/security
@@ -59,4 +63,4 @@ Browser ──HTTPS──▶ Hub ◀──WSS (outbound)── Agent ──▶ l
 4. [How to use](/features/browse) — feature guides with real UI screenshots  
 5. [Ops](/ops/hub) — HTTPS, updates, Office, FAQ  
 
-Docs align with **v2.5.0** (Hub + Agent). Screenshots on this site were captured from a live Hub + Agent session — the same product you get after deploying.
+Docs align with **v3.0.0** (Hub + Agent). Screenshots on this site were captured from a live Hub + Agent session — the same product you get after deploying.
