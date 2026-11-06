@@ -1,0 +1,126 @@
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as api from '../api/client';
+import { TempTransferView } from './TempTransferView';
+
+vi.mock('../api/client', () => ({
+  fsList: vi.fn(), uploadTempFile: vi.fn(), cleanupTempFolder: vi.fn(),
+  friendlyMessage: vi.fn((error: { error?: string }) => error.error || 'Transfer failed'),
+}));
+vi.mock('../state/useIsMobile', () => ({ useIsMobile: () => false }));
+vi.mock('../hooks/useCopyToClipboard', () => ({
+  useCopyToClipboard: () => ({ copiedPath: null, copyToClipboard: vi.fn() }),
+}));
+vi.mock('./FileDownloadLink', () => ({ FileDownloadLink: () => null }));
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+let host: HTMLDivElement;
+let root: Root;
+let agent: api.AgentInfo;
+let handled: ReturnType<typeof vi.fn>;
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(yes => { resolve = yes; });
+  return { promise, resolve };
+}
+function render(files?: File[]) {
+  act(() => {
+    root.render(<TempTransferView agent={agent}
+      uploadRequest={files ? { files, nonce: 1 } : undefined} onUploadsHandled={handled} />);
+  });
+}
+const clean = () => host.querySelector<HTMLButtonElement>('[aria-label="Clean the temp folder"]')!;
+const uploadText = () => host.querySelector('[role="status"]')?.textContent;
+const file = (name: string, size = 3) => new File(['x'.repeat(size)], name);
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2025-01-01'));
+  vi.clearAllMocks();
+  vi.mocked(api.fsList).mockReset().mockResolvedValue({ items: [], next_cursor: null });
+  vi.mocked(api.uploadTempFile).mockReset().mockResolvedValue({ ok: true, name: 'uploaded', size: 3 });
+  vi.mocked(api.cleanupTempFolder).mockReset().mockResolvedValue({ ok: true, removed: 2, freed_bytes: 10 });
+  host = document.createElement('div');
+  root = createRoot(host);
+  agent = { id: 'a', temp_root_name: 'temp', temp_max_file_bytes: 5 } as api.AgentInfo;
+  handled = vi.fn();
+});
+afterEach(() => {
+  act(() => root.unmount());
+  host.remove();
+  vi.useRealTimers();
+});
+
+describe('TempTransferView queue', () => {
+  it('uploads sequentially and caps progress below completion until the upload resolves', async () => {
+    const first = deferred<api.TempUploadResult>();
+    vi.mocked(api.uploadTempFile).mockReturnValueOnce(first.promise);
+    const files = [file('first'), file('second')];
+    render(files);
+    await act(async () => {});
+    expect(api.uploadTempFile).toHaveBeenCalledTimes(1);
+    expect(handled).toHaveBeenCalledTimes(1);
+    const progress = vi.mocked(api.uploadTempFile).mock.calls[0][2]!;
+    act(() => { progress(100, 100); });
+    expect(uploadText()).toContain('99%');
+    expect(uploadText()).not.toContain('100%');
+    expect(uploadText()).not.toContain('Uploaded');
+    await act(async () => { first.resolve({ ok: true, name: 'first', size: 3 }); });
+    expect(api.uploadTempFile).toHaveBeenNthCalledWith(2, 'a', files[1], expect.any(Function));
+    expect(uploadText()).toBe('firstUploadedsecondUploaded');
+    expect(api.fsList).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects oversized files locally but continues with a file at the cap', async () => {
+    const oversized = file('large', 6);
+    const accepted = file('at-cap', 5);
+    render([oversized, accepted]);
+    await act(async () => {});
+    expect(api.uploadTempFile).toHaveBeenCalledExactlyOnceWith('a', accepted, expect.any(Function));
+    expect(uploadText()).toContain('temp_file_too_large');
+    expect(uploadText()).toContain('at-capUploaded');
+  });
+
+  it('continues after upload failure and clears completed/error rows after the display period', async () => {
+    vi.mocked(api.uploadTempFile).mockRejectedValueOnce({ error: 'network_error' });
+    render([file('failed'), file('next')]);
+    await act(async () => {});
+    expect(api.uploadTempFile).toHaveBeenCalledTimes(2);
+    expect(uploadText()).toContain('network_error');
+    expect(uploadText()).toContain('nextUploaded');
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(host.querySelector('[role="status"]')).toBeNull();
+  });
+});
+
+describe('TempTransferView cleanup', () => {
+  it('guards cleanup while busy, re-lists on success, and dismisses its result banner', async () => {
+    const pending = deferred<api.TempCleanupResult>();
+    vi.mocked(api.cleanupTempFolder).mockReturnValueOnce(pending.promise);
+    render();
+    await act(async () => {});
+    act(() => { clean().click(); });
+    expect(clean().disabled).toBe(true);
+    act(() => { clean().click(); });
+    expect(api.cleanupTempFolder).toHaveBeenCalledTimes(1);
+    await act(async () => { pending.resolve({ ok: true, removed: 2, freed_bytes: 10 }); });
+    expect(clean().disabled).toBe(false);
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('removed 2 items (10 B)');
+    expect(api.fsList).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    expect(host.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it('shows cleanup failure, unlocks the control, and permits retry', async () => {
+    vi.mocked(api.cleanupTempFolder).mockRejectedValueOnce({ error: 'backend_offline' });
+    render();
+    await act(async () => {});
+    await act(async () => { clean().click(); });
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('backend_offline');
+    expect(clean().disabled).toBe(false);
+    await act(async () => { clean().click(); });
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.querySelector('[role="status"]')?.textContent).toContain('Cleaned the temp folder');
+  });
+});

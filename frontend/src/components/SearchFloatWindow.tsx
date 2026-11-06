@@ -24,7 +24,7 @@ interface Rect {
 }
 
 /** Clamp geometry so the window never leaves the viewport (header stays reachable). */
-function clampRect(r: Rect, vw: number, vh: number): Rect {
+export function clampRect(r: Rect, vw: number, vh: number): Rect {
   const w = Math.min(Math.max(r.w, MIN_W), Math.max(MIN_W, vw - EDGE * 2));
   const h = Math.min(Math.max(r.h, MIN_H), Math.max(MIN_H, vh - EDGE * 2));
   const loX = EDGE - w + MIN_VISIBLE;
@@ -45,7 +45,7 @@ function clampRect(r: Rect, vw: number, vh: number): Rect {
   };
 }
 
-function loadRect(): Rect {
+export function loadRect(): Rect {
   const fallback: Rect = {
     x: Math.max(EDGE, window.innerWidth - DEFAULT_W - EDGE),
     y: 72,

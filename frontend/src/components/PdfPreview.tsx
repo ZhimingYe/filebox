@@ -61,7 +61,7 @@ const PDF_ZOOM_OPTIONS: { value: PdfZoomMode; label: string }[] = [
   { value: 2, label: '200%' },
 ];
 
-function readPdfZoomPref(): PdfZoomMode {
+export function readPdfZoomPref(): PdfZoomMode {
   try {
     const raw = sessionStorage.getItem(PDF_ZOOM_PREF_KEY);
     if (raw === 'fit' || raw === null) return 'fit';
@@ -73,7 +73,7 @@ function readPdfZoomPref(): PdfZoomMode {
   return 'fit';
 }
 
-function writePdfZoomPref(mode: PdfZoomMode) {
+export function writePdfZoomPref(mode: PdfZoomMode) {
   try {
     sessionStorage.setItem(PDF_ZOOM_PREF_KEY, String(mode));
   } catch {

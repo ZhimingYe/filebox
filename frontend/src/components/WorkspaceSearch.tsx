@@ -36,7 +36,7 @@ function estimateHitHeight(hit: SearchHit): number {
 }
 
 /** Case-insensitive substring over path/root/context (client-side only). */
-function hitMatchesFilter(hit: SearchHit, needle: string): boolean {
+export function hitMatchesFilter(hit: SearchHit, needle: string): boolean {
   const q = needle.trim().toLowerCase();
   if (!q) return true;
   if (hit.path.toLowerCase().includes(q)) return true;
@@ -126,7 +126,7 @@ function loadStoredMaxDepth(agentId: string): string {
   return '';
 }
 
-function isValidIgnoreName(name: string): boolean {
+export function isValidIgnoreName(name: string): boolean {
   if (!name || name === '.' || name === '..') return false;
   if (name.length > MAX_IGNORE_NAME_LEN) return false;
   if (IGNORE_META_RE.test(name)) return false;
@@ -135,7 +135,7 @@ function isValidIgnoreName(name: string): boolean {
 }
 
 /** Parse ignore text into names; invalid tokens are dropped (not sent to hub). */
-function parseIgnoreList(raw: string): {
+export function parseIgnoreList(raw: string): {
   names: string[];
   dropped: number;
   truncated: boolean;
@@ -161,7 +161,7 @@ function parseIgnoreList(raw: string): {
   return { names: out, dropped, truncated };
 }
 
-function parseMaxDepth(raw: string): number | null {
+export function parseMaxDepth(raw: string): number | null {
   const t = raw.trim();
   if (!t) return null;
   const n = Number(t);
@@ -174,7 +174,7 @@ function searchErrorMessage(err: unknown): string {
 }
 
 /** Normalize folder input; `./` and `.` mean root. */
-function normalizeFolderPath(path: string): string {
+export function normalizeFolderPath(path: string): string {
   let p = path.trim();
   if (!p || p === '.' || p === './') return '/';
   if (p.startsWith('./')) p = p.slice(1);
@@ -183,7 +183,7 @@ function normalizeFolderPath(path: string): string {
   return p || '/';
 }
 
-function clampContext(n: number): number {
+export function clampContext(n: number): number {
   if (!Number.isFinite(n)) return DEFAULT_CONTEXT;
   return Math.max(0, Math.min(MAX_CONTEXT, Math.floor(n)));
 }

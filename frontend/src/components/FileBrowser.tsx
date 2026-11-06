@@ -1040,7 +1040,7 @@ export function FileBrowser({ agentId, roots, onFileSelect, onEntriesChange, onR
   );
 }
 
-function globToRegex(glob: string): string {
+export function globToRegex(glob: string): string {
   // If it contains regex-only chars but no glob chars, treat as raw regex
   const hasGlob = glob.includes('*') || glob.includes('?');
   const hasRegexChars = /[+^${}()|[\]\\]/.test(glob);
