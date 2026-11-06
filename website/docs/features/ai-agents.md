@@ -33,4 +33,4 @@ By default, every prompt is reviewed at the Hub before delivery. Destructive com
 
 The view shows review **on with its model**, **off**, or **not configured** (prompts disabled). Missing configuration or a failed review refuses delivery rather than bypassing review. Reads, status and allowlisted keys remain available; keys are not LLM-reviewed. Coding agents can modify files outside browse roots, so use their controls with care.
 
-An administrator configures review only on the Hub, not in the browser. See [Prompt review (AI Agents)](/ops/hub#prompt-review-ai-agents).
+An administrator configures review only on the Hub, not in the browser. See [Prompt review (AI Agents)](/guide/llm-review).

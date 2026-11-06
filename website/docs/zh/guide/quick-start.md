@@ -25,10 +25,13 @@ cargo build --release
 tar xzf filebox-hub-*-x86_64-musl.tar.gz
 cd filebox-hub-*
 ./bin/hub --init-config   # 监听地址、管理员账号、Agent token（只打印一次）
+./bin/hub --init-llm      # 使用 AI Agents 时：配置默认强制执行的提示词审核
 ./bin/hub                 # 默认 :3000，自带前端静态资源
 ```
 
 `--init-config` 会生成 `config/hub.json`，并**只打印一次** Agent token（Hub 只存 bcrypt hash）。请立刻保存 token，之后无法从 Hub 再读出明文。
+
+使用 AI Agents 时，请按[配置 LLM 审核](./llm-review)操作，并在启动 Hub 前将提供商 API key 传给 Hub 进程。
 
 生产环境请在前面加 nginx / Caddy / Traefik 终止 TLS。详见 [部署 Hub](./install-hub) 与 [Hub 配置与 HTTPS](/zh/ops/hub)。
 

@@ -69,37 +69,7 @@ UI：点击侧栏底部 **v3.x.x** 打开 About / Diagnostics（Hub status、upt
 
 ## 提示词审核（AI Agents） {#prompt-review-ai-agents}
 
-默认 AI Agents 提示词必须通过 Hub 的 LLM 安全审核。审核器看到提示词及目标窗口近期输出；未配置、提供商不可用或审核失败均拒绝发送。状态、读取输出与白名单按键不受影响；按键不经 LLM 审核。
-
-先用 `./bin/hub --init-config` 创建配置，再运行交互向导（默认编辑 `config/hub.json`；`--output` 指向其他已有配置）：
-
-```bash
-./bin/hub --init-llm
-./bin/hub --init-llm --output /path/to/hub.json
-```
-
-选择预设或 Custom、确认 URL / 可选端点路径及提供商名称，选择环境变量密钥（推荐）或内联密钥，再选择或输入模型。向导测试聊天、JSON 和带 thinking 的工具调用；失败时会询问是否仍保存。最后选择将提供商用于 AI Agents 审核。保留其他配置字段；保存后重启 Hub。使用环境变量密钥时，需让 Hub 服务进程也能读取它。
-
-以下字段合并到已有 `hub.json`（不要替换认证配置）：
-
-```json
-{
-  "llm_providers": {
-    "deepseek": {
-      "protocol": "chat_completions",
-      "base_url": "https://api.deepseek.com",
-      "model": "deepseek-flash",
-      "api_key_env": "DEEPSEEK_API_KEY",
-      "timeout_secs": 20
-    }
-  },
-  "prompt_review": {"provider": "deepseek"}
-}
-```
-
-协议支持 `chat_completions`、`responses`、`messages`。官方 Anthropic Messages 使用 `path: "/v1/messages"`；默认 Messages 路径是 `/anthropic/v1/messages`。审核超时最多 60 秒。
-
-只有启动时设置 `FILEBOX_HUB_PROMPT_REVIEW_ENABLED=0`（或 `false`）才显式关闭审核；向导不会关闭它。网页显示审核模型、关闭或未配置状态。见 [AI Agents](/zh/features/ai-agents)。
+AI Agents 提示词默认必须通过 Hub 的 LLM 安全审核；未配置、提供商不可用或审核失败均拒绝发送。状态、读取输出与白名单按键仍可用，按键不经 LLM 审核。部署步骤、提供商字段、服务环境变量与关闭方式见[配置 LLM 审核](/zh/guide/llm-review)。
 
 ## 第三方许可证
 
