@@ -729,7 +729,7 @@ function RefreshIcon() {
 
 // ── formatting & helpers ──────────────────────────────────────────────────
 
-function barColor(pct: number): string {
+export function barColor(pct: number): string {
   return pct > 80 ? c.danger : pct > 60 ? c.warning : c.success;
 }
 
@@ -744,7 +744,7 @@ function stateColor(state: string): string {
   }
 }
 
-function stateLabel(state: string): string {
+export function stateLabel(state: string): string {
   switch (state) {
     case 'R': return 'Running';
     case 'S': return 'Sleeping';
@@ -763,7 +763,7 @@ function stateLabel(state: string): string {
 // key on a tie would recurse forever — common on HPC nodes running identical
 // jobs — so the tiebreak always lands on a different dimension and finally on
 // uid (unique), never recursing.
-function cmpUsers(
+export function cmpUsers(
   a: UserAgg, b: UserAgg, key: UserSortKey,
   cpuShare: Record<number, number>, memShare: Record<number, number>,
 ): number {
@@ -784,7 +784,7 @@ function cmpUsers(
   return b.uid - a.uid;
 }
 
-function cmpProcs(a: ProcessInfo, b: ProcessInfo, key: ProcSortKey): number {
+export function cmpProcs(a: ProcessInfo, b: ProcessInfo, key: ProcSortKey): number {
   const primary = (() => {
     switch (key) {
       case 'mem_bytes': return b.mem_bytes > a.mem_bytes ? 1 : b.mem_bytes < a.mem_bytes ? -1 : 0;
@@ -800,7 +800,7 @@ function cmpProcs(a: ProcessInfo, b: ProcessInfo, key: ProcSortKey): number {
   return a.pid - b.pid;
 }
 
-function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -808,20 +808,20 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(2)} TB`;
 }
 
-function formatCount(n: number): string {
+export function formatCount(n: number): string {
   if (n < 1000) return String(n);
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
-function formatDuration(secs: number): string {
+export function formatDuration(secs: number): string {
   if (secs < 60) return `${secs}s`;
   if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
   return `${Math.floor(secs / 86400)}d ${Math.floor((secs % 86400) / 3600)}h`;
 }
 
-function formatCpuMs(ms: number): string {
+export function formatCpuMs(ms: number): string {
   // CPU-ms → human core-time (the unit HPC ops cares about for accounting).
   const secs = ms / 1000;
   if (secs < 60) return `${secs.toFixed(0)}s`;
@@ -830,14 +830,14 @@ function formatCpuMs(ms: number): string {
   return `${(secs / 86400).toFixed(1)}d`;
 }
 
-function formatAgo(ms: number): string {
+export function formatAgo(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 5) return 'just now';
   if (s < 60) return `${s}s ago`;
   return `${Math.floor(s / 60)}m ago`;
 }
 
-function formatBoot(epoch: number): string {
+export function formatBoot(epoch: number): string {
   if (!epoch) return '—';
   const d = new Date(epoch * 1000);
   return d.toLocaleString();
@@ -852,7 +852,7 @@ function formatBoot(epoch: number): string {
 /// ownership so a userspace process named `[x]` can't sneak in. The earlier
 /// "uid==0 && cmd empty && mem==0" rule was too broad and misclassified real
 /// root processes on macOS / on Linux hosts with argv-dropping daemons.
-function isKernelThread(p: ProcessInfo): boolean {
+export function isKernelThread(p: ProcessInfo): boolean {
   return p.uid === 0
     && p.command === ''
     && p.name.startsWith('[')

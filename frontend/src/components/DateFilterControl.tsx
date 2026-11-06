@@ -107,7 +107,7 @@ export function todayIso(): string {
   return toIsoDay(n.getFullYear(), n.getMonth(), n.getDate());
 }
 
-function addDaysIso(iso: string, delta: number): string | null {
+export function addDaysIso(iso: string, delta: number): string | null {
   const t = parseLocalDateInput(iso);
   if (t === null) return null;
   const d = new Date(t);
@@ -242,12 +242,12 @@ function monthFromIso(iso: string | null | undefined, fallback = new Date()): Mo
   return { year: fallback.getFullYear(), month: fallback.getMonth() };
 }
 
-function shiftMonth(cursor: MonthCursor, delta: number): MonthCursor {
+export function shiftMonth(cursor: MonthCursor, delta: number): MonthCursor {
   const d = new Date(cursor.year, cursor.month + delta, 1);
   return { year: d.getFullYear(), month: d.getMonth() };
 }
 
-function buildMonthCells(year: number, month: number): Array<{ iso: string; day: number; inMonth: boolean } | null> {
+export function buildMonthCells(year: number, month: number): Array<{ iso: string; day: number; inMonth: boolean } | null> {
   const firstDow = new Date(year, month, 1).getDay(); // 0=Sun
   const days = new Date(year, month + 1, 0).getDate();
   const cells: Array<{ iso: string; day: number; inMonth: boolean } | null> = [];
@@ -261,7 +261,7 @@ function buildMonthCells(year: number, month: number): Array<{ iso: string; day:
   return cells;
 }
 
-function isoInRange(iso: string, start: string, end: string): boolean {
+export function isoInRange(iso: string, start: string, end: string): boolean {
   if (!start || !end) return false;
   const lo = compareIso(start, end) <= 0 ? start : end;
   const hi = compareIso(start, end) <= 0 ? end : start;

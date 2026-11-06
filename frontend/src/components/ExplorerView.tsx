@@ -166,32 +166,32 @@ const EMPTY_DIRECTORY: DirectoryState = {
   lastUsed: 0,
 };
 
-function nodeKey(root: string, path: string): string {
+export function nodeKey(root: string, path: string): string {
   return `${root}\u0000${path}`;
 }
 
-function splitNodeKey(key: string): { root: string; path: string } {
+export function splitNodeKey(key: string): { root: string; path: string } {
   const split = key.indexOf('\u0000');
   return { root: key.slice(0, split), path: key.slice(split + 1) };
 }
 
-function childPath(parent: string, name: string): string {
+export function childPath(parent: string, name: string): string {
   return parent === '/' ? `/${name}` : `${parent}/${name}`;
 }
 
-function parentPath(path: string): string {
+export function parentPath(path: string): string {
   if (path === '/') return '/';
   const parts = path.split('/').filter(Boolean);
   parts.pop();
   return parts.length === 0 ? '/' : `/${parts.join('/')}`;
 }
 
-function displayPath(rootPath: string, relativePath: string): string {
+export function displayPath(rootPath: string, relativePath: string): string {
   const base = rootPath.replace(/\/+$/, '');
   return relativePath === '/' ? base || '/' : `${base}${relativePath}`;
 }
 
-function normalizePinPath(path: string): string {
+export function normalizePinPath(path: string): string {
   let normalized = path.length > 1 ? path.replace(/\/+$/, '') : path;
   if (!normalized.startsWith('/')) normalized = `/${normalized}`;
   return normalized || '/';
@@ -206,7 +206,7 @@ function isPendingAgentUpdate(value: unknown): boolean {
   );
 }
 
-function compareExplorerEntries(
+export function compareExplorerEntries(
   a: FsEntry,
   b: FsEntry,
   sortBy: ExplorerSortKey,
@@ -240,7 +240,7 @@ function modifiedTime(entry: FsEntry): number {
   return parsed;
 }
 
-function mergeSortedEntries(
+export function mergeSortedEntries(
   left: FsEntry[],
   right: FsEntry[],
   sortBy: ExplorerSortKey,
@@ -270,7 +270,7 @@ function mergeSortedEntries(
   return merged;
 }
 
-function sortedExplorerEntries(
+export function sortedExplorerEntries(
   items: FsEntry[],
   sortBy: ExplorerSortKey,
   sortAsc: boolean,
@@ -297,13 +297,13 @@ function sortedExplorerEntries(
   return sorted;
 }
 
-function appendExplorerEntries(existing: FsEntry[], appended: FsEntry[]): FsEntry[] {
+export function appendExplorerEntries(existing: FsEntry[], appended: FsEntry[]): FsEntry[] {
   const combined = [...existing, ...appended];
   APPENDED_ENTRIES.set(combined, { previous: existing, appended });
   return combined;
 }
 
-function isSameOrDescendant(
+export function isSameOrDescendant(
   candidateKey: string,
   root: string,
   path: string,
@@ -316,7 +316,7 @@ function isSameOrDescendant(
     : candidate.path.startsWith(`${path}/`);
 }
 
-function totalCachedEntries(nodes: Map<string, DirectoryState>): number {
+export function totalCachedEntries(nodes: Map<string, DirectoryState>): number {
   let total = 0;
   nodes.forEach((state) => {
     total += state.items.length;
@@ -324,7 +324,7 @@ function totalCachedEntries(nodes: Map<string, DirectoryState>): number {
   return total;
 }
 
-function trimCollapsedCache(
+export function trimCollapsedCache(
   nodes: Map<string, DirectoryState>,
   expanded: Set<string>,
 ): Map<string, DirectoryState> {
