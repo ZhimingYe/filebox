@@ -89,11 +89,18 @@ export function CollectionPicker({ agent, target, anchorEl, onClose, onChanged }
   useEffect(() => {
     placePanel();
     const onReposition = () => placePanel();
+    const onScroll = (event: Event) => {
+      // Scrolling the panel's own list must not reposition (or close) it: the
+      // hover-only trigger is usually unmounted once the pointer is here.
+      const t = event.target;
+      if (t instanceof Node && panelRef.current?.contains(t)) return;
+      placePanel();
+    };
     window.addEventListener('resize', onReposition);
-    window.addEventListener('scroll', onReposition, true);
+    window.addEventListener('scroll', onScroll, true);
     return () => {
       window.removeEventListener('resize', onReposition);
-      window.removeEventListener('scroll', onReposition, true);
+      window.removeEventListener('scroll', onScroll, true);
     };
   }, [placePanel]);
 
