@@ -126,6 +126,42 @@ async fn install(state: &AppState) -> (AgentContext, mpsc::Receiver<HubMessage>)
     (context, receiver)
 }
 
+#[tokio::test]
+async fn successful_forward_retry_clears_error_before_sse_refresh_including_empty_lists() {
+    use filebox_protocol::forwards::ForwardConfig;
+    let state = test_state();
+    let (context, _rx) = install(&state).await;
+    let mut events = state.inner.read().await.sse_tx.subscribe();
+    for (revision, forwards) in [
+        (1, vec![ForwardConfig { port: 9001, name: "web".into(), keep_prefix: false }]),
+        (2, vec![]),
+    ] {
+        state.inner.write().await.agents.get_mut("agent").unwrap().pending_forwards = Some(("failed-edit".into(), forwards.clone()));
+        dispatch::dispatch(&context, &serde_json::to_string(&AgentMessage::ForwardsRejected {
+            req_id: "failed-edit".into(), error: "persistence_failed".into(), message: "Persistence failed".into(),
+        }).unwrap()).await;
+        assert_eq!(events.recv().await.unwrap().data["state"], "rejected");
+        assert_eq!(state.inner.read().await.agents.get("agent").unwrap().to_info().last_config_error.as_deref(), Some("Persistence failed"));
+        dispatch::dispatch(&context, &serde_json::to_string(&AgentMessage::ForwardsApplied {
+            req_id: "stale-edit".into(), forwards_revision: 0, forwards: vec![],
+        }).unwrap()).await;
+        let _ = events.recv().await.unwrap();
+        assert_eq!(state.inner.read().await.agents.get("agent").unwrap().last_config_error.as_deref(), Some("Persistence failed"));
+        state.inner.write().await.agents.get_mut("agent").unwrap().pending_forwards = Some(("retry".into(), forwards.clone()));
+        dispatch::dispatch(&context, &serde_json::to_string(&AgentMessage::ForwardsApplied {
+            req_id: "retry".into(), forwards_revision: revision, forwards: forwards.clone(),
+        }).unwrap()).await;
+        let event = events.recv().await.unwrap();
+        assert_eq!(event.event, "forwards_updated");
+        assert_eq!(event.data["state"], "applied");
+        let info = state.inner.read().await.agents.get("agent").unwrap().to_info();
+        assert!(info.last_config_error.is_none());
+        assert!(!info.pending_forwards_update);
+        assert_eq!(info.forwards_revision, revision);
+        assert_eq!(info.forwards, forwards);
+    }
+}
+
 async fn pending(
     context: &AgentContext, req_id: &str, desired_roots: Option<Vec<RootConfig>>,
 ) -> mpsc::Receiver<serde_json::Value> {

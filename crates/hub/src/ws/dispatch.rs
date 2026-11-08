@@ -28,6 +28,7 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
             if forwards_revision > agent.forwards_revision {
                 agent.forwards_revision = forwards_revision;
                 agent.forwards = forwards;
+                agent.last_config_error = None;
             }
             if agent.pending_forwards.as_ref().is_some_and(|(id, _)| id == &req_id) {
                 agent.pending_forwards = None;
