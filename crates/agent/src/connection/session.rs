@@ -170,7 +170,7 @@ impl<'a> ConnectionSession<'a> {
                 Ok(())
             }
             HubMessage::ForwardsSetDesired { req_id, desired_revision, forwards } => {
-                let untrusted = forwards.iter().any(|forward| !self.runtime.resource_mgr.trusted_ports.allows(forward.port));
+                let untrusted = self.runtime.resource_mgr.new_untrusted_forward_port(&forwards).is_some();
                 let response = match self.runtime.resource_mgr.apply_forwards_desired(desired_revision, forwards) {
                     Ok(forwards_revision) => AgentMessage::ForwardsApplied {
                         req_id, forwards_revision,

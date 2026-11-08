@@ -1,6 +1,53 @@
 use super::*;
 
 #[tokio::test]
+async fn retained_untrusted_forward_allows_add_and_remove_and_does_not_mask_invalid_forward_errors() {
+    use filebox_protocol::forwards::ForwardConfig;
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = AgentRuntime::for_tests(temp.path());
+    runtime.resource_mgr.trusted_ports = crate::trusted_ports::TrustedPorts::parse("9000-9010").unwrap();
+    let saved = ForwardConfig { port: 3080, name: "saved".into(), keep_prefix: false, trusted: false };
+    let trusted = ForwardConfig { port: 9000, name: "trusted".into(), keep_prefix: false, trusted: false };
+    runtime.resource_mgr.config.forwards = vec![saved.clone()];
+    let (sink, mut replies) = capture();
+    let mut session = ConnectionSession::new(&mut runtime, sink, "agent".into());
+    session.dispatch(HubMessage::ForwardsSetDesired {
+        req_id: "add".into(), desired_revision: 1, forwards: vec![saved.clone(), trusted.clone()],
+    }).await.unwrap();
+    match response(&mut replies).await {
+        AgentMessage::ForwardsApplied { forwards, .. } => {
+            assert_eq!(forwards[0].port, 3080);
+            assert!(!forwards[0].trusted);
+            assert!(forwards[1].trusted);
+        }
+        other => panic!("unexpected reply: {other:?}"),
+    }
+    for (entry, expected) in [
+        (ForwardConfig { port: 8888, ..saved.clone() }, "port_not_trusted"),
+        (ForwardConfig { name: "".into(), ..saved.clone() }, "invalid_forward"),
+    ] {
+        let forwards = if expected == "port_not_trusted" { vec![saved.clone(), trusted.clone(), entry] }
+            else { vec![entry, trusted.clone()] };
+        session.dispatch(HubMessage::ForwardsSetDesired { req_id: "reject".into(), desired_revision: 2, forwards }).await.unwrap();
+        match response(&mut replies).await {
+            AgentMessage::ForwardsRejected { error, message, .. } => {
+                assert_eq!(error, expected);
+                if expected == "port_not_trusted" {
+                    assert!(message.contains("8888"));
+                    assert!(!message.contains("3080"));
+                }
+            }
+            other => panic!("unexpected reply: {other:?}"),
+        }
+        assert_eq!(session.runtime.resource_mgr.config.forwards_revision, 1);
+        assert_eq!(session.runtime.resource_mgr.config.forwards, vec![saved.clone(), trusted.clone()]);
+    }
+    session.dispatch(HubMessage::ForwardsSetDesired { req_id: "remove".into(), desired_revision: 2, forwards: vec![trusted] }).await.unwrap();
+    assert!(matches!(response(&mut replies).await, AgentMessage::ForwardsApplied { forwards_revision: 2, forwards, .. } if forwards.len() == 1 && forwards[0].port == 9000));
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn forwards_acknowledge_trusted_ports_and_reject_untrusted_updates_without_mutation() {
     use filebox_protocol::forwards::ForwardConfig;
     let temp = tempfile::tempdir().unwrap();

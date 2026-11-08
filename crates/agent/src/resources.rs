@@ -19,6 +19,36 @@ mod forward_tests {
     use filebox_protocol::forwards::ForwardConfig;
 
     #[test]
+    fn retained_untrusted_ports_do_not_block_trusted_additions_edits_or_removals() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = ResourceManager::new(dir.path().to_path_buf());
+        manager.trusted_ports = crate::trusted_ports::TrustedPorts::All;
+        let mut saved = ForwardConfig { port: 3080, name: "saved".into(), keep_prefix: false, trusted: false };
+        manager.apply_forwards_desired(1, vec![saved.clone()]).unwrap();
+        manager.trusted_ports = crate::trusted_ports::TrustedPorts::parse("9000-9010").unwrap();
+        let trusted = ForwardConfig { port: 9000, name: "trusted".into(), keep_prefix: false, trusted: false };
+        manager.apply_forwards_desired(2, vec![saved.clone(), trusted.clone()]).unwrap();
+        assert!(!manager.reported_forwards()[0].trusted);
+        assert!(manager.reported_forwards()[1].trusted);
+        saved.name = "edited".into();
+        saved.keep_prefix = true;
+        manager.apply_forwards_desired(3, vec![saved.clone(), trusted.clone()]).unwrap();
+        let disk = std::fs::read(dir.path().join("agent_state.json")).unwrap();
+        let error = manager.apply_forwards_desired(4, vec![saved.clone(), trusted.clone(),
+            ForwardConfig { port: 8888, ..saved.clone() }, ForwardConfig { port: 8889, ..saved.clone() },
+        ]).unwrap_err();
+        assert!(error.contains("8888") && error.contains("trusted_ports"));
+        for port in ["3080", "9000", "8889"] { assert!(!error.contains(port)); }
+        assert_eq!(manager.config.forwards_revision, 3);
+        assert_eq!(manager.config.forwards, vec![saved.clone(), trusted.clone()]);
+        assert_eq!(std::fs::read(dir.path().join("agent_state.json")).unwrap(), disk);
+        manager.apply_forwards_desired(4, vec![trusted.clone()]).unwrap();
+        assert_eq!(manager.config.forwards, vec![trusted.clone()]);
+        let error = manager.apply_forwards_desired(5, vec![saved, trusted]).unwrap_err();
+        assert!(error.contains("3080"));
+    }
+
+    #[test]
     fn trusted_ports_reject_additions_atomically_and_only_report_configured_port_trust() {
         let dir = tempfile::tempdir().unwrap();
         let mut manager = ResourceManager::new(dir.path().to_path_buf());
@@ -71,6 +101,12 @@ mod forward_tests {
 }
 
 impl ResourceManager {
+    pub fn new_untrusted_forward_port(&self, forwards: &[filebox_protocol::forwards::ForwardConfig]) -> Option<u16> {
+        forwards.iter().find(|forward| !self.trusted_ports.allows(forward.port)
+            && !self.config.forwards.iter().any(|current| current.port == forward.port))
+            .map(|forward| forward.port)
+    }
+
     pub fn apply_forwards_desired(
         &mut self,
         revision: u64,
@@ -80,10 +116,10 @@ impl ResourceManager {
             return Err("Stale forwards revision".into());
         }
         filebox_protocol::forwards::validate_forwards(&forwards)?;
+        if let Some(port) = self.new_untrusted_forward_port(&forwards) {
+            return Err(crate::trusted_ports::TrustedPorts::rejection(port));
+        }
         for forward in &mut forwards {
-            if !self.trusted_ports.allows(forward.port) {
-                return Err(crate::trusted_ports::TrustedPorts::rejection(forward.port));
-            }
             forward.trusted = false;
         }
         let previous = self.config.clone();
