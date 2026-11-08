@@ -26,8 +26,8 @@ pub fn router() -> Router<AppState> {
 
 struct Generation { cancel: CancellationToken, limit: Arc<Semaphore> }
 struct Ticket {
-    agent: String, generation: u64, expires: Instant,
-    tx: oneshot::Sender<WebSocket>,
+    agent: String, generation: u64, expires: Instant, port: u16,
+    tx: oneshot::Sender<Result<WebSocket, StatusCode>>,
 }
 #[derive(Default)]
 pub struct TunnelStore {
@@ -42,9 +42,13 @@ impl TunnelStore {
         self.tickets.lock().unwrap().retain(|_, t| t.agent != agent || t.generation != generation);
         self.idle.lock().unwrap().retain(|(id, _), _| id != agent);
     }
-    pub fn fail(&self, ticket: &str, agent: &str, generation: u64) {
+    pub fn fail(&self, ticket: &str, agent: &str, generation: u64, code: &str) -> Option<u16> {
         let mut tickets = self.tickets.lock().unwrap();
-        if tickets.get(ticket).is_some_and(|t| t.agent == agent && t.generation == generation) { tickets.remove(ticket); }
+        if !tickets.get(ticket).is_some_and(|t| t.agent == agent && t.generation == generation) { return None; }
+        let ticket = tickets.remove(ticket)?;
+        let status = if code == "port_not_trusted" { StatusCode::FORBIDDEN } else { StatusCode::BAD_GATEWAY };
+        let _ = ticket.tx.send(Err(status));
+        Some(ticket.port)
     }
     fn take(&self, ticket: &str, agent: &str, generation: u64) -> Option<Ticket> {
         let mut tickets = self.tickets.lock().unwrap();
@@ -65,7 +69,7 @@ pub async fn data_socket(State(state): State<AppState>, headers: HeaderMap, ws: 
     let Some(connection) = inner.agents.get(agent).filter(|a| a.status != AgentStatus::Offline) else { return StatusCode::UNAUTHORIZED.into_response(); };
     let Some(pending) = state.tunnels.take(ticket, agent, connection.connection_id) else { return StatusCode::UNAUTHORIZED.into_response(); };
     ws.max_message_size(tunnel::MAX_WS_MESSAGE).max_frame_size(tunnel::MAX_WS_MESSAGE)
-        .on_upgrade(move |socket| async move { let _ = pending.tx.send(socket); })
+        .on_upgrade(move |socket| async move { let _ = pending.tx.send(Ok(socket)); })
 }
 
 pub(super) struct Opened { pub stream: DuplexStream, pub cancel: CancellationToken }
@@ -74,6 +78,7 @@ async fn open(state: &AppState, agent: &str, port: u16) -> Result<Opened, Status
     let inner = state.inner.read().await;
     let connection = inner.agents.get(agent).ok_or(StatusCode::NOT_FOUND)?;
     if !connection.capabilities.port_forward || !connection.forwards.iter().any(|f| f.port == port) { return Err(StatusCode::NOT_FOUND); }
+    if connection.forwards.iter().any(|f| f.port == port && !f.trusted) { return Err(StatusCode::FORBIDDEN); }
     if connection.status == AgentStatus::Offline { return Err(StatusCode::SERVICE_UNAVAILABLE); }
     let generation = connection.connection_id;
     let (cancel, limit) = {
@@ -93,7 +98,7 @@ async fn open(state: &AppState, agent: &str, port: u16) -> Result<Opened, Status
     let ticket = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel();
     state.tunnels.tickets.lock().unwrap().insert(ticket.clone(), Ticket {
-        agent: agent.into(), generation: connection.connection_id,
+        agent: agent.into(), generation: connection.connection_id, port,
         expires: Instant::now() + Duration::from_secs(300), tx,
     });
     let _cleanup = TicketCleanup { store: state.tunnels.clone(), ticket: ticket.clone() };
@@ -101,7 +106,7 @@ async fn open(state: &AppState, agent: &str, port: u16) -> Result<Opened, Status
     drop(inner);
     let mut socket = tokio::select! {
         _ = cancel.cancelled() => return Err(StatusCode::SERVICE_UNAVAILABLE),
-        result = tokio::time::timeout(Duration::from_secs(300), rx) => result.map_err(|_| StatusCode::GATEWAY_TIMEOUT)?.map_err(|_| StatusCode::BAD_GATEWAY)?,
+        result = tokio::time::timeout(Duration::from_secs(300), rx) => result.map_err(|_| StatusCode::GATEWAY_TIMEOUT)?.map_err(|_| StatusCode::BAD_GATEWAY)??,
     };
     let ready = tokio::time::timeout(Duration::from_secs(300), socket.recv()).await;
     if !matches!(ready, Ok(Some(Ok(Message::Binary(ref data)))) if tunnel::decode_frame(data, true).is_ok_and(|(kind, _)| kind == Frame::Ready)) { return Err(StatusCode::BAD_GATEWAY); }

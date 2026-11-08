@@ -18,8 +18,19 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
         return;
     };
     match message {
-        AgentMessage::TunnelFailed { ticket, code: _ } => {
-            context.state.tunnels.fail(&ticket, &context.agent_id, context.connection_id);
+        AgentMessage::TunnelFailed { ticket, code } => {
+            let port = context.state.tunnels.fail(&ticket, &context.agent_id, context.connection_id, &code);
+            if code == "port_not_trusted" {
+                if let Some(port) = port {
+                    let mut inner = context.state.inner.write().await;
+                    if !inner.agents.is_current_connection(&context.agent_id, context.connection_id) { return; }
+                    let agent = inner.agents.get_mut(&context.agent_id).expect("current connection");
+                    for forward in &mut agent.forwards { if forward.port == port { forward.trusted = false; } }
+                    AppState::emit_sse_locked(&inner, "forwards_updated", serde_json::json!({
+                        "agent_id": context.agent_id, "port": port, "trusted": false,
+                    })).await;
+                }
+            }
         }
         AgentMessage::ForwardsApplied { req_id, forwards_revision, forwards } => {
             let mut inner = context.state.inner.write().await;
@@ -38,6 +49,7 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
             }
             AppState::emit_sse_locked(&inner, "forwards_updated", serde_json::json!({
                 "agent_id": context.agent_id, "forwards_revision": forwards_revision, "state": "applied",
+                "forwards": inner.agents.get(&context.agent_id).map(|agent| &agent.forwards),
             })).await;
         }
         AgentMessage::ForwardsRejected { req_id, error, message } => {

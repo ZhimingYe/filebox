@@ -79,11 +79,11 @@ async fn superseded_forward_waiter_does_not_report_agent_rejection() {
     let pending_state = state.clone();
     let waiter = tokio::spawn(async move {
         super::forwards::add(State(pending_state), Path("agent".into()), Json(filebox_protocol::forwards::ForwardConfig {
-            port: 9001, name: "first".into(), keep_prefix: false,
+            port: 9001, name: "first".into(), keep_prefix: false, trusted: false,
         })).await
     });
     let HubMessage::ForwardsSetDesired { req_id, desired_revision, mut forwards } = rx.recv().await.unwrap() else { panic!("expected forwards update"); };
-    forwards.push(filebox_protocol::forwards::ForwardConfig { port: 9002, name: "second".into(), keep_prefix: false });
+    forwards.push(filebox_protocol::forwards::ForwardConfig { port: 9002, name: "second".into(), keep_prefix: false, trusted: false });
     {
         let mut inner = state.inner.write().await;
         let agent = inner.agents.get_mut("agent").unwrap();

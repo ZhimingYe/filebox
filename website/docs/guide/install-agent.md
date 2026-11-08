@@ -27,6 +27,7 @@ Useful for systemd, containers, or orchestration:
 | `FILEBOX_AGENT_TOKEN` | Token printed at Hub init |
 | `FILEBOX_AGENT_NAME` | Sidebar display name (default `default-agent`) |
 | `FILEBOX_AGENT_DATA_DIR` | State directory (roots, collections, temp transfer, agent_id, …) |
+| `FILEBOX_AGENT_TRUSTED_PORTS` | Agent-local Web forwarding trust: ports/ranges such as `3080,8888,9000-9010`; empty/unset denies all. Overrides `agent.toml` `trusted_ports`; restart to apply. See [trusted ports](/ops/agent#trusted-web-ports) |
 | `FILEBOX_AGENT_AI_AGENTS_ENABLED` | Enable or disable AI Agents on this Agent |
 | `FILEBOX_AGENT_AI_AGENTS_BACKEND` | Lock AI Agents to a backend kind |
 | `FILEBOX_ALLOW_INSECURE_HUB` | Allow plaintext `ws://` / `http://` (dev only) |
@@ -71,6 +72,7 @@ After disconnects the Agent reconnects indefinitely; `agent_id` persists in the 
 |------------|---------------|
 | Office preview | Install LibreOffice and set `FILEBOX_AGENT_SOFFICE` — see [Office preview](/ops/office) |
 | Transfer | Capability `temp_upload` (on by default in current releases); writes only to a dedicated scratch dir |
+| Ports | Set Agent `trusted_ports` / `FILEBOX_AGENT_TRUSTED_PORTS`; denies all by default. `all` is allowed but not recommended. Disable the feature entirely with `FILEBOX_AGENT_PORT_FORWARD=off` |
 
 With Office enabled, Settings shows the Office preview toggle.
 

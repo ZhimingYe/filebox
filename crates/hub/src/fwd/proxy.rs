@@ -44,6 +44,9 @@ fn request_is_https(request: &Request) -> bool {
 }
 
 fn failure(status: StatusCode) -> Response {
+    if status == StatusCode::FORBIDDEN {
+        return (status, "Port not trusted by agent. Add it to the agent's trusted_ports.").into_response();
+    }
     (status, axum::response::Html(format!("<!doctype html><html><head><title>Forward unavailable</title></head><body><h1>{}</h1><p>Check the agent and local web service, then retry.</p></body></html>", status.canonical_reason().unwrap_or("Forward unavailable")))).into_response()
 }
 
@@ -103,6 +106,7 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
         let inner = state.inner.read().await;
         let Some(forward) = inner.agents.get(agent).filter(|a| a.status != crate::agent_registry::AgentStatus::Offline && a.capabilities.port_forward)
             .and_then(|a| a.pending_forwards.as_ref().map(|(_, forwards)| forwards).unwrap_or(&a.forwards).iter().find(|f| f.port == port)) else { return StatusCode::NOT_FOUND.into_response(); };
+        if !forward.trusted { return failure(StatusCode::FORBIDDEN); }
         (forward.keep_prefix, state.tunnels.scope(state.clone(), session.principal_id.clone(), agent.into(), port))
     };
     let base = own.join(request.uri().path_and_query().unwrap().as_str()).unwrap();

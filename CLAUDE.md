@@ -340,6 +340,16 @@ proxying or LAN dialing. Forward lists and revisions persist in
 defaults to `false` (strip the forwarding prefix); `true` preserves it for
 apps configured to use that base path.
 
+Agent-local `trusted_ports` / `FILEBOX_AGENT_TRUSTED_PORTS` controls which
+ports may be added or opened: empty/unset denies all, a string such as
+`"3080,8888,9000-9010"` allows decimal ports and inclusive ascending ranges
+(1–65535), and case-insensitive `"all"` is allowed but warns and is not
+recommended. Environment overrides TOML, including empty; restart to apply.
+Never advertise the policy to the Hub. Only per-forward trust is reported;
+untrusted updates are rejected non-destructively and untrusted saved forwards
+remain stored but cannot open. Missing trust flags are untrusted; old Agents
+cannot enforce this policy, so upgrade Agent and Hub together.
+
 Security risks accepted with explicit sign-off:
 
 - A forwarded service can do anything it does locally (e.g. Jupyter writes

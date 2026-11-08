@@ -481,6 +481,7 @@ export interface ForwardConfig {
   port: number;
   name: string;
   keep_prefix?: boolean;
+  trusted?: boolean;
 }
 
 /// A root as returned by the hub (display shape). `pinned_folders` holds

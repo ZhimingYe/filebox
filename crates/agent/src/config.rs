@@ -9,6 +9,7 @@ const DEFAULT_CONFIG_PATH: &str = "agent.toml";
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct TomlConfig {
     port_forward: Option<bool>,
+    trusted_ports: Option<String>,
     hub: Option<String>,
     token: Option<String>,
     name: Option<String>,
@@ -24,6 +25,7 @@ struct TomlConfig {
 
 pub struct AgentConfig {
     pub port_forward: bool,
+    pub trusted_ports: crate::trusted_ports::TrustedPorts,
     pub hub_url: String,
     pub token: String,
     pub agent_name: String,
@@ -51,6 +53,7 @@ impl AgentConfig {
             );
             TomlConfig {
                 port_forward: None,
+                trusted_ports: None,
                 hub: None,
                 token: None,
                 name: None,
@@ -98,7 +101,14 @@ impl AgentConfig {
 
         enforce_secure_hub_url(&hub_url);
 
+        let trusted_ports = trusted_ports_from_options(std::env::var("FILEBOX_AGENT_TRUSTED_PORTS").ok().as_deref(), toml_config.trusted_ports.as_deref())
+            .unwrap_or_else(|error| panic!("Invalid trusted_ports / FILEBOX_AGENT_TRUSTED_PORTS: {error}"));
+        if trusted_ports == crate::trusted_ports::TrustedPorts::All {
+            tracing::warn!("trusted_ports=all allows every loopback port; an explicit trusted_ports list is recommended");
+        }
+
         Self {
+            trusted_ports,
             port_forward: std::env::var("FILEBOX_AGENT_PORT_FORWARD")
                 .map(|value| !matches!(value.to_ascii_lowercase().as_str(), "off" | "false" | "0"))
                 .unwrap_or(toml_config.port_forward.unwrap_or(true)),
@@ -110,6 +120,10 @@ impl AgentConfig {
             temp_upload_name: toml_config.temp_upload_name,
         }
     }
+}
+
+fn trusted_ports_from_options(env: Option<&str>, file: Option<&str>) -> Result<crate::trusted_ports::TrustedPorts, String> {
+    crate::trusted_ports::TrustedPorts::parse(env.or(file).unwrap_or_default())
 }
 
 pub fn init_interactive(request: filebox_updater::ConfigInitRequest) -> Result<(), String> {
@@ -154,6 +168,7 @@ pub fn init_interactive(request: filebox_updater::ConfigInitRequest) -> Result<(
 
     let config = TomlConfig {
         port_forward: None,
+        trusted_ports: None,
         hub: Some(hub_url),
         token: Some(token),
         name: Some(name),
@@ -226,6 +241,23 @@ mod tests {
     use super::{is_secure_hub_url, TomlConfig};
 
     #[test]
+    fn trusted_ports_toml_and_environment_precedence() {
+        for value in ["3080,8888", "9000-9010", "ALL", "", " "] {
+            let config: TomlConfig = toml::from_str(&format!("trusted_ports = {value:?}")).unwrap();
+            assert_eq!(super::trusted_ports_from_options(None, config.trusted_ports.as_deref()).unwrap(), crate::trusted_ports::TrustedPorts::parse(value).unwrap());
+        }
+        assert_eq!(super::trusted_ports_from_options(None, None).unwrap(), Default::default());
+        assert_eq!(super::trusted_ports_from_options(Some(""), Some("all")).unwrap(), Default::default());
+        let policy = super::trusted_ports_from_options(Some("3080"), Some("8888")).unwrap();
+        assert!(policy.allows(3080));
+        assert!(!policy.allows(8888));
+        assert!(super::trusted_ports_from_options(Some("bad"), Some("all")).is_err());
+        assert!(super::trusted_ports_from_options(None, Some("9010-9000")).unwrap_err().contains("range start"));
+        assert!(super::trusted_ports_from_options(Some("3080"), Some("bad")).unwrap().allows(3080));
+        assert!(toml::from_str::<TomlConfig>("trusted_ports = 3080").is_err());
+    }
+
+    #[test]
     fn legacy_terminal_setting_is_ignored_and_not_serialized() {
         let config: TomlConfig = toml::from_str(r#"
             hub = "https://hub.example.com"
@@ -257,6 +289,7 @@ mod tests {
     fn generated_toml_round_trips_all_fields() {
         let config = TomlConfig {
             port_forward: None,
+            trusted_ports: None,
             hub: Some("https://hub.example.com".to_string()),
             token: Some("secret-token".to_string()),
             name: Some("Lab Server".to_string()),

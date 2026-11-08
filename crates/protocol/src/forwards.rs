@@ -6,6 +6,8 @@ pub struct ForwardConfig {
     pub name: String,
     #[serde(default)]
     pub keep_prefix: bool,
+    #[serde(default)]
+    pub trusted: bool,
 }
 
 pub fn validate_forwards(forwards: &[ForwardConfig]) -> Result<(), String> {
@@ -33,6 +35,7 @@ mod tests {
     fn keep_prefix_defaults_false_and_round_trips_true() {
         let legacy: ForwardConfig = serde_json::from_str(r#"{"port":9001,"name":"app"}"#).unwrap();
         assert!(!legacy.keep_prefix);
+        assert!(!legacy.trusted);
         let entry = ForwardConfig { keep_prefix: true, ..legacy };
         assert_eq!(serde_json::from_str::<ForwardConfig>(&serde_json::to_string(&entry).unwrap()).unwrap(), entry);
     }
@@ -40,11 +43,11 @@ mod tests {
     #[test]
     fn validates_empty_normal_and_invalid_lists() {
         assert!(validate_forwards(&[]).is_ok());
-        let entry = ForwardConfig { port: 9001, name: "Notebook".into(), keep_prefix: false };
+        let entry = ForwardConfig { port: 9001, name: "Notebook".into(), keep_prefix: false, trusted: false };
         assert!(validate_forwards(std::slice::from_ref(&entry)).is_ok());
         assert!(validate_forwards(&[entry.clone(), entry]).is_err());
         for (port, name) in [(0, "app"), (80, ""), (80, "bad\nname")] {
-            assert!(validate_forwards(&[ForwardConfig { port, name: name.into(), keep_prefix: false }]).is_err());
+            assert!(validate_forwards(&[ForwardConfig { port, name: name.into(), keep_prefix: false, trusted: false }]).is_err());
         }
     }
 }

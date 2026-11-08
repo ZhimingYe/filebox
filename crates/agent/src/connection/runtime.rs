@@ -26,7 +26,8 @@ pub(super) struct AgentRuntime {
 
 impl AgentRuntime {
     pub(super) async fn new(config: &AgentConfig) -> Self {
-        let resource_mgr = ResourceManager::new(config.data_dir.clone());
+        let mut resource_mgr = ResourceManager::new(config.data_dir.clone());
+        resource_mgr.trusted_ports = config.trusted_ports.clone();
         let stable_agent_id = resource_mgr.agent_id().to_string();
         let stats_cache: Arc<StatsCache> = StatsCache::new(stats_ttl());
         // Per-directory listing cache. Cuts the O(N)-per-page cost of paginating

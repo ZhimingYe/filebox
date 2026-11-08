@@ -4,6 +4,9 @@ All notable changes to filebox are listed here. Dates are UTC.
 
 ## Unreleased
 
+### Breaking changes
+- **Agent-local trusted ports** — Web forwarding now denies all ports by default. Existing forwards stop working until their ports are listed in Agent `trusted_ports` (`agent.toml`) or `FILEBOX_AGENT_TRUSTED_PORTS` and the Agent is restarted. Accepts comma-separated ports and inclusive ranges; case-insensitive `all` is allowed but not recommended. The Agent rejects untrusted updates without losing saved forwards and refuses untrusted tunnels. The Hub never receives the allowed-port policy: Ports shows only saved forwards' trust flags, disables untrusted Open buttons, and relays Agent errors; refused forwards return 403. Upgrade Agent and Hub together: old Agents cannot enforce the policy, and missing per-forward trust flags are treated as untrusted.
+
 ### Fixed
 - **Forwarding behind reverse proxies** — recover a stripped Hub port from a same-host, same-scheme Origin or forwarding-page Referer only with absent or same-origin fetch-site metadata so forwarded POSTs, WebSockets, upstream Host checks and URL rewriting work on non-443 listeners. Document navigations without a usable recovery source reload once before contacting the app to preserve Host-bound login cookies, including links from another port. Nginx examples now preserve the original Host port.
 

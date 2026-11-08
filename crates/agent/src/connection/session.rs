@@ -143,6 +143,7 @@ impl<'a> ConnectionSession<'a> {
         match message {
             HubMessage::TunnelOpen { ticket, port, compression } => {
                 let code = if !self.runtime.port_forward { Some("disabled") }
+                    else if !self.runtime.resource_mgr.trusted_ports.allows(port) { Some("port_not_trusted") }
                     else if !self.runtime.resource_mgr.config.forwards.iter().any(|f| f.port == port) { Some("not_allowed") }
                     else { None };
                 if let Some(code) = code {
@@ -169,12 +170,13 @@ impl<'a> ConnectionSession<'a> {
                 Ok(())
             }
             HubMessage::ForwardsSetDesired { req_id, desired_revision, forwards } => {
+                let untrusted = forwards.iter().any(|forward| !self.runtime.resource_mgr.trusted_ports.allows(forward.port));
                 let response = match self.runtime.resource_mgr.apply_forwards_desired(desired_revision, forwards) {
                     Ok(forwards_revision) => AgentMessage::ForwardsApplied {
                         req_id, forwards_revision,
-                        forwards: self.runtime.resource_mgr.config.forwards.clone(),
+                        forwards: self.runtime.resource_mgr.reported_forwards(),
                     },
-                    Err(message) => AgentMessage::ForwardsRejected { req_id, error: "invalid_forward".into(), message },
+                    Err(message) => AgentMessage::ForwardsRejected { req_id, error: if untrusted { "port_not_trusted" } else { "invalid_forward" }.into(), message },
                 };
                 if queue_agent_message(&self.control_tx, &response) { Ok(()) }
                 else { Err(DisconnectReason::ControlQueueClosed) }
