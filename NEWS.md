@@ -2,6 +2,11 @@
 
 All notable changes to filebox are listed here. Dates are UTC.
 
+## Unreleased
+
+### Fixed
+- **Forwarding behind reverse proxies** — recover a stripped Hub port from a same-host, same-scheme Origin or forwarding-page Referer only with absent or same-origin fetch-site metadata so forwarded POSTs, WebSockets, upstream Host checks and URL rewriting work on non-443 listeners. Document navigations without a usable recovery source reload once before contacting the app to preserve Host-bound login cookies, including links from another port. Nginx examples now preserve the original Host port.
+
 ## v3.1.0
 
 ### Added

@@ -30,7 +30,8 @@ The Hub process itself is HTTP. Minimal nginx:
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:3000;
-    proxy_set_header Host $host;
+    # Preserve the port for HTTPS listeners other than 443.
+    proxy_set_header Host $http_host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_http_version 1.1;
