@@ -8,6 +8,7 @@ const DEFAULT_CONFIG_PATH: &str = "agent.toml";
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct TomlConfig {
+    port_forward: Option<bool>,
     hub: Option<String>,
     token: Option<String>,
     name: Option<String>,
@@ -22,6 +23,7 @@ struct TomlConfig {
 }
 
 pub struct AgentConfig {
+    pub port_forward: bool,
     pub hub_url: String,
     pub token: String,
     pub agent_name: String,
@@ -48,6 +50,7 @@ impl AgentConfig {
                 config_path
             );
             TomlConfig {
+                port_forward: None,
                 hub: None,
                 token: None,
                 name: None,
@@ -96,6 +99,9 @@ impl AgentConfig {
         enforce_secure_hub_url(&hub_url);
 
         Self {
+            port_forward: std::env::var("FILEBOX_AGENT_PORT_FORWARD")
+                .map(|value| !matches!(value.to_ascii_lowercase().as_str(), "off" | "false" | "0"))
+                .unwrap_or(toml_config.port_forward.unwrap_or(true)),
             hub_url,
             token,
             agent_name,
@@ -147,6 +153,7 @@ pub fn init_interactive(request: filebox_updater::ConfigInitRequest) -> Result<(
     let data_dir = expand_home(&data_dir_input);
 
     let config = TomlConfig {
+        port_forward: None,
         hub: Some(hub_url),
         token: Some(token),
         name: Some(name),
@@ -249,6 +256,7 @@ mod tests {
     #[test]
     fn generated_toml_round_trips_all_fields() {
         let config = TomlConfig {
+            port_forward: None,
             hub: Some("https://hub.example.com".to_string()),
             token: Some("secret-token".to_string()),
             name: Some("Lab Server".to_string()),

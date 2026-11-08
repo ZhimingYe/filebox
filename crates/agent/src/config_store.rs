@@ -6,6 +6,10 @@ use filebox_protocol::resources::{CollectionConfig, RootConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedConfig {
+    #[serde(default)]
+    pub forwards_revision: u64,
+    #[serde(default)]
+    pub forwards: Vec<filebox_protocol::forwards::ForwardConfig>,
     pub agent_id: String,
     pub resource_revision: u64,
     pub roots: Vec<RootConfig>,
@@ -30,6 +34,8 @@ fn default_ai_agents_enabled() -> bool {
 impl PersistedConfig {
     pub fn new(agent_id: String) -> Self {
         Self {
+            forwards_revision: 0,
+            forwards: vec![],
             agent_id,
             resource_revision: 0,
             roots: vec![],
@@ -275,6 +281,8 @@ mod tests {
         let path = dir.path().to_path_buf();
 
         let cfg = PersistedConfig {
+            forwards_revision: 0,
+            forwards: vec![],
             agent_id: "multi".to_string(),
             resource_revision: 7,
             roots: vec![

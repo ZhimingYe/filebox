@@ -5,3 +5,5 @@ pub mod message;
 pub mod resources;
 pub mod search;
 pub mod temp;
+pub mod forwards;
+pub mod tunnel;

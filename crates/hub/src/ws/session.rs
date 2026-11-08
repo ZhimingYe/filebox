@@ -78,6 +78,7 @@ async fn cleanup(context: &AgentContext, sender: &mpsc::Sender<HubMessage>) {
     // a generation whose transport has stopped. Replacement sockets stay live.
     {
         let mut inner = context.state.inner.write().await;
+        context.state.tunnels.disconnect(&context.agent_id, context.connection_id);
         let current = inner.agents.is_current_connection(&context.agent_id, context.connection_id);
         inner.agents.unregister(&context.agent_id, sender);
         if current && inner.agents.get(&context.agent_id).is_some_and(|a| a.sender.same_channel(sender)) {

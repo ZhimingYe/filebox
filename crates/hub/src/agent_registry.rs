@@ -25,6 +25,10 @@ pub enum AgentStatus {
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct AgentConnection {
+    pub forwards_revision: u64,
+    pub forwards_desired_revision: u64,
+    pub forwards: Vec<filebox_protocol::forwards::ForwardConfig>,
+    pub pending_forwards: Option<(String, Vec<filebox_protocol::forwards::ForwardConfig>)>,
     pub agent_id: String,
     pub name: String,
     /// Monotonic id assigned at register time. Pending requests store this so
@@ -59,6 +63,7 @@ pub struct AgentConnection {
     pub inflight_requests: u32,
     pub connected_at: u64,
     pub last_config_error: Option<String>,
+    pub(crate) config_error_from_forwards: bool,
 }
 
 impl AgentConnection {
@@ -79,6 +84,9 @@ impl AgentConnection {
         let temp_visible = self.visible_temp_root_name().is_some();
 
         AgentInfoResponse {
+            forwards_revision: self.forwards_revision,
+            forwards: self.pending_forwards.as_ref().map(|(_, f)| f).unwrap_or(&self.forwards).clone(),
+            pending_forwards_update: self.pending_forwards.is_some(),
             id: self.agent_id.clone(),
             name: self.name.clone(),
             status: match self.status {
@@ -130,6 +138,7 @@ impl AgentConnection {
                     .collect()
             },
             capabilities: AgentCapabilitiesInfo {
+                port_forward: self.capabilities.port_forward,
                 office_pdf_preview: self.capabilities.office_pdf_preview,
                 workspace_search: self.capabilities.workspace_search,
                 pinned_folders: self.capabilities.pinned_folders,
@@ -175,6 +184,7 @@ impl AgentConnection {
 /// Subset of agent capabilities exposed to the frontend for UI gating.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AgentCapabilitiesInfo {
+    pub port_forward: bool,
     pub office_pdf_preview: bool,
     pub office_max_src_bytes: Option<u64>,
     pub office_max_pdf_bytes: Option<u64>,
@@ -188,6 +198,9 @@ pub struct AgentCapabilitiesInfo {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AgentInfoResponse {
+    pub forwards_revision: u64,
+    pub forwards: Vec<filebox_protocol::forwards::ForwardConfig>,
+    pub pending_forwards_update: bool,
     pub id: String,
     pub name: String,
     pub status: String,
@@ -245,6 +258,10 @@ impl AgentRegistry {
             .as_secs();
 
         let agent = AgentConnection {
+            forwards_revision: 0,
+            forwards_desired_revision: 0,
+            forwards: vec![],
+            pending_forwards: None,
             agent_id: agent_id.clone(),
             name,
             connection_id: NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed),
@@ -268,6 +285,7 @@ impl AgentRegistry {
             inflight_requests: 0,
             connected_at: epoch,
             last_config_error: None,
+            config_error_from_forwards: false,
         };
 
         self.agents.insert(agent_id, agent);
@@ -392,6 +410,7 @@ impl AgentRegistry {
             agent.pending_update = None;
             agent.pending_resource_request = None;
             agent.last_config_error = None;
+            agent.config_error_from_forwards = false;
         }
     }
 
@@ -432,6 +451,7 @@ impl AgentRegistry {
             agent.pending_collections_update = None;
             agent.pending_collection_request = None;
             agent.last_config_error = None;
+            agent.config_error_from_forwards = false;
         }
     }
 
@@ -478,6 +498,7 @@ impl AgentRegistry {
     pub fn set_config_error(&mut self, agent_id: &str, error: String) {
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.last_config_error = Some(error);
+            agent.config_error_from_forwards = false;
         }
     }
 
@@ -488,6 +509,7 @@ impl AgentRegistry {
             agent.pending_collections_update = None;
             agent.pending_collection_request = None;
             agent.last_config_error = Some(error);
+            agent.config_error_from_forwards = false;
         }
     }
 

@@ -3,6 +3,8 @@ use super::*;
 // Services and worker limits survive reconnects. Stuck blocking syscalls
 // retain permits from the same global bound after transport teardown.
 pub(super) struct AgentRuntime {
+    pub(super) port_forward: bool,
+    pub(super) hub_url: String,
     pub(super) resource_mgr: ResourceManager,
     pub(super) stable_agent_id: String,
     pub(super) stats_cache: Arc<StatsCache>,
@@ -99,6 +101,7 @@ impl AgentRuntime {
 
         Self {
             resource_mgr, stable_agent_id, stats_cache, dir_cache, content_cache,
+            port_forward: config.port_forward, hub_url: config.hub_url.clone(),
             office_runtime, temp_store, fs_workers, dir_list_workers, search_inflight,
             search_cancels,
             upload_workers: Arc::new(Semaphore::new(4)),
@@ -115,6 +118,7 @@ impl AgentRuntime {
         let resource_mgr = ResourceManager::new(path.to_path_buf());
         Self {
             stable_agent_id: resource_mgr.agent_id().to_string(), resource_mgr,
+            port_forward: true, hub_url: String::new(),
             stats_cache: StatsCache::new(Duration::from_secs(60)), dir_cache: DirCache::new(),
             content_cache: Arc::new(ContentCache::new(4096, 4096)),
             office_runtime: None, temp_store: None,

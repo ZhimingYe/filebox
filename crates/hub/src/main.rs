@@ -5,6 +5,7 @@ mod agent_requests;
 mod audit;
 mod auth;
 mod config;
+mod fwd;
 mod events;
 mod fs_proxy;
 mod health;

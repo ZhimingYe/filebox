@@ -13,6 +13,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/health", get(health::health_handler))
         .route("/api/pow/challenge", get(pow_challenge_handler))
         .route("/api/session/exchange", post(session_exchange_handler))
+        .route("/ws/agent-data", get(crate::fwd::data_socket))
         .route("/ws/agent", get(ws::ws_handler));
 
     let preview_resources = Router::new().route(
@@ -22,6 +23,7 @@ pub fn create_router(state: AppState) -> Router {
 
     // Protected routes (session cookie required)
     let protected = Router::new()
+        .route("/api/agents/{agent_id}/forwards", get(forwards::list).post(forwards::add).patch(forwards::patch).delete(forwards::remove))
         .route("/api/events", get(events::sse_handler))
         .route("/api/session/logout", post(session_logout_handler))
         .route("/api/audit/logins", get(login_audit_handler))
@@ -161,11 +163,13 @@ pub fn create_router(state: AppState) -> Router {
         .layer(cors);
 
     Router::new()
+        .merge(crate::fwd::router())
         .merge(preview_resources)
         .merge(cors_app)
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)) // 1MB max request body
         .layer(axum::middleware::from_fn(security_headers))
         .layer(axum::middleware::from_fn(cache_headers))
+        .layer(axum::middleware::from_fn(crate::fwd::referer_fallback))
         .with_state(state)
 }
 
@@ -182,13 +186,14 @@ fn hub_overloaded_response() -> Response {
 }
 
 // Route assembly stays here; each feature owns its handlers and validation.
-mod middleware;
+pub(crate) mod middleware;
 mod session;
 mod access;
 mod preview;
 mod cancel;
 mod resources;
 mod collections;
+mod forwards;
 
 use middleware::{security_headers, cache_headers, require_session};
 use session::{pow_challenge_handler, session_exchange_handler, session_logout_handler, login_audit_handler};

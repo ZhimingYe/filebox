@@ -1,8 +1,19 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import * as api from '../api/client';
+import { forwardNext } from './forwardNext';
 
-export function useSession() {
+const navigate = (path: string) => window.location.replace(path);
+
+export function useSession(navigateTo: (path: string) => void = navigate) {
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null);
+  const redirected = useRef(false);
+  const resumeForward = useCallback(() => {
+    const next = forwardNext(window.location.search, window.location.origin);
+    if (next && !redirected.current) {
+      redirected.current = true;
+      navigateTo(next);
+    }
+  }, [navigateTo]);
 
   useEffect(() => {
     let cancelled = false;
@@ -16,7 +27,7 @@ export function useSession() {
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
           await api.getAgents();
-          if (!cancelled) setLoggedIn(true);
+          if (!cancelled) { setLoggedIn(true); resumeForward(); }
           return;
         } catch (e: any) {
           const status = e?.status;
@@ -47,7 +58,7 @@ export function useSession() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [resumeForward]);
 
   useEffect(() => {
     const onExpired = () => {
@@ -69,11 +80,12 @@ export function useSession() {
       const result = await api.exchangeSession(username, password, remember, powId, powNonce);
       if (result.ok) {
         setLoggedIn(true);
+        resumeForward();
         return true;
       }
       return false;
     },
-    [],
+    [resumeForward],
   );
 
   const logout = useCallback(async () => {

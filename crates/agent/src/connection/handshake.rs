@@ -84,6 +84,7 @@ pub(super) async fn connect_and_register(
     let mut capabilities = Capabilities::default();
     capabilities.pinned_folders = true;
     capabilities.collections = true;
+    capabilities.port_forward = config.port_forward;
     capabilities.workspace_search = true;
     // Temporary runtime degradation is request-scoped, not a capability
     // change. Keeping the configured capability advertised lets a later
@@ -109,6 +110,8 @@ pub(super) async fn connect_and_register(
         capabilities,
         collections_revision: collections_rev,
         collections,
+        forwards_revision: resource_mgr.config.forwards_revision,
+        forwards: resource_mgr.config.forwards.clone(),
         temp_root,
     };
     let register_msg = Message::Text(serde_json::to_string(&register).unwrap().into());

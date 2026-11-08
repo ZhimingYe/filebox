@@ -217,6 +217,7 @@ pub(super) async fn session_logout_handler(
         .map(|s| s.username.clone())
         .unwrap_or_default();
     inner.sessions.remove(&session.id);
+    state.tunnels.cancel_session(&session.principal_id);
     let preview_sessions = inner.preview_sessions.clone();
     let get_access_tokens = inner.get_access_tokens.clone();
     drop(inner);

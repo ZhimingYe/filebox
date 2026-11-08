@@ -290,12 +290,13 @@ export interface ApiError {
   retryable?: boolean;
 }
 
-/** Desired-state changes can be applied, queued offline, or rejected with HTTP 200. */
+/** Desired-state changes can be applied, queued offline, superseded, or rejected with HTTP 200. */
 export interface DesiredStateResponse extends ApiError {
   ok?: boolean;
-  state?: 'applied' | 'pending_agent_reconnect' | 'rejected';
+  state?: 'applied' | 'pending_agent_reconnect' | 'superseded' | 'rejected';
   resource_revision?: number;
   collections_revision?: number;
+  forwards_revision?: number;
 }
 
 // ── Session ──────────────────────────────────────────────────────────────────
@@ -387,6 +388,7 @@ export async function getLoginAudit(
 // ── Health ───────────────────────────────────────────────────────────────────
 
 export interface AgentCapabilities {
+  port_forward?: boolean;
   office_pdf_preview: boolean;
   office_max_src_bytes?: number | null;
   office_max_pdf_bytes?: number | null;
@@ -457,6 +459,9 @@ export interface AgentInfo {
   collections_revision: number;
   pending_collections_update: boolean;
   collections: CollectionInfo[];
+  forwards?: ForwardConfig[];
+  forwards_revision?: number;
+  pending_forwards_update?: boolean;
   /** Present on current hubs; treat missing fields as false for older hubs. */
   capabilities?: Partial<AgentCapabilities>;
 }
@@ -470,6 +475,12 @@ export interface CollectionItem {
 export interface CollectionInfo {
   name: string;
   items: CollectionItem[];
+}
+
+export interface ForwardConfig {
+  port: number;
+  name: string;
+  keep_prefix?: boolean;
 }
 
 /// A root as returned by the hub (display shape). `pinned_folders` holds
@@ -761,6 +772,33 @@ export async function deleteCollection(agentId: string, collectionName: string) 
     method: 'DELETE',
   });
   return throwIfCollectionRejected(res);
+}
+
+export function forwardPath(agentId: string, port: number) {
+  return `/_fwd/${encodeURIComponent(agentId)}/${port}/`;
+}
+
+async function updateForward(agentId: string, method: 'POST' | 'DELETE' | 'PATCH', entry: { port: number; name?: string; keep_prefix?: boolean }) {
+  const res = await request<DesiredStateResponse>(`/api/agents/${encodeURIComponent(agentId)}/forwards`, {
+    method,
+    body: JSON.stringify(entry),
+  });
+  if (res.ok === false || res.state === 'rejected' || res.error) {
+    throw { ...res, message: res.message || 'Agent rejected the forward update.' };
+  }
+  return res;
+}
+
+export function addForward(agentId: string, forward: ForwardConfig) {
+  return updateForward(agentId, 'POST', forward);
+}
+
+export function deleteForward(agentId: string, port: number) {
+  return updateForward(agentId, 'DELETE', { port });
+}
+
+export function setForwardPrefix(agentId: string, port: number, keepPrefix: boolean) {
+  return updateForward(agentId, 'PATCH', { port, keep_prefix: keepPrefix });
 }
 
 // ── Filesystem ───────────────────────────────────────────────────────────────

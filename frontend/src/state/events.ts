@@ -159,6 +159,9 @@ class SseManager {
     es.addEventListener('collections_updated', (e) => {
       this.dispatch('collections_updated', e.data);
     });
+    es.addEventListener('forwards_updated', (e) => {
+      this.dispatch('forwards_updated', e.data);
+    });
     es.addEventListener('ai_agent_settings_updated', (e) => {
       this.dispatch('ai_agent_settings_updated', e.data);
     });

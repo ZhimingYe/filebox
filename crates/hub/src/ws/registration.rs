@@ -2,6 +2,8 @@ use super::*;
 use filebox_protocol::resources::{CollectionConfig, RootConfig, TempRootInfo};
 
 pub(super) struct Registration {
+    forwards_revision: u64,
+    forwards: Vec<filebox_protocol::forwards::ForwardConfig>,
     pub(super) agent_id: String,
     pub(super) name: String,
     resource_revision: u64,
@@ -16,9 +18,10 @@ impl Registration {
     pub(super) fn from_message(message: AgentMessage, temporary_id: String) -> Option<Self> {
         let AgentMessage::Register {
             agent_id, name, resource_revision, roots, collections_revision,
-            collections, capabilities, temp_root,
+            collections, capabilities, temp_root, forwards_revision, forwards,
         } = message else { return None; };
         Some(Self {
+            forwards_revision, forwards,
             agent_id: agent_id.filter(|id| !id.is_empty()).unwrap_or(temporary_id),
             name, resource_revision, roots, collections_revision,
             collections, capabilities, temp_root,
@@ -34,6 +37,7 @@ impl Registration {
         // successful edit, or leave a queued update unsent until another reconnect.
         if let Some(old) = inner.agents.get(&self.agent_id) {
             let old_id = old.connection_id;
+            state.tunnels.disconnect(&self.agent_id, old_id);
             tracing::warn!(agent_id = %self.agent_id, old_connection = old_id,
                 connected_at = old.connected_at, "Replacing Agent connection");
             inner.agents.notify_old_connection_abort(&self.agent_id);
@@ -51,6 +55,7 @@ impl Registration {
         }
         let pending_roots = inner.agents.get(&self.agent_id).and_then(|a| a.pending_update.clone());
         let pending_collections = inner.agents.get(&self.agent_id).and_then(|a| a.pending_collections_update.clone());
+        let pending_forwards = inner.agents.get(&self.agent_id).and_then(|a| a.pending_forwards.clone());
         inner.agents.register(
             self.agent_id.clone(), self.name.clone(), sender.clone(), abort,
             self.resource_revision, self.roots, self.collections_revision,
@@ -63,6 +68,21 @@ impl Registration {
             inner.agents.set_pending_collections_update(&self.agent_id, pending);
         }
         let agent = inner.agents.get_mut(&self.agent_id).expect("registration just installed");
+        agent.forwards_revision = self.forwards_revision;
+        agent.forwards_desired_revision = self.forwards_revision;
+        agent.forwards = self.forwards;
+        if let Some((_, forwards)) = pending_forwards {
+            let req_id = format!("fwd_{}", Uuid::new_v4());
+            if agent.capabilities.port_forward {
+                if let Some(desired_revision) = agent.forwards_revision.checked_add(1) {
+                    agent.forwards_desired_revision = desired_revision;
+                    let _ = sender.try_send(HubMessage::ForwardsSetDesired {
+                        req_id: req_id.clone(), desired_revision, forwards: forwards.clone(),
+                    });
+                }
+            }
+            agent.pending_forwards = Some((req_id, forwards));
+        }
         let connection_id = agent.connection_id;
         // This fresh queue has capacity for both coalesced control updates.
         if let Some(pending) = &agent.pending_update {

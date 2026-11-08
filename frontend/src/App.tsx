@@ -35,6 +35,7 @@ import { WorkspaceSplit } from './components/WorkspaceSplit';
 import { CollectionPicker } from './components/CollectionPicker';
 import { NoAgentSelected } from './components/NoAgentSelected';
 import { TempTransferView } from './components/TempTransferView';
+import { PortsView } from './components/PortsView';
 import { AiAgentsView } from './components/AiAgentsView';
 import { AiAgentAttention } from './components/AiAgentAttention';
 import { aiAgentBackendKey, useAiAgentAttention, type AiAgentAttention as AiAgentNotice } from './hooks/useAiAgentAttention';
@@ -52,6 +53,7 @@ import {
   IconBrandMark,
   IconAudit,
   IconUpload,
+  IconPorts,
   IconAiAgents,
 } from './components/icons';
 import type { FsEntry } from './api/client';
@@ -82,7 +84,7 @@ function setDismissedVersion(v: string) {
   }
 }
 
-type View = 'files' | 'explorer' | 'transfer' | 'ai-agents' | 'collections' | 'settings' | 'stats' | 'audit';
+type View = 'files' | 'explorer' | 'transfer' | 'ports' | 'ai-agents' | 'collections' | 'settings' | 'stats' | 'audit';
 
 interface ProgressEvent {
   req_id: string;
@@ -711,6 +713,7 @@ export default function App() {
       evt.event === 'agent_disconnected' ||
       evt.event === 'resources_updated' ||
       evt.event === 'collections_updated' ||
+      evt.event === 'forwards_updated' ||
       evt.event === 'ai_agent_settings_updated' ||
       evt.event === 'sync_required'
     ) {
@@ -825,6 +828,7 @@ export default function App() {
     { v: 'files' as const, label: 'Files', Icon: IconFolder },
     { v: 'explorer' as const, label: 'Explorer', Icon: IconExplorer },
     { v: 'collections' as const, label: 'Collections', Icon: IconCollection },
+    { v: 'ports' as const, label: 'Ports', Icon: IconPorts },
     // Transfer is only meaningful on a temp-capable agent.
     { v: 'transfer' as const, label: 'Transfer', Icon: IconUpload },
     // Keep setup reachable before installation, but hide disabled integrations.
@@ -1375,6 +1379,11 @@ export default function App() {
                       </p>
                     </div>
                   )}
+                </div>
+              )}
+              {view === 'ports' && (
+                <div style={styles.secondaryView}>
+                  <PortsView key={selectedAgent.id} agent={selectedAgent} onRefresh={refresh} />
                 </div>
               )}
               {view === 'ai-agents' && (

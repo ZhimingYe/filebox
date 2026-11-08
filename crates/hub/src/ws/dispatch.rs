@@ -18,6 +18,41 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
         return;
     };
     match message {
+        AgentMessage::TunnelFailed { ticket, code: _ } => {
+            context.state.tunnels.fail(&ticket, &context.agent_id, context.connection_id);
+        }
+        AgentMessage::ForwardsApplied { req_id, forwards_revision, forwards } => {
+            let mut inner = context.state.inner.write().await;
+            if !inner.agents.is_current_connection(&context.agent_id, context.connection_id) { return; }
+            let agent = inner.agents.get_mut(&context.agent_id).expect("current connection");
+            if forwards_revision > agent.forwards_revision {
+                agent.forwards_revision = forwards_revision;
+                agent.forwards = forwards;
+                if agent.config_error_from_forwards {
+                    agent.last_config_error = None;
+                    agent.config_error_from_forwards = false;
+                }
+            }
+            if agent.pending_forwards.as_ref().is_some_and(|(id, _)| id == &req_id) {
+                agent.pending_forwards = None;
+            }
+            AppState::emit_sse_locked(&inner, "forwards_updated", serde_json::json!({
+                "agent_id": context.agent_id, "forwards_revision": forwards_revision, "state": "applied",
+            })).await;
+        }
+        AgentMessage::ForwardsRejected { req_id, error, message } => {
+            let mut inner = context.state.inner.write().await;
+            if !inner.agents.is_current_connection(&context.agent_id, context.connection_id) { return; }
+            let agent = inner.agents.get_mut(&context.agent_id).expect("current connection");
+            if agent.pending_forwards.as_ref().is_some_and(|(id, _)| id == &req_id) {
+                agent.pending_forwards = None;
+                agent.last_config_error = Some(message.clone());
+                agent.config_error_from_forwards = true;
+            }
+            AppState::emit_sse_locked(&inner, "forwards_updated", serde_json::json!({
+                "agent_id": context.agent_id, "state": "rejected", "error": error, "message": message,
+            })).await;
+        }
         AgentMessage::Pong | AgentMessage::Heartbeat => {
             context.state.inner.write().await.agents.record_pong_for_connection(
                 &context.agent_id, context.connection_id,
