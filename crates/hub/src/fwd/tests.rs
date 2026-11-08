@@ -2,6 +2,9 @@ use super::*;
 use filebox_protocol::{forwards::ForwardConfig, resources::Capabilities};
 use axum::{extract::ws::WebSocketUpgrade, http::header, routing::get};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use base64::Engine;
+use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[path = "../../../agent/src/tunnel.rs"]
 mod agent_tunnel;
@@ -31,12 +34,14 @@ fn tickets_are_single_use_expiring_and_generation_bound() {
     assert!(store.tickets.lock().unwrap().is_empty());
 }
 
-struct Harness { hub: String, port: u16, cookie: String, state: AppState, principal: String, csrf: String, tasks: Vec<tokio::task::JoinHandle<()>> }
+struct Harness { hub: String, port: u16, cookie: String, state: AppState, principal: String, csrf: String, hits: Arc<AtomicUsize>, tasks: Vec<tokio::task::JoinHandle<()>> }
 impl Drop for Harness { fn drop(&mut self) { for task in &self.tasks { task.abort(); } } }
 
 async fn harness() -> Harness {
     let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = local.local_addr().unwrap().port();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let upstream_hits = hits.clone();
     let local_app = Router::new().route("/", get(|headers: HeaderMap| async move {
         assert!(headers["x-forwarded-prefix"].to_str().unwrap().starts_with("/_fwd/agent/"));
         assert!(headers[header::HOST].to_str().unwrap().starts_with("127.0.0.1:"));
@@ -48,6 +53,8 @@ async fn harness() -> Harness {
         .route("/echo", axum::routing::post(|bytes: axum::body::Bytes| async move { bytes }))
         .route("/authority", axum::routing::post(|headers: HeaderMap| async move {
             ([(header::LOCATION, "https://hub.test:8983/next")], headers[header::HOST].to_str().unwrap().to_string())
+        }).get(|headers: HeaderMap, uri: axum::http::Uri| async move {
+            axum::Json(serde_json::json!({"host":headers[header::HOST].to_str().unwrap(), "uri":uri.to_string()}))
         }))
         .route("/authority-html", get(|| async { axum::response::Html("<head><base href='https://hub.test:8983/app/'></head>") }))
         .route("/authority-socket", get(|headers: HeaderMap, ws: WebSocketUpgrade| async move {
@@ -78,7 +85,11 @@ async fn harness() -> Harness {
             };
             ([(header::CONTENT_TYPE, "text/event-stream")], axum::body::Body::from_stream(stream))
         }))
-        .layer(axum::extract::DefaultBodyLimit::disable());
+        .layer(axum::extract::DefaultBodyLimit::disable())
+        .layer(axum::middleware::from_fn(move |request: axum::extract::Request, next: axum::middleware::Next| {
+            upstream_hits.fetch_add(1, Ordering::SeqCst);
+            async move { next.run(request).await }
+        }));
     let local_task = tokio::spawn(async move { axum::serve(local, local_app).await.unwrap(); });
     let state = AppState::new(&crate::config::HubConfig {
         listen_addr: "127.0.0.1:0".parse().unwrap(), agent_token_hash: "fake".into(), users: vec![],
@@ -104,7 +115,7 @@ async fn harness() -> Harness {
             }
         }
     });
-    Harness { hub: format!("http://{address}"), port, cookie, state, principal: session.principal_id, csrf: session.csrf_token, tasks: vec![local_task, hub_task, agent_task] }
+    Harness { hub: format!("http://{address}"), port, cookie, state, principal: session.principal_id, csrf: session.csrf_token, hits, tasks: vec![local_task, hub_task, agent_task] }
 }
 
 #[path = "transport_tests.rs"]
@@ -141,6 +152,53 @@ async fn mock_agent_http_reaches_real_tcp_server_and_injects_html() {
     let body = response.text().await.unwrap();
     assert_eq!(body.len(), 8 * 1024 * 1024 + 6 + super::rewrite::SHIM.len() + 17);
     assert!(body.contains("__fileboxForwardShim"));
+}
+
+#[tokio::test]
+async fn cold_document_bounces_before_upstream_then_recovers_host_and_preserves_query() {
+    let harness = harness().await;
+    let path = format!("/_fwd/agent/{}/authority?token=private%3Cvalue%3E&x=a%2Fb", harness.port);
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let url = format!("{}{path}", harness.hub);
+    let response = client.get(&url).header(header::HOST, "hub.test").header("sec-fetch-dest", "document").send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response.headers()[header::LOCATION].to_str().unwrap();
+    assert_eq!(url::form_urlencoded::parse(location.trim_start_matches("/?").as_bytes()).next().unwrap().1, path);
+    for dest in [Some("document"), Some("iframe"), None] {
+        let mut request = client.get(&url).header(header::HOST, "hub.test").header(header::COOKIE, &harness.cookie)
+            .header("x-forwarded-proto", "https").header(header::ACCEPT, "text/html");
+        if let Some(dest) = dest { request = request.header("sec-fetch-dest", dest); }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(response.headers()[header::REFERRER_POLICY], "same-origin");
+        let csp = response.headers()[header::CONTENT_SECURITY_POLICY].to_str().unwrap().to_string();
+        let html = response.text().await.unwrap();
+        let script = html.split("<script>").nth(1).unwrap().split("</script>").next().unwrap();
+        assert_eq!(script, "location.replace(location.href)");
+        let hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(script.as_bytes()));
+        assert_eq!(csp, format!("default-src 'none'; script-src 'sha256-{hash}'; base-uri 'none'; frame-ancestors 'self'"));
+        assert!(html.contains("<noscript><a href=\"\">Continue</a></noscript>"));
+        assert!(!html.contains("token") && !html.contains("private") && !html.contains("hub.test"));
+        assert_eq!(harness.hits.load(Ordering::SeqCst), 0);
+    }
+    let response = client.get(&url).header(header::HOST, "hub.test").header(header::COOKIE, &harness.cookie)
+        .header("sec-fetch-dest", "document").header("x-forwarded-proto", "https")
+        .header(header::REFERER, format!("https://hub.test:8983{path}")).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["host"], "hub.test:8983");
+    assert_eq!(body["uri"], "/authority?token=private%3Cvalue%3E&x=a%2Fb");
+    assert_eq!(harness.hits.load(Ordering::SeqCst), 1);
+    for (method, host, dest) in [(reqwest::Method::GET, "hub.test:8983", "document"), (reqwest::Method::GET, "hub.test", "empty"), (reqwest::Method::HEAD, "hub.test", "document"), (reqwest::Method::POST, "hub.test", "document")] {
+        let before = harness.hits.load(Ordering::SeqCst);
+        let response = client.request(method, &url).header(header::HOST, host).header(header::COOKIE, &harness.cookie)
+            .header("sec-fetch-dest", dest).header("x-forwarded-proto", "https").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_ne!(response.headers().get(header::CACHE_CONTROL).and_then(|value| value.to_str().ok()), Some("no-store"));
+        let _ = response.bytes().await.unwrap();
+        assert_eq!(harness.hits.load(Ordering::SeqCst), before + 1);
+    }
 }
 
 #[tokio::test]

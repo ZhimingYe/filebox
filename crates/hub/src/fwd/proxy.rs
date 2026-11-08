@@ -1,5 +1,7 @@
 use axum::{body::Body, extract::{Request, State}, http::{header, HeaderMap, HeaderValue, Method, StatusCode}, middleware::Next, response::{IntoResponse, Redirect, Response}};
 use futures_util::StreamExt;
+use base64::Engine;
+use sha2::{Digest, Sha256};
 use hyper_util::rt::TokioIo;
 use crate::{state::AppState, routes::middleware::{session_cookie, session_cookie_name, csrf_cookie_name}};
 use super::rewrite;
@@ -45,6 +47,18 @@ fn failure(status: StatusCode) -> Response {
     (status, axum::response::Html(format!("<!doctype html><html><head><title>Forward unavailable</title></head><body><h1>{}</h1><p>Check the agent and local web service, then retry.</p></body></html>", status.canonical_reason().unwrap_or("Forward unavailable")))).into_response()
 }
 
+fn authority_bounce() -> Response {
+    const SCRIPT: &str = "location.replace(location.href)";
+    let hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(SCRIPT.as_bytes()));
+    let mut response = axum::response::Html(format!("<!doctype html><html><head><title>Opening forward</title></head><body><script>{SCRIPT}</script><noscript><a href=\"\">Continue</a></noscript></body></html>")).into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("same-origin"));
+    headers.insert("x-filebox-forward", HeaderValue::from_static("1"));
+    headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_str(&format!("default-src 'none'; script-src 'sha256-{hash}'; base-uri 'none'; frame-ancestors 'self'")).unwrap());
+    response
+}
+
 pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Response {
     let document = super::body::document(request.method(), request.headers());
     let sid = session_cookie(request.headers(), &state.cookie_suffix);
@@ -69,6 +83,12 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
         return StatusCode::FORBIDDEN.into_response();
     }
     if request.method() == Method::CONNECT { return StatusCode::METHOD_NOT_ALLOWED.into_response(); }
+    if request.method() == Method::GET && document && !websocket
+        && request.headers().get("sec-fetch-dest").is_none_or(|dest| dest == "document" || dest == "iframe")
+        && !request.headers().contains_key(header::ORIGIN) && !request.headers().contains_key(header::REFERER)
+        && host.parse::<axum::http::uri::Authority>().is_ok_and(|authority| authority.port().is_none()) {
+        return authority_bounce();
+    }
     let path = request.uri().path().to_string();
     let mut segments = path.trim_start_matches("/_fwd/").splitn(3, '/');
     let agent = segments.next().unwrap_or_default();
