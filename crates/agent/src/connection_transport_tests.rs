@@ -108,6 +108,7 @@ async fn start_test_connection() -> (
     let address = listener.local_addr().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let config = AgentConfig {
+        port_forward: true,
         hub_url: format!("ws://{address}"), token: "test-token".into(),
         agent_name: "test-agent".into(), data_dir: temp.path().to_path_buf(),
         temp_dir: None, temp_upload_name: None,

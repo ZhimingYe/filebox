@@ -152,6 +152,7 @@ impl LoginRateLimiter {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub tunnels: Arc<crate::fwd::TunnelStore>,
     pub prompt_review_mode: crate::prompt_review::ReviewMode,
     pub prompt_reviewer: Option<Arc<crate::prompt_review::PromptReviewer>>,
     pub inner: Arc<RwLock<AppStateInner>>,
@@ -285,6 +286,7 @@ impl AppState {
         let (sse_tx, _) = broadcast::channel(256);
         let audit = Arc::new(crate::audit::LoginAuditLog::load(crate::audit::default_path(secure_cookies)));
         Self {
+            tunnels: Arc::new(crate::fwd::TunnelStore::default()),
             inner: Arc::new(RwLock::new(AppStateInner {
                 sessions: SessionStore::from_config(config),
                 agents: AgentRegistry::new(),

@@ -1,6 +1,7 @@
 use tracing_subscriber::EnvFilter;
 
 mod config;
+mod tunnel;
 mod config_store;
 mod connection;
 mod content_cache;

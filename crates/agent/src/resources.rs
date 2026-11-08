@@ -12,7 +12,51 @@ pub struct ResourceManager {
     data_dir: PathBuf,
 }
 
+#[cfg(test)]
+mod forward_tests {
+    use super::*;
+    use filebox_protocol::forwards::ForwardConfig;
+    #[test]
+    fn forwards_persist_and_failed_updates_preserve_last_good_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = ResourceManager::new(dir.path().to_path_buf());
+        let entries = vec![ForwardConfig { port: 9001, name: "app".into() }];
+        assert_eq!(manager.apply_forwards_desired(1, entries.clone()).unwrap(), 1);
+        let loaded = ResourceManager::new(dir.path().to_path_buf());
+        assert_eq!(loaded.config.forwards, entries);
+        assert_eq!(loaded.config.forwards_revision, 1);
+        assert!(manager.apply_forwards_desired(1, vec![]).is_err());
+        assert!(manager.apply_forwards_desired(2, vec![ForwardConfig { port: 0, name: "app".into() }]).is_err());
+        assert_eq!(manager.config.forwards, entries);
+        manager.apply_forwards_desired(2, vec![]).unwrap();
+        assert!(ResourceManager::new(dir.path().to_path_buf()).config.forwards.is_empty());
+        std::fs::remove_file(dir.path().join("agent_state.json")).unwrap();
+        std::fs::create_dir(dir.path().join("agent_state.json")).unwrap();
+        assert!(manager.apply_forwards_desired(3, entries).is_err());
+        assert_eq!(manager.config.forwards_revision, 2);
+        assert!(manager.config.forwards.is_empty());
+    }
+}
+
 impl ResourceManager {
+    pub fn apply_forwards_desired(
+        &mut self,
+        revision: u64,
+        forwards: Vec<filebox_protocol::forwards::ForwardConfig>,
+    ) -> Result<u64, String> {
+        if revision <= self.config.forwards_revision {
+            return Err("Stale forwards revision".into());
+        }
+        filebox_protocol::forwards::validate_forwards(&forwards)?;
+        let previous = self.config.clone();
+        self.config.forwards_revision = revision;
+        self.config.forwards = forwards;
+        if let Err(error) = self.config.save_fallible(&self.data_dir) {
+            self.config = previous;
+            return Err(format!("Failed to persist forwards: {error}"));
+        }
+        Ok(revision)
+    }
     pub fn new(data_dir: PathBuf) -> Self {
         let config = PersistedConfig::load_or_create(&data_dir);
         Self { config, data_dir }

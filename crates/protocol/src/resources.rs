@@ -103,6 +103,8 @@ pub fn validate_pinned_path(p: &str) -> Result<(), String> {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Capabilities {
+    #[serde(default)]
+    pub port_forward: bool,
     pub fs_list: bool,
     pub fs_stat: bool,
     pub fs_read_range: bool,
@@ -221,6 +223,7 @@ pub struct AiAgentSettings {
 impl Default for Capabilities {
     fn default() -> Self {
         Self {
+            port_forward: false,
             fs_list: true,
             fs_stat: true,
             fs_read_range: true,

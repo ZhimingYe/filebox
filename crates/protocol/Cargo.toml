@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+thiserror = "2"
+zstd = "0.13"
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

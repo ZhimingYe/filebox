@@ -27,6 +27,17 @@ pub struct OfficePreviewOutput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentMessage {
+    TunnelFailed { ticket: String, code: String },
+    ForwardsApplied {
+        req_id: String,
+        forwards_revision: u64,
+        forwards: Vec<crate::forwards::ForwardConfig>,
+    },
+    ForwardsRejected {
+        req_id: String,
+        error: String,
+        message: String,
+    },
     Auth {
         token: String,
     },
@@ -41,6 +52,10 @@ pub enum AgentMessage {
         collections_revision: u64,
         #[serde(default)]
         collections: Vec<CollectionConfig>,
+        #[serde(default)]
+        forwards_revision: u64,
+        #[serde(default)]
+        forwards: Vec<crate::forwards::ForwardConfig>,
         /// Dedicated temp-upload folder (write-scoped scratch space). Absent on
         /// legacy agents and when the folder could not be initialized.
         #[serde(default)]
@@ -229,6 +244,12 @@ mod base64_bytes {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HubMessage {
+    TunnelOpen { ticket: String, port: u16, compression: bool },
+    ForwardsSetDesired {
+        req_id: String,
+        desired_revision: u64,
+        forwards: Vec<crate::forwards::ForwardConfig>,
+    },
     AuthResult {
         success: bool,
         agent_id: Option<String>,
@@ -414,6 +435,7 @@ mod tests {
             capabilities: Capabilities::default(),
             collections_revision: 0,
             collections: vec![],
+            forwards_revision: 0, forwards: vec![],
             temp_root: None,
         };
         let back = round_trip_agent(&msg);
@@ -446,6 +468,7 @@ mod tests {
             capabilities: Capabilities::default(),
             collections_revision: 0,
             collections: vec![],
+            forwards_revision: 0, forwards: vec![],
             temp_root: None,
         };
         let back = round_trip_agent(&msg);
@@ -1360,6 +1383,7 @@ mod tests {
             capabilities: Capabilities::default(),
             collections_revision: 0,
             collections: vec![],
+            forwards_revision: 0, forwards: vec![],
             temp_root: Some(TempRootInfo {
                 name: "agent-temp-copied-file".into(),
                 path: "/var/lib/filebox/temp/agent-temp-copied-file".into(),
@@ -1444,6 +1468,7 @@ mod tests {
             capabilities,
             collections_revision: 0,
             collections: vec![],
+            forwards_revision: 0, forwards: vec![],
             temp_root: None,
         };
         match round_trip_agent(&register) {

@@ -40,6 +40,7 @@ pub(super) struct ConnectionSession<'a> {
     dir_tx: mpsc::Sender<AgentMessage>,
     ai_agents_tx: mpsc::Sender<AgentMessage>,
     fs_admission: Arc<Semaphore>,
+    tunnel_admission: Arc<Semaphore>,
     stats_admission: Arc<Semaphore>,
     dir_list_admission: Arc<Semaphore>,
     fs_cancellations: FsCancellationMap,
@@ -68,6 +69,7 @@ impl<'a> ConnectionSession<'a> {
             runtime, assigned_agent_id, writer, control_tx, search_tx, office_tx,
             stats_tx, fs_tx, temp_tx, dir_tx, ai_agents_tx,
             fs_admission: Arc::new(Semaphore::new(FS_MAX_INFLIGHT)),
+            tunnel_admission: Arc::new(Semaphore::new(64)),
             stats_admission: Arc::new(Semaphore::new(8)),
             dir_list_admission: Arc::new(Semaphore::new(DIR_LIST_MAX_INFLIGHT)),
             fs_cancellations: Arc::new(Mutex::new(HashMap::new())),
@@ -139,6 +141,46 @@ impl<'a> ConnectionSession<'a> {
     async fn dispatch(&mut self, message: HubMessage) -> Result<(), DisconnectReason> {
         self.temp_writers.retain(|_, writer| writer.is_active());
         match message {
+            HubMessage::TunnelOpen { ticket, port, compression } => {
+                let code = if !self.runtime.port_forward { Some("disabled") }
+                    else if !self.runtime.resource_mgr.config.forwards.iter().any(|f| f.port == port) { Some("not_allowed") }
+                    else { None };
+                if let Some(code) = code {
+                    if !queue_agent_message(&self.control_tx, &AgentMessage::TunnelFailed { ticket, code: code.into() }) {
+                        return Err(DisconnectReason::ControlQueueClosed);
+                    }
+                } else {
+                    let Ok(permit) = self.tunnel_admission.clone().try_acquire_owned() else {
+                        if !queue_agent_message(&self.control_tx, &AgentMessage::TunnelFailed { ticket, code: "not_allowed".into() }) {
+                            return Err(DisconnectReason::ControlQueueClosed);
+                        }
+                        return Ok(());
+                    };
+                    let url = build_ws_url(&self.runtime.hub_url).replace("/ws/agent", "/ws/agent-data");
+                    let agent = self.runtime.stable_agent_id.clone();
+                    let tx = self.control_tx.clone();
+                    self.tasks.spawn(async move {
+                        let _permit = permit;
+                        if let Err(error) = crate::tunnel::run(url, agent, ticket.clone(), port, compression).await {
+                            tracing::debug!(%error, "Forward tunnel ended");
+                            let response = AgentMessage::TunnelFailed { ticket, code: "refused".into() };
+                            let _ = tx.send(Message::Text(serde_json::to_string(&response).unwrap().into())).await;
+                        }
+                    });
+                }
+                Ok(())
+            }
+            HubMessage::ForwardsSetDesired { req_id, desired_revision, forwards } => {
+                let response = match self.runtime.resource_mgr.apply_forwards_desired(desired_revision, forwards) {
+                    Ok(forwards_revision) => AgentMessage::ForwardsApplied {
+                        req_id, forwards_revision,
+                        forwards: self.runtime.resource_mgr.config.forwards.clone(),
+                    },
+                    Err(message) => AgentMessage::ForwardsRejected { req_id, error: "invalid_forward".into(), message },
+                };
+                if queue_agent_message(&self.control_tx, &response) { Ok(()) }
+                else { Err(DisconnectReason::ControlQueueClosed) }
+            }
             HubMessage::ResourcesSetDesired { .. } | HubMessage::CollectionsSetDesired { .. } => self.handle_resources(message),
             HubMessage::FsListRequest { .. } | HubMessage::FsStatRequest { .. } | HubMessage::FileReadRequest { .. } => self.handle_filesystem(message),
             HubMessage::WorkspaceSearchRequest { .. } => self.handle_search(message),

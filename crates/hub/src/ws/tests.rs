@@ -75,8 +75,48 @@ fn register_message() -> AgentMessage {
         agent_id: Some("agent".into()), name: "test agent".into(), resource_revision: 0,
         roots: vec![root("docs", "/home/test/docs", &[])], collections_revision: 0,
         collections: vec![], capabilities: Capabilities { collections: true, pinned_folders: true, ..Capabilities::default() },
+        forwards_revision: 0, forwards: vec![],
         temp_root: None,
     }
+}
+
+#[tokio::test]
+async fn forwards_reconnect_replays_latest_intent_and_stale_connections_cannot_apply() {
+    use filebox_protocol::forwards::ForwardConfig;
+    let state = test_state();
+    let (old, _old_rx) = install(&state).await;
+    let desired = vec![ForwardConfig { port: 9002, name: "new".into() }];
+    state.inner.write().await.agents.get_mut("agent").unwrap().pending_forwards = Some(("old-request".into(), desired.clone()));
+    let mut registration = register_message();
+    if let AgentMessage::Register { capabilities, forwards_revision, forwards, .. } = &mut registration {
+        capabilities.port_forward = true;
+        *forwards_revision = 5;
+        *forwards = vec![ForwardConfig { port: 9001, name: "persisted".into() }];
+    }
+    let (tx, mut rx) = mpsc::channel(8);
+    let current = registration::Registration::from_message(registration, "temporary".into()).unwrap().install(state.clone(), tx, Arc::new(Notify::new())).await;
+    let HubMessage::ForwardsSetDesired { req_id, desired_revision, forwards } = rx.recv().await.unwrap() else { panic!("expected forward replay"); };
+    assert_eq!(desired_revision, 6);
+    assert_eq!(forwards, desired);
+    let applied = serde_json::to_string(&AgentMessage::ForwardsApplied { req_id: req_id.clone(), forwards_revision: 6, forwards: desired.clone() }).unwrap();
+    dispatch::dispatch(&old, &applied).await;
+    assert!(state.inner.read().await.agents.get("agent").unwrap().pending_forwards.is_some());
+    dispatch::dispatch(&current, &applied).await;
+    {
+        let mut inner = state.inner.write().await;
+        let agent = inner.agents.get_mut("agent").unwrap();
+        assert_eq!(agent.forwards, desired);
+        assert_eq!(agent.forwards_revision, 6);
+        assert!(agent.pending_forwards.is_none());
+        agent.pending_forwards = Some(("reject".into(), vec![]));
+    }
+    let rejected = serde_json::to_string(&AgentMessage::ForwardsRejected { req_id: "reject".into(), error: "invalid_forward".into(), message: "Persistence failed".into() }).unwrap();
+    dispatch::dispatch(&current, &rejected).await;
+    let inner = state.inner.read().await;
+    let agent = inner.agents.get("agent").unwrap();
+    assert_eq!(agent.forwards, desired);
+    assert!(agent.pending_forwards.is_none());
+    assert_eq!(agent.last_config_error.as_deref(), Some("Persistence failed"));
 }
 
 async fn install(state: &AppState) -> (AgentContext, mpsc::Receiver<HubMessage>) {

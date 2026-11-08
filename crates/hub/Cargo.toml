@@ -9,6 +9,11 @@ name = "hub"
 path = "src/main.rs"
 
 [dependencies]
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client", "http1", "tokio"] }
+http-body-util = "0.1"
+tokio-util = { version = "0.7", features = ["rt"] }
+url = "2"
 filebox-protocol = { workspace = true }
 filebox-llm = { workspace = true, features = ["cli"] }
 tokio = { workspace = true }

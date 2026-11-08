@@ -32,7 +32,7 @@ pub(super) async fn security_headers(
     // the blob new-window wrapper (both opaque origins), so the preview
     // handler marks them with a sentinel header and this layer defers to it.
     // Their injected CSP keeps them locked to the token origin either way.
-    if !headers.contains_key("x-filebox-preview-document") {
+    if !headers.contains_key("x-filebox-preview-document") && !headers.contains_key("x-filebox-forward") {
         headers.insert(
             HeaderName::from_static("x-frame-options"),
             HeaderValue::from_static("DENY"),
@@ -48,7 +48,7 @@ pub(super) async fn security_headers(
         header::REFERRER_POLICY,
         HeaderValue::from_static("same-origin"),
     );
-    if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
+    if !headers.contains_key(header::CONTENT_SECURITY_POLICY) && !headers.contains_key("x-filebox-forward") {
         headers.insert(
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static("frame-ancestors 'none'"),
@@ -66,7 +66,7 @@ pub(super) async fn cache_headers(
 ) -> Response {
     let path = req.uri().path().to_string();
     let mut resp = next.run(req).await;
-    if !resp.status().is_success() || path.starts_with("/api/") || path.starts_with("/ws/") {
+    if !resp.status().is_success() || path.starts_with("/api/") || path.starts_with("/ws/") || path.starts_with("/_fwd/") {
         return resp;
     }
     // index.html must always be revalidated so a stale cached copy can never
