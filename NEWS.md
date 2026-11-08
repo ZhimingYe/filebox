@@ -2,11 +2,18 @@
 
 All notable changes to filebox are listed here. Dates are UTC.
 
-## v3.0.0
+## v3.1.0
 
 ### Added
 - **Ports base paths and transport** — opt into **App uses this base path** for preconfigured apps (`keep_prefix`, default off), copy the prefix from Ports, reuse idle upstream connections, queue busy tunnels, and close active forwards on logout, expiry, deletion or Agent disconnect.
 - **Ports** — manage multiple loopback web forwards per Agent, open or copy `/_fwd/<agent>/<port>/` links without app base-path setup, and sync offline changes on reconnect. Disable with `FILEBOX_AGENT_PORT_FORWARD=off` or `port_forward = false` in `agent.toml`.
+
+### Fixed
+- **Forwarded web compatibility** — rewrite app URLs and cookies, stream compressed HTML, support WebSockets and workers, authorize credentialless manifest fetches with short-lived session-bound tokens, and resume forwarded links after login. Superseded edits no longer report rejection, and successful forwards retries clear only forwards-owned configuration errors.
+
+## v3.0.0
+
+### Added
 - **Experimental hc backend** — select **hc (experimental)** in Agent Settings to list and control local, live herdr-core terminals opted in with `fb=<name>` or `filebox=<name>` labels (case-insensitive keys; the value is the display name; legacy `filebox=ai-agent` still works). Operations target hc terminal IDs, and every read, prompt and key re-checks the label. The Herdr backend is unchanged. See `docs/hc-compatibility.md`.
 - **AI Agents settings and onboarding** — per-Agent enable switch in Agent Settings, persisted in `agent_state.json`, with Setup, Intro and not-running states; `FILEBOX_AGENT_AI_AGENTS_ENABLED=0`/`1` at Agent startup overrides and locks the switch.
 - **Prompt review state** — the AI Agents view shows whether Hub prompt review is on (with its model), off, or not configured.
