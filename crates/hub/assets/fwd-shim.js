@@ -21,9 +21,17 @@
     const patch = (object, key, wrap) => {
       try { if (typeof object[key] === 'function') object[key] = wrap(object[key]); } catch (_) {}
     };
+    patch(window, 'Request', original => new Proxy(original, {
+      construct(target, args, newTarget) {
+        try { if (!(args[0] instanceof original)) args[0] = fix(args[0]); } catch (_) {}
+        return Reflect.construct(target, args, newTarget);
+      }
+    }));
     patch(window, 'fetch', original => function (input, ...rest) {
       try {
-        input = input instanceof Request ? new Request(fix(input.url), input) : fix(input);
+        // Rebuilding a Request from its body turns fixed uploads into streams,
+        // which Chromium cannot send over HTTP/1. Pre-existing Requests use the Referer fallback.
+        if (!(input instanceof Request)) input = fix(input);
       } catch (_) {}
       return Reflect.apply(original, this, [input, ...rest]);
     });
