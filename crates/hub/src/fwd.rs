@@ -9,6 +9,8 @@ use filebox_protocol::{message::HubMessage, tunnel::{self, Frame}};
 mod rewrite;
 mod body;
 mod proxy;
+mod pool;
+mod lifecycle;
 #[cfg(test)]
 mod tests;
 pub use proxy::referer_fallback;
@@ -30,11 +32,14 @@ struct Ticket {
 pub struct TunnelStore {
     tickets: Mutex<HashMap<String, Ticket>>,
     generations: Mutex<HashMap<(String, u64), Generation>>,
+    idle: Mutex<HashMap<(String, u16), Vec<pool::Idle>>>,
+    active: Mutex<HashMap<String, lifecycle::Active>>,
 }
 impl TunnelStore {
     pub fn disconnect(&self, agent: &str, generation: u64) {
         if let Some(entry) = self.generations.lock().unwrap().remove(&(agent.into(), generation)) { entry.cancel.cancel(); }
         self.tickets.lock().unwrap().retain(|_, t| t.agent != agent || t.generation != generation);
+        self.idle.lock().unwrap().retain(|(id, _), _| id != agent);
     }
     pub fn fail(&self, ticket: &str, agent: &str, generation: u64) {
         let mut tickets = self.tickets.lock().unwrap();
@@ -69,13 +74,21 @@ async fn open(state: &AppState, agent: &str, port: u16) -> Result<Opened, Status
     let connection = inner.agents.get(agent).ok_or(StatusCode::NOT_FOUND)?;
     if !connection.capabilities.port_forward || !connection.forwards.iter().any(|f| f.port == port) { return Err(StatusCode::NOT_FOUND); }
     if connection.status == AgentStatus::Offline { return Err(StatusCode::SERVICE_UNAVAILABLE); }
-    let (cancel, permit) = {
+    let generation = connection.connection_id;
+    let (cancel, limit) = {
         let mut generations = state.tunnels.generations.lock().unwrap();
         let entry = generations.entry((agent.into(), connection.connection_id)).or_insert_with(|| Generation {
-            cancel: CancellationToken::new(), limit: Arc::new(Semaphore::new(64)),
+            cancel: CancellationToken::new(), limit: Arc::new(Semaphore::new(256)),
         });
-        (entry.cancel.child_token(), entry.limit.clone().try_acquire_owned().map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?)
+        (entry.cancel.child_token(), entry.limit.clone())
     };
+    drop(inner);
+    if limit.available_permits() == 0 { state.tunnels.evict_idle(agent); }
+    let permit = admission(limit, &cancel).await?;
+    let inner = state.inner.read().await;
+    let connection = inner.agents.get(agent).filter(|a| a.connection_id == generation && a.status != AgentStatus::Offline).ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    if !connection.forwards.iter().any(|f| f.port == port) { return Err(StatusCode::NOT_FOUND); }
+    if connection.pending_forwards.as_ref().is_some_and(|(_, forwards)| !forwards.iter().any(|f| f.port == port)) { return Err(StatusCode::NOT_FOUND); }
     let ticket = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel();
     state.tunnels.tickets.lock().unwrap().insert(ticket.clone(), Ticket {
@@ -94,13 +107,19 @@ async fn open(state: &AppState, agent: &str, port: u16) -> Result<Opened, Status
     let (stream, peer) = tokio::io::duplex(256 * 1024);
     let bridge_cancel = cancel.clone();
     tokio::spawn(async move {
-        bridge(socket, peer, bridge_cancel.clone(), permit).await;
-        bridge_cancel.cancel();
+        if bridge(socket, peer, bridge_cancel.clone(), permit).await.is_err() { bridge_cancel.cancel(); }
     });
     Ok(Opened { stream, cancel })
 }
 
-async fn bridge(socket: WebSocket, stream: DuplexStream, cancel: CancellationToken, _permit: OwnedSemaphorePermit) {
+async fn admission(limit: Arc<Semaphore>, cancel: &CancellationToken) -> Result<OwnedSemaphorePermit, StatusCode> {
+    tokio::select! {
+        _ = cancel.cancelled() => Err(StatusCode::SERVICE_UNAVAILABLE),
+        permit = tokio::time::timeout(Duration::from_secs(30), limit.acquire_owned()) => permit.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?.map_err(|_| StatusCode::SERVICE_UNAVAILABLE),
+    }
+}
+
+async fn bridge(socket: WebSocket, stream: DuplexStream, cancel: CancellationToken, _permit: OwnedSemaphorePermit) -> std::io::Result<()> {
     let (sink, mut source) = socket.split();
     let sink = Arc::new(tokio::sync::Mutex::new(sink));
     let (mut read, mut write) = tokio::io::split(stream);
@@ -135,5 +154,5 @@ async fn bridge(socket: WebSocket, stream: DuplexStream, cancel: CancellationTok
             }
         }
     };
-    tokio::select! { _ = cancel.cancelled() => {}, _ = async { let _ = tokio::try_join!(send, receive); } => {} }
+    tokio::select! { _ = cancel.cancelled() => Ok(()), result = async { tokio::try_join!(send, receive) } => result.map(|_| ()) }
 }

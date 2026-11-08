@@ -9,6 +9,7 @@ afterEach(() => {
 it.each([
   { method: 'POST', body: { port: 9001, name: 'Python' }, run: () => api.addForward('agent/a', { port: 9001, name: 'Python' }) },
   { method: 'DELETE', body: { port: 9001 }, run: () => api.deleteForward('agent/a', 9001) },
+  { method: 'PATCH', body: { port: 9001, keep_prefix: true }, run: () => api.setForwardPrefix('agent/a', 9001, true) },
 ])('sends $method with credentials and CSRF', async ({ method, body, run }) => {
   api.setCsrfToken('csrf');
   const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, state: 'pending_agent_reconnect' })));

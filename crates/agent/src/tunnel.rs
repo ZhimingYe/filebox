@@ -7,12 +7,7 @@ use filebox_protocol::tunnel::{self, Frame};
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 pub async fn run(url: String, agent: String, ticket: String, port: u16, compression: bool) -> Result<(), Error> {
-    let tcp = tokio::time::timeout(Duration::from_secs(5), async {
-        match TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await {
-            Ok(stream) => Ok(stream),
-            Err(_) => TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port)).await,
-        }
-    }).await??;
+    let tcp = tokio::time::timeout(Duration::from_secs(5), dial(port)).await??;
     let mut request = url.into_client_request()?;
     request.headers_mut().insert("x-filebox-ticket", ticket.parse()?);
     request.headers_mut().insert("x-filebox-agent", agent.parse()?);
@@ -54,4 +49,31 @@ pub async fn run(url: String, agent: String, ticket: String, port: u16, compress
     };
     tokio::try_join!(send, receive)?;
     Ok(())
+}
+
+async fn dial(port: u16) -> std::io::Result<TcpStream> {
+    match TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await {
+        Ok(stream) => Ok(stream),
+        Err(_) => TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port)).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn loopback_dial_prefers_ipv4_and_falls_back_to_ipv6() {
+        let ipv4 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = ipv4.local_addr().unwrap().port();
+        let ipv6 = tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)).await.unwrap();
+        let stream = dial(port).await.unwrap();
+        assert_eq!(stream.peer_addr().unwrap().ip(), std::net::Ipv4Addr::LOCALHOST);
+        drop(stream);
+        drop(ipv4);
+        let stream = dial(port).await.unwrap();
+        assert_eq!(stream.peer_addr().unwrap().ip(), std::net::Ipv6Addr::LOCALHOST);
+        drop(stream);
+        drop(ipv6);
+        assert!(dial(port).await.is_err());
+    }
 }

@@ -32,10 +32,10 @@ fn failure(status: StatusCode) -> Response {
 pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Response {
     let document = super::body::document(request.method(), request.headers());
     let sid = session_cookie(request.headers(), &state.cookie_suffix);
-    let valid = if let Some(sid) = sid { state.inner.read().await.sessions.get_session(&sid).is_some() } else { false };
-    if !valid {
+    let principal = if let Some(sid) = sid { state.inner.read().await.sessions.get_session(&sid).map(|s| s.principal_id.clone()) } else { None };
+    let Some(principal) = principal else {
         return if document && request.method() == Method::GET { Redirect::to("/").into_response() } else { StatusCode::UNAUTHORIZED.into_response() };
-    }
+    };
     let websocket = request.headers().get(header::UPGRADE).is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket"))
         && request.headers().get(header::CONNECTION).and_then(|v| v.to_str().ok()).is_some_and(|v| v.split(',').any(|v| v.trim().eq_ignore_ascii_case("upgrade")));
     let Some(own) = origin(request.headers(), request_is_https(&request)) else { return StatusCode::BAD_REQUEST.into_response(); };
@@ -54,7 +54,14 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
         return Redirect::permanent(&format!("{path}/{query}")).into_response();
     }
     let prefix = format!("/_fwd/{agent}/{port}");
-    let target = format!("/{}{}", rest.unwrap_or_default(), request.uri().query().map(|q| format!("?{q}")).unwrap_or_default());
+    let (keep_prefix, scope) = {
+        let inner = state.inner.read().await;
+        let Some(forward) = inner.agents.get(agent).filter(|a| a.status != crate::agent_registry::AgentStatus::Offline && a.capabilities.port_forward)
+            .and_then(|a| a.pending_forwards.as_ref().map(|(_, forwards)| forwards).unwrap_or(&a.forwards).iter().find(|f| f.port == port)) else { return StatusCode::NOT_FOUND.into_response(); };
+        (forward.keep_prefix, state.tunnels.scope(state.clone(), principal, agent.into(), port))
+    };
+    let target = if keep_prefix { request.uri().path_and_query().unwrap().as_str().to_string() }
+        else { format!("/{}{}", rest.unwrap_or_default(), request.uri().query().map(|q| format!("?{q}")).unwrap_or_default()) };
     let mut headers = rewrite::sanitize(request.headers(), websocket);
     let reserved = [session_cookie_name(true, &state.cookie_suffix), session_cookie_name(false, &state.cookie_suffix), csrf_cookie_name(true, &state.cookie_suffix), csrf_cookie_name(false, &state.cookie_suffix)];
     let cookies = headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).map(str::trim)
@@ -66,35 +73,36 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
     for name in forwarding { headers.remove(name); }
     if let Ok(value) = HeaderValue::from_str(&prefix) { headers.insert("x-forwarded-prefix", value); }
     if document { headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("identity")); }
-    let opened = match super::open(&state, agent, port).await { Ok(opened) => opened, Err(status) => return failure(status) };
-    let cancel = opened.cancel;
-    let mut guard = Some(cancel.clone().drop_guard());
+    let mut connection = tokio::select! {
+        _ = scope.cancel.cancelled() => return StatusCode::UNAUTHORIZED.into_response(),
+        result = tokio::time::timeout(FIRST_BYTE_TIMEOUT, super::pool::connect(&state, agent, port, !websocket)) => match result {
+            Ok(Ok(connection)) => connection, Ok(Err(status)) => return failure(status), Err(_) => return failure(StatusCode::GATEWAY_TIMEOUT),
+        }
+    };
+    scope.attach(&connection.cancel);
+    let cancel = connection.cancel.clone();
     let browser_upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
     let body = std::mem::replace(request.body_mut(), Body::empty());
     let mut upstream = match Request::builder().method(request.method().clone()).uri(target).body(body) {
         Ok(request) => request, Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
     *upstream.headers_mut() = headers;
-    let connection_cancel = cancel.clone();
-    let handshake = async move {
-        let (mut sender, connection) = hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(opened.stream)).await?;
-        tokio::spawn(async move {
-            tokio::select! { _ = connection_cancel.cancelled() => {}, _ = connection.with_upgrades() => {} }
-        });
-        sender.send_request(upstream).await
-    };
-    let mut upstream = match tokio::time::timeout(FIRST_BYTE_TIMEOUT, handshake).await {
-        Ok(Ok(response)) => response, Ok(Err(_)) => return StatusCode::BAD_GATEWAY.into_response(), Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
+    let mut upstream = tokio::select! {
+        _ = scope.cancel.cancelled() => return StatusCode::UNAUTHORIZED.into_response(),
+        result = tokio::time::timeout(FIRST_BYTE_TIMEOUT, connection.sender.send_request(upstream)) => match result {
+            Ok(Ok(response)) => response, Ok(Err(_)) => return StatusCode::BAD_GATEWAY.into_response(), Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
+        }
     };
     let host = request.headers().get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or_default();
     let mut headers = rewrite::response_headers(upstream.headers(), websocket, &prefix, host, port, request_is_https(&request));
     let status = upstream.status();
+    let reusable = !websocket && !status.is_client_error() && !status.is_server_error();
     if status == StatusCode::SWITCHING_PROTOCOLS {
         let Some(browser) = browser_upgrade else { return StatusCode::BAD_GATEWAY.into_response(); };
         let service = hyper::upgrade::on(&mut upstream);
-        let guard = guard.take();
         tokio::spawn(async move {
-            let _guard = guard;
+            let _connection = connection;
+            let _scope = scope;
             tokio::select! {
                 _ = cancel.cancelled() => {},
                 _ = async {
@@ -111,16 +119,25 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
     }
     let body = super::body::transform(Body::new(upstream.into_body()), &mut headers, request.method(), status, request.headers(), (prefix, host.into(), port));
     let mut stream = body.into_data_stream();
+    let pool_key = (agent.to_string(), port);
     let body = {
-        let guard = guard.take();
         let body_stream: std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<axum::body::Bytes, std::io::Error>> + Send>> = Box::pin(async_stream::try_stream! {
-            let _guard = guard;
+            let scope = scope;
+            let mut connection = Some(connection);
             loop {
                 let item = tokio::select! {
                     _ = cancel.cancelled() => Err(std::io::Error::other("Agent disconnected")),
                     item = stream.next() => Ok(item),
                 }?;
-                match item { Some(bytes) => yield bytes.map_err(std::io::Error::other)?, None => break }
+                match item {
+                    Some(bytes) => yield bytes.map_err(std::io::Error::other)?,
+                    None => {
+                        if !scope.cancel.is_cancelled() && reusable {
+                            scope.recycle(pool_key, connection.take().unwrap());
+                        }
+                        break;
+                    }
+                }
             }
         });
         Body::from_stream(body_stream)

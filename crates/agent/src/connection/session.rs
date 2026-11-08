@@ -69,7 +69,7 @@ impl<'a> ConnectionSession<'a> {
             runtime, assigned_agent_id, writer, control_tx, search_tx, office_tx,
             stats_tx, fs_tx, temp_tx, dir_tx, ai_agents_tx,
             fs_admission: Arc::new(Semaphore::new(FS_MAX_INFLIGHT)),
-            tunnel_admission: Arc::new(Semaphore::new(64)),
+            tunnel_admission: Arc::new(Semaphore::new(256)),
             stats_admission: Arc::new(Semaphore::new(8)),
             dir_list_admission: Arc::new(Semaphore::new(DIR_LIST_MAX_INFLIGHT)),
             fs_cancellations: Arc::new(Mutex::new(HashMap::new())),
@@ -150,17 +150,15 @@ impl<'a> ConnectionSession<'a> {
                         return Err(DisconnectReason::ControlQueueClosed);
                     }
                 } else {
-                    let Ok(permit) = self.tunnel_admission.clone().try_acquire_owned() else {
-                        if !queue_agent_message(&self.control_tx, &AgentMessage::TunnelFailed { ticket, code: "not_allowed".into() }) {
-                            return Err(DisconnectReason::ControlQueueClosed);
-                        }
-                        return Ok(());
-                    };
+                    let admission = self.tunnel_admission.clone();
                     let url = build_ws_url(&self.runtime.hub_url).replace("/ws/agent", "/ws/agent-data");
                     let agent = self.runtime.stable_agent_id.clone();
                     let tx = self.control_tx.clone();
                     self.tasks.spawn(async move {
-                        let _permit = permit;
+                        let Ok(Ok(_permit)) = tokio::time::timeout(Duration::from_secs(30), admission.acquire_owned()).await else {
+                            let _ = queue_agent_message(&tx, &AgentMessage::TunnelFailed { ticket, code: "busy".into() });
+                            return;
+                        };
                         if let Err(error) = crate::tunnel::run(url, agent, ticket.clone(), port, compression).await {
                             tracing::debug!(%error, "Forward tunnel ended");
                             let response = AgentMessage::TunnelFailed { ticket, code: "refused".into() };

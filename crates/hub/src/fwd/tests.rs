@@ -31,7 +31,7 @@ fn tickets_are_single_use_expiring_and_generation_bound() {
     assert!(store.tickets.lock().unwrap().is_empty());
 }
 
-struct Harness { hub: String, port: u16, cookie: String, tasks: Vec<tokio::task::JoinHandle<()>> }
+struct Harness { hub: String, port: u16, cookie: String, state: AppState, principal: String, csrf: String, tasks: Vec<tokio::task::JoinHandle<()>> }
 impl Drop for Harness { fn drop(&mut self) { for task in &self.tasks { task.abort(); } } }
 
 async fn harness() -> Harness {
@@ -43,10 +43,24 @@ async fn harness() -> Harness {
         assert!(!headers.get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or_default().contains("filebox_session"));
         axum::response::Html("<!doctype html><head><title>Forward test</title></head><body>local service</body>")
     })).route("/socket", get(|ws: WebSocketUpgrade| async move { ws.on_upgrade(|mut socket| async move {
-        if let Some(Ok(message)) = socket.recv().await { let _ = socket.send(message).await; }
+        while let Some(Ok(message)) = socket.recv().await { if socket.send(message).await.is_err() { break; } }
     }) }))
         .route("/echo", axum::routing::post(|bytes: axum::body::Bytes| async move { bytes }))
         .route("/large", get(|| async { axum::response::Html(format!("<head>{}", "x".repeat(8 * 1024 * 1024))) }))
+        .route("/large-close", get(|| async { ([(header::CONNECTION, "close")], axum::response::Html(format!("<head>{}", "x".repeat(8 * 1024 * 1024)))) }))
+        .route("/bad", get(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "failed") }))
+        .route("/broken", get(|| async {
+            let stream = async_stream::stream! {
+                yield Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"partial"));
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                yield Err(std::io::Error::other("upstream failed"));
+            };
+            axum::body::Body::from_stream(stream)
+        }))
+        .route("/_fwd/{agent}/{port}/socket", get(|ws: WebSocketUpgrade| async move { ws.on_upgrade(|mut socket| async move {
+            while let Some(Ok(message)) = socket.recv().await { if socket.send(message).await.is_err() { break; } }
+        }) }))
+        .route("/_fwd/{agent}/{port}/app", axum::routing::any(|uri: axum::http::Uri| async move { uri.to_string() }))
         .route("/events", get(|| async {
             let stream = async_stream::stream! {
                 yield Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"data: first\n\n"));
@@ -66,11 +80,12 @@ async fn harness() -> Harness {
     {
         let mut inner = state.inner.write().await;
         inner.agents.register("agent".into(), "mock".into(), tx, Arc::new(tokio::sync::Notify::new()), 0, vec![], 0, vec![], Capabilities { port_forward: true, ..Default::default() }, None);
-        inner.agents.get_mut("agent").unwrap().forwards = vec![ForwardConfig { port, name: "local".into() }];
+        inner.agents.get_mut("agent").unwrap().forwards = vec![ForwardConfig { port, name: "local".into(), keep_prefix: false }];
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let hub_task = tokio::spawn(async move { axum::serve(listener, crate::routes::create_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap(); });
+    let hub_state = state.clone();
+    let hub_task = tokio::spawn(async move { axum::serve(listener, crate::routes::create_router(hub_state).into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap(); });
     let agent_task = tokio::spawn(async move {
         let mut tunnels = tokio::task::JoinSet::new();
         while let Some(message) = rx.recv().await {
@@ -79,8 +94,11 @@ async fn harness() -> Harness {
             }
         }
     });
-    Harness { hub: format!("http://{address}"), port, cookie, tasks: vec![local_task, hub_task, agent_task] }
+    Harness { hub: format!("http://{address}"), port, cookie, state, principal: session.principal_id, csrf: session.csrf_token, tasks: vec![local_task, hub_task, agent_task] }
 }
+
+#[path = "transport_tests.rs"]
+mod transport_tests;
 
 #[tokio::test]
 async fn mock_agent_http_reaches_real_tcp_server_and_injects_html() {

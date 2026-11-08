@@ -23,7 +23,7 @@ pub fn create_router(state: AppState) -> Router {
 
     // Protected routes (session cookie required)
     let protected = Router::new()
-        .route("/api/agents/{agent_id}/forwards", get(forwards::list).post(forwards::add).delete(forwards::remove))
+        .route("/api/agents/{agent_id}/forwards", get(forwards::list).post(forwards::add).patch(forwards::patch).delete(forwards::remove))
         .route("/api/events", get(events::sse_handler))
         .route("/api/session/logout", post(session_logout_handler))
         .route("/api/audit/logins", get(login_audit_handler))

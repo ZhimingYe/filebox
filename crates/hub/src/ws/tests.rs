@@ -85,13 +85,13 @@ async fn forwards_reconnect_replays_latest_intent_and_stale_connections_cannot_a
     use filebox_protocol::forwards::ForwardConfig;
     let state = test_state();
     let (old, _old_rx) = install(&state).await;
-    let desired = vec![ForwardConfig { port: 9002, name: "new".into() }];
+    let desired = vec![ForwardConfig { port: 9002, name: "new".into(), keep_prefix: true }];
     state.inner.write().await.agents.get_mut("agent").unwrap().pending_forwards = Some(("old-request".into(), desired.clone()));
     let mut registration = register_message();
     if let AgentMessage::Register { capabilities, forwards_revision, forwards, .. } = &mut registration {
         capabilities.port_forward = true;
         *forwards_revision = 5;
-        *forwards = vec![ForwardConfig { port: 9001, name: "persisted".into() }];
+        *forwards = vec![ForwardConfig { port: 9001, name: "persisted".into(), keep_prefix: false }];
     }
     let (tx, mut rx) = mpsc::channel(8);
     let current = registration::Registration::from_message(registration, "temporary".into()).unwrap().install(state.clone(), tx, Arc::new(Notify::new())).await;

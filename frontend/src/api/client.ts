@@ -480,6 +480,7 @@ export interface CollectionInfo {
 export interface ForwardConfig {
   port: number;
   name: string;
+  keep_prefix?: boolean;
 }
 
 /// A root as returned by the hub (display shape). `pinned_folders` holds
@@ -777,7 +778,7 @@ export function forwardPath(agentId: string, port: number) {
   return `/_fwd/${encodeURIComponent(agentId)}/${port}/`;
 }
 
-async function updateForward(agentId: string, method: 'POST' | 'DELETE', entry: { port: number; name?: string }) {
+async function updateForward(agentId: string, method: 'POST' | 'DELETE' | 'PATCH', entry: { port: number; name?: string; keep_prefix?: boolean }) {
   const res = await request<DesiredStateResponse>(`/api/agents/${encodeURIComponent(agentId)}/forwards`, {
     method,
     body: JSON.stringify(entry),
@@ -794,6 +795,10 @@ export function addForward(agentId: string, forward: ForwardConfig) {
 
 export function deleteForward(agentId: string, port: number) {
   return updateForward(agentId, 'DELETE', { port });
+}
+
+export function setForwardPrefix(agentId: string, port: number, keepPrefix: boolean) {
+  return updateForward(agentId, 'PATCH', { port, keep_prefix: keepPrefix });
 }
 
 // ── Filesystem ───────────────────────────────────────────────────────────────

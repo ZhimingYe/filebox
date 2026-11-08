@@ -5,7 +5,7 @@ import * as api from '../api/client';
 import { PortsView } from './PortsView';
 
 vi.mock('../api/client', async (original) => ({
-  ...await original<typeof api>(), addForward: vi.fn(), deleteForward: vi.fn(),
+  ...await original<typeof api>(), addForward: vi.fn(), deleteForward: vi.fn(), setForwardPrefix: vi.fn(),
 }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -27,6 +27,7 @@ beforeEach(() => {
   root = createRoot(host);
   vi.mocked(api.addForward).mockResolvedValue({ ok: true, state: 'applied' });
   vi.mocked(api.deleteForward).mockResolvedValue({ ok: true, state: 'applied' });
+  vi.mocked(api.setForwardPrefix).mockResolvedValue({ ok: true, state: 'applied' });
 });
 afterEach(() => {
   act(() => root.unmount());
@@ -152,4 +153,30 @@ it('keeps compact wrapping controls and a scrollable view on mobile', async () =
   expect(host.querySelector('section')?.style.overflowY).toBe('auto');
   expect(host.querySelector('form')?.style.flexWrap).toBe('wrap');
   expect(host.querySelector('a')?.style.height).toBe('30px');
+});
+
+it('adds a configured base path from Advanced and resets its checkbox on success', async () => {
+  await render();
+  expect(host.querySelector('details summary')?.textContent).toBe('Advanced');
+  input('Port', '8888');
+  await act(async () => host.querySelector<HTMLInputElement>('details input[type="checkbox"]')!.click());
+  await submit();
+  expect(api.addForward).toHaveBeenCalledWith('a1', { port: 8888, name: 'Port 8888', keep_prefix: true });
+  expect(host.querySelector<HTMLInputElement>('details input[type="checkbox"]')?.checked).toBe(false);
+});
+
+it('toggles existing base paths, copies the prefix, and reflects rejection without losing the current value', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  await render({ ...agent, forwards: [{ port: 9001, name: 'Python', keep_prefix: true }] });
+  const toggle = host.querySelector<HTMLInputElement>('[aria-label="App uses this base path for Python"]')!;
+  expect(toggle.checked).toBe(true);
+  await act(async () => toggle.click());
+  expect(api.setForwardPrefix).toHaveBeenCalledExactlyOnceWith('a1', 9001, false);
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Copy base path for Python"]')!.click());
+  expect(writeText).toHaveBeenCalledWith('/_fwd/a1/9001/');
+  vi.mocked(api.setForwardPrefix).mockRejectedValue({ message: 'Cannot persist base path' });
+  await act(async () => toggle.click());
+  expect(toggle.checked).toBe(true);
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('Cannot persist base path');
 });

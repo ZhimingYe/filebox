@@ -20,13 +20,13 @@ mod forward_tests {
     fn forwards_persist_and_failed_updates_preserve_last_good_state() {
         let dir = tempfile::tempdir().unwrap();
         let mut manager = ResourceManager::new(dir.path().to_path_buf());
-        let entries = vec![ForwardConfig { port: 9001, name: "app".into() }];
+        let entries = vec![ForwardConfig { port: 9001, name: "app".into(), keep_prefix: true }];
         assert_eq!(manager.apply_forwards_desired(1, entries.clone()).unwrap(), 1);
         let loaded = ResourceManager::new(dir.path().to_path_buf());
         assert_eq!(loaded.config.forwards, entries);
         assert_eq!(loaded.config.forwards_revision, 1);
         assert!(manager.apply_forwards_desired(1, vec![]).is_err());
-        assert!(manager.apply_forwards_desired(2, vec![ForwardConfig { port: 0, name: "app".into() }]).is_err());
+        assert!(manager.apply_forwards_desired(2, vec![ForwardConfig { port: 0, name: "app".into(), keep_prefix: false }]).is_err());
         assert_eq!(manager.config.forwards, entries);
         manager.apply_forwards_desired(2, vec![]).unwrap();
         assert!(ResourceManager::new(dir.path().to_path_buf()).config.forwards.is_empty());

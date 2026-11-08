@@ -15,6 +15,7 @@ export function PortsView({ agent, onRefresh }: Props) {
   const { copiedPath, copyToClipboard } = useCopyToClipboard();
   const [port, setPort] = useState('');
   const [name, setName] = useState('');
+  const [keepPrefix, setKeepPrefix] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const forwards = agent.forwards ?? [];
@@ -25,7 +26,7 @@ export function PortsView({ agent, onRefresh }: Props) {
     setError(null);
     try {
       await operation();
-      if (added) { setPort(''); setName(''); }
+      if (added) { setPort(''); setName(''); setKeepPrefix(false); }
     } catch (cause) {
       const details = cause as api.ApiError;
       setError(details?.message || api.friendlyMessage(cause));
@@ -46,7 +47,7 @@ export function PortsView({ agent, onRefresh }: Props) {
       setError('This port is already listed.');
       return;
     }
-    void change(() => api.addForward(agent.id, { port: value, name: name.trim() || `Port ${value}` }), true);
+    void change(() => api.addForward(agent.id, { port: value, name: name.trim() || `Port ${value}`, ...(keepPrefix ? { keep_prefix: true } : {}) }), true);
   }
 
   return <section style={{ ...styles.view, padding: isMobile ? 16 : 24 }} aria-label="Ports">
@@ -54,7 +55,7 @@ export function PortsView({ agent, onRefresh }: Props) {
     {!agent.capabilities?.port_forward ? <p style={styles.notice}>
       Upgrade the Agent or enable port forwarding. Forwarding may be disabled with <code style={{ fontFamily: font.mono }}>FILEBOX_AGENT_PORT_FORWARD=off</code>.
     </p> : <>
-      <p style={styles.description}>Open loopback web services through this Hub. No base-path setup needed.</p>
+      <p style={styles.description}>Open loopback web services through this Hub. No base-path setup needed by default.</p>
       {(pending || agent.status === 'offline') && <p role="status" style={styles.notice}>
         {agent.status === 'offline' ? 'Agent offline. Changes will sync on reconnect.' : 'Pending sync with Agent…'}
       </p>}
@@ -73,6 +74,13 @@ export function PortsView({ agent, onRefresh }: Props) {
         <button type="submit" disabled={busy} style={{ ...styles.button, color: c.onAccent, background: c.accent, borderColor: c.accent, opacity: busy ? 0.6 : 1 }}>
           {busy ? 'Saving…' : 'Add port'}
         </button>
+        <details style={{ flex: '1 0 100%', fontSize: 11, color: c.textSecondary }}>
+          <summary style={{ cursor: 'pointer' }}>Advanced</summary>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+            <input type="checkbox" checked={keepPrefix} disabled={busy} onChange={(event) => setKeepPrefix(event.target.checked)} />App uses this base path
+          </label>
+          <code style={{ display: 'block', marginTop: 6, fontFamily: font.mono, overflowWrap: 'anywhere' }}>{`/_fwd/${encodeURIComponent(agent.id)}/${port || '<port>'}/`}</code>
+        </details>
       </form>
       <div style={styles.list}>
         {forwards.length === 0 ? <p style={styles.empty}>No ports yet. Add a local web service above.</p> : forwards.map((forward) => {
@@ -80,6 +88,16 @@ export function PortsView({ agent, onRefresh }: Props) {
           const canOpen = agent.status !== 'offline' && !pending;
           return <div key={forward.port} style={styles.row}>
             <div style={styles.identity}><span style={styles.name}>{forward.name}</span><span style={styles.port}>:{forward.port}</span></div>
+            <div style={{ order: 1, flex: '1 0 100%', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, fontSize: 11, color: c.textSecondary }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input type="checkbox" aria-label={`App uses this base path for ${forward.name}`} checked={!!forward.keep_prefix} disabled={busy}
+                  onChange={(event) => void change(() => api.setForwardPrefix(agent.id, forward.port, event.target.checked))} />App uses this base path
+              </label>
+              <code style={{ fontFamily: font.mono, overflowWrap: 'anywhere' }}>{path}</code>
+              <button type="button" aria-label={`Copy base path for ${forward.name}`} style={styles.iconButton} onClick={async () => {
+                if (!await copyToClipboard(path, `prefix:${path}`)) setError('Could not copy the base path.');
+              }}>{copiedPath === `prefix:${path}` ? <IconCheck /> : <IconClipboard />}</button>
+            </div>
             <div style={styles.actions}>
               {canOpen ? <a href={path} target="_blank" rel="noopener noreferrer" style={styles.button}>Open</a>
                 : <span title="Available when the Agent is connected and synced" style={{ ...styles.button, color: c.textMuted }}>Open</span>}
