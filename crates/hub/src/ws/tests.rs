@@ -162,6 +162,51 @@ async fn successful_forward_retry_clears_error_before_sse_refresh_including_empt
     }
 }
 
+#[tokio::test]
+async fn forwards_success_preserves_root_and_collection_errors_even_after_a_forward_error() {
+    for collections in [false, true] {
+        for prior_forward_error in [false, true] {
+            let state = test_state();
+            let (context, _rx) = install(&state).await;
+            if prior_forward_error {
+                state.inner.write().await.agents.get_mut("agent").unwrap().pending_forwards = Some(("forward-failure".into(), vec![]));
+                dispatch::dispatch(&context, &serde_json::to_string(&AgentMessage::ForwardsRejected {
+                    req_id: "forward-failure".into(), error: "persistence_failed".into(), message: "Forward persistence failed".into(),
+                }).unwrap()).await;
+            }
+            {
+                let mut inner = state.inner.write().await;
+                let agent = inner.agents.get_mut("agent").unwrap();
+                if collections { agent.pending_collection_request = Some("other-failure".into()); }
+                else { agent.pending_resource_request = Some("other-failure".into()); }
+            }
+            let message = if collections {
+                AgentMessage::CollectionsRejected {
+                    req_id: "other-failure".into(), agent_id: "agent".into(), current_collections_revision: 0,
+                    error: "invalid_collection".into(), message: "Collection unavailable".into(),
+                }
+            } else {
+                AgentMessage::ResourcesRejected {
+                    req_id: "other-failure".into(), agent_id: "agent".into(), current_resource_revision: 0,
+                    error: "invalid_root".into(), message: "Root unavailable".into(),
+                }
+            };
+            updates::dispatch(&context, message).await;
+            let expected = state.inner.read().await.agents.get("agent").unwrap().last_config_error.clone();
+            assert!(expected.is_some());
+            let mut events = state.inner.read().await.sse_tx.subscribe();
+            dispatch::dispatch(&context, &serde_json::to_string(&AgentMessage::ForwardsApplied {
+                req_id: "forward-success".into(), forwards_revision: 1, forwards: vec![],
+            }).unwrap()).await;
+            let event = events.recv().await.unwrap();
+            assert_eq!(event.event, "forwards_updated");
+            let info = state.inner.read().await.agents.get("agent").unwrap().to_info();
+            assert_eq!(info.forwards_revision, 1);
+            assert_eq!(info.last_config_error, expected);
+        }
+    }
+}
+
 async fn pending(
     context: &AgentContext, req_id: &str, desired_roots: Option<Vec<RootConfig>>,
 ) -> mpsc::Receiver<serde_json::Value> {

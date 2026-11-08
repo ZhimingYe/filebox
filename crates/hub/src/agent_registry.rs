@@ -63,6 +63,7 @@ pub struct AgentConnection {
     pub inflight_requests: u32,
     pub connected_at: u64,
     pub last_config_error: Option<String>,
+    pub(crate) config_error_from_forwards: bool,
 }
 
 impl AgentConnection {
@@ -284,6 +285,7 @@ impl AgentRegistry {
             inflight_requests: 0,
             connected_at: epoch,
             last_config_error: None,
+            config_error_from_forwards: false,
         };
 
         self.agents.insert(agent_id, agent);
@@ -408,6 +410,7 @@ impl AgentRegistry {
             agent.pending_update = None;
             agent.pending_resource_request = None;
             agent.last_config_error = None;
+            agent.config_error_from_forwards = false;
         }
     }
 
@@ -448,6 +451,7 @@ impl AgentRegistry {
             agent.pending_collections_update = None;
             agent.pending_collection_request = None;
             agent.last_config_error = None;
+            agent.config_error_from_forwards = false;
         }
     }
 
@@ -494,6 +498,7 @@ impl AgentRegistry {
     pub fn set_config_error(&mut self, agent_id: &str, error: String) {
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.last_config_error = Some(error);
+            agent.config_error_from_forwards = false;
         }
     }
 
@@ -504,6 +509,7 @@ impl AgentRegistry {
             agent.pending_collections_update = None;
             agent.pending_collection_request = None;
             agent.last_config_error = Some(error);
+            agent.config_error_from_forwards = false;
         }
     }
 

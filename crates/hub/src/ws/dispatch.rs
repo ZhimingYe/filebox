@@ -28,7 +28,10 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
             if forwards_revision > agent.forwards_revision {
                 agent.forwards_revision = forwards_revision;
                 agent.forwards = forwards;
-                agent.last_config_error = None;
+                if agent.config_error_from_forwards {
+                    agent.last_config_error = None;
+                    agent.config_error_from_forwards = false;
+                }
             }
             if agent.pending_forwards.as_ref().is_some_and(|(id, _)| id == &req_id) {
                 agent.pending_forwards = None;
@@ -44,6 +47,7 @@ pub(super) async fn dispatch(context: &AgentContext, text: &str) {
             if agent.pending_forwards.as_ref().is_some_and(|(id, _)| id == &req_id) {
                 agent.pending_forwards = None;
                 agent.last_config_error = Some(message.clone());
+                agent.config_error_from_forwards = true;
             }
             AppState::emit_sse_locked(&inner, "forwards_updated", serde_json::json!({
                 "agent_id": context.agent_id, "state": "rejected", "error": error, "message": message,
