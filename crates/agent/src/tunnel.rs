@@ -17,7 +17,7 @@ pub async fn run(url: String, agent: String, ticket: String, port: u16, compress
     request.headers_mut().insert("x-filebox-ticket", ticket.parse()?);
     request.headers_mut().insert("x-filebox-agent", agent.parse()?);
     let config = WebSocketConfig::default().max_message_size(Some(tunnel::MAX_WS_MESSAGE)).max_frame_size(Some(tunnel::MAX_WS_MESSAGE));
-    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(10), connect_async_with_config(request, Some(config), true)).await??;
+    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(300), connect_async_with_config(request, Some(config), true)).await??;
     tokio::time::timeout(Duration::from_secs(10), socket.send(Message::Binary(tunnel::encode_ready().into()))).await??;
     let (sink, mut source) = socket.split();
     let sink = std::sync::Arc::new(tokio::sync::Mutex::new(sink));

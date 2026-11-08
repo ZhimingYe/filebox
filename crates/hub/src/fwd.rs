@@ -7,6 +7,7 @@ use crate::{state::AppState, agent_registry::AgentStatus};
 use filebox_protocol::{message::HubMessage, tunnel::{self, Frame}};
 
 mod rewrite;
+mod body;
 mod proxy;
 #[cfg(test)]
 mod tests;
@@ -79,16 +80,16 @@ async fn open(state: &AppState, agent: &str, port: u16) -> Result<Opened, Status
     let (tx, rx) = oneshot::channel();
     state.tunnels.tickets.lock().unwrap().insert(ticket.clone(), Ticket {
         agent: agent.into(), generation: connection.connection_id,
-        expires: Instant::now() + Duration::from_secs(10), tx,
+        expires: Instant::now() + Duration::from_secs(300), tx,
     });
     let _cleanup = TicketCleanup { store: state.tunnels.clone(), ticket: ticket.clone() };
     if !inner.agents.send_to_agent(agent, HubMessage::TunnelOpen { ticket, port, compression: true }) { return Err(StatusCode::SERVICE_UNAVAILABLE); }
     drop(inner);
     let mut socket = tokio::select! {
         _ = cancel.cancelled() => return Err(StatusCode::SERVICE_UNAVAILABLE),
-        result = tokio::time::timeout(Duration::from_secs(10), rx) => result.map_err(|_| StatusCode::GATEWAY_TIMEOUT)?.map_err(|_| StatusCode::BAD_GATEWAY)?,
+        result = tokio::time::timeout(Duration::from_secs(300), rx) => result.map_err(|_| StatusCode::GATEWAY_TIMEOUT)?.map_err(|_| StatusCode::BAD_GATEWAY)?,
     };
-    let ready = tokio::time::timeout(Duration::from_secs(10), socket.recv()).await;
+    let ready = tokio::time::timeout(Duration::from_secs(300), socket.recv()).await;
     if !matches!(ready, Ok(Some(Ok(Message::Binary(ref data)))) if tunnel::decode_frame(data, true).is_ok_and(|(kind, _)| kind == Frame::Ready)) { return Err(StatusCode::BAD_GATEWAY); }
     let (stream, peer) = tokio::io::duplex(256 * 1024);
     let bridge_cancel = cancel.clone();

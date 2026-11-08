@@ -1,9 +1,10 @@
 use axum::{body::Body, extract::{Request, State}, http::{header, HeaderMap, HeaderValue, Method, StatusCode}, middleware::Next, response::{IntoResponse, Redirect, Response}};
 use futures_util::StreamExt;
-use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
 use crate::{state::AppState, routes::middleware::{session_cookie, session_cookie_name, csrf_cookie_name}};
 use super::rewrite;
+
+const FIRST_BYTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn origin(headers: &HeaderMap, secure: bool) -> Option<url::Url> {
     let host = headers.get(header::HOST)?.to_str().ok()?;
@@ -29,8 +30,7 @@ fn failure(status: StatusCode) -> Response {
 }
 
 pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Response {
-    let document = request.headers().get("sec-fetch-dest").is_some_and(|v| v == "document" || v == "iframe")
-        || request.headers().get(header::ACCEPT).and_then(|h| h.to_str().ok()).is_some_and(|v| v.contains("text/html"));
+    let document = super::body::document(request.method(), request.headers());
     let sid = session_cookie(request.headers(), &state.cookie_suffix);
     let valid = if let Some(sid) = sid { state.inner.read().await.sessions.get_session(&sid).is_some() } else { false };
     if !valid {
@@ -59,6 +59,7 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
     let reserved = [session_cookie_name(true, &state.cookie_suffix), session_cookie_name(false, &state.cookie_suffix), csrf_cookie_name(true, &state.cookie_suffix), csrf_cookie_name(false, &state.cookie_suffix)];
     let cookies = headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).map(str::trim)
         .filter(|v| v.split_once('=').is_some_and(|(name, _)| !reserved.iter().any(|r| r == name.trim()))).collect::<Vec<_>>().join("; ");
+    let cookies = rewrite::request_cookie(&cookies);
     headers.remove(header::COOKIE);
     if !cookies.is_empty() { if let Ok(value) = HeaderValue::from_str(&cookies) { headers.insert(header::COOKIE, value); } }
     let forwarding: Vec<_> = headers.keys().filter(|n| n.as_str() == "forwarded" || n.as_str().starts_with("x-forwarded-") || matches!(n.as_str(), "x-real-ip" | "x-original-url" | "x-original-uri" | "x-rewrite-url" | "x-client-ip" | "true-client-ip") || n.as_str().starts_with("x-filebox-")).cloned().collect();
@@ -82,11 +83,11 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
         });
         sender.send_request(upstream).await
     };
-    let mut upstream = match tokio::time::timeout(std::time::Duration::from_secs(60), handshake).await {
+    let mut upstream = match tokio::time::timeout(FIRST_BYTE_TIMEOUT, handshake).await {
         Ok(Ok(response)) => response, Ok(Err(_)) => return StatusCode::BAD_GATEWAY.into_response(), Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
     };
     let host = request.headers().get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or_default();
-    let mut headers = rewrite::response_headers(upstream.headers(), websocket, &prefix, host, port);
+    let mut headers = rewrite::response_headers(upstream.headers(), websocket, &prefix, host, port, request_is_https(&request));
     let status = upstream.status();
     if status == StatusCode::SWITCHING_PROTOCOLS {
         let Some(browser) = browser_upgrade else { return StatusCode::BAD_GATEWAY.into_response(); };
@@ -108,29 +109,12 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
         *response.headers_mut() = headers;
         return response;
     }
-    let html = document && request.method() != Method::HEAD && status != StatusCode::PARTIAL_CONTENT
-        && headers.get(header::CONTENT_TYPE).and_then(|h| h.to_str().ok()).is_some_and(|v| v.split(';').next().is_some_and(|v| v.trim().eq_ignore_ascii_case("text/html")))
-        && headers.get(header::CONTENT_ENCODING).is_none_or(|v| v == "identity");
-    let mut stream = upstream.into_body().into_data_stream();
-    let mut buffered = Vec::new();
-    let mut ended = false;
-    if html {
-        loop {
-            match tokio::time::timeout(std::time::Duration::from_secs(60), stream.next()).await {
-                Ok(Some(Ok(bytes))) => { buffered.extend_from_slice(&bytes); if buffered.len() > 8 * 1024 * 1024 { break; } }
-                Ok(None) => { ended = true; break; }
-                Ok(Some(Err(_))) => return StatusCode::BAD_GATEWAY.into_response(),
-                Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
-            }
-        }
-    }
-    let body = if ended {
-        Body::from(rewrite::inject(&buffered, &mut headers).unwrap_or(buffered))
-    } else {
+    let body = super::body::transform(Body::new(upstream.into_body()), &mut headers, request.method(), status, request.headers(), (prefix, host.into(), port));
+    let mut stream = body.into_data_stream();
+    let body = {
         let guard = guard.take();
         let body_stream: std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<axum::body::Bytes, std::io::Error>> + Send>> = Box::pin(async_stream::try_stream! {
             let _guard = guard;
-            if !buffered.is_empty() { yield axum::body::Bytes::from(buffered); }
             loop {
                 let item = tokio::select! {
                     _ = cancel.cancelled() => Err(std::io::Error::other("Agent disconnected")),
@@ -170,6 +154,14 @@ pub async fn referer_fallback(request: Request, next: Next) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn long_first_byte_deadline_and_https_detection() {
+        assert!(FIRST_BYTE_TIMEOUT >= std::time::Duration::from_secs(300));
+        for (uri, forwarded, expected) in [("http://hub/", "http", false), ("https://hub/", "http", true), ("http://hub/", "https", true)] {
+            let request = Request::builder().uri(uri).header("x-forwarded-proto", forwarded).body(Body::empty()).unwrap();
+            assert_eq!(request_is_https(&request), expected);
+        }
+    }
     #[test]
     fn fallback_is_same_origin_and_excludes_control_and_forward_routes() {
         let own = url::Url::parse("https://hub.test").unwrap();

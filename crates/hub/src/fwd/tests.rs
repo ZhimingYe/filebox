@@ -47,6 +47,13 @@ async fn harness() -> Harness {
     }) }))
         .route("/echo", axum::routing::post(|bytes: axum::body::Bytes| async move { bytes }))
         .route("/large", get(|| async { axum::response::Html(format!("<head>{}", "x".repeat(8 * 1024 * 1024))) }))
+        .route("/events", get(|| async {
+            let stream = async_stream::stream! {
+                yield Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"data: first\n\n"));
+                std::future::pending::<()>().await;
+            };
+            ([(header::CONTENT_TYPE, "text/event-stream")], axum::body::Body::from_stream(stream))
+        }))
         .layer(axum::extract::DefaultBodyLimit::disable());
     let local_task = tokio::spawn(async move { axum::serve(local, local_app).await.unwrap(); });
     let state = AppState::new(&crate::config::HubConfig {
@@ -104,8 +111,8 @@ async fn mock_agent_http_reaches_real_tcp_server_and_injects_html() {
     let response = client.get(format!("{base}/large")).header(header::COOKIE, &harness.cookie).header(header::ACCEPT, "text/html").send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.text().await.unwrap();
-    assert_eq!(body.len(), 8 * 1024 * 1024 + 6);
-    assert!(!body.contains("__fileboxForwardShim"));
+    assert_eq!(body.len(), 8 * 1024 * 1024 + 6 + super::rewrite::SHIM.len() + 17);
+    assert!(body.contains("__fileboxForwardShim"));
 }
 
 #[tokio::test]
@@ -120,4 +127,16 @@ async fn websocket_upgrade_crosses_data_tunnel() {
     socket.send(tokio_tungstenite::tungstenite::Message::Text("echo me".into())).await.unwrap();
     let message = tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap();
     assert_eq!(message.into_text().unwrap(), "echo me");
+}
+
+#[tokio::test]
+async fn sse_flushes_through_full_router_without_compression_or_eof() {
+    let harness = harness().await;
+    let mut response = reqwest::Client::new().get(format!("{}/_fwd/agent/{}/events", harness.hub, harness.port))
+        .header(header::COOKIE, &harness.cookie).header(header::ACCEPT_ENCODING, "gzip, br, zstd").send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
+    assert!(response.headers().get(header::CONTENT_LENGTH).is_none());
+    let first = tokio::time::timeout(Duration::from_secs(2), response.chunk()).await.unwrap().unwrap().unwrap();
+    assert_eq!(first, "data: first\n\n");
 }

@@ -12,7 +12,9 @@ path = "src/main.rs"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client", "http1", "tokio"] }
 http-body-util = "0.1"
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
+async-compression = { version = "0.4", features = ["tokio", "gzip", "deflate", "zlib", "brotli", "zstd"] }
+lol_html = "3"
 url = "2"
 filebox-protocol = { workspace = true }
 filebox-llm = { workspace = true, features = ["cli"] }

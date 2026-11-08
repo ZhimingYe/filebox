@@ -5,14 +5,17 @@
     if (!match) return;
     window.__fileboxForwardShim = true;
     const prefix = match[0];
+    const port = Number(prefix.split('/').pop());
     const fix = value => {
       try {
         const url = new URL(value, document.baseURI);
         if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)) return value;
-        const local = url.origin === location.origin ||
+        const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && Number(url.port || (['https:', 'wss:'].includes(url.protocol) ? 443 : 80)) === port;
+        const local = loopback || url.origin === location.origin ||
           (['ws:', 'wss:'].includes(url.protocol) && url.host === location.host);
-        if (local && !url.pathname.startsWith(prefix + '/') && !url.pathname.startsWith('/_fwd/')) {
-          url.pathname = prefix + url.pathname;
+        if (local) {
+          if (url.pathname !== prefix && !url.pathname.startsWith('/_fwd/')) url.pathname = prefix + url.pathname;
+          if (loopback) { url.host = location.host; url.port = location.port; url.protocol = ['ws:', 'wss:'].includes(url.protocol) ? (location.protocol === 'https:' ? 'wss:' : 'ws:') : location.protocol; }
           return url.href;
         }
       } catch (_) {}
@@ -60,5 +63,112 @@
     if (navigator.serviceWorker) patch(navigator.serviceWorker, 'register', () => function () {
       return Promise.reject(new Error('Service workers are unavailable through filebox forwarding'));
     });
+    const attributes = new Set(['src', 'href', 'action', 'formaction', 'poster']);
+    const types = ['HTMLScriptElement', 'HTMLLinkElement', 'HTMLImageElement', 'HTMLIFrameElement', 'HTMLAnchorElement', 'HTMLFormElement', 'HTMLSourceElement', 'HTMLVideoElement', 'HTMLAudioElement', 'HTMLButtonElement', 'HTMLInputElement', 'HTMLBaseElement'];
+    const prototypes = types.map(key => window[key]?.prototype).filter(Boolean);
+    const supported = element => prototypes.some(prototype => prototype.isPrototypeOf(element));
+    const manifest = element => {
+      try {
+        if (element.localName === 'link' && element.rel.split(/\s+/).some(value => value.toLowerCase() === 'manifest') && !element.hasAttribute('crossorigin')) element.setAttribute('crossorigin', 'use-credentials');
+      } catch (_) {}
+    };
+    if (window.Element) patch(Element.prototype, 'setAttribute', original => function (name, value) {
+      try { if (supported(this) && attributes.has(String(name).toLowerCase())) value = fix(value); } catch (_) {}
+      const result = Reflect.apply(original, this, [name, value]);
+      manifest(this);
+      return result;
+    });
+    for (const prototype of prototypes) {
+      for (const key of ['src', 'href', 'action', 'formAction', 'poster']) {
+        try {
+          let owner = prototype;
+          let descriptor;
+          while (owner && !(descriptor = Object.getOwnPropertyDescriptor(owner, key))) owner = Object.getPrototypeOf(owner);
+          if (!descriptor?.set) continue;
+          Object.defineProperty(prototype, key, { ...descriptor, set(value) {
+            try { value = fix(value); } catch (_) {}
+            return Reflect.apply(descriptor.set, this, [value]);
+          } });
+        } catch (_) {}
+      }
+    }
+    const fixAttribute = (element, name) => {
+      try { if (element?.hasAttribute(name)) element.setAttribute(name, fix(element.getAttribute(name))); } catch (_) {}
+    };
+    document.addEventListener?.('click', event => {
+      try {
+        const anchor = event.composedPath().find(node => node?.localName === 'a') || event.target?.closest?.('a');
+        fixAttribute(anchor, 'href');
+      } catch (_) {}
+    }, true);
+    const fixForm = (form, submitter) => {
+      try {
+        if (!form.hasAttribute('action')) form.action = fix(location.href);
+        else fixAttribute(form, 'action');
+        for (const button of form.querySelectorAll('[formaction]')) fixAttribute(button, 'formaction');
+        fixAttribute(submitter, 'formaction');
+      } catch (_) {}
+    };
+    document.addEventListener?.('submit', event => fixForm(event.target, event.submitter), true);
+    if (window.HTMLFormElement) {
+      for (const key of ['submit', 'requestSubmit']) patch(HTMLFormElement.prototype, key, original => function (...args) {
+        fixForm(this, args[0]);
+        return Reflect.apply(original, this, args);
+      });
+    }
+    const scan = node => {
+      try { manifest(node); for (const link of node.querySelectorAll?.('link[rel]') || []) manifest(link); } catch (_) {}
+    };
+    scan(document);
+    if (window.MutationObserver) new MutationObserver(records => {
+      for (const record of records) { scan(record.target); for (const node of record.addedNodes || []) scan(node); }
+    }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['rel', 'crossorigin'] });
+    try {
+      let prototype = document;
+      let descriptor;
+      while (prototype && !(descriptor = Object.getOwnPropertyDescriptor(prototype, 'cookie'))) prototype = Object.getPrototypeOf(prototype);
+      if (descriptor?.get && descriptor?.set) {
+        const secure = location.protocol === 'https:';
+        Object.defineProperty(document, 'cookie', { configurable: true, get() {
+          return Reflect.apply(descriptor.get, this, []).split(';').map(part => {
+            const separator = part.indexOf('=');
+            if (separator < 0) return part;
+            let name = part.slice(0, separator).trim();
+            if (name.startsWith('__Secure-fbh-')) name = '__Host-' + name.slice(13);
+            else if (name.startsWith('fbs-fbh-')) name = '__Host-' + name.slice(8);
+            else if (name.startsWith('fbs-')) name = '__Secure-' + name.slice(4);
+            return name + part.slice(separator);
+          }).join('; ');
+        }, set(value) {
+          try {
+            const parts = String(value).split(';');
+            const separator = parts[0].indexOf('=');
+            if (separator >= 0) {
+              let name = parts[0].slice(0, separator).trim();
+              if (name.startsWith('__Host-')) name = '__Secure-fbh-' + name.slice(7);
+              if (!secure && name.startsWith('__Secure-')) name = 'fbs-' + name.slice(9);
+              parts[0] = name + parts[0].slice(separator);
+            }
+            let path = false;
+            const result = [parts[0]];
+            for (let part of parts.slice(1)) {
+              const separator = part.indexOf('=');
+              const key = (separator < 0 ? part : part.slice(0, separator)).trim().toLowerCase();
+              const value = separator < 0 ? '' : part.slice(separator + 1).trim();
+              if (key === 'domain' || (!secure && key === 'secure')) continue;
+              if (key === 'path') {
+                if (path) continue;
+                path = true;
+                part = 'Path=' + (value === prefix || value.startsWith(prefix + '/') ? value : prefix + '/' + value.replace(/^\/+/, ''));
+              } else if (!secure && key === 'samesite' && value.toLowerCase() === 'none') part = 'SameSite=Lax';
+              result.push(part);
+            }
+            if (!path) result.push('Path=' + prefix + '/');
+            value = result.join('; ');
+          } catch (_) {}
+          return Reflect.apply(descriptor.set, this, [value]);
+        } });
+      }
+    } catch (_) {}
   } catch (_) {}
 })();
