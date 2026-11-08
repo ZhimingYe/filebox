@@ -23,14 +23,16 @@ machines need no public IP, inbound port, or port mapping.
 
 ## Out of Scope (do not resurrect without explicit sign-off)
 
-- Write / edit / delete / rename files — **two sanctioned exceptions only**:
+- Write / edit / delete / rename files — **sanctioned exceptions only**:
   the per-agent temp-upload folder (see "Temp Upload Folder" below; the agent
   writes ONLY inside `<temp base>/<upload folder>` and nothing else, ever) and
   the explicit-sign-off **remote terminal** (see "Remote Terminal" below; its
-  shell is NOT sandboxed and can write anywhere the shell user can).
+  shell is NOT sandboxed and can write anywhere the shell user can). See also
+  the Web Port Forwarding exception below.
 - Remote desktop
-- Arbitrary TCP proxying, LAN scanning, **port forwarding** (an earlier
-  draft planned a port-tunnel feature; it was dropped)
+- Arbitrary TCP proxying and LAN scanning. **Sanctioned exception with
+  explicit sign-off: loopback-only Web port forwarding** (see "Web Port
+  Forwarding" below).
 - WebDAV, sync drive behavior
 - Multi-tenant user management, RBAC, general audit log (only the
   **login audit trail** exists — see "Login Audit" below)
@@ -46,13 +48,15 @@ machines need no public IP, inbound port, or port mapping.
   entire file.
 - **Frontend is the control surface.** Roots, pins, and collections are
   managed from the UI. CLI is bootstrap / automation / recovery only.
-- **Read-only files.** Never add file writes or arbitrary proxying. The ONLY
-  file write path is the temp-upload folder (browser drag-drop → hub relay →
-  agent writes into its dedicated folder). Nothing else writes files.
+- **Read-only files.** Never add file writes or arbitrary proxying outside
+  the sanctioned exceptions. The ONLY Filebox file-write path is the
+  temp-upload folder (browser drag-drop → hub relay → agent writes into its
+  dedicated folder). Do not add other Filebox file-write paths.
   **Sanctioned exception with explicit sign-off: the 2FA-gated remote
   terminal** (see "Remote Terminal" below) — a PTY shell on the agent,
   guarded by per-browser-session TOTP. It is NOT a file write path and must
-  never bypass the fs denylist for previews.
+  never bypass the fs denylist for previews. See also the explicitly approved
+  **Web Port Forwarding** exception and its risks below.
 - **Reconnect forever.** Survives 24h+ outages; identity persists; no
   duplicate backend entries on reconnect.
 - **Never freeze silently.** Long ops are fine, but every one needs visible
@@ -324,6 +328,26 @@ Security invariants (`crates/agent/src/temp_store.rs` is the authority):
 - Gated by `capabilities.temp_upload` (false when the folder can't be
   initialized or for legacy agents → `unsupported_feature`). Uploads also
   ride the normal session + CSRF protection.
+
+## Web Port Forwarding
+
+Explicitly approved: browser access to configured Agent-local web services at
+`/_fwd/<agent>/<port>/`, managed in **Ports**. The Agent dials loopback only
+(`127.0.0.1` first, then `::1`) and only configured ports; no arbitrary TCP
+proxying or LAN dialing. Forward lists and revisions persist in
+`agent_state.json`. Capability `port_forward` gates the feature;
+`FILEBOX_AGENT_PORT_FORWARD=off` is the kill switch. Per-forward `keep_prefix`
+defaults to `false` (strip the forwarding prefix); `true` preserves it for
+apps configured to use that base path.
+
+Security risks accepted with explicit sign-off:
+
+- A forwarded service can do anything it does locally (e.g. Jupyter writes
+  files and runs code). This bypasses the read-only/temp-upload-only invariant.
+  It is **not a Filebox file-write path** and must never be used to implement one.
+- Forwarded pages share the **Hub origin**: their scripts can call Filebox
+  APIs as the signed-in user. **Only forward trusted apps.** True isolation
+  would require a separate origin.
 
 ## Remote Terminal (Agent-local 2FA; persistent PTYs)
 

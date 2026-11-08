@@ -79,6 +79,7 @@ on its own, with no duplicate entries and no lost configuration.
 
 - Open multiple Agent-local, loopback-only web services at `/_fwd/<agent>/<port>/` with no app base-path setup; manage links in **Ports**, or disable forwarding with `FILEBOX_AGENT_PORT_FORWARD=off` (or `port_forward = false` in `agent.toml`).
 - For apps already configured with a base path, enable **App uses this base path** under **Advanced** when adding a port, or toggle it on an existing row. Copy the displayed `/_fwd/<agent>/<port>/` prefix into the app configuration. This persists `keep_prefix = true`; the Hub then preserves the prefix in upstream HTTP and WebSocket paths. The default (`false`, including older saved forwards) strips it.
+- **Security:** A forwarded service retains its local powers (e.g. Jupyter can write files and run code), bypassing Filebox's read-only/temp-upload-only invariant. Forwarding is not a Filebox file-write path and must never be used to implement one. Forwarded pages also share the Hub origin, so their scripts can call Filebox APIs as the signed-in user. Only forward trusted apps; true isolation would require a separate origin.
 
 ### Preview
 
