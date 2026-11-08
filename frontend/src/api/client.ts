@@ -290,10 +290,10 @@ export interface ApiError {
   retryable?: boolean;
 }
 
-/** Desired-state changes can be applied, queued offline, or rejected with HTTP 200. */
+/** Desired-state changes can be applied, queued offline, superseded, or rejected with HTTP 200. */
 export interface DesiredStateResponse extends ApiError {
   ok?: boolean;
-  state?: 'applied' | 'pending_agent_reconnect' | 'rejected';
+  state?: 'applied' | 'pending_agent_reconnect' | 'superseded' | 'rejected';
   resource_revision?: number;
   collections_revision?: number;
   forwards_revision?: number;

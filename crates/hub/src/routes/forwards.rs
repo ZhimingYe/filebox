@@ -77,6 +77,9 @@ async fn update(state: AppState, id: String, add: Option<ForwardConfig>, remove:
             if agent.connection_id != connection_id || agent.status == AgentStatus::Offline {
                 return Json(serde_json::json!({"ok": true, "state": "pending_agent_reconnect"})).into_response();
             }
+            if agent.forwards_revision < desired_revision && agent.pending_forwards.as_ref().is_some_and(|(request, _)| request != &req_id) {
+                return Json(serde_json::json!({"ok": true, "state": "superseded", "forwards_revision": agent.forwards_revision})).into_response();
+            }
             if agent.pending_forwards.as_ref().is_none_or(|(request, _)| request != &req_id) {
                 return Json(serde_json::json!({"ok": agent.forwards_revision >= desired_revision,
                     "state": if agent.forwards_revision >= desired_revision { "applied" } else { "rejected" },

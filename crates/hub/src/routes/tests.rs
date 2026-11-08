@@ -70,6 +70,37 @@ fn test_session() -> Extension<AuthenticatedSession> {
     })
 }
 
+#[tokio::test]
+async fn superseded_forward_waiter_does_not_report_agent_rejection() {
+    let state = AppState::new(&test_config(), false);
+    let (tx, mut rx) = mpsc::channel(8);
+    register_preview_agent(&state, tx).await;
+    state.inner.write().await.agents.get_mut("agent").unwrap().capabilities.port_forward = true;
+    let pending_state = state.clone();
+    let waiter = tokio::spawn(async move {
+        super::forwards::add(State(pending_state), Path("agent".into()), Json(filebox_protocol::forwards::ForwardConfig {
+            port: 9001, name: "first".into(), keep_prefix: false,
+        })).await
+    });
+    let HubMessage::ForwardsSetDesired { req_id, desired_revision, mut forwards } = rx.recv().await.unwrap() else { panic!("expected forwards update"); };
+    forwards.push(filebox_protocol::forwards::ForwardConfig { port: 9002, name: "second".into(), keep_prefix: false });
+    {
+        let mut inner = state.inner.write().await;
+        let agent = inner.agents.get_mut("agent").unwrap();
+        assert_eq!(agent.pending_forwards.as_ref().unwrap().0, req_id);
+        agent.pending_forwards = Some(("newer-edit".into(), forwards));
+        agent.forwards_desired_revision = desired_revision + 1;
+    }
+    state.emit_sse("forwards_updated", serde_json::json!({"agent_id":"agent"})).await;
+    let response = tokio::time::timeout(std::time::Duration::from_secs(1), waiter).await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["state"], "superseded");
+    assert_eq!(state.inner.read().await.agents.get("agent").unwrap().pending_forwards.as_ref().unwrap().0, "newer-edit");
+}
+
 async fn register_preview_agent(
     state: &AppState,
     tx: mpsc::Sender<HubMessage>,

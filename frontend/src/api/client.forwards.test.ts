@@ -31,3 +31,9 @@ it.each([{ ok: false }, { state: 'rejected' }, { error: 'invalid_forward', messa
 it('encodes Agent IDs in forward links', () => {
   expect(api.forwardPath('agent/a', 9001)).toBe('/_fwd/agent%2Fa/9001/');
 });
+
+it('accepts superseded edits without presenting an Agent rejection', async () => {
+  const body: api.DesiredStateResponse = { ok: true, state: 'superseded', forwards_revision: 0 };
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(body))));
+  await expect(api.addForward('a', { port: 9001, name: 'Python' })).resolves.toEqual(body);
+});
