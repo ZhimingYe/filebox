@@ -224,7 +224,7 @@ describe('SSE retry and token refresh through useSse', () => {
 describe('SSE dispatch', () => {
   it.each([
     'agent_connected', 'agent_disconnected', 'resources_updated',
-    'collections_updated', 'ai_agent_settings_updated', 'progress', 'sync_required',
+    'collections_updated', 'forwards_updated', 'ai_agent_settings_updated', 'progress', 'sync_required',
     'message',
   ])('dispatches parsed %s events and ignores malformed JSON', async event => {
     const listener = vi.fn();

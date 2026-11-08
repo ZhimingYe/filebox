@@ -75,6 +75,10 @@ on its own, with no duplicate entries and no lost configuration.
 - View items side by side, remove them, or jump to their original location
 - Stored on the machine; nothing is moved or copied — they are virtual references
 
+### Ports
+
+- Open multiple Agent-local, loopback-only web services at `/_fwd/<agent>/<port>/` with no app base-path setup; manage links in **Ports**, or disable forwarding with `FILEBOX_AGENT_PORT_FORWARD=off` (or `port_forward = false` in `agent.toml`).
+
 ### Preview
 
 - Multi-tab workspace with keyboard shortcuts
@@ -300,6 +304,7 @@ Most users never need this — see [`docs/`](docs/) for development details.
 | `name` | `FILEBOX_AGENT_NAME` | Name shown in the sidebar | `default-agent` |
 | `data_dir` | `FILEBOX_AGENT_DATA_DIR` | Where the agent keeps its state | system data dir + `filebox` |
 | — | `FILEBOX_AGENT_CONFIG` | Agent TOML file to load; environment values override TOML | `./agent.toml` |
+| `port_forward` | `FILEBOX_AGENT_PORT_FORWARD` | Loopback web forwarding: TOML `false` disables, `true` enables. Environment overrides TOML: `off`, `false`, or `0` (case-insensitive) disables; any other value enables. Disabled Agents advertise no forwarding capability and refuse all opens. Restart after changing | `true` |
 | — | `FILEBOX_AGENT_AI_AGENTS_ENABLED` | Startup override: `0`/`false` disables discovery, probing and commands; `1`/`true` enables and locks the web switch. Invalid values disable. Restart after changing | unset (saved `ai_agents_enabled`, initially `true`) |
 | — | `FILEBOX_AGENT_HERDR` | Explicit Herdr executable path; cannot override `FILEBOX_AGENT_AI_AGENTS_ENABLED=0` | search `PATH` |
 | — | `FILEBOX_AGENT_SOFFICE` | Path to `soffice` (enables Office preview) | unset |

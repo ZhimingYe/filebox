@@ -40,6 +40,10 @@ export function IconPlus({ style }: SvgProps) {
   return <Svg style={style}><path d="M8 3v10M3 8h10" /></Svg>;
 }
 
+export function IconPorts({ style }: SvgProps) {
+  return <Svg style={style}><rect x="1.5" y="3" width="5" height="10" rx="1.5" /><path d="M9 8h5M11.5 5.5 14 8l-2.5 2.5M3.5 6h1M3.5 10h1" /></Svg>;
+}
+
 export function IconKeyboard({ style }: SvgProps) {
   return <Svg style={style}><rect x="1.5" y="3.5" width="13" height="9" rx="1.5" /><path d="M4 6h.01M6.7 6h.01M9.3 6h.01M12 6h.01M4 8.5h.01M6.7 8.5h.01M9.3 8.5h.01M12 8.5h.01M5 10.5h6" /></Svg>;
 }
