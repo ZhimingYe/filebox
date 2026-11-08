@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api/client';
 import { useSession } from './session';
+import { forwardNext } from './forwardNext';
 
 vi.mock('../api/client', () => ({
   ensureCookieSuffix: vi.fn(),
@@ -19,9 +20,10 @@ let root: Root | null;
 let host: HTMLDivElement;
 let session: ReturnType<typeof useSession>;
 let renders: number;
+let navigate: ReturnType<typeof vi.fn>;
 
 function Harness() {
-  const value = useSession();
+  const value = useSession(navigate);
   renders++;
   useEffect(() => { session = value; });
   return null;
@@ -45,6 +47,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   renders = 0;
   root = null;
+  navigate = vi.fn();
   vi.mocked(api.ensureCookieSuffix).mockResolvedValue(null);
   vi.mocked(api.getAgents).mockResolvedValue([]);
   vi.mocked(api.getCsrfToken).mockReturnValue(null);
@@ -54,6 +57,7 @@ afterEach(() => {
   host?.remove();
   vi.restoreAllMocks();
   vi.useRealTimers();
+  window.history.replaceState(null, '', '/');
 });
 
 describe('useSession verification', () => {
@@ -191,5 +195,47 @@ describe('useSession actions and expiry', () => {
     expect(session.loggedIn).toBe(false);
     expect(api.logout).toHaveBeenCalledTimes(1);
     if (reject) expect(api.setCsrfToken).toHaveBeenCalledWith(null);
+  });
+});
+
+describe('forward login return targets', () => {
+  const target = '/_fwd/agent/8888/lab?token=demo&path=My%20Notebook.ipynb';
+  function next(value: string) { window.history.replaceState(null, '', '/?next=' + encodeURIComponent(value)); }
+
+  it('returns to the original path and query after successful login, not rejected credentials', async () => {
+    next(target);
+    vi.mocked(api.getAgents).mockRejectedValue({ status: 401 });
+    vi.mocked(api.exchangeSession).mockResolvedValueOnce({ ok: false, permissions: [] }).mockResolvedValueOnce({ ok: true, permissions: [] });
+    mount();
+    await act(async () => {});
+    expect(navigate).not.toHaveBeenCalled();
+    await act(async () => { await session.login('u', 'p', false, 'id', 'nonce'); });
+    expect(navigate).not.toHaveBeenCalled();
+    await act(async () => { await session.login('u', 'p', false, 'id', 'nonce'); });
+    expect(navigate).toHaveBeenCalledExactlyOnceWith(target);
+  });
+
+  it('returns immediately after verifying an existing login, only once', async () => {
+    next(target);
+    mount();
+    await act(async () => {});
+    expect(navigate).toHaveBeenCalledExactlyOnceWith(target);
+    vi.mocked(api.exchangeSession).mockResolvedValue({ ok: true, permissions: [] });
+    await act(async () => { await session.login('u', 'p', false, 'id', 'nonce'); });
+    expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['', '/', '/api/agents', '//evil.test/_fwd/a/1/', 'https://evil.test/_fwd/a/1/', 'https://localhost/_fwd/a/1/', 'javascript:alert(1)', '\\evil.test', '/_fwd/agent/1/\\evil', '/_fwd/../private', '/_fwd/%2e%2e/private', '/_fwd/a/1/%2f%2fevil', '/_fwd/a/1/%5cevil', '/_fwd/a/1/%252e%252e', '/_fwd/a/1/%0a', '/_fwd/a/1/%zz', '/_fwd/a/1/\n', '%2F_fwd%2Fa%2F1%2F'])('ignores unsafe or non-forward next target %j', async value => {
+    next(value);
+    mount();
+    await act(async () => {});
+    expect(navigate).not.toHaveBeenCalled();
+    expect(forwardNext(window.location.search, window.location.origin)).toBeNull();
+  });
+
+  it('ignores duplicate next parameters and absent next values', () => {
+    expect(forwardNext('?next=/_fwd/a/1/&next=/_fwd/b/2/', window.location.origin)).toBeNull();
+    expect(forwardNext('', window.location.origin)).toBeNull();
+    expect(forwardNext('?next=' + encodeURIComponent('/_fwd/a/1/My%20File?url=https%3A%2F%2Fexample.test#cell'), window.location.origin)).toBe('/_fwd/a/1/My%20File?url=https%3A%2F%2Fexample.test#cell');
   });
 });

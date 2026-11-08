@@ -66,6 +66,55 @@ test('base URI is honored for relative paths, root bases, loopback bases and ext
   } finally { dom.window.close(); }
 });
 
+test('dynamic manifest hrefs wait for scoped authorization and stale completions cannot overwrite newer hrefs', async () => {
+  const { dom, document, window } = setup();
+  const pending = [];
+  window.fetch = (url, init) => new Promise(resolve => pending.push({ url: new URL(url), init, resolve }));
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  try {
+    const link = document.createElement('link');
+    link.rel = 'manifest';
+    link.href = '/first.webmanifest';
+    document.head.append(link);
+    await tick();
+    assert.equal(link.hasAttribute('href'), false);
+    assert.equal(pending[0].url.pathname, `${prefix}/__filebox_manifest_token`);
+    assert.equal(pending[0].url.searchParams.get('url'), `https://hub.test${prefix}/first.webmanifest`);
+    assert.equal(pending[0].init.credentials, 'same-origin');
+    link.setAttribute('href', '/new.json?v=2');
+    pending[0].resolve({ ok: true, json: async () => ({ href: `https://hub.test${prefix}/first.webmanifest?__filebox_manifest=old` }) });
+    await tick();
+    assert.equal(link.hasAttribute('href'), false);
+    pending[1].resolve({ ok: true, json: async () => ({ href: `https://hub.test${prefix}/new.json?v=2&__filebox_manifest=signed` }) });
+    await tick();
+    assert.equal(link.href, `https://hub.test${prefix}/new.json?v=2&__filebox_manifest=signed`);
+    assert.equal(pending.length, 2);
+    link.href = 'https://external.test/manifest';
+    assert.equal(link.href, 'https://external.test/manifest');
+    assert.equal(pending.length, 2);
+    const container = document.createElement('div');
+    container.innerHTML = '<link rel=manifest href="relative.json">';
+    document.body.append(container);
+    await tick();
+    assert.equal(pending[2].url.searchParams.get('url'), `https://hub.test${prefix}/dir/relative.json`);
+    let errors = 0;
+    container.firstChild.addEventListener('error', () => errors++);
+    pending[2].resolve({ ok: false });
+    await tick();
+    assert.equal(container.firstChild.hasAttribute('href'), false);
+    assert.equal(errors, 1);
+    const reversed = document.createElement('link');
+    reversed.href = '/reversed.json';
+    reversed.rel = 'manifest';
+    assert.equal(reversed.hasAttribute('href'), false);
+    assert.equal(pending[3].url.searchParams.get('url'), `https://hub.test${prefix}/reversed.json`);
+    reversed.removeAttribute('href');
+    pending[3].resolve({ ok: true, json: async () => ({ href: `https://hub.test${prefix}/reversed.json?__filebox_manifest=cancelled` }) });
+    await tick();
+    assert.equal(reversed.hasAttribute('href'), false);
+  } finally { dom.window.close(); }
+});
+
 test('all specified elements rewrite URL attributes and inherited native property setters without changing external/invalid URLs', () => {
   const { dom, document } = setup();
   try {

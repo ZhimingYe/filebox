@@ -13,7 +13,7 @@ pub(super) fn document(method: &Method, headers: &HeaderMap) -> bool {
         && headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()).is_some_and(|v| v.to_ascii_lowercase().contains("text/html"))
 }
 
-pub(super) fn transform(body: Body, headers: &mut HeaderMap, method: &Method, status: StatusCode, request: &HeaderMap, (prefix, host, port): (String, String, u16)) -> Body {
+pub(super) fn transform(body: Body, headers: &mut HeaderMap, method: &Method, status: StatusCode, request: &HeaderMap, (prefix, host, port, signer): (String, String, u16, Option<super::manifest::Signer>)) -> Body {
     if *method == Method::HEAD || status.is_informational() || matches!(status, StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED | StatusCode::PARTIAL_CONTENT) { return body; }
     let mime = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").split(';').next().unwrap_or("").trim().to_ascii_lowercase();
     let html = mime == "text/html" && document(method, request);
@@ -24,6 +24,7 @@ pub(super) fn transform(body: Body, headers: &mut HeaderMap, method: &Method, st
     let encodings: Vec<_> = encoding.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect();
     if encodings.iter().any(|v| !matches!(v.as_str(), "identity" | "gzip" | "x-gzip" | "deflate" | "br" | "zstd")) { return body; }
     rewrite::injection_headers(headers, html);
+    if html { headers.insert(header::CACHE_CONTROL, "private, no-store".parse().unwrap()); }
     let input = body.into_data_stream().map(|v| v.map_err(io::Error::other));
     let mut reader: Pin<Box<dyn AsyncRead + Send>> = Box::pin(StreamReader::new(input));
     let output: Pin<Box<dyn futures_util::Stream<Item = Result<Bytes, io::Error>> + Send>> = Box::pin(async_stream::try_stream! {
@@ -57,7 +58,7 @@ pub(super) fn transform(body: Body, headers: &mut HeaderMap, method: &Method, st
         } else {
             let output = Arc::new(Mutex::new(Vec::new()));
             let sink = output.clone();
-            let mut rewriter = rewrite::html_rewriter(prefix, host, port, move |bytes| sink.lock().unwrap().extend_from_slice(bytes));
+            let mut rewriter = rewrite::html_rewriter((prefix, host, port, signer), move |bytes| sink.lock().unwrap().extend_from_slice(bytes));
             let mut pending = Vec::new();
             let mut injected = false;
             while let Some(bytes) = input.next().await {

@@ -32,9 +32,17 @@ fn failure(status: StatusCode) -> Response {
 pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Response {
     let document = super::body::document(request.method(), request.headers());
     let sid = session_cookie(request.headers(), &state.cookie_suffix);
-    let principal = if let Some(sid) = sid { state.inner.read().await.sessions.get_session(&sid).map(|s| s.principal_id.clone()) } else { None };
-    let Some(principal) = principal else {
-        return if document && request.method() == Method::GET { Redirect::to("/").into_response() } else { StatusCode::UNAUTHORIZED.into_response() };
+    let cookie_session = if let Some(sid) = sid { state.inner.read().await.sessions.get_session(&sid).cloned() } else { None };
+    let session = {
+        let inner = state.inner.read().await;
+        cookie_session.clone().or_else(|| super::manifest::Signer::authenticate(&inner.sessions, request.method(), request.headers(), request.uri(), super::manifest::now()))
+    };
+    let Some(session) = session else {
+        return if document && request.method() == Method::GET {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query.append_pair("next", request.uri().path_and_query().map(|value| value.as_str()).unwrap_or("/"));
+            Redirect::to(&format!("/?{}", query.finish())).into_response()
+        } else { StatusCode::UNAUTHORIZED.into_response() };
     };
     let websocket = request.headers().get(header::UPGRADE).is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket"))
         && request.headers().get(header::CONNECTION).and_then(|v| v.to_str().ok()).is_some_and(|v| v.split(',').any(|v| v.trim().eq_ignore_ascii_case("upgrade")));
@@ -58,10 +66,20 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
         let inner = state.inner.read().await;
         let Some(forward) = inner.agents.get(agent).filter(|a| a.status != crate::agent_registry::AgentStatus::Offline && a.capabilities.port_forward)
             .and_then(|a| a.pending_forwards.as_ref().map(|(_, forwards)| forwards).unwrap_or(&a.forwards).iter().find(|f| f.port == port)) else { return StatusCode::NOT_FOUND.into_response(); };
-        (forward.keep_prefix, state.tunnels.scope(state.clone(), principal, agent.into(), port))
+        (forward.keep_prefix, state.tunnels.scope(state.clone(), session.principal_id.clone(), agent.into(), port))
     };
-    let target = if keep_prefix { request.uri().path_and_query().unwrap().as_str().to_string() }
-        else { format!("/{}{}", rest.unwrap_or_default(), request.uri().query().map(|q| format!("?{q}")).unwrap_or_default()) };
+    let base = own.join(request.uri().path_and_query().unwrap().as_str()).unwrap();
+    let signer = super::manifest::Signer::new(base, prefix.clone(), session);
+    if rest == Some(super::manifest::ENDPOINT) {
+        if cookie_session.is_none() || request.method() != Method::GET { return StatusCode::UNAUTHORIZED.into_response(); }
+        let href = request.uri().query().and_then(|q| url::form_urlencoded::parse(q.as_bytes()).find(|(key, _)| key == "url")).and_then(|(_, value)| signer.href(&value));
+        return match href {
+            Some(href) => ([(header::CACHE_CONTROL, "private, no-store")], axum::Json(serde_json::json!({"href":href}))).into_response(),
+            None => StatusCode::BAD_REQUEST.into_response(),
+        };
+    }
+    let (clean_target, _) = super::manifest::clean(request.uri());
+    let target = if keep_prefix { clean_target } else { clean_target.strip_prefix(&prefix).unwrap().to_string() };
     let mut headers = rewrite::sanitize(request.headers(), websocket);
     let reserved = [session_cookie_name(true, &state.cookie_suffix), session_cookie_name(false, &state.cookie_suffix), csrf_cookie_name(true, &state.cookie_suffix), csrf_cookie_name(false, &state.cookie_suffix)];
     let cookies = headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).map(str::trim)
@@ -95,6 +113,7 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
     };
     let host = request.headers().get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or_default();
     let mut headers = rewrite::response_headers(upstream.headers(), websocket, &prefix, host, port, request_is_https(&request));
+    if super::manifest::clean(request.uri()).1.is_some() { headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store")); }
     let status = upstream.status();
     let reusable = !websocket && !status.is_client_error() && !status.is_server_error();
     if status == StatusCode::SWITCHING_PROTOCOLS {
@@ -117,7 +136,7 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
         *response.headers_mut() = headers;
         return response;
     }
-    let body = super::body::transform(Body::new(upstream.into_body()), &mut headers, request.method(), status, request.headers(), (prefix, host.into(), port));
+    let body = super::body::transform(Body::new(upstream.into_body()), &mut headers, request.method(), status, request.headers(), (prefix, host.into(), port, Some(signer)));
     let mut stream = body.into_data_stream();
     let pool_key = (agent.to_string(), port);
     let body = {

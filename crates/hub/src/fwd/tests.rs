@@ -41,7 +41,7 @@ async fn harness() -> Harness {
         assert!(headers["x-forwarded-prefix"].to_str().unwrap().starts_with("/_fwd/agent/"));
         assert!(headers[header::HOST].to_str().unwrap().starts_with("127.0.0.1:"));
         assert!(!headers.get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or_default().contains("filebox_session"));
-        axum::response::Html("<!doctype html><head><title>Forward test</title></head><body>local service</body>")
+        axum::response::Html("<!doctype html><head><title>Forward test</title><link rel=manifest href='/manifest.json?v=1&amp;name=Demo'></head><body>local service</body>")
     })).route("/socket", get(|ws: WebSocketUpgrade| async move { ws.on_upgrade(|mut socket| async move {
         while let Some(Ok(message)) = socket.recv().await { if socket.send(message).await.is_err() { break; } }
     }) }))
@@ -49,6 +49,7 @@ async fn harness() -> Harness {
         .route("/large", get(|| async { axum::response::Html(format!("<head>{}", "x".repeat(8 * 1024 * 1024))) }))
         .route("/large-close", get(|| async { ([(header::CONNECTION, "close")], axum::response::Html(format!("<head>{}", "x".repeat(8 * 1024 * 1024)))) }))
         .route("/bad", get(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "failed") }))
+        .route("/manifest.json", get(|uri: axum::http::Uri| async move { axum::Json(serde_json::json!({"name":"fixture", "upstream_uri":uri.to_string()})) }))
         .route("/broken", get(|| async {
             let stream = async_stream::stream! {
                 yield Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"partial"));

@@ -33,6 +33,8 @@ futures-util = { workspace = true }
 rand = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
+hmac = "0.12"
+html-escape = "0.2"
 hex = { workspace = true }
 async-stream = { workspace = true }
 bcrypt = { workspace = true }

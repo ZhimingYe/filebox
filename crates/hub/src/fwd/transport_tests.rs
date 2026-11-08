@@ -1,6 +1,62 @@
 use super::*;
 use crate::fwd::{admission, pool};
 
+#[tokio::test]
+async fn unauthenticated_document_preserves_original_target_but_fetches_remain_unauthorized() {
+    let harness = harness().await;
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let path = format!("/_fwd/agent/{}/lab?token=demo&path=My%20Notebook.ipynb", harness.port);
+    for dest in ["document", "iframe"] {
+        let response = client.get(format!("{}{path}", harness.hub)).header("sec-fetch-dest", dest).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response.headers()[header::LOCATION].to_str().unwrap();
+        assert!(location.starts_with("/?next=%2F_fwd%2F"));
+        assert_eq!(url::form_urlencoded::parse(location.trim_start_matches("/?").as_bytes()).find(|(key, _)| key == "next").unwrap().1, path);
+    }
+    for dest in [None, Some("empty"), Some("manifest"), Some("script")] {
+        let mut request = client.get(format!("{}{path}", harness.hub));
+        if let Some(dest) = dest { request = request.header("sec-fetch-dest", dest); }
+        assert_eq!(request.send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(client.post(format!("{}{path}", harness.hub)).header("sec-fetch-dest", "document").send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn rewritten_manifest_works_without_cookies_but_not_for_other_paths_destinations_or_after_logout() {
+    let harness = harness().await;
+    let client = reqwest::Client::new();
+    let base = format!("{}/_fwd/agent/{}", harness.hub, harness.port);
+    let response = client.get(format!("{base}/")).header(header::COOKIE, &harness.cookie).header("sec-fetch-dest", "document").send().await.unwrap();
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "private, no-store");
+    let html = response.text().await.unwrap();
+    let href = html.split("href=\"").nth(1).unwrap().split('"').next().unwrap().replace("&amp;", "&");
+    assert!(href.contains("__filebox_manifest="));
+    for dest in [None, Some("manifest")] {
+        let mut request = client.get(&href);
+        if let Some(dest) = dest { request = request.header("sec-fetch-dest", dest); }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "private, no-store");
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["upstream_uri"], "/manifest.json?v=1&name=Demo");
+    }
+    assert_eq!(client.get(&href).header("sec-fetch-dest", "script").send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(client.get(href.replace("manifest.json", "events")).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(client.post(&href).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    let endpoint = format!("{base}/__filebox_manifest_token");
+    let response = client.get(&endpoint).header(header::COOKIE, &harness.cookie).query(&[("url", format!("{base}/manifest.json?dynamic=1"))]).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(client.get(body["href"].as_str().unwrap()).send().await.unwrap().status(), StatusCode::OK);
+    assert_eq!(client.get(&endpoint).query(&[("url", format!("{base}/manifest.json"))]).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    {
+        let mut inner = harness.state.inner.write().await;
+        let sid = inner.sessions.get_session_by_principal(&harness.principal).unwrap().session_id.clone();
+        inner.sessions.remove(&sid);
+    }
+    assert_eq!(client.get(&href).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+}
+
 #[tokio::test(start_paused = true)]
 async fn admission_queues_until_capacity_or_thirty_seconds_and_is_cancellable() {
     let limit = Arc::new(Semaphore::new(256));

@@ -84,7 +84,7 @@ fn csp_hash_is_added_to_every_applicable_policy_and_header() {
 fn incremental_html_attributes_manifest_base_csp_referrer_and_literals() {
     let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = output.clone();
-    let mut rewriter = html_rewriter(PREFIX.into(), "hub.test".into(), 9001, move |bytes| sink.lock().unwrap().extend_from_slice(bytes));
+    let mut rewriter = html_rewriter((PREFIX.into(), "hub.test".into(), 9001, None), move |bytes| sink.lock().unwrap().extend_from_slice(bytes));
     let html = "<!doctype html><head><LINK REL='alternate MANIFEST' href='/m'><link rel=manifest crossorigin=anonymous><base href='http://[::1]:9001/app/?x=1&amp;y=2'><meta name=REFERRER content=no-referrer><meta http-equiv=Content-Security-Policy content=\"default-src 'self'; script-src 'none'\"><script>const x='<link rel=manifest>';</script><!-- <base href='/ignore'> --></head>";
     for byte in html.as_bytes() { rewriter.write(&[*byte]).unwrap(); }
     rewriter.end().unwrap();

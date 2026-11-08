@@ -11,6 +11,7 @@ mod body;
 mod proxy;
 mod pool;
 mod lifecycle;
+mod manifest;
 #[cfg(test)]
 mod tests;
 pub use proxy::referer_fallback;

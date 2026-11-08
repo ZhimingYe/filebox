@@ -18,7 +18,7 @@ fn request(dest: &str) -> HeaderMap {
 }
 
 async fn render(body: Body, headers: &mut HeaderMap, method: Method, status: StatusCode, request: HeaderMap) -> Result<Vec<u8>, axum::Error> {
-    transform(body, headers, &method, status, &request, (PREFIX.into(), "hub.test".into(), 9001)).collect().await.map(|v| v.to_bytes().to_vec())
+    transform(body, headers, &method, status, &request, (PREFIX.into(), "hub.test".into(), 9001, None)).collect().await.map(|v| v.to_bytes().to_vec())
 }
 
 #[tokio::test]
@@ -100,7 +100,7 @@ async fn injection_classifies_documents_not_html_api_requests_or_bodyless_respon
 async fn html_streams_bootstrap_before_eof_and_keeps_large_documents_and_empty_html() {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
     tx.send(Ok(Bytes::from_static(b"<!doctype html><html>"))).await.unwrap();
-    let body = transform(Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)), &mut headers(), &Method::GET, StatusCode::OK, &request("document"), (PREFIX.into(), "hub".into(), 9001));
+    let body = transform(Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)), &mut headers(), &Method::GET, StatusCode::OK, &request("document"), (PREFIX.into(), "hub".into(), 9001, None));
     let mut stream = body.into_data_stream();
     let first = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next()).await.unwrap().unwrap().unwrap();
     assert!(String::from_utf8_lossy(&first).contains(rewrite::SHIM));
@@ -141,7 +141,7 @@ async fn sse_is_not_buffered_recompressed_or_injected() {
     tx.send(Ok(Bytes::from_static(b"data: first\n\n"))).await.unwrap();
     let mut headers = headers();
     headers.insert(header::CONTENT_TYPE, "text/event-stream".parse().unwrap());
-    let mut stream = transform(Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)), &mut headers, &Method::GET, StatusCode::OK, &request("empty"), (PREFIX.into(), "hub".into(), 9001)).into_data_stream();
+    let mut stream = transform(Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)), &mut headers, &Method::GET, StatusCode::OK, &request("empty"), (PREFIX.into(), "hub".into(), 9001, None)).into_data_stream();
     assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1), stream.next()).await.unwrap().unwrap().unwrap(), "data: first\n\n");
     tx.send(Ok(Bytes::from_static(b"data: second\n\n"))).await.unwrap();
     assert_eq!(stream.next().await.unwrap().unwrap(), "data: second\n\n");

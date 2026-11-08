@@ -124,17 +124,24 @@ pub(super) fn injection_headers(headers: &mut HeaderMap, html: bool) {
     for name in [header::CONTENT_LENGTH, header::CONTENT_ENCODING, header::ETAG, HeaderName::from_static("content-md5")] { headers.remove(name); }
 }
 
-pub(super) fn html_rewriter(prefix: String, host: String, port: u16, sink: impl FnMut(&[u8]) + Send + 'static) -> lol_html::send::HtmlRewriter<'static, impl FnMut(&[u8]) + Send> {
+pub(super) fn html_rewriter((prefix, host, port, mut signer): (String, String, u16, Option<super::manifest::Signer>), sink: impl FnMut(&[u8]) + Send + 'static) -> lol_html::send::HtmlRewriter<'static, impl FnMut(&[u8]) + Send> {
     use lol_html::{element, MemorySettings};
     let settings = lol_html::send::Settings::new_send()
         .with_memory_settings(MemorySettings::new().with_max_allowed_memory_usage(HTML_LIMIT).with_graceful_bail_out_on_memory_limit_exceeded(true))
         .append_element_content_handler(element!("link, base, meta", move |el| {
             match el.tag_name().as_str() {
                 "link" => {
-                    if el.get_attribute("rel").is_some_and(|v| v.split_ascii_whitespace().any(|v| v.eq_ignore_ascii_case("manifest"))) && !el.has_attribute("crossorigin") { el.set_attribute("crossorigin", "use-credentials")?; }
+                    if el.get_attribute("rel").is_some_and(|v| v.split_ascii_whitespace().any(|v| v.eq_ignore_ascii_case("manifest"))) {
+                        if !el.has_attribute("crossorigin") { el.set_attribute("crossorigin", "use-credentials")?; }
+                        if let Some(href) = el.get_attribute("href").and_then(|href| signer.as_ref()?.href(&location(&html_escape::decode_html_entities(&href), &prefix, &host, port))) { el.set_attribute("href", &href.replace('&', "&amp;"))?; }
+                    }
                 }
                 "base" => {
-                    if let Some(value) = el.get_attribute("href") { el.set_attribute("href", &location(&value, &prefix, &host, port))?; }
+                    if let Some(value) = el.get_attribute("href") {
+                        let value = location(&value, &prefix, &host, port);
+                        if let Some(signer) = &mut signer { if let Ok(base) = signer.base.join(&html_escape::decode_html_entities(&value)) { signer.base = base; } }
+                        el.set_attribute("href", &value)?;
+                    }
                 }
                 "meta" => {
                     if el.get_attribute("name").is_some_and(|v| v.eq_ignore_ascii_case("referrer")) { el.set_attribute("content", "same-origin")?; }

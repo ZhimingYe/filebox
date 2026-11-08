@@ -67,16 +67,62 @@
     const types = ['HTMLScriptElement', 'HTMLLinkElement', 'HTMLImageElement', 'HTMLIFrameElement', 'HTMLAnchorElement', 'HTMLFormElement', 'HTMLSourceElement', 'HTMLVideoElement', 'HTMLAudioElement', 'HTMLButtonElement', 'HTMLInputElement', 'HTMLBaseElement'];
     const prototypes = types.map(key => window[key]?.prototype).filter(Boolean);
     const supported = element => prototypes.some(prototype => prototype.isPrototypeOf(element));
-    const manifest = element => {
+    const nativeAttribute = window.Element?.prototype.setAttribute;
+    const nativeRemoveAttribute = window.Element?.prototype.removeAttribute;
+    const manifestJobs = new WeakMap();
+    const isManifest = element => element.localName === 'link' && element.rel.split(/\s+/).some(value => value.toLowerCase() === 'manifest');
+    const manifestRel = value => String(value).split(/\s+/).some(token => token.toLowerCase() === 'manifest');
+    const manifest = (element, value) => {
       try {
-        if (element.localName === 'link' && element.rel.split(/\s+/).some(value => value.toLowerCase() === 'manifest') && !element.hasAttribute('crossorigin')) element.setAttribute('crossorigin', 'use-credentials');
+        if (!isManifest(element)) { manifestJobs.delete(element); return false; }
+        if (!element.hasAttribute('crossorigin')) Reflect.apply(nativeAttribute, element, ['crossorigin', 'use-credentials']);
+        const explicit = value !== undefined;
+        value = explicit ? value : element.getAttribute('href');
+        if (!value) { if (explicit) manifestJobs.delete(element); return false; }
+        const url = new URL(fix(value), document.baseURI);
+        if (url.origin !== location.origin || !url.pathname.startsWith(prefix + '/')) { manifestJobs.delete(element); return false; }
+        if (!explicit && url.searchParams.has('__filebox_manifest')) return true;
+        if (manifestJobs.get(element)?.url === url.href) return true;
+        const job = { url: url.href };
+        manifestJobs.set(element, job);
+        Reflect.apply(nativeRemoveAttribute, element, ['href']);
+        const endpoint = new URL(prefix + '/__filebox_manifest_token', location.origin);
+        endpoint.searchParams.set('url', url.href);
+        Promise.resolve(window.fetch(endpoint.href, { credentials: 'same-origin', cache: 'no-store' })).then(async response => {
+          if (!response?.ok) throw new Error('Manifest authorization failed');
+          const result = await response.json();
+          const signed = new URL(result.href);
+          if (signed.origin !== location.origin || !signed.pathname.startsWith(prefix + '/') || !signed.searchParams.has('__filebox_manifest')) throw new Error('Invalid manifest authorization');
+          if (manifestJobs.get(element) === job && isManifest(element)) Reflect.apply(nativeAttribute, element, ['href', signed.href]);
+        }).catch(() => {
+          if (manifestJobs.get(element) === job) { manifestJobs.delete(element); element.dispatchEvent(new Event('error')); }
+        });
+        return true;
       } catch (_) {}
+      return false;
     };
     if (window.Element) patch(Element.prototype, 'setAttribute', original => function (name, value) {
+      if (String(name).toLowerCase() === 'href' && manifest(this, value)) return;
+      const href = this.localName === 'link' && String(name).toLowerCase() === 'rel' && manifestRel(value) ? this.getAttribute('href') : null;
+      if (href) Reflect.apply(nativeRemoveAttribute, this, ['href']);
       try { if (supported(this) && attributes.has(String(name).toLowerCase())) value = fix(value); } catch (_) {}
       const result = Reflect.apply(original, this, [name, value]);
-      manifest(this);
+      manifest(this, href || undefined);
       return result;
+    });
+    try {
+      const prototype = window.HTMLLinkElement.prototype;
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, 'rel');
+      Object.defineProperty(prototype, 'rel', { ...descriptor, set(value) {
+        const href = manifestRel(value) ? this.getAttribute('href') : null;
+        if (href) Reflect.apply(nativeRemoveAttribute, this, ['href']);
+        Reflect.apply(descriptor.set, this, [value]);
+        manifest(this, href || undefined);
+      } });
+    } catch (_) {}
+    if (window.Element) patch(Element.prototype, 'removeAttribute', original => function (name) {
+      if (String(name).toLowerCase() === 'href') manifestJobs.delete(this);
+      return Reflect.apply(original, this, [name]);
     });
     for (const prototype of prototypes) {
       for (const key of ['src', 'href', 'action', 'formAction', 'poster']) {
@@ -86,6 +132,7 @@
           while (owner && !(descriptor = Object.getOwnPropertyDescriptor(owner, key))) owner = Object.getPrototypeOf(owner);
           if (!descriptor?.set) continue;
           Object.defineProperty(prototype, key, { ...descriptor, set(value) {
+            if (key === 'href' && manifest(this, value)) return;
             try { value = fix(value); } catch (_) {}
             return Reflect.apply(descriptor.set, this, [value]);
           } });
@@ -119,10 +166,18 @@
     const scan = node => {
       try { manifest(node); for (const link of node.querySelectorAll?.('link[rel]') || []) manifest(link); } catch (_) {}
     };
+    for (const prototype of [window.Node?.prototype, window.Element?.prototype, window.Document?.prototype, window.DocumentFragment?.prototype].filter(Boolean)) {
+      for (const key of ['appendChild', 'insertBefore', 'replaceChild', 'append', 'prepend', 'replaceChildren', 'insertAdjacentElement']) {
+        if (Object.prototype.hasOwnProperty.call(prototype, key)) patch(prototype, key, original => function (...args) {
+          for (const node of args) if (node && typeof node === 'object') scan(node);
+          return Reflect.apply(original, this, args);
+        });
+      }
+    }
     scan(document);
     if (window.MutationObserver) new MutationObserver(records => {
       for (const record of records) { scan(record.target); for (const node of record.addedNodes || []) scan(node); }
-    }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['rel', 'crossorigin'] });
+    }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['rel', 'crossorigin', 'href'] });
     try {
       let prototype = document;
       let descriptor;
