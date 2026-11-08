@@ -202,6 +202,51 @@ async fn cold_document_bounces_before_upstream_then_recovers_host_and_preserves_
 }
 
 #[tokio::test]
+async fn cross_port_navigation_bounces_without_upstream_and_cross_port_mutations_are_forbidden() {
+    let harness = harness().await;
+    let path = format!("/_fwd/agent/{}/authority?token=unchanged", harness.port);
+    let url = format!("{}{path}", harness.hub);
+    let client = reqwest::Client::new();
+    for (site, name, source) in [
+        (Some("same-site"), header::REFERER, "https://hub.test:9000/"),
+        (Some("same-site"), header::REFERER, "https://hub.test:9000/_fwd/other/9001/"),
+        (Some("same-origin"), header::REFERER, "https://hub.test:9000/"),
+        (None, header::REFERER, "https://hub.test:9000/"),
+        (Some("same-site"), header::ORIGIN, "https://hub.test:9000"),
+    ] {
+        let mut request = client.get(&url).header(header::HOST, "hub.test").header(header::COOKIE, &harness.cookie)
+            .header("sec-fetch-dest", "document").header("x-forwarded-proto", "https").header(name, source);
+        if let Some(site) = site { request = request.header("sec-fetch-site", site); }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(response.text().await.unwrap().contains("location.replace(location.href)"));
+        assert_eq!(harness.hits.load(Ordering::SeqCst), 0);
+    }
+    let response = client.post(&url).header(header::HOST, "hub.test").header(header::COOKIE, &harness.cookie)
+        .header(header::ORIGIN, "https://hub.test:9000").header("sec-fetch-site", "same-site")
+        .header("x-forwarded-proto", "https").send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let mut request = format!("{}/_fwd/agent/{}/authority-socket", harness.hub.replace("http:", "ws:"), harness.port).into_client_request().unwrap();
+    for (name, value) in [("host", "hub.test"), ("origin", "https://hub.test:9000"), ("cookie", harness.cookie.as_str()), ("sec-fetch-site", "same-site"), ("x-forwarded-proto", "https")] {
+        request.headers_mut().insert(axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(), value.parse().unwrap());
+    }
+    match tokio_tungstenite::connect_async(request).await.unwrap_err() {
+        tokio_tungstenite::tungstenite::Error::Http(response) => assert_eq!(response.status(), StatusCode::FORBIDDEN),
+        error => panic!("expected HTTP 403, got {error}"),
+    }
+    assert_eq!(harness.hits.load(Ordering::SeqCst), 0);
+    let response = client.get(&url).header(header::HOST, "hub.test").header(header::COOKIE, &harness.cookie)
+        .header("sec-fetch-dest", "document").header("x-forwarded-proto", "https").header("sec-fetch-site", "same-origin")
+        .header(header::REFERER, format!("https://hub.test:8983{path}")).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["host"], "hub.test:8983");
+    assert_eq!(body["uri"], "/authority?token=unchanged");
+    assert_eq!(harness.hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn port_stripping_proxy_preserves_authority_for_posts_websockets_rewriting_and_fallback() {
     let harness = harness().await;
     let base = format!("{}/_fwd/agent/{}", harness.hub, harness.port);

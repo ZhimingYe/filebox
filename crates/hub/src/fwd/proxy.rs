@@ -8,21 +8,21 @@ use super::rewrite;
 
 const FIRST_BYTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
-fn effective_host(headers: &HeaderMap, secure: bool) -> Option<String> {
+fn recovered_host(headers: &HeaderMap, secure: bool) -> Option<String> {
     let host = headers.get(header::HOST)?.to_str().ok()?;
     let authority = host.parse::<axum::http::uri::Authority>().ok()?;
-    if authority.port().is_none() {
-        let source = headers.get(header::ORIGIN).or_else(|| headers.get(header::REFERER))
-            .and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<axum::http::Uri>().ok());
-        if let Some(source) = source {
-            if source.scheme_str() == Some(if secure { "https" } else { "http" }) {
-                if let Some(candidate) = source.authority().filter(|candidate| candidate.host() == authority.host() && !candidate.as_str().contains('@')) {
-                    return Some(candidate.to_string());
-                }
-            }
-        }
-    }
-    Some(host.into())
+    if authority.port().is_some() || headers.get("sec-fetch-site").is_some_and(|site| site != "same-origin") { return None; }
+    let source = headers.get(header::ORIGIN).or_else(|| headers.get(header::REFERER))?
+        .to_str().ok()?.parse::<axum::http::Uri>().ok()?;
+    if !headers.contains_key(header::ORIGIN) && !source.path().starts_with("/_fwd/") { return None; }
+    if source.scheme_str() != Some(if secure { "https" } else { "http" }) { return None; }
+    source.authority().filter(|candidate| candidate.host() == authority.host() && !candidate.as_str().contains('@')).map(|candidate| candidate.to_string())
+}
+
+fn effective_host(headers: &HeaderMap, secure: bool) -> Option<String> {
+    let host = headers.get(header::HOST)?.to_str().ok()?;
+    host.parse::<axum::http::uri::Authority>().ok()?;
+    Some(recovered_host(headers, secure).unwrap_or_else(|| host.into()))
 }
 
 fn origin(host: &str, secure: bool) -> Option<url::Url> {
@@ -78,17 +78,17 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
         && request.headers().get(header::CONNECTION).and_then(|v| v.to_str().ok()).is_some_and(|v| v.split(',').any(|v| v.trim().eq_ignore_ascii_case("upgrade")));
     let Some(host) = effective_host(request.headers(), request_is_https(&request)) else { return StatusCode::BAD_REQUEST.into_response(); };
     let Some(own) = origin(&host, request_is_https(&request)) else { return StatusCode::BAD_REQUEST.into_response(); };
+    if request.method() == Method::GET && document && !websocket
+        && request.headers().get("sec-fetch-dest").is_none_or(|dest| dest == "document" || dest == "iframe")
+        && recovered_host(request.headers(), request_is_https(&request)).is_none()
+        && host.parse::<axum::http::uri::Authority>().is_ok_and(|authority| authority.port().is_none()) {
+        return authority_bounce();
+    }
     if !safe_origin(request.headers(), &own, websocket || !matches!(*request.method(), Method::GET | Method::HEAD))
         || request.headers().get("sec-fetch-dest").is_some_and(|v| v == "serviceworker") {
         return StatusCode::FORBIDDEN.into_response();
     }
     if request.method() == Method::CONNECT { return StatusCode::METHOD_NOT_ALLOWED.into_response(); }
-    if request.method() == Method::GET && document && !websocket
-        && request.headers().get("sec-fetch-dest").is_none_or(|dest| dest == "document" || dest == "iframe")
-        && !request.headers().contains_key(header::ORIGIN) && !request.headers().contains_key(header::REFERER)
-        && host.parse::<axum::http::uri::Authority>().is_ok_and(|authority| authority.port().is_none()) {
-        return authority_bounce();
-    }
     let path = request.uri().path().to_string();
     let mut segments = path.trim_start_matches("/_fwd/").splitn(3, '/');
     let agent = segments.next().unwrap_or_default();
@@ -227,6 +227,28 @@ pub async fn referer_fallback(request: Request, next: Next) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recovery_requires_trusted_fetch_site_and_a_forwarding_referer() {
+        for name in [header::ORIGIN, header::REFERER] {
+            for site in [None, Some("same-origin"), Some("same-site"), Some("cross-site"), Some("none"), Some("")] {
+                let mut headers = HeaderMap::new();
+                headers.insert(header::HOST, HeaderValue::from_static("hub.test"));
+                headers.insert(name.clone(), HeaderValue::from_static("https://hub.test:8983/_fwd/agent/9001/"));
+                if let Some(site) = site { headers.insert("sec-fetch-site", site.parse().unwrap()); }
+                let allowed = site.is_none() || site == Some("same-origin");
+                assert_eq!(recovered_host(&headers, true).is_some(), allowed, "{name} {site:?}");
+                assert_eq!(effective_host(&headers, true).as_deref(), Some(if allowed { "hub.test:8983" } else { "hub.test" }));
+            }
+        }
+        for path in ["/", "/login", "/_fwd", "/_fwd-other/", "/other?next=/_fwd/agent/9001/"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::HOST, HeaderValue::from_static("hub.test"));
+            headers.insert(header::REFERER, format!("https://hub.test:9000{path}").parse().unwrap());
+            headers.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
+            assert!(recovered_host(&headers, true).is_none(), "{path}");
+            assert_eq!(effective_host(&headers, true).as_deref(), Some("hub.test"));
+        }
+    }
     #[test]
     fn effective_host_recovers_only_same_hostname_and_scheme_without_overriding_explicit_ports() {
         for (host, source, expected, accepted) in [
