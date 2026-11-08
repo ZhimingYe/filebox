@@ -46,6 +46,15 @@ async fn harness() -> Harness {
         while let Some(Ok(message)) = socket.recv().await { if socket.send(message).await.is_err() { break; } }
     }) }))
         .route("/echo", axum::routing::post(|bytes: axum::body::Bytes| async move { bytes }))
+        .route("/authority", axum::routing::post(|headers: HeaderMap| async move {
+            ([(header::LOCATION, "https://hub.test:8983/next")], headers[header::HOST].to_str().unwrap().to_string())
+        }))
+        .route("/authority-html", get(|| async { axum::response::Html("<head><base href='https://hub.test:8983/app/'></head>") }))
+        .route("/authority-socket", get(|headers: HeaderMap, ws: WebSocketUpgrade| async move {
+            ws.on_upgrade(move |mut socket| async move {
+                socket.send(axum::extract::ws::Message::Text(headers[header::HOST].to_str().unwrap().to_string().into())).await.unwrap();
+            })
+        }))
         .route("/large", get(|| async { axum::response::Html(format!("<head>{}", "x".repeat(8 * 1024 * 1024))) }))
         .route("/large-close", get(|| async { ([(header::CONNECTION, "close")], axum::response::Html(format!("<head>{}", "x".repeat(8 * 1024 * 1024)))) }))
         .route("/bad", get(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "failed") }))
@@ -132,6 +141,47 @@ async fn mock_agent_http_reaches_real_tcp_server_and_injects_html() {
     let body = response.text().await.unwrap();
     assert_eq!(body.len(), 8 * 1024 * 1024 + 6 + super::rewrite::SHIM.len() + 17);
     assert!(body.contains("__fileboxForwardShim"));
+}
+
+#[tokio::test]
+async fn port_stripping_proxy_preserves_authority_for_posts_websockets_rewriting_and_fallback() {
+    let harness = harness().await;
+    let base = format!("{}/_fwd/agent/{}", harness.hub, harness.port);
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    for (host, origin, expected) in [
+        ("hub.test", "https://hub.test:8983", StatusCode::OK),
+        ("hub.test:8983", "https://hub.test:8983", StatusCode::OK),
+        ("hub.test", "https://evil.test:8983", StatusCode::FORBIDDEN),
+        ("hub.test", "http://hub.test:8983", StatusCode::FORBIDDEN),
+        ("hub.test:8443", "https://hub.test:8983", StatusCode::FORBIDDEN),
+    ] {
+        let response = client.post(format!("{base}/authority")).header(header::COOKIE, &harness.cookie)
+            .header(header::HOST, host).header(header::ORIGIN, origin).header("x-forwarded-proto", "https").send().await.unwrap();
+        assert_eq!(response.status(), expected, "{host} {origin}");
+        if expected == StatusCode::OK {
+            assert_eq!(response.headers()[header::LOCATION], format!("/_fwd/agent/{}/next", harness.port));
+            assert_eq!(response.text().await.unwrap(), "hub.test:8983");
+        }
+    }
+    let response = client.get(format!("{base}/authority-html")).header(header::COOKIE, &harness.cookie)
+        .header(header::HOST, "hub.test").header(header::ORIGIN, "https://hub.test:8983").header("x-forwarded-proto", "https").header("sec-fetch-dest", "document").send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.text().await.unwrap().contains(&format!("/_fwd/agent/{}/app/", harness.port)));
+    for referer in ["https://hub.test:8983", "https://evil.test:8983", "http://hub.test:8983"] {
+        let response = client.get(format!("{}/asset.js", harness.hub)).header(header::HOST, "hub.test")
+            .header(header::REFERER, format!("{referer}/_fwd/agent/{}/app", harness.port)).header("x-forwarded-proto", "https").send().await.unwrap();
+        if referer == "https://hub.test:8983" {
+            assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+            assert_eq!(response.headers()[header::LOCATION], format!("/_fwd/agent/{}/asset.js", harness.port));
+        } else { assert_ne!(response.status(), StatusCode::TEMPORARY_REDIRECT); }
+    }
+    let mut request = format!("{}/authority-socket", base.replace("http:", "ws:")).into_client_request().unwrap();
+    for (name, value) in [(header::HOST, "hub.test"), (header::ORIGIN, "https://hub.test:8983"), (header::COOKIE, harness.cookie.as_str()), (header::HeaderName::from_static("x-forwarded-proto"), "https")] {
+        request.headers_mut().insert(name, value.parse().unwrap());
+    }
+    let (mut socket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    assert_eq!(tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap().into_text().unwrap(), "hub.test:8983");
 }
 
 #[tokio::test]

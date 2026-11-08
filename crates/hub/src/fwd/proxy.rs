@@ -6,8 +6,24 @@ use super::rewrite;
 
 const FIRST_BYTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
-fn origin(headers: &HeaderMap, secure: bool) -> Option<url::Url> {
+fn effective_host(headers: &HeaderMap, secure: bool) -> Option<String> {
     let host = headers.get(header::HOST)?.to_str().ok()?;
+    let authority = host.parse::<axum::http::uri::Authority>().ok()?;
+    if authority.port().is_none() {
+        let source = headers.get(header::ORIGIN).or_else(|| headers.get(header::REFERER))
+            .and_then(|value| value.to_str().ok()).and_then(|value| value.parse::<axum::http::Uri>().ok());
+        if let Some(source) = source {
+            if source.scheme_str() == Some(if secure { "https" } else { "http" }) {
+                if let Some(candidate) = source.authority().filter(|candidate| candidate.host() == authority.host() && !candidate.as_str().contains('@')) {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+    }
+    Some(host.into())
+}
+
+fn origin(host: &str, secure: bool) -> Option<url::Url> {
     let scheme = if secure { "https" } else { "http" };
     let url = url::Url::parse(&format!("{scheme}://{host}" )).ok()?;
     if url.username().is_empty() && url.password().is_none() { Some(url) } else { None }
@@ -46,7 +62,8 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
     };
     let websocket = request.headers().get(header::UPGRADE).is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket"))
         && request.headers().get(header::CONNECTION).and_then(|v| v.to_str().ok()).is_some_and(|v| v.split(',').any(|v| v.trim().eq_ignore_ascii_case("upgrade")));
-    let Some(own) = origin(request.headers(), request_is_https(&request)) else { return StatusCode::BAD_REQUEST.into_response(); };
+    let Some(host) = effective_host(request.headers(), request_is_https(&request)) else { return StatusCode::BAD_REQUEST.into_response(); };
+    let Some(own) = origin(&host, request_is_https(&request)) else { return StatusCode::BAD_REQUEST.into_response(); };
     if !safe_origin(request.headers(), &own, websocket || !matches!(*request.method(), Method::GET | Method::HEAD))
         || request.headers().get("sec-fetch-dest").is_some_and(|v| v == "serviceworker") {
         return StatusCode::FORBIDDEN.into_response();
@@ -81,6 +98,7 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
     let (clean_target, _) = super::manifest::clean(request.uri());
     let target = if keep_prefix { clean_target } else { clean_target.strip_prefix(&prefix).unwrap().to_string() };
     let mut headers = rewrite::sanitize(request.headers(), websocket);
+    headers.insert(header::HOST, HeaderValue::from_str(&host).unwrap());
     let reserved = [session_cookie_name(true, &state.cookie_suffix), session_cookie_name(false, &state.cookie_suffix), csrf_cookie_name(true, &state.cookie_suffix), csrf_cookie_name(false, &state.cookie_suffix)];
     let cookies = headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).map(str::trim)
         .filter(|v| v.split_once('=').is_some_and(|(name, _)| !reserved.iter().any(|r| r == name.trim()))).collect::<Vec<_>>().join("; ");
@@ -111,8 +129,7 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
             Ok(Ok(response)) => response, Ok(Err(_)) => return StatusCode::BAD_GATEWAY.into_response(), Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
         }
     };
-    let host = request.headers().get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or_default();
-    let mut headers = rewrite::response_headers(upstream.headers(), websocket, &prefix, host, port, request_is_https(&request));
+    let mut headers = rewrite::response_headers(upstream.headers(), websocket, &prefix, &host, port, request_is_https(&request));
     if super::manifest::clean(request.uri()).1.is_some() { headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store")); }
     let status = upstream.status();
     let reusable = !websocket && !status.is_client_error() && !status.is_server_error();
@@ -181,7 +198,7 @@ fn fallback_target(path_query: &str, referer: &str, own: &url::Url) -> Option<St
 
 pub async fn referer_fallback(request: Request, next: Next) -> Response {
     let secure = request_is_https(&request);
-    if let Some(target) = origin(request.headers(), secure).and_then(|own| {
+    if let Some(target) = effective_host(request.headers(), secure).and_then(|host| origin(&host, secure)).and_then(|own| {
         fallback_target(request.uri().path_and_query()?.as_str(), request.headers().get(header::REFERER)?.to_str().ok()?, &own)
     }) { return Redirect::temporary(&target).into_response(); }
     next.run(request).await
@@ -190,6 +207,37 @@ pub async fn referer_fallback(request: Request, next: Next) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn effective_host_recovers_only_same_hostname_and_scheme_without_overriding_explicit_ports() {
+        for (host, source, expected, accepted) in [
+            ("hub.test", "https://hub.test:8983", "hub.test:8983", true),
+            ("hub.test", "https://evil.test:8983", "hub.test", false),
+            ("hub.test", "https://hub.test.evil:8983", "hub.test", false),
+            ("hub.test", "http://hub.test:8983", "hub.test", false),
+            ("hub.test", "https://HUB.test:8983", "hub.test", false),
+            ("hub.test", "null", "hub.test", false),
+            ("hub.test:8983", "https://hub.test:8983", "hub.test:8983", true),
+            ("hub.test:8443", "https://hub.test:8983", "hub.test:8443", false),
+            ("hub.test:443", "https://hub.test", "hub.test:443", true),
+            ("[::1]", "https://[::1]:8983", "[::1]:8983", true),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::HOST, host.parse().unwrap());
+            headers.insert(header::ORIGIN, source.parse().unwrap());
+            let effective = effective_host(&headers, true).unwrap();
+            assert_eq!(effective, expected, "{host} {source}");
+            assert_eq!(safe_origin(&headers, &origin(&effective, true).unwrap(), true), accepted, "{host} {source}");
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("hub.test"));
+        assert_eq!(effective_host(&headers, true).as_deref(), Some("hub.test"));
+        headers.insert(header::REFERER, HeaderValue::from_static("https://hub.test:8983/_fwd/agent/9001/app"));
+        let own = origin(&effective_host(&headers, true).unwrap(), true).unwrap();
+        assert_eq!(fallback_target("/asset.js", headers[header::REFERER].to_str().unwrap(), &own).as_deref(), Some("/_fwd/agent/9001/asset.js"));
+        headers.insert(header::ORIGIN, HeaderValue::from_static("https://evil.test:8983"));
+        assert_eq!(effective_host(&headers, true).as_deref(), Some("hub.test"));
+        assert!(fallback_target("/asset.js", headers[header::REFERER].to_str().unwrap(), &origin("hub.test", true).unwrap()).is_none());
+    }
     #[test]
     fn long_first_byte_deadline_and_https_detection() {
         assert!(FIRST_BYTE_TIMEOUT >= std::time::Duration::from_secs(300));
