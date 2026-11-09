@@ -18,6 +18,7 @@ Install an Agent on every host you want to browse; it dials out to the Hub. Inst
 | `FILEBOX_AGENT_TOKEN` | Agent token |
 | `FILEBOX_AGENT_NAME` | Sidebar display name |
 | `FILEBOX_AGENT_DATA_DIR` | State directory |
+| `FILEBOX_AGENT_TRUSTED_PORTS` | Agent-local trusted Web ports; overrides TOML `trusted_ports`, including an empty override (deny all); restart to apply |
 | `FILEBOX_AGENT_AI_AGENTS_ENABLED` | Enable or disable AI Agents on this Agent |
 | `FILEBOX_AGENT_AI_AGENTS_BACKEND` | Lock AI Agents to a backend kind |
 | `FILEBOX_AGENT_HC` | Explicit hc executable path (experimental backend; otherwise searches PATH) |
@@ -27,6 +28,20 @@ Install an Agent on every host you want to browse; it dials out to the Hub. Inst
 | `FILEBOX_AGENT_DIR_CACHE_RESTAT_COOLDOWN_MS` | Directory cache re-stat cooldown |
 
 Office-related limits: [Office preview](./office).
+
+## Trusted Web ports
+
+Web forwarding denies all ports by default. On the Agent machine, add a string to `agent.toml`:
+
+```toml
+trusted_ports = "3080,8888,9000-9010"
+```
+
+Or set `FILEBOX_AGENT_TRUSTED_PORTS="3080,8888,9000-9010"`. The environment overrides TOML, including an empty value. Restart the Agent after changes. Syntax is comma-separated decimal ports (1–65535) or inclusive ascending ranges; whitespace is accepted. Empty/unset denies all. Malformed values prevent startup. Case-insensitive `"all"` permits every loopback port, logs a warning, and is **not recommended**; prefer an explicit list. TOML arrays are not supported.
+
+The policy stays Agent-local and is never advertised to the Hub. The Agent rejects untrusted desired forwards without replacing the saved list and refuses untrusted tunnel opens. Already-saved forwards remain in `agent_state.json`; Ports marks them **Not trusted by agent**, disables Open, and displays Agent rejection messages. The proxy returns 403 for untrusted forwards. Only each configured forward's trust flag is reported, not the allowed ports. Upgrade Agent and Hub together: legacy Agents cannot enforce this setting, and a missing trust flag is treated as untrusted by current Hubs.
+
+Only forward trusted apps: they retain their local powers (including writing files or executing code) and share the Hub origin, so their scripts can call Filebox APIs as the signed-in user. `FILEBOX_AGENT_PORT_FORWARD=off` disables forwarding entirely.
 
 ## Experimental hc backend
 

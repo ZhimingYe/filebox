@@ -109,6 +109,7 @@ async fn start_test_connection() -> (
     let temp = tempfile::tempdir().unwrap();
     let config = AgentConfig {
         port_forward: true,
+        trusted_ports: Default::default(),
         hub_url: format!("ws://{address}"), token: "test-token".into(),
         agent_name: "test-agent".into(), data_dir: temp.path().to_path_buf(),
         temp_dir: None, temp_upload_name: None,

@@ -111,7 +111,7 @@ pub(super) async fn connect_and_register(
         collections_revision: collections_rev,
         collections,
         forwards_revision: resource_mgr.config.forwards_revision,
-        forwards: resource_mgr.config.forwards.clone(),
+        forwards: resource_mgr.reported_forwards(),
         temp_root,
     };
     let register_msg = Message::Text(serde_json::to_string(&register).unwrap().into());

@@ -10,11 +10,27 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod agent_tunnel;
 
 #[test]
+fn tunnel_refusals_are_generation_bound_and_preserve_the_untrusted_status() {
+    for (code, expected) in [("port_not_trusted", StatusCode::FORBIDDEN), ("connect_failed", StatusCode::BAD_GATEWAY)] {
+        let store = TunnelStore::default();
+        let (tx, mut rx) = oneshot::channel();
+        store.tickets.lock().unwrap().insert("ticket".into(), Ticket {
+            agent: "agent".into(), generation: 3, expires: Instant::now() + Duration::from_secs(10), port: 9001, tx,
+        });
+        assert_eq!(store.fail("ticket", "other", 3, code), None);
+        assert_eq!(store.fail("ticket", "agent", 2, code), None);
+        assert_eq!(store.fail("ticket", "agent", 3, code), Some(9001));
+        assert!(matches!(rx.try_recv(), Ok(Err(status)) if status == expected));
+        assert_eq!(store.fail("ticket", "agent", 3, code), None);
+    }
+}
+
+#[test]
 fn tickets_are_single_use_expiring_and_generation_bound() {
     let store = TunnelStore::default();
     let (tx, _rx) = oneshot::channel();
     store.tickets.lock().unwrap().insert("secret".into(), Ticket {
-        agent: "agent".into(), generation: 3, expires: Instant::now() + Duration::from_secs(10), tx,
+        agent: "agent".into(), generation: 3, expires: Instant::now() + Duration::from_secs(10), port: 9001, tx,
     });
     assert!(store.take("secret", "other", 3).is_none());
     assert!(store.take("secret", "agent", 2).is_none());
@@ -22,7 +38,7 @@ fn tickets_are_single_use_expiring_and_generation_bound() {
     assert!(store.take("secret", "agent", 3).is_none());
     let (tx, _rx) = oneshot::channel();
     store.tickets.lock().unwrap().insert("expired".into(), Ticket {
-        agent: "agent".into(), generation: 3, expires: Instant::now() - Duration::from_secs(1), tx,
+        agent: "agent".into(), generation: 3, expires: Instant::now() - Duration::from_secs(1), port: 9001, tx,
     });
     assert!(store.take("expired", "agent", 3).is_none());
     let cancel = CancellationToken::new();
@@ -101,7 +117,7 @@ async fn harness() -> Harness {
     {
         let mut inner = state.inner.write().await;
         inner.agents.register("agent".into(), "mock".into(), tx, Arc::new(tokio::sync::Notify::new()), 0, vec![], 0, vec![], Capabilities { port_forward: true, ..Default::default() }, None);
-        inner.agents.get_mut("agent").unwrap().forwards = vec![ForwardConfig { port, name: "local".into(), keep_prefix: false }];
+        inner.agents.get_mut("agent").unwrap().forwards = vec![ForwardConfig { port, name: "local".into(), keep_prefix: false, trusted: true }];
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -120,6 +136,36 @@ async fn harness() -> Harness {
 
 #[path = "transport_tests.rs"]
 mod transport_tests;
+
+#[tokio::test]
+async fn untrusted_saved_and_legacy_forwards_return_403_even_with_a_pooled_connection() {
+    let harness = harness().await;
+    let client = reqwest::Client::new();
+    let url = format!("{}/_fwd/agent/{}/", harness.hub, harness.port);
+    let response = client.get(&url).header(header::COOKIE, &harness.cookie).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.bytes().await.unwrap();
+    let hits = harness.hits.load(Ordering::SeqCst);
+    for legacy in [false, true] {
+        let forward = if legacy {
+            serde_json::from_value::<ForwardConfig>(serde_json::json!({"port": harness.port, "name": "legacy"})).unwrap()
+        } else {
+            ForwardConfig { port: harness.port, name: "saved".into(), keep_prefix: false, trusted: false }
+        };
+        harness.state.inner.write().await.agents.get_mut("agent").unwrap().forwards = vec![forward];
+        let response = client.get(&url).header(header::COOKIE, &harness.cookie).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(response.text().await.unwrap().contains("Port not trusted by agent"));
+        let mut request = url.replacen("http", "ws", 1).into_client_request().unwrap();
+        request.headers_mut().insert(header::COOKIE, harness.cookie.parse().unwrap());
+        request.headers_mut().insert(header::ORIGIN, harness.hub.parse().unwrap());
+        match tokio_tungstenite::connect_async(request).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => assert_eq!(response.status(), StatusCode::FORBIDDEN),
+            other => panic!("expected forbidden WebSocket: {other:?}"),
+        }
+        assert_eq!(harness.hits.load(Ordering::SeqCst), hits);
+    }
+}
 
 #[tokio::test]
 async fn mock_agent_http_reaches_real_tcp_server_and_injects_html() {

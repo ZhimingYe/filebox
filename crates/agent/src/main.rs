@@ -2,6 +2,7 @@ use tracing_subscriber::EnvFilter;
 
 mod config;
 mod tunnel;
+mod trusted_ports;
 mod config_store;
 mod connection;
 mod content_cache;

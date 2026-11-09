@@ -63,6 +63,9 @@ export function PortsView({ agent, onRefresh }: Props) {
         {error || agent.last_config_error}
       </p>}
       <form onSubmit={add} style={styles.form}>
+        <p style={{ flex: '1 0 100%', margin: 0, fontSize: 11, color: c.textSecondary }}>
+          Ports must be listed in the Agent's <code>trusted_ports</code> (agent.toml / FILEBOX_AGENT_TRUSTED_PORTS).
+        </p>
         <label style={{ ...styles.label, flex: '0 1 84px' }}>Port
           <input aria-label="Port" type="number" min="1" max="65535" step="1" required value={port}
             onChange={(event) => setPort(event.target.value)} style={styles.input} disabled={busy} placeholder="9001" />
@@ -85,9 +88,11 @@ export function PortsView({ agent, onRefresh }: Props) {
       <div style={styles.list}>
         {forwards.length === 0 ? <p style={styles.empty}>No ports yet. Add a local web service above.</p> : forwards.map((forward) => {
           const path = api.forwardPath(agent.id, forward.port);
-          const canOpen = agent.status !== 'offline' && !pending;
+          const canOpen = forward.trusted === true && agent.status !== 'offline' && !pending;
           return <div key={forward.port} style={styles.row}>
-            <div style={styles.identity}><span style={styles.name}>{forward.name}</span><span style={styles.port}>:{forward.port}</span></div>
+            <div style={styles.identity}><span style={styles.name}>{forward.name}</span><span style={styles.port}>:{forward.port}</span>
+              {forward.trusted !== true && <span style={{ fontSize: 11, color: c.textMuted }}>Not trusted by agent</span>}
+            </div>
             <div style={{ order: 1, flex: '1 0 100%', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, fontSize: 11, color: c.textSecondary }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input type="checkbox" aria-label={`App uses this base path for ${forward.name}`} checked={!!forward.keep_prefix} disabled={busy}
@@ -100,7 +105,7 @@ export function PortsView({ agent, onRefresh }: Props) {
             </div>
             <div style={styles.actions}>
               {canOpen ? <a href={path} target="_blank" rel="noopener noreferrer" style={styles.button}>Open</a>
-                : <span title="Available when the Agent is connected and synced" style={{ ...styles.button, color: c.textMuted }}>Open</span>}
+                : <button type="button" disabled title={forward.trusted !== true ? "Not trusted by agent" : "Available when the Agent is connected and synced"} style={{ ...styles.button, color: c.textMuted }}>Open</button>}
               <button type="button" aria-label={`Copy link for ${forward.name}`} title="Copy link" style={styles.iconButton} onClick={async () => {
                 const ok = await copyToClipboard(new URL(path, window.location.origin).href, path);
                 if (!ok) setError('Could not copy the link. Open the service and copy its address.');

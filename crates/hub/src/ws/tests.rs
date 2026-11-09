@@ -85,13 +85,13 @@ async fn forwards_reconnect_replays_latest_intent_and_stale_connections_cannot_a
     use filebox_protocol::forwards::ForwardConfig;
     let state = test_state();
     let (old, _old_rx) = install(&state).await;
-    let desired = vec![ForwardConfig { port: 9002, name: "new".into(), keep_prefix: true }];
+    let desired = vec![ForwardConfig { port: 9002, name: "new".into(), keep_prefix: true, trusted: false }];
     state.inner.write().await.agents.get_mut("agent").unwrap().pending_forwards = Some(("old-request".into(), desired.clone()));
     let mut registration = register_message();
     if let AgentMessage::Register { capabilities, forwards_revision, forwards, .. } = &mut registration {
         capabilities.port_forward = true;
         *forwards_revision = 5;
-        *forwards = vec![ForwardConfig { port: 9001, name: "persisted".into(), keep_prefix: false }];
+        *forwards = vec![ForwardConfig { port: 9001, name: "persisted".into(), keep_prefix: false, trusted: false }];
     }
     let (tx, mut rx) = mpsc::channel(8);
     let current = registration::Registration::from_message(registration, "temporary".into()).unwrap().install(state.clone(), tx, Arc::new(Notify::new())).await;
@@ -127,13 +127,100 @@ async fn install(state: &AppState) -> (AgentContext, mpsc::Receiver<HubMessage>)
 }
 
 #[tokio::test]
+async fn forwards_api_relays_agent_trust_rejections_without_learning_or_prevalidating_policy() {
+    use axum::{body::{Body, to_bytes}, http::{header, Method, Request}};
+    use tower::ServiceExt;
+    for method in [Method::POST, Method::PATCH] {
+        let state = test_state();
+        let (context, mut rx) = install(&state).await;
+        let original = vec![filebox_protocol::forwards::ForwardConfig { port: 9001, name: "saved".into(), keep_prefix: false, trusted: false }];
+        {
+            let mut inner = state.inner.write().await;
+            let agent = inner.agents.get_mut("agent").unwrap();
+            agent.capabilities.port_forward = true;
+            agent.forwards_revision = 3;
+            agent.forwards_desired_revision = 3;
+            agent.forwards = original.clone();
+        }
+        let mut events = state.inner.read().await.sse_tx.subscribe();
+        let (session, _) = state.inner.write().await.sessions.create_session("admin", false);
+        let cookie = format!("{}={}", crate::routes::middleware::session_cookie_name(false, &state.cookie_suffix), session.session_id);
+        let port = if method == Method::POST { 9002 } else { 9001 };
+        let request = Request::builder().method(method).uri("/api/agents/agent/forwards")
+            .header(header::COOKIE, &cookie).header("x-csrf-token", &session.csrf_token).header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::json!({"port": port, "name": "requested", "keep_prefix": true}).to_string())).unwrap();
+        let app = crate::routes::create_router(state.clone());
+        let pending = tokio::spawn(app.clone().oneshot(request));
+        let HubMessage::ForwardsSetDesired { req_id, desired_revision, forwards } = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() else { panic!("expected forwarded update"); };
+        assert_eq!(desired_revision, 4);
+        assert!(forwards.iter().any(|forward| forward.port == port));
+        let message = format!("Port {port} is not trusted by this agent; add it to the agent's trusted_ports.");
+        dispatch::dispatch(&context, &serde_json::to_string(&AgentMessage::ForwardsRejected {
+            req_id, error: "port_not_trusted".into(), message: message.clone(),
+        }).unwrap()).await;
+        let response = pending.await.unwrap().unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["state"], "rejected");
+        assert_eq!(body["message"], message);
+        assert_eq!(events.recv().await.unwrap().data["error"], "port_not_trusted");
+        let info = serde_json::to_value(state.inner.read().await.agents.get("agent").unwrap().to_info()).unwrap();
+        assert_eq!(info["forwards"], serde_json::to_value(&original).unwrap());
+        assert_eq!(info["forwards_revision"], 3);
+        assert!(info.get("trusted_ports").is_none());
+        assert!(info["capabilities"].get("trusted_ports").is_none());
+        let response = app.oneshot(Request::builder().uri("/api/agents/agent/forwards").header(header::COOKIE, &cookie).header("x-csrf-token", &session.csrf_token).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(body["forwards"], serde_json::to_value(original).unwrap());
+        assert!(body.get("trusted_ports").is_none());
+    }
+}
+
+#[tokio::test]
+async fn agent_tunnel_trust_refusal_reaches_proxy_as_403_and_refreshes_the_forward_flag() {
+    use axum::{body::{Body, to_bytes}, http::{header, Request}};
+    use tower::ServiceExt;
+    let state = test_state();
+    let (context, mut rx) = install(&state).await;
+    {
+        let mut inner = state.inner.write().await;
+        let agent = inner.agents.get_mut("agent").unwrap();
+        agent.capabilities.port_forward = true;
+        agent.forwards = vec![filebox_protocol::forwards::ForwardConfig { port: 9001, name: "saved".into(), keep_prefix: false, trusted: true }];
+    }
+    let mut events = state.inner.read().await.sse_tx.subscribe();
+    let (session, _) = state.inner.write().await.sessions.create_session("admin", false);
+    let cookie = format!("{}={}", crate::routes::middleware::session_cookie_name(false, &state.cookie_suffix), session.session_id);
+    let app = crate::routes::create_router(state.clone());
+    let request = Request::builder().uri("/_fwd/agent/9001/").header(header::HOST, "hub.test:8983").header(header::COOKIE, &cookie).body(Body::empty()).unwrap();
+    let pending = tokio::spawn(app.clone().oneshot(request));
+    let HubMessage::TunnelOpen { ticket, port, .. } = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() else { panic!("expected tunnel open"); };
+    assert_eq!(port, 9001);
+    dispatch::dispatch(&context, &serde_json::to_string(&AgentMessage::TunnelFailed { ticket, code: "port_not_trusted".into() }).unwrap()).await;
+    let response = pending.await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert!(std::str::from_utf8(&body).unwrap().contains("Port not trusted by agent"));
+    let event = events.recv().await.unwrap();
+    assert_eq!(event.event, "forwards_updated");
+    assert_eq!(event.data["port"], 9001);
+    assert_eq!(event.data["trusted"], false);
+    assert!(!state.inner.read().await.agents.get("agent").unwrap().to_info().forwards[0].trusted);
+    let response = app.oneshot(Request::builder().uri("/_fwd/agent/9001/").header(header::HOST, "hub.test:8983").header(header::COOKIE, &cookie).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn successful_forward_retry_clears_error_before_sse_refresh_including_empty_lists() {
     use filebox_protocol::forwards::ForwardConfig;
     let state = test_state();
     let (context, _rx) = install(&state).await;
     let mut events = state.inner.read().await.sse_tx.subscribe();
     for (revision, forwards) in [
-        (1, vec![ForwardConfig { port: 9001, name: "web".into(), keep_prefix: false }]),
+        (1, vec![ForwardConfig { port: 9001, name: "web".into(), keep_prefix: false, trusted: false }]),
         (2, vec![]),
     ] {
         state.inner.write().await.agents.get_mut("agent").unwrap().pending_forwards = Some(("failed-edit".into(), forwards.clone()));
@@ -154,6 +241,7 @@ async fn successful_forward_retry_clears_error_before_sse_refresh_including_empt
         let event = events.recv().await.unwrap();
         assert_eq!(event.event, "forwards_updated");
         assert_eq!(event.data["state"], "applied");
+        assert_eq!(event.data["forwards"], serde_json::to_value(&forwards).unwrap());
         let info = state.inner.read().await.agents.get("agent").unwrap().to_info();
         assert!(info.last_config_error.is_none());
         assert!(!info.pending_forwards_update);

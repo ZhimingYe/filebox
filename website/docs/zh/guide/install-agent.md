@@ -27,6 +27,7 @@ cd filebox-agent-*
 | `FILEBOX_AGENT_TOKEN` | Hub 初始化时打印的 token |
 | `FILEBOX_AGENT_NAME` | 侧栏显示名（默认 `default-agent`） |
 | `FILEBOX_AGENT_DATA_DIR` | 状态目录（根目录、合集、临时传输、agent_id 等） |
+| `FILEBOX_AGENT_TRUSTED_PORTS` | Agent 本地的 Web 转发信任配置，例如 `3080,8888,9000-9010`；未设置或为空时拒绝所有端口。覆盖 `agent.toml` 的 `trusted_ports`，重启后生效。见[可信端口](/zh/ops/agent#trusted-web-ports) |
 | `FILEBOX_AGENT_AI_AGENTS_ENABLED` | 在此 Agent 上启用或禁用 AI Agents |
 | `FILEBOX_AGENT_AI_AGENTS_BACKEND` | 将 AI Agents 锁定到指定后端类型 |
 | `FILEBOX_ALLOW_INSECURE_HUB` | 允许明文 `ws://` / `http://`（仅开发） |
@@ -71,6 +72,7 @@ FILEBOX_AGENT_DATA_DIR="/tmp/fbx-agent-data" \
 |------|----------|
 | Office 预览 | 安装 LibreOffice 并设置 `FILEBOX_AGENT_SOFFICE`，见 [Office 预览](/zh/ops/office) |
 | Transfer | 能力位 `temp_upload`（当前发布版默认具备）；写入仅限专用 scratch 目录 |
+| Ports | 设置 Agent 的 `trusted_ports` / `FILEBOX_AGENT_TRUSTED_PORTS`；默认拒绝所有端口。允许 `all`，但不推荐。`FILEBOX_AGENT_PORT_FORWARD=off` 可完全关闭转发 |
 
 启用 Office 后，Settings 里会显示 Office preview 开关。
 

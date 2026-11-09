@@ -59,6 +59,9 @@ it.each([false, undefined])('explains unavailable capability %s without showing 
 it('shows an empty state and adds an optional default name', async () => {
   await render();
   expect(host.textContent).toContain('No ports yet');
+  expect(host.querySelector('form')?.textContent).toContain('trusted_ports');
+  expect(host.querySelector('form')?.textContent).toContain('agent.toml / FILEBOX_AGENT_TRUSTED_PORTS');
+  expect(host.textContent).not.toContain('Allowed ports');
   input('Port', '9001');
   await submit();
   expect(api.addForward).toHaveBeenCalledExactlyOnceWith('a1', { port: 9001, name: 'Port 9001' });
@@ -85,7 +88,7 @@ it.each(['1', '65535'])('accepts boundary port %s and trims the supplied name', 
 it('lists safe new-tab links, copies an absolute link and deletes the selected port', async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
-  await render({ ...agent, forwards: [{ port: 9001, name: 'Python' }, { port: 8888, name: 'Notebook' }] });
+  await render({ ...agent, forwards: [{ port: 9001, name: 'Python', trusted: true }, { port: 8888, name: 'Notebook', trusted: true }] });
   const link = host.querySelector('a')!;
   expect(link.getAttribute('href')).toBe('/_fwd/a1/9001/');
   expect(link.target).toBe('_blank');
@@ -111,6 +114,29 @@ it('rejects duplicate ports and retains the draft on Agent rejection', async () 
   expect(refresh).toHaveBeenCalledOnce();
 });
 
+it.each([false, undefined])('disables untrusted or legacy forwards (%s) without displaying an allowed-ports policy', async (trusted) => {
+  await render({ ...agent, forwards: [{ port: 9001, name: 'App', trusted }] });
+  expect(host.textContent).toContain('Not trusted by agent');
+  expect(host.querySelector('a')).toBeNull();
+  const open = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Open');
+  expect(open?.disabled).toBe(true);
+  expect(host.textContent).not.toContain('Allowed ports');
+  await render({ ...agent, forwards: [{ port: 9001, name: 'App', trusted: true }] });
+  expect(host.textContent).not.toContain('Not trusted by agent');
+  expect(host.querySelector('a')?.getAttribute('href')).toBe('/_fwd/a1/9001/');
+});
+
+it('shows the Agent trust rejection and retains the add draft', async () => {
+  const message = "Port 9002 is not trusted by this agent; add it to the agent's trusted_ports.";
+  vi.mocked(api.addForward).mockRejectedValue({ error: 'port_not_trusted', message });
+  await render();
+  input('Port', '9002');
+  await submit();
+  expect(api.addForward).toHaveBeenCalledExactlyOnceWith('a1', { port: 9002, name: 'Port 9002' });
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(message);
+  expect(host.querySelector<HTMLInputElement>('[aria-label="Port"]')?.value).toBe('9002');
+});
+
 it('reports clipboard failures instead of claiming the link was copied', async () => {
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('Denied')) } });
   await render({ ...agent, forwards: [{ port: 9001, name: 'Python' }] });
@@ -119,7 +145,7 @@ it('reports clipboard failures instead of claiming the link was copied', async (
 });
 
 it('shows pending/offline and config errors, then updates from refreshed Agent metadata', async () => {
-  const forwards = [{ port: 9001, name: 'Python' }];
+  const forwards = [{ port: 9001, name: 'Python', trusted: true }];
   await render({ ...agent, forwards, status: 'offline', pending_forwards_update: true, last_config_error: 'Rejected config' });
   expect(host.textContent).toContain('Changes will sync on reconnect');
   expect(host.textContent).toContain('Rejected config');
@@ -148,7 +174,7 @@ it('queues offline edits, disables mutations while saving, and resets the form f
 
 it('keeps compact wrapping controls and a scrollable view on mobile', async () => {
   window.innerWidth = 375;
-  await render({ ...agent, forwards: [{ port: 9001, name: 'A very long local service name' }] });
+  await render({ ...agent, forwards: [{ port: 9001, name: 'A very long local service name', trusted: true }] });
   expect(host.querySelector('section')?.style.padding).toBe('16px');
   expect(host.querySelector('section')?.style.overflowY).toBe('auto');
   expect(host.querySelector('form')?.style.flexWrap).toBe('wrap');
