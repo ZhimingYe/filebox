@@ -2,7 +2,7 @@
 
 All notable changes to filebox are listed here. Dates are UTC.
 
-## Unreleased
+## v3.1.5
 
 ### Breaking changes
 - **Agent-local trusted ports** — Web forwarding now denies all ports by default. Existing forwards stop working until their ports are listed in Agent `trusted_ports` (`agent.toml`) or `FILEBOX_AGENT_TRUSTED_PORTS` and the Agent is restarted. Accepts comma-separated ports and inclusive ranges; case-insensitive `all` is allowed but not recommended. The Agent rejects untrusted updates without losing saved forwards and refuses untrusted tunnels. The Hub never receives the allowed-port policy: Ports shows only saved forwards' trust flags, disables untrusted Open buttons, and relays Agent errors; refused forwards return 403. Upgrade Agent and Hub together: old Agents cannot enforce the policy, and missing per-forward trust flags are treated as untrusted.
