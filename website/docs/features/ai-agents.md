@@ -9,7 +9,7 @@ Use **AI Agents** on the selected Filebox Agent to list coding-agent windows, re
 In **Settings** (Agent Settings), turn on **AI Agents** and choose its backend. The switch is saved on that Agent and shared across browsers. Turning it off stops Filebox controls and monitoring, not the backend or running coding agents.
 
 - **Herdr**: install the [Herdr CLI](https://herdr.ink) on the Agent machine (checked against v0.9.5). Put `herdr` on the Agent process's PATH or set `FILEBOX_AGENT_HERDR` to its executable, then use **Check installation**.
-- **hc (experimental)**: connects local live herdr-core terminals opted in with `fb=<name>` or `filebox=<name>` labels. See [experimental hc setup](/ops/agent#experimental-hc-backend). Automatic selection prefers Herdr when both are installed.
+- **hc (experimental)**: automatically connects local live herdr-core terminals with a non-empty OSC 7501 `status.app`, using hc terminal names. See [experimental hc setup](/ops/agent#experimental-hc-backend). Automatic selection prefers Herdr when both are installed.
 
 **Meet AI Agents** introduces the integration; **Set up AI Agents** explains missing installation or disabled settings. **AI agent backend is not running** means the CLI was found but the backend needs to be started on the Agent machine.
 

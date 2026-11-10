@@ -161,7 +161,7 @@ it('shows the backend selector only when needed and preserves the selection on c
   expect(api.setAiAgentsSettings).toHaveBeenLastCalledWith('a1', { enabled: false, backend: 'other' });
 });
 
-it('explains the experimental hc binary and explicit terminal opt-in', async () => {
+it('explains the experimental hc binary and automatic coding-agent detection', async () => {
   const hc = { ...agent, capabilities: { ...agent.capabilities, ai_agents: {
     ...agent.capabilities!.ai_agents!, backend: 'hc',
     settings: { ...agent.capabilities!.ai_agents!.settings, backend: 'hc' },
@@ -169,7 +169,7 @@ it('explains the experimental hc binary and explicit terminal opt-in', async () 
   await act(async () => root.render(<AiAgentsSetup agent={hc} onRefresh={refresh} />));
   expect(container.textContent).toContain('hc (experimental)');
   expect(container.textContent).toContain('FILEBOX_AGENT_HC');
-  expect(container.textContent).toContain('hc run --bg --label fb=frontend -- claude');
+  expect(container.textContent).toContain('hc run --bg --name frontend -- claude');
   expect(container.querySelector('a')?.href).toBe('https://github.com/herdrdev/herdr-core#install');
   expect(container.textContent).not.toContain('herdr server');
 });

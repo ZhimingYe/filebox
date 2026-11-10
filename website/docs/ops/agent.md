@@ -46,35 +46,25 @@ Only forward trusted apps: they retain their local powers (including writing fil
 ## Experimental hc backend
 
 Install [herdr-core](https://github.com/herdrdev/herdr-core#install) on the
-Agent machine and make `hc` available to the Filebox Agent. Only local live
-terminals explicitly labelled `fb=<name>` or `filebox=<name>` are included.
-Choose the name shown in Filebox for each terminal:
+Agent machine and make `hc` available to the Filebox Agent. Local live
+terminals are included automatically when the coding agent reports an OSC 7501
+status object with a non-empty `status.app` string. Filebox uses hc terminal
+names; labels do not affect inclusion or names.
 
 ```sh
-hc run --bg --label fb=frontend -- claude
-hc run --bg --label Filebox=backend -- claude
-hc label t7 fb=review       # connect or rename an existing terminal
-hc label t7 fb=             # remove this label to revoke access
+hc run --bg --name frontend -- claude
+hc run --bg --name backend -- claude
 ```
 
-Use the actual terminal address instead of `t7`, and your program instead
-of `claude`, starting each terminal in its working directory. A labelled terminal
-may run a coding agent, a shell or another program; Filebox does not classify it.
-Label keys are
-case-insensitive in Filebox (`fb`, `FB`, `filebox`, `Filebox`, `FILEBOX`); values
-are user-chosen names, not fixed codes. Empty/blank values do not opt in.
-The original `filebox=ai-agent` marker keeps the hc terminal name. If both keys
-exist, `fb` supplies the display name. IDs remain visible and identify all
-operations, even for duplicate or changed names. To revoke access, remove all
-supported labels using their exact original capitalization, e.g.
-`hc label t7 Filebox=` for `Filebox=backend`.
+Start each terminal in its working directory. IDs identify all operations,
+even for duplicate names. Every read, prompt and key rechecks the inclusion rule.
 
 Select **hc (experimental)** in Agent Settings; automatic selection
 still prefers Herdr when both are installed. `FILEBOX_AGENT_AI_AGENTS_BACKEND=hc`
 locks the selection. hc uses the Agent process's hc session/config environment;
 `hc connect` can start its local core automatically. Status requires the
-program's OSC 7501 reports; otherwise it is Unknown. Prompt review remains
-unchanged. Unlabelled, finished and remote-machine terminals are excluded.
+program's OSC 7501 reports. Prompt review remains unchanged. Plain shells
+without status, finished and remote-machine terminals are excluded.
 Cancellation does not retract a prompt already accepted by hc; inspect output
 before retrying. Tested with hc 0.1.17, API generation 1.
 

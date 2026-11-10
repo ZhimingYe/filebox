@@ -14,46 +14,22 @@ Filebox Agent process's PATH, or set `FILEBOX_AGENT_HC` to the executable path
 (`herdr-core` is also valid as an explicit path). Restart the Filebox Agent or
 use **Check installation**. An explicit invalid path does not fall back to PATH.
 
-Start hc terminals from their working directories, choosing their names in Filebox:
+Start coding agents in hc terminals from their working directories:
 
 ```sh
-hc run --bg --label fb=frontend -- claude
-hc run --bg --label Filebox=backend -- claude
-# Or opt in an existing terminal, using its actual address:
-hc label t7 fb=review
-# Revoke future Filebox access:
-hc label t7 fb=
+hc run --bg --name frontend -- claude
+hc run --bg --name backend -- claude
 ```
 
-Replace `claude` with the program you want to run, including a shell.
-The label opts in the terminal; Filebox does not restrict its program type.
-The label key is `fb` or `filebox`, matched case-insensitively: `FB`, `Filebox`,
-`FILEBOX` and mixed-case spellings also work. The value is your chosen display
-name, not a fixed activation code. Names preserve their case and can include
-Unicode or spaces (quote the whole label, e.g. `--label 'fb=Code review'`).
-Empty or whitespace-only values do not opt in a terminal. hc requires
-`key=value`; bare `--label fb` is not valid.
+Only local, live terminals with a non-null OSC 7501 status object and a
+non-empty `status.app` string are included automatically. Labels have no role
+in inclusion or naming. Filebox uses the hc terminal name; names need not be
+unique because reads, prompts and keys always target terminal IDs.
 
-Updating the label renames the agent in Filebox on the next list refresh,
-without changing its terminal ID, selected pane or draft. Names need not be
-unique: the list and detail show hc terminal IDs, and reads, prompts and keys
-always target those IDs, never the display name. These labels do not rename
-the terminal inside hc itself.
-
-The original `filebox=ai-agent` marker remains supported and keeps the hc
-terminal's original name. A named `fb` label takes precedence over a `filebox`
-label when both exist; each terminal is listed once. To revoke access, remove
-**every** supported label on that terminal, using the exact key spellings you
-added: for example, `hc label t7 Filebox=` removes `Filebox`, not `fb` or
-`FILEBOX`. hc itself treats label keys as case-sensitive.
-
-Only **local, live** opted-in terminals are exposed. Filebox filters one
-terminal-list snapshot locally for the supported labels.
-Unlabelled shells, finished terminals and remote `machine/t7` terminals are
-excluded. Filebox checks the label again with `terminal.get` before every
-read, prompt and key operation; a revoked or finished target returns
-`ai_agent_missing`. A labelled terminal may run a coding agent, a shell or
-another program; the same terminal operations apply to each.
+Plain shells without status, finished terminals and remote `machine/t7`
+terminals are excluded. Filebox checks the same rule with `terminal.get`
+before every read, prompt and key operation; a terminal that no longer
+qualifies returns `ai_agent_missing`.
 
 Choose the backend in the existing Settings selector. For process-managed
 deployments, `FILEBOX_AGENT_AI_AGENTS_BACKEND=hc` locks that choice;
@@ -74,8 +50,7 @@ as `ai_agent_backend_incompatible` rather than falling back to a shell.
 - Transport is newline-delimited JSON-RPC 2.0 with matching request IDs,
   generation 1 and plain mode. No attach stream, raw API proxy, `run`, `exec`,
   file, machine-management or lifecycle operation is exposed by Filebox.
-- Status comes only from hc's OSC 7501 root status record. Missing status and
-  unrecognised words (including `error`, for which Filebox has no separate
+- Status comes only from hc's OSC 7501 root status record. Unrecognised words (including `error`, for which Filebox has no separate
   state) display as **Unknown**, never as a guessed screen-text status.
   hc's completed-turn counter supplies `completion_seq`; core identity and
   terminal creation time distinguish identities across resets. No focused
@@ -92,14 +67,13 @@ as `ai_agent_backend_incompatible` rather than falling back to a shell.
   promises that a task finished. Polling supplies fresh terminal state after
   mutations; delivery metadata is not presented as an updated agent record.
 - Keys use `terminal.keys` and the existing Filebox key allowlist. As with
-  Herdr, key actions are **not LLM-reviewed**; only prompts are. The local
-  opt-in label grants access to the terminal regardless of its running program.
+  Herdr, key actions are **not LLM-reviewed**; only prompts are.
   Inputs are passed as JSON, not interpolated into hc command-line arguments.
 - Local subprocess deadlines match the existing backend budgets: list 8s,
   read 20s, keys 10s, prompt 15s (or requested wait + 5s). Cancellation kills
   the local transport process, not the hc core or terminal. A send already
   accepted by hc may still complete after Filebox times out or cancels;
-  inspect output before retrying to avoid duplicate input. Label revocation
+  inspect output before retrying to avoid duplicate input. Losing status
   likewise does not retract input already submitted to hc.
 
 Prompts continue through the existing mandatory Hub-side review, with context
@@ -109,14 +83,14 @@ provider configuration. See [prompt review configuration](herdr-compatibility.md
 ## Local verification
 
 The normal Rust suite includes isolated fake-transport contract tests (Python 3
-on Unix), covering handshakes, labels, operations, invalid responses, output
+on Unix), covering handshakes, detection, operations, invalid responses, output
 limits, timeouts and cancellation. An opt-in real-core smoke test creates an
-OSC-reporting fixture plus an unlabelled terminal, verifies list/read/prompt/keys
-and label revocation, then stops only its isolated core:
+OSC-reporting fixture plus a plain shell, verifies list/read/prompt/keys
+and rejection after the agent exits, then stops only its isolated core:
 
 ```sh
 FILEBOX_TEST_HC=/absolute/path/to/hc cargo test --locked -p filebox-agent \
-  real_core_labelled_terminal_lifecycle -- --ignored --nocapture
+  real_core_detected_agent_lifecycle -- --ignored --nocapture
 ```
 
 It uses scratch XDG homes and `HC_SESSION=filebox-test`; it does not call a
