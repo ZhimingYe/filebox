@@ -2,6 +2,11 @@
 
 All notable changes to filebox are listed here. Dates are UTC.
 
+## Unreleased
+
+### Changed
+- **hc agent detection** — automatically include local live terminals with a non-empty OSC 7501 `status.app`, using hc terminal names; labels no longer opt terminals in or override names.
+
 ## v3.1.5
 
 ### Breaking changes
@@ -22,7 +27,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 ## v3.0.0
 
 ### Added
-- **Experimental hc backend** — select **hc (experimental)** in Agent Settings to list and control local, live herdr-core terminals opted in with `fb=<name>` or `filebox=<name>` labels (case-insensitive keys; the value is the display name; legacy `filebox=ai-agent` still works). Operations target hc terminal IDs, and every read, prompt and key re-checks the label. The Herdr backend is unchanged. See `docs/hc-compatibility.md`.
+- **Experimental hc backend** — select **hc (experimental)** in Agent Settings to list and control local, live herdr-core coding-agent terminals. Operations target hc terminal IDs. The Herdr backend is unchanged. See `docs/hc-compatibility.md`.
 - **AI Agents settings and onboarding** — per-Agent enable switch in Agent Settings, persisted in `agent_state.json`, with Setup, Intro and not-running states; `FILEBOX_AGENT_AI_AGENTS_ENABLED=0`/`1` at Agent startup overrides and locks the switch.
 - **Prompt review state** — the AI Agents view shows whether Hub prompt review is on (with its model), off, or not configured.
 - **Markdown math** — Markdown previews render math locally with KaTeX (no CDN): `$...$`, `$$...$$`, `\(...\)`, `\[...\]`, GitHub `` $`...`$ ``, fenced `math`/`latex`/`tex`/`katex` blocks and standalone LaTeX environments. Invalid TeX stays readable.

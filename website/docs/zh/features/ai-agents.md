@@ -9,7 +9,7 @@
 在 **Settings**（Agent Settings）中打开 **AI Agents** 并选择后端。开关保存在该 Agent 上，跨浏览器共享。关闭只停止 Filebox 的控制与监测，不会停止后端或正在运行的编码代理。
 
 - **Herdr**：在 Agent 机器上安装 [Herdr CLI](https://herdr.ink)（已对照 v0.9.5）。让 Agent 进程的 PATH 能找到 `herdr`，或用 `FILEBOX_AGENT_HERDR` 指定可执行文件，再点 **Check installation**。
-- **hc (experimental)**：接入以 `fb=<名称>` 或 `filebox=<名称>` 标签明确授权的本地运行中 herdr-core 终端。见 [实验性 hc 配置](/zh/ops/agent#experimental-hc-backend)。两者都安装时，自动选择优先使用 Herdr。
+- **hc (experimental)**：自动接入通过 OSC 7501 报告非空 `status.app` 的本地运行中 herdr-core 终端，使用 hc 终端名称。见 [实验性 hc 配置](/zh/ops/agent#experimental-hc-backend)。两者都安装时，自动选择优先使用 Herdr。
 
 **Meet AI Agents** 介绍功能；**Set up AI Agents** 说明未安装或已关闭的状态。**AI agent backend is not running** 表示已找到 CLI，但需在 Agent 机器上启动后端。
 

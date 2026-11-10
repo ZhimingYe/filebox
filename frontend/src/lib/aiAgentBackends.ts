@@ -37,10 +37,10 @@ const hc: AiAgentBackendDescriptor = {
   installGuide: 'herdr-core installation guide',
   binaryName: 'hc',
   binaryEnvironment: 'FILEBOX_AGENT_HC',
-  serverCommand: 'hc run --bg --label fb=frontend -- claude',
-  versionNote: () => 'Experimental hc generation-1 API. Use fb=<name> or filebox=<name>; keys are case-insensitive and the value is the agent name in Filebox.',
+  serverCommand: 'hc run --bg --name frontend -- claude',
+  versionNote: () => 'Experimental hc generation-1 API. Local live coding-agent terminals reporting OSC 7501 status.app are included automatically, using hc terminal names.',
   noServerMessage: 'Check hc on the Agent machine. Filebox uses hc connect, which can start the local core automatically; the API must support generation 1.',
-  noAgentsMessage: 'Start with hc run --bg --label fb=frontend -- claude. Choose a name after fb= for each agent, such as frontend or backend. Connect or rename an existing terminal with hc label t7 fb=frontend. fb and filebox are case-insensitive. Only local live terminals with a non-empty name are listed; the legacy filebox=ai-agent marker still works.',
+  noAgentsMessage: 'Start with hc run --bg --name frontend -- claude. Local live terminals appear automatically when the coding agent reports a non-empty status.app via OSC 7501. Plain shells without status are not listed.',
 };
 
 export const aiAgentBackends: Record<string, AiAgentBackendDescriptor> = {
