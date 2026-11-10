@@ -53,13 +53,13 @@ export function parseSgr(input: string): SgrRun[] {
       else if (code === 39) fg = undefined;
       else if (code === 49) bg = undefined;
       else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) fg = ansiIndexedColor(code >= 90 ? code - 82 : code - 30);
-      else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) bg = ansiIndexedColor(code >= 100 ? code - 92 : code - 40);
+      else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) bg = ansiIndexedColor(code >= 100 ? code - 92 : code - 40, true);
       else if (code === 38 || code === 48) {
         const mode = codes[++j];
         let color: string | undefined;
         if (mode === 5) {
           const n = codes[++j];
-          if (Number.isInteger(n) && n >= 0 && n <= 255) color = ansiIndexedColor(n);
+          if (Number.isInteger(n) && n >= 0 && n <= 255) color = ansiIndexedColor(n, code === 48);
         } else if (mode === 2) {
           const rgb = codes.slice(j + 1, j + 4);
           j += 3;
