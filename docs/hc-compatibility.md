@@ -55,6 +55,14 @@ as `ai_agent_backend_incompatible` rather than falling back to a shell.
   hc's completed-turn counter supplies `completion_seq`; core identity and
   terminal creation time distinguish identities across resets. No focused
   terminal is inferred.
+- hc advertises `read_ansi` for read-only colored snapshots. An observer attach
+  collects VT output until 150 ms of quiet or a 1.5 s capture deadline, with a
+  4 MiB raw-byte limit and flow-control credits. A VT emulator resolves cursor
+  moves and emits only text and SGR, capped at 256 KiB and the requested tail
+  lines. Active output can advance the captured screen. No input, focus or
+  resize is sent; the observer is detached after capture.
+- Plain reads (including mandatory prompt-review context) still use
+  `terminal.read`. Older agents and Herdr do not advertise `read_ansi`.
 - Visible reads request `terminal.read` with `lines=0`. Bottom/default reads
   request history above the screen, then keep only the last requested number
   of lines of the entire result. hc may return a partial screen or stitch a

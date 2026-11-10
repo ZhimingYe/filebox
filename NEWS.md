@@ -5,6 +5,7 @@ All notable changes to filebox are listed here. Dates are UTC.
 ## Unreleased
 
 ### Changed
+- **hc colored snapshots** — display read-only terminal snapshots with colors and text emphasis; plain reads and prompt-review context remain plain text.
 - **hc agent detection** — automatically include local live terminals with a non-empty OSC 7501 `status.app`, using hc terminal names; labels no longer opt terminals in or override names.
 
 ## v3.1.5

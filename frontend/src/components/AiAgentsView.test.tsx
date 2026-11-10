@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api/client';
 import { aiAgentBackendKey } from '../hooks/useAiAgentAttention';
 import { AiAgentsView } from './AiAgentsView';
+import { ansiColors } from '../theme';
 
 vi.mock('../api/client', async (original) => {
   const actual = await original<typeof api>();
@@ -79,6 +80,29 @@ function button(label: string) {
 }
 
 describe('AiAgentsView', () => {
+  it.each([true, false])('requests and renders ANSI only when advertised (%s)', async (readAnsi) => {
+    const hc = { ...agent, capabilities: { ai_agents: {
+      ...agent.capabilities!.ai_agents!, backend: 'hc', version: '0.1.17',
+      backends: [{ kind: 'hc', version: '0.1.17', features: {
+        read_ansi: readAnsi, prompt_wait: true, read_visible: true,
+        keys: null, status_detection: true,
+      } }],
+    } } } as api.AgentInfo;
+    vi.mocked(api.aiAgentCommand).mockImplementation(async (_id, body) => body.op === 'status'
+      ? listed : { req_id: 'r', output: readAnsi ? '\x1b[31mRED\x1b[0m plain' : 'RED plain' });
+    await render(hc);
+    const read = vi.mocked(api.aiAgentCommand).mock.calls.find(([, body]) => body.op === 'read')![1];
+    expect(read.ansi).toBe(readAnsi ? true : undefined);
+    const pre = container.querySelector('pre')!;
+    expect(pre.textContent).toBe('RED plain');
+    if (readAnsi) {
+      const span = [...pre.querySelectorAll('span')].find(s => s.textContent === 'RED')!;
+      const probe = document.createElement('span');
+      probe.style.color = ansiColors[1];
+      expect(span.style.color).toBe(probe.style.color);
+    }
+  });
+
   it.each([
     [{ state: 'on', model: 'deepseek-flash' }, 'Reviewed by deepseek-flash', false],
     [{ state: 'off' }, 'Prompt review off', false],

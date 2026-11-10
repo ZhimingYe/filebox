@@ -26,6 +26,7 @@ impl ConnectionSession<'_> {
             keys,
             lines,
             read_source,
+            ansi,
             wait,
             timeout_ms,
         } = message
@@ -124,6 +125,7 @@ impl ConnectionSession<'_> {
                 keys,
                 lines,
                 read_source,
+                ansi,
                 wait,
                 timeout_ms,
                 cancel,

@@ -1024,6 +1024,7 @@ exit 1
                 Some(40),
                 None,
                 false,
+                false,
                 None,
                 Arc::new(cancel),
             )
@@ -1053,7 +1054,7 @@ exit 1
                 let msg = crate::ai_agents::handle_request(
                     &client,
                     "p1".into(), AiAgentOp::Prompt, Some("reviewer".into()),
-                    Some(text.into()), Vec::new(), None, None, wait, Some(60_000),
+                    Some(text.into()), Vec::new(), None, None, false, wait, Some(60_000),
                     Arc::new(AtomicBool::new(false)),
                 ).await;
                 match msg {

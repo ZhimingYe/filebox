@@ -38,6 +38,11 @@ pub trait AiAgentBackend: Send + Sync {
         source: Option<AiAgentReadSource>,
         cancel: &'a AtomicBool,
     ) -> BackendFuture<'a, Result<String, String>>;
+    fn read_ansi<'a>(
+        &'a self, _target: &'a str, _lines: u32, _source: Option<AiAgentReadSource>, _cancel: &'a AtomicBool,
+    ) -> BackendFuture<'a, Result<String, String>> {
+        Box::pin(async { Err("ai_agent_unsupported_operation".into()) })
+    }
     fn prompt<'a>(
         &'a self,
         target: &'a str,
@@ -165,11 +170,15 @@ pub async fn handle_request(
     keys: Vec<String>,
     lines: Option<u32>,
     read_source: Option<AiAgentReadSource>,
+    ansi: bool,
     wait: bool,
     timeout_ms: Option<u64>,
     cancel: Arc<AtomicBool>,
 ) -> AgentMessage {
     let features = backend.features();
+    if ansi && (op != AiAgentOp::Read || !features.read_ansi) {
+        return rejected(req_id, "ai_agent_unsupported_operation");
+    }
     let response = match op {
         AiAgentOp::Status => match backend.list(&cancel).await {
             Ok(result) => AgentMessage::AiAgentResponse {
@@ -190,10 +199,12 @@ pub async fn handle_request(
                 Ok(target) => target,
                 Err(error) => return invalid(req_id, error),
             };
-            match backend
-                .read(&target, clamp_lines(lines), read_source, &cancel)
-                .await
-            {
+            let result = if ansi {
+                backend.read_ansi(&target, clamp_lines(lines), read_source, &cancel).await
+            } else {
+                backend.read(&target, clamp_lines(lines), read_source, &cancel).await
+            };
+            match result {
                 Ok(output) => AgentMessage::AiAgentResponse {
                     req_id,
                     error: None,
@@ -505,7 +516,7 @@ mod tests {
         let request = tokio::spawn(async move {
             handle_request(
                 original.as_ref(), "in-flight".into(), AiAgentOp::Read,
-                Some("reviewer".into()), None, Vec::new(), Some(10), None,
+                Some("reviewer".into()), None, Vec::new(), Some(10), None, false,
                 false, None, Arc::new(AtomicBool::new(false)),
             ).await
         });
@@ -524,7 +535,7 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let status = handle_request(
             &backend, "status".into(), AiAgentOp::Status, None, None, Vec::new(),
-            None, None, false, None, cancel.clone(),
+            None, None, false, false, None, cancel.clone(),
         ).await;
         assert!(matches!(status, AgentMessage::AiAgentResponse {
             status: Some(AiAgentBackendStatus { reachable: true, .. }),
@@ -533,7 +544,7 @@ mod tests {
 
         let read = handle_request(
             &backend, "read".into(), AiAgentOp::Read, Some(" reviewer ".into()),
-            None, Vec::new(), Some(999), Some(AiAgentReadSource::Bottom), false, None,
+            None, Vec::new(), Some(999), Some(AiAgentReadSource::Bottom), false, false, None,
             cancel.clone(),
         ).await;
         assert!(matches!(read, AgentMessage::AiAgentResponse {
@@ -542,7 +553,7 @@ mod tests {
 
         let prompt = handle_request(
             &backend, "prompt".into(), AiAgentOp::Prompt, Some("reviewer".into()),
-            Some("test prompt".into()), Vec::new(), None, None, false, None, cancel.clone(),
+            Some("test prompt".into()), Vec::new(), None, None, false, false, None, cancel.clone(),
         ).await;
         assert!(matches!(prompt, AgentMessage::AiAgentResponse {
             agent: Some(_), ..
@@ -550,7 +561,7 @@ mod tests {
 
         let keys = handle_request(
             &backend, "keys".into(), AiAgentOp::SendKeys, Some("reviewer".into()),
-            None, vec!["ENTER".into()], None, None, false, None, cancel,
+            None, vec!["ENTER".into()], None, None, false, false, None, cancel,
         ).await;
         assert!(matches!(keys, AgentMessage::AiAgentResponse {
             agent: Some(_), ..
@@ -570,6 +581,7 @@ mod tests {
                 AiAgentFeatures {
                     prompt_wait: false,
                     read_visible: false,
+                    read_ansi: false,
                     keys: Some(vec!["enter".into(), "esc".into()]),
                     status_detection: false,
                 }
@@ -597,7 +609,7 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let rejected_wait = handle_request(
             &backend, "wait".into(), AiAgentOp::Prompt, Some("reviewer".into()),
-            Some("prompt".into()), Vec::new(), None, None, true, None, cancel.clone(),
+            Some("prompt".into()), Vec::new(), None, None, false, true, None, cancel.clone(),
         ).await;
         assert!(matches!(rejected_wait, AgentMessage::AiAgentResponse {
             error: Some(error), status: None, .. } if error == "ai_agent_unsupported_operation"));
@@ -605,26 +617,34 @@ mod tests {
 
         let prompt = handle_request(
             &backend, "prompt".into(), AiAgentOp::Prompt, Some("reviewer".into()),
-            Some("prompt".into()), Vec::new(), None, None, false, None, cancel.clone(),
+            Some("prompt".into()), Vec::new(), None, None, false, false, None, cancel.clone(),
         ).await;
         assert!(matches!(prompt, AgentMessage::AiAgentResponse { agent: Some(_), .. }));
         let rejected_visible = handle_request(
             &backend, "visible".into(), AiAgentOp::Read, Some("reviewer".into()),
-            None, Vec::new(), None, Some(AiAgentReadSource::Visible), false, None, cancel.clone(),
+            None, Vec::new(), None, Some(AiAgentReadSource::Visible), false, false, None, cancel.clone(),
         ).await;
         assert!(matches!(rejected_visible, AgentMessage::AiAgentResponse {
             error: Some(error), status: None, .. } if error == "ai_agent_unsupported_operation"));
         assert_eq!(*calls.lock().unwrap(), ["prompt"]);
 
+        let rejected_ansi = handle_request(
+            &backend, "ansi".into(), AiAgentOp::Read, Some("reviewer".into()),
+            None, Vec::new(), None, None, true, false, None, cancel.clone(),
+        ).await;
+        assert!(matches!(rejected_ansi, AgentMessage::AiAgentResponse {
+            error: Some(error), .. } if error == "ai_agent_unsupported_operation"));
+        assert_eq!(*calls.lock().unwrap(), ["prompt"]);
+
         let bottom = handle_request(
             &backend, "bottom".into(), AiAgentOp::Read, Some("reviewer".into()),
-            None, Vec::new(), None, Some(AiAgentReadSource::Bottom), false, None, cancel.clone(),
+            None, Vec::new(), None, Some(AiAgentReadSource::Bottom), false, false, None, cancel.clone(),
         ).await;
         assert!(matches!(bottom, AgentMessage::AiAgentResponse { output: Some(output), .. }
             if output == "reviewer"));
         let rejected_keys = handle_request(
             &backend, "ctrl-c".into(), AiAgentOp::SendKeys, Some("reviewer".into()),
-            None, vec!["ctrl+c".into()], None, None, false, None, cancel.clone(),
+            None, vec!["ctrl+c".into()], None, None, false, false, None, cancel.clone(),
         ).await;
         assert!(matches!(rejected_keys, AgentMessage::AiAgentResponse {
             error: Some(error), status: None, .. } if error == "ai_agent_key_unsupported"));
@@ -632,7 +652,7 @@ mod tests {
 
         let enter = handle_request(
             &backend, "enter".into(), AiAgentOp::SendKeys, Some("reviewer".into()),
-            None, vec!["ENTER".into()], None, None, false, None, cancel,
+            None, vec!["ENTER".into()], None, None, false, false, None, cancel,
         ).await;
         assert!(matches!(enter, AgentMessage::AiAgentResponse { agent: Some(_), .. }));
         assert_eq!(*calls.lock().unwrap(), ["prompt", "read", "keys"]);

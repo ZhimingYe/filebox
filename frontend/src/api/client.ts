@@ -417,6 +417,7 @@ export interface AiAgentBackendInfo {
 export interface AiAgentFeatures {
   prompt_wait: boolean;
   read_visible: boolean;
+  read_ansi?: boolean;
   keys: string[] | null;
   status_detection: boolean;
 }
@@ -1175,6 +1176,7 @@ export interface AiAgentCommandBody {
   keys?: string[];
   lines?: number;
   read_source?: 'visible' | 'bottom';
+  ansi?: boolean;
   wait?: boolean;
   timeout_ms?: number;
 }

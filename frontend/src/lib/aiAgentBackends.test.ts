@@ -23,7 +23,7 @@ it('selects features only from the selected backend, preserving explicit false a
     { kind: 'hc', features: { prompt_wait: false, keys: ['Enter'] } },
   ] } as AiAgentsCapability;
   const before = structuredClone(capability);
-  expect(aiAgentFeatures(capability)).toEqual({ prompt_wait: false, read_visible: true, status_detection: true, keys: ['Enter'] });
+  expect(aiAgentFeatures(capability)).toEqual({ prompt_wait: false, read_visible: true, read_ansi: false, status_detection: true, keys: ['Enter'] });
   expect(capability).toEqual(before);
   const defaults = aiAgentFeatures();
   defaults.prompt_wait = false;

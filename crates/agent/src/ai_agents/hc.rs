@@ -17,6 +17,9 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use super::{AiAgentBackend, AiAgentList, BackendFuture};
 
+#[path = "hc_snapshot.rs"]
+mod snapshot;
+
 const RPC_MAX_BYTES: usize = 2 * 1024 * 1024;
 const METHODS: &[&str] = &[
     "terminal.list", "terminal.get", "terminal.read", "terminal.send", "terminal.keys",
@@ -115,7 +118,7 @@ impl HcBackend {
 impl AiAgentBackend for HcBackend {
     fn kind(&self) -> &'static str { "hc" }
     fn version(&self) -> &str { &self.version }
-    fn features(&self) -> AiAgentFeatures { AiAgentFeatures::default() }
+    fn features(&self) -> AiAgentFeatures { AiAgentFeatures { read_ansi: true, ..AiAgentFeatures::default() } }
 
     fn list<'a>(&'a self, cancel: &'a AtomicBool) -> BackendFuture<'a, Result<AiAgentList, String>> {
         Box::pin(async move {
@@ -143,6 +146,13 @@ impl AiAgentBackend for HcBackend {
         Box::pin(async move {
             let value = self.execute(Operation::Read { target, lines, source }, cancel).await?;
             value.as_str().map(str::to_string).ok_or_else(incompatible)
+        })
+    }
+
+    fn read_ansi<'a>(&'a self, target: &'a str, lines: u32, source: Option<AiAgentReadSource>, cancel: &'a AtomicBool)
+        -> BackendFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            bounded(Duration::from_secs(20), cancel, snapshot::read(&self.bin, target, lines, source)).await
         })
     }
 

@@ -6,6 +6,7 @@ import { SettingsSwitch } from './SettingsSwitch';
 import { AiAgentShortcuts } from './AiAgentShortcuts';
 import { AiAgentButton, AiAgentCallout, AiAgentPopover } from './AiAgentControls';
 import { AiAgentQueue } from '../lib/aiAgentQueue';
+import { parseSgr } from '../lib/ansiSnapshot';
 import { useIsMobile } from '../state/useIsMobile';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { aiAgentBackend, aiAgentBackendLabel, aiAgentFeatures } from '../lib/aiAgentBackends';
@@ -301,6 +302,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
       const identity = paneIdentity(itemAtStart);
       const res = await command(
         { op: 'read', target: itemAtStart.id || target, lines: 120,
+          ...(features.read_ansi ? { ansi: true } : {}),
           read_source: visible && features.read_visible ? 'visible' : 'bottom' },
         controller.signal,
         25_000,
@@ -336,7 +338,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
       parentSignal?.removeEventListener('abort', abort);
       if (outputGenRef.current === gen) { abortOutput.current = null; if (mountedRef.current) setLoadingOutput(false); }
     }
-  }, [backendKind, command, features.read_visible]);
+  }, [backendKind, command, features.read_visible, features.read_ansi]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -608,11 +610,12 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
     jumpToLatest();
     if (selected) void loadOutput(selected, false);
   };
+  const outputRuns = useMemo(() => features.read_ansi ? parseSgr(output) : [{ text: output, style: {} }], [output, features.read_ansi]);
   const copyOutput = async () => {
     if (copying || !output) return;
     setCopying(true);
     setCopyFailedFor(null);
-    const success = await copyToClipboard(output, copyLabel);
+    const success = await copyToClipboard(outputRuns.map(run => run.text).join(''), copyLabel);
     if (!mountedRef.current) return;
     setCopying(false);
     if (!success) setCopyFailedFor(copyLabel);
@@ -855,7 +858,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
             >
               {loadingOutput && !output
                 ? 'Reading latest output…'
-                : output || 'No output yet. Send a prompt or wait for the agent to write.'}
+                : output ? outputRuns.map((run, index) => <span key={index} style={run.style}>{run.text}</span>) : 'No output yet. Send a prompt or wait for the agent to write.'}
             </pre>
 
             <div style={{ ...styles.composer, ...(isMobile ? { padding: '4px 8px max(8px, env(safe-area-inset-bottom))' } : compactHeight ? { padding: '8px 12px 10px', gap: 8 } : null) }}>
