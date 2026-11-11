@@ -18,7 +18,7 @@ Researchers, analysts, and data scientists whose results live as files on shared
 
 filebox is not a sync/drive product and not a full remote desktop — it is the “front door” to result files: open, preview, search, occasionally upload a small scratch file, or manage coding agents through AI Agents.
 
-## What you can do (v3.1.5)
+## What you can do (v3.2.0)
 
 | Capability | Notes | Docs |
 |------------|-------|------|

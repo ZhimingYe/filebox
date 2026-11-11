@@ -457,7 +457,7 @@ async function main() {
   const { readdir, stat } = await import('node:fs/promises')
   const files = (await readdir(outDir)).filter((f) => f.endsWith('.png') || f.endsWith('.webp')).sort()
   const lines = ['# Real Hub+Agent screenshots / 真实 Hub + Agent 截图', '',
-    `Source / 来源: ${baseUrl} (v3.1.5, FILEBOX_DEV_MODE local).`,
+    `Source / 来源: ${baseUrl} (v3.2.0, FILEBOX_DEV_MODE local).`,
     'AI Agents uses synthetic Herdr CLI output; shots 15/15c override only the displayed review state to on / deepseek-flash. / AI Agents 使用合成 CLI 输出；15/15c 仅覆盖显示的审核状态。',
     '', '| File / 文件 | Bytes / 字节 |', '|------|------|']
   for (const f of files) {

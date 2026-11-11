@@ -2,7 +2,10 @@
 
 All notable changes to filebox are listed here. Dates are UTC.
 
-## Unreleased
+## v3.2.0
+
+### Fixed
+- **Forwarding apps with localhost checks** — forwarded services now receive loopback Host/Origin/Referer so apps that reject non-local hosts (e.g. DeepSeek Harness API and WebSocket) work; the Hub recovers the browser's scheme and port from a same-hostname Origin/Referer, so no `X-Forwarded-Proto` or other reverse-proxy configuration is needed.
 
 ### Changed
 - **hc colored snapshots** — display read-only terminal snapshots with colors and text emphasis; plain reads and prompt-review context remain plain text.
