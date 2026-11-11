@@ -11,7 +11,7 @@ import { useIsMobile } from '../state/useIsMobile';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { aiAgentBackend, aiAgentBackendLabel, aiAgentFeatures } from '../lib/aiAgentBackends';
 import { aiAgentBackendKey } from '../hooks/useAiAgentAttention';
-import { IconChevronLeft, IconRefresh, IconSettings, IconClose, IconSearch, IconClipboard, IconCheck } from './icons';
+import { IconChevronLeft, IconChevronRight, IconRefresh, IconSettings, IconClose, IconSearch, IconClipboard, IconCheck } from './icons';
 
 interface Props {
   agent: api.AgentInfo;
@@ -109,6 +109,14 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
   const backendKey = aiAgentBackendKey(agent.id, backendKind);
   const backend = aiAgentBackend(backendKind);
   const isMobile = useIsMobile();
+  const [listCollapsed, setListCollapsed] = useState(() => {
+    try { return localStorage.getItem('filebox.aiAgentsListCollapsed') === '1'; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('filebox.aiAgentsListCollapsed', listCollapsed ? '1' : '0'); }
+    catch { /* ignore */ }
+  }, [listCollapsed]);
   const isMobileRef = useRef(isMobile);
   isMobileRef.current = isMobile;
   const [status, setStatus] = useState<api.AiAgentBackendStatus | null>(null);
@@ -566,7 +574,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
 
   const reachable = status?.reachable === true;
   const showDetail = !!selectedAgent && (!isMobile || selected !== null);
-  const showList = !isMobile || !selectedAgent;
+  const showList = isMobile ? !selectedAgent : !listCollapsed || agents.length === 0;
   const promptDisabled = sending || !reachable || !prompt.trim()
     || promptBytes > PROMPT_MAX_BYTES || selectedAgent?.status === 'blocked' || promptReview?.state === 'not_configured';
   const outputChanged = features.status_detection && selectedAgent && seenSignature !== null && seenSignature !== outputSignature(selectedAgent);
@@ -664,6 +672,9 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
           <h1 style={layout.pageTitle}>AI Agents</h1>
         </div>
         <div style={styles.keyRow}>
+          {!isMobile && listCollapsed && agents.length > 0 && <AiAgentButton variant="quiet" icon size="sm"
+            aria-label="Expand coding agents list" title="Expand coding agents list" aria-expanded={false}
+            onClick={() => setListCollapsed(false)}><IconChevronRight /></AiAgentButton>}
           {listControl}
           {!showDetail && settingsControl}
         </div>
@@ -678,7 +689,11 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
           <aside style={{ ...(isMobile ? styles.listMobile : styles.listDesktop),
             ...(!isMobile && agents.length === 0 ? { width: '100%', maxWidth: 680, margin: '0 auto', border: 0, background: 'transparent', boxShadow: 'none', padding: 0 } : null) }} aria-label="AI agents">
             {agents.length > 0 && <div style={styles.listHeading}>
-              <span>Coding agents</span><span style={styles.countChip}>{agents.length}</span>
+              <span>Coding agents</span>
+              <span style={{ ...styles.countChip, ...(!isMobile ? { marginLeft: 'auto' } : null) }}>{agents.length}</span>
+              {!isMobile && <AiAgentButton variant="quiet" icon size="sm" style={{ marginLeft: 4 }}
+                aria-label="Collapse coding agents list" title="Collapse coding agents list" aria-expanded={true}
+                onClick={() => setListCollapsed(true)}><IconChevronLeft /></AiAgentButton>}
             </div>}
             {reachable && (agents.length > 1 || agentQuery || (features.status_detection && statusFilter !== 'all')) && <div style={{ ...styles.listTools, flexDirection: 'row' }}>
               <label style={{ ...styles.searchBox, ...(searchFocused ? styles.fieldFocused : null) }}>

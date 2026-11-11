@@ -38,6 +38,7 @@ const listed = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  localStorage.removeItem('filebox.aiAgentsListCollapsed');
   vi.mocked(api.aiAgentCommand).mockImplementation(async (_id, body) => {
     if (body.op === 'status') return listed;
     if (body.op === 'read') return { req_id: 'r1', output: 'latest pane output' };
@@ -274,6 +275,40 @@ describe('AiAgentsView', () => {
     await act(async () => button('Down').click());
     expect(api.aiAgentCommand).toHaveBeenCalledWith(agent.id,
       { op: 'send_keys', backend: 'herdr', target: 'w1:p2', keys: ['down'] }, expect.any(AbortSignal), 15_000);
+  });
+
+  it('collapses and expands the desktop list without losing the selected agent or snapshot', async () => {
+    await render();
+    expect(container.querySelector('aside')).not.toBeNull();
+    await act(async () => button('Collapse coding agents list').click());
+    expect(container.querySelector('aside')).toBeNull();
+    expect(container.querySelector('section')!.textContent).toContain('reviewer');
+    expect(container.querySelector('section')!.textContent).toContain('Working');
+    expect(container.querySelector('pre')!.textContent).toBe('latest pane output');
+    expect(localStorage.getItem('filebox.aiAgentsListCollapsed')).toBe('1');
+    expect(button('Expand coding agents list').getAttribute('aria-expanded')).toBe('false');
+    await act(async () => button('Expand coding agents list').click());
+    expect(container.querySelector('aside')).not.toBeNull();
+    expect(localStorage.getItem('filebox.aiAgentsListCollapsed')).toBe('0');
+  });
+
+  it('restores the saved collapsed preference on remount and ignores it on mobile', async () => {
+    await render();
+    await act(async () => button('Collapse coding agents list').click());
+    act(() => root.unmount());
+    root = createRoot(container);
+    await render();
+    expect(container.querySelector('aside')).toBeNull();
+    expect(button('Expand coding agents list')).toBeDefined();
+    await act(async () => {
+      window.innerWidth = 390;
+      window.dispatchEvent(new Event('resize'));
+    });
+    await act(async () => button('Back to agent list').click());
+    expect(container.querySelector('aside')).not.toBeNull();
+    expect(button('Collapse coding agents list')).toBeUndefined();
+    expect(button('Expand coding agents list')).toBeUndefined();
+    expect(localStorage.getItem('filebox.aiAgentsListCollapsed')).toBe('1');
   });
 
   it('keeps the desktop list compact and long names and paths ellipsized with tooltips', async () => {
