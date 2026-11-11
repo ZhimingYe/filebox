@@ -22,7 +22,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
 
@@ -32,8 +32,19 @@ jobs:
 
       - name: Install musl toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools
+          # Fall back to building musl-gcc from source when the Ubuntu archive is unreachable.
+          if timeout 300 sh -c 'sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools'; then exit 0; fi
+          curl -fsSL --retry 3 -o /tmp/musl.tar.gz https://musl.libc.org/releases/musl-1.2.5.tar.gz
+          echo "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4  /tmp/musl.tar.gz" | sha256sum -c
+          tar -xzf /tmp/musl.tar.gz -C /tmp
+          (cd /tmp/musl-1.2.5 && ./configure --prefix="$HOME/musl" && make -j"$(nproc)" && make install)
+          # Upstream specs lack static-pie (Ubuntu patches it in); Rust links static-pie with crt-static.
+          M="$HOME/musl"
+          sed -i -e "s|%{!shared: $M/lib/Scrt1.o}|%{!shared: %{static-pie:$M/lib/rcrt1.o} %{!static-pie:$M/lib/Scrt1.o}}|" \
+            -e 's|^-dynamic-linker \(\S*\) -nostdlib|%{!static-pie:-dynamic-linker \1} -nostdlib %{static-pie:-static -pie --no-dynamic-linker -z text}|' \
+            "$M/lib/musl-gcc.specs"
+          grep -q rcrt1.o "$M/lib/musl-gcc.specs"
+          echo "$HOME/musl/bin" >> "$GITHUB_PATH"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
