@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "filebox-agent"
-version = "3.1.5"
+version = "3.2.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "filebox-hub"
-version = "3.1.5"
+version = "3.2.0"
 dependencies = [
  "ammonia",
  "async-compression",
@@ -670,7 +670,7 @@ dependencies = [
 
 [[package]]
 name = "filebox-llm"
-version = "3.1.5"
+version = "3.2.0"
 dependencies = [
  "axum",
  "reqwest",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "filebox-protocol"
-version = "3.1.5"
+version = "3.2.0"
 dependencies = [
  "base64",
  "serde",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "filebox-updater"
-version = "3.1.5"
+version = "3.2.0"
 dependencies = [
  "flate2",
  "hex",
