@@ -387,6 +387,8 @@ pub enum HubMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         read_source: Option<crate::ai_agents::AiAgentReadSource>,
         #[serde(default)]
+        ansi: bool,
+        #[serde(default)]
         wait: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
@@ -397,6 +399,17 @@ pub enum HubMessage {
 mod tests {
     use super::*;
     use crate::resources::{Capabilities, FileStat, FsEntry, FsEntryType, RootConfig};
+
+    #[test]
+    fn ansi_reads_are_opt_in_for_old_requests_and_agents() {
+        let request: HubMessage = serde_json::from_value(serde_json::json!({
+            "type": "ai_agent_request", "req_id": "read", "op": "read", "target": "t1"
+        })).unwrap();
+        assert!(matches!(request, HubMessage::AiAgentRequest { ansi: false, .. }));
+        let features: crate::resources::AiAgentFeatures = serde_json::from_str("{}").unwrap();
+        assert!(!features.read_ansi);
+        assert!(!crate::resources::AiAgentFeatures::default().read_ansi);
+    }
 
     fn round_trip_agent(msg: &AgentMessage) -> AgentMessage {
         let json = serde_json::to_string(msg).unwrap();
@@ -1048,6 +1061,7 @@ mod tests {
             keys: Vec::new(),
             lines: None,
             read_source: None,
+            ansi: false,
             wait: false,
             timeout_ms: None,
         };
@@ -1071,6 +1085,7 @@ mod tests {
             keys: Vec::new(),
             lines: None,
             read_source: None,
+            ansi: false,
             wait: false,
             timeout_ms: None,
         };

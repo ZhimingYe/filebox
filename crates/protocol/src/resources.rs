@@ -178,6 +178,8 @@ pub struct AiAgentFeatures {
     /// Bottom reads are mandatory for every backend.
     #[serde(default = "default_true")]
     pub read_visible: bool,
+    #[serde(default)]
+    pub read_ansi: bool,
     /// `None` allows the full Filebox key allowlist.
     #[serde(default)]
     pub keys: Option<Vec<String>>,
@@ -190,6 +192,7 @@ impl Default for AiAgentFeatures {
         Self {
             prompt_wait: true,
             read_visible: true,
+            read_ansi: false,
             keys: None,
             status_detection: true,
         }

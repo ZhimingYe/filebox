@@ -6,11 +6,12 @@ import { SettingsSwitch } from './SettingsSwitch';
 import { AiAgentShortcuts } from './AiAgentShortcuts';
 import { AiAgentButton, AiAgentCallout, AiAgentPopover } from './AiAgentControls';
 import { AiAgentQueue } from '../lib/aiAgentQueue';
+import { parseSgr } from '../lib/ansiSnapshot';
 import { useIsMobile } from '../state/useIsMobile';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { aiAgentBackend, aiAgentBackendLabel, aiAgentFeatures } from '../lib/aiAgentBackends';
 import { aiAgentBackendKey } from '../hooks/useAiAgentAttention';
-import { IconChevronLeft, IconRefresh, IconSettings, IconClose, IconSearch, IconClipboard, IconCheck } from './icons';
+import { IconChevronLeft, IconChevronRight, IconRefresh, IconSettings, IconClose, IconSearch, IconClipboard, IconCheck } from './icons';
 
 interface Props {
   agent: api.AgentInfo;
@@ -108,6 +109,14 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
   const backendKey = aiAgentBackendKey(agent.id, backendKind);
   const backend = aiAgentBackend(backendKind);
   const isMobile = useIsMobile();
+  const [listCollapsed, setListCollapsed] = useState(() => {
+    try { return localStorage.getItem('filebox.aiAgentsListCollapsed') === '1'; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('filebox.aiAgentsListCollapsed', listCollapsed ? '1' : '0'); }
+    catch { /* ignore */ }
+  }, [listCollapsed]);
   const isMobileRef = useRef(isMobile);
   isMobileRef.current = isMobile;
   const [status, setStatus] = useState<api.AiAgentBackendStatus | null>(null);
@@ -301,6 +310,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
       const identity = paneIdentity(itemAtStart);
       const res = await command(
         { op: 'read', target: itemAtStart.id || target, lines: 120,
+          ...(features.read_ansi ? { ansi: true } : {}),
           read_source: visible && features.read_visible ? 'visible' : 'bottom' },
         controller.signal,
         25_000,
@@ -336,7 +346,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
       parentSignal?.removeEventListener('abort', abort);
       if (outputGenRef.current === gen) { abortOutput.current = null; if (mountedRef.current) setLoadingOutput(false); }
     }
-  }, [backendKind, command, features.read_visible]);
+  }, [backendKind, command, features.read_visible, features.read_ansi]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -564,7 +574,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
 
   const reachable = status?.reachable === true;
   const showDetail = !!selectedAgent && (!isMobile || selected !== null);
-  const showList = !isMobile || !selectedAgent;
+  const showList = isMobile ? !selectedAgent : !listCollapsed || agents.length === 0;
   const promptDisabled = sending || !reachable || !prompt.trim()
     || promptBytes > PROMPT_MAX_BYTES || selectedAgent?.status === 'blocked' || promptReview?.state === 'not_configured';
   const outputChanged = features.status_detection && selectedAgent && seenSignature !== null && seenSignature !== outputSignature(selectedAgent);
@@ -608,11 +618,12 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
     jumpToLatest();
     if (selected) void loadOutput(selected, false);
   };
+  const outputRuns = useMemo(() => features.read_ansi ? parseSgr(output) : [{ text: output, style: {} }], [output, features.read_ansi]);
   const copyOutput = async () => {
     if (copying || !output) return;
     setCopying(true);
     setCopyFailedFor(null);
-    const success = await copyToClipboard(output, copyLabel);
+    const success = await copyToClipboard(outputRuns.map(run => run.text).join(''), copyLabel);
     if (!mountedRef.current) return;
     setCopying(false);
     if (!success) setCopyFailedFor(copyLabel);
@@ -661,6 +672,9 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
           <h1 style={layout.pageTitle}>AI Agents</h1>
         </div>
         <div style={styles.keyRow}>
+          {!isMobile && listCollapsed && agents.length > 0 && <AiAgentButton variant="quiet" icon size="sm"
+            aria-label="Expand coding agents list" title="Expand coding agents list" aria-expanded={false}
+            onClick={() => setListCollapsed(false)}><IconChevronRight /></AiAgentButton>}
           {listControl}
           {!showDetail && settingsControl}
         </div>
@@ -675,7 +689,11 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
           <aside style={{ ...(isMobile ? styles.listMobile : styles.listDesktop),
             ...(!isMobile && agents.length === 0 ? { width: '100%', maxWidth: 680, margin: '0 auto', border: 0, background: 'transparent', boxShadow: 'none', padding: 0 } : null) }} aria-label="AI agents">
             {agents.length > 0 && <div style={styles.listHeading}>
-              <span>Coding agents</span><span style={styles.countChip}>{agents.length}</span>
+              <span>Coding agents</span>
+              <span style={{ ...styles.countChip, ...(!isMobile ? { marginLeft: 'auto' } : null) }}>{agents.length}</span>
+              {!isMobile && <AiAgentButton variant="quiet" icon size="sm" style={{ marginLeft: 4 }}
+                aria-label="Collapse coding agents list" title="Collapse coding agents list" aria-expanded={true}
+                onClick={() => setListCollapsed(true)}><IconChevronLeft /></AiAgentButton>}
             </div>}
             {reachable && (agents.length > 1 || agentQuery || (features.status_detection && statusFilter !== 'all')) && <div style={{ ...styles.listTools, flexDirection: 'row' }}>
               <label style={{ ...styles.searchBox, ...(searchFocused ? styles.fieldFocused : null) }}>
@@ -749,13 +767,13 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
                   >
                     <span style={styles.cardBody}>
                       <span style={styles.cardTop}>
-                        <span style={{ ...styles.cardName, ...(active ? { color: c.accent } : null) }}>{displayName(item)}</span>
+                        <span title={displayName(item)} style={{ ...styles.cardName, ...(active ? { color: c.accent } : null) }}>{displayName(item)}</span>
                         {drafts[paneIdentity(item)]?.trim() && <span style={styles.draftBadge}>Draft</span>}
                         {features.status_detection && <span style={{ ...styles.badge, color: meta.color, background: active ? c.surface : meta.bg }}>
                           <span style={{ ...styles.dot, background: meta.color }} />{meta.label}
                         </span>}
                       </span>
-                      <span style={styles.cardMeta}>
+                      <span style={styles.cardMeta} title={item.cwd ?? undefined}>
                         {backendKind === 'hc' ? `${item.target} · ` : ''}{item.kind || 'agent'}
                         {item.cwd ? ` · ${item.cwd}` : backendKind !== 'hc' && item.id ? ` · ${item.id}` : ''}
                       </span>
@@ -855,7 +873,7 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
             >
               {loadingOutput && !output
                 ? 'Reading latest output…'
-                : output || 'No output yet. Send a prompt or wait for the agent to write.'}
+                : output ? outputRuns.map((run, index) => <span key={index} style={run.style}>{run.text}</span>) : 'No output yet. Send a prompt or wait for the agent to write.'}
             </pre>
 
             <div style={{ ...styles.composer, ...(isMobile ? { padding: '4px 8px max(8px, env(safe-area-inset-bottom))' } : compactHeight ? { padding: '8px 12px 10px', gap: 8 } : null) }}>
@@ -986,7 +1004,8 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
   },
   listDesktop: {
-    width: 'clamp(220px, 28%, 300px)',
+    width: 240,
+    boxSizing: 'border-box',
     flexShrink: 0,
     overflow: 'auto',
     border: `1px solid ${c.border}`,

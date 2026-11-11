@@ -33,6 +33,8 @@ pub struct AiAgentBody {
     #[serde(default)]
     pub read_source: Option<AiAgentReadSource>,
     #[serde(default)]
+    pub ansi: bool,
+    #[serde(default)]
     pub wait: bool,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
@@ -305,6 +307,7 @@ pub async fn ai_agents_handler(
         .map(|backend| backend.features.clone())
         .unwrap_or_default();
     let unsupported = match validated.op {
+        AiAgentOp::Read if validated.ansi && !features.read_ansi => Some("ai_agent_unsupported_operation"),
         AiAgentOp::Prompt if validated.wait && !features.prompt_wait => {
             Some("ai_agent_unsupported_operation")
         }
@@ -471,7 +474,7 @@ async fn review_context(
         let msg = HubMessage::AiAgentRequest {
             req_id: req_id.clone(), op: AiAgentOp::Read, backend: Some(backend.into()), target: target.clone(),
             text: None, keys: Vec::new(), lines: Some(120),
-            read_source: Some(AiAgentReadSource::Bottom), wait: false, timeout_ms: None,
+            read_source: Some(AiAgentReadSource::Bottom), ansi: false, wait: false, timeout_ms: None,
         };
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         match relay_ai_agents(state, principal_id, agent_id, &req_id, msg, remaining).await {
@@ -581,6 +584,7 @@ async fn reviewed_message(
         keys: validated.keys,
         lines: validated.lines,
         read_source: validated.read_source,
+        ansi: validated.ansi,
         wait: validated.wait,
         timeout_ms: validated.timeout_ms,
     })
@@ -595,6 +599,7 @@ struct ValidatedBody {
     keys: Vec<String>,
     lines: Option<u32>,
     read_source: Option<AiAgentReadSource>,
+    ansi: bool,
     wait: bool,
     timeout_ms: Option<u64>,
 }
@@ -651,6 +656,9 @@ fn validate_body(body: AiAgentBody) -> Result<ValidatedBody, &'static str> {
     if body.read_source.is_some() && body.op != AiAgentOp::Read {
         return Err("read_source is only valid for read");
     }
+    if body.ansi && body.op != AiAgentOp::Read {
+        return Err("ansi is only valid for read");
+    }
     if body.wait && body.op != AiAgentOp::Prompt {
         return Err("wait is only valid for prompt");
     }
@@ -662,6 +670,7 @@ fn validate_body(body: AiAgentBody) -> Result<ValidatedBody, &'static str> {
         keys,
         lines: Some(clamp_lines(body.lines)),
         read_source: body.read_source,
+        ansi: body.ansi,
         wait: body.wait,
         timeout_ms: body.timeout_ms,
     })
@@ -803,6 +812,7 @@ mod tests {
                 .backends[0].features = filebox_protocol::resources::AiAgentFeatures {
                     prompt_wait: false,
                     read_visible: false,
+                    read_ansi: false,
                     keys: Some(vec!["enter".into(), "esc".into()]),
                     status_detection: false,
                 };
@@ -810,6 +820,7 @@ mod tests {
         for (body, expected) in [
             (serde_json::json!({"op":"prompt","target":"reviewer","text":"hello","wait":true}), "ai_agent_unsupported_operation"),
             (serde_json::json!({"op":"read","target":"reviewer","read_source":"visible"}), "ai_agent_unsupported_operation"),
+            (serde_json::json!({"op":"read","target":"reviewer","ansi":true}), "ai_agent_unsupported_operation"),
             (serde_json::json!({"op":"send_keys","target":"reviewer","keys":["ctrl+c"]}), "ai_agent_key_unsupported"),
         ] {
             let response = ai_agents_handler(
@@ -825,6 +836,42 @@ mod tests {
             assert_eq!(value["error"], expected);
             assert!(receiver.try_recv().is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn ansi_read_is_forwarded_and_sgr_output_is_preserved() {
+        let settings = filebox_protocol::resources::AiAgentSettings {
+            enabled: true, backend: Some("herdr".into()),
+            environment_override: None, backend_environment_override: None,
+        };
+        let (state, mut receiver, _) = state_with_ai_agents_settings(settings, "herdr").await;
+        state.inner.write().await.agents.get_mut("agent").unwrap()
+            .capabilities.ai_agents.as_mut().unwrap().backends[0].features.read_ansi = true;
+        let request_state = state.clone();
+        let request = tokio::spawn(async move {
+            ai_agents_handler(
+                State(request_state),
+                Extension(AuthenticatedSession { id: "s".into(), principal_id: "p".into() }),
+                Path("agent".into()),
+                Json(serde_json::from_value(serde_json::json!({
+                    "op": "read", "target": "reviewer", "ansi": true, "lines": 80,
+                })).unwrap()),
+            ).await
+        });
+        let message = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await.unwrap().unwrap();
+        let HubMessage::AiAgentRequest { req_id, op, ansi, lines, .. } = message else { panic!("expected Read") };
+        assert_eq!(op, AiAgentOp::Read);
+        assert!(ansi);
+        assert_eq!(lines, Some(80));
+        let output = "\x1b[31mRED\x1b[0m";
+        state.inner.read().await.pending_responses.write().await.remove(&req_id).unwrap()
+            .deliver(serde_json::json!({"output": output}));
+        let response = request.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 4096).await.unwrap(),
+        ).unwrap();
+        assert_eq!(body["output"], output);
     }
 
     #[test]
@@ -898,7 +945,7 @@ mod tests {
                 text: None,
                 keys: Vec::new(),
                 lines: None,
-                read_source: None,
+                read_source: None, ansi: false,
                 wait: false,
                 timeout_ms: None,
             }),
@@ -921,7 +968,7 @@ mod tests {
                 text: None,
                 keys: Vec::new(),
                 lines: None,
-                read_source: None,
+                read_source: None, ansi: false,
                 wait: false,
                 timeout_ms: None,
             }),
@@ -990,7 +1037,7 @@ mod tests {
                     text: None,
                     keys: Vec::new(),
                     lines: None,
-                    read_source: None,
+                    read_source: None, ansi: false,
                     wait: false,
                     timeout_ms: None,
                 }),
@@ -1171,13 +1218,14 @@ mod tests {
                 let attempts = if decision == "read_busy" { 2 } else { 1 };
                 for attempt in 0..attempts {
                     let msg = tokio::time::timeout(Duration::from_secs(3), receiver.recv()).await.unwrap().unwrap();
-                    let HubMessage::AiAgentRequest { req_id, op, backend, target, text, keys, lines, read_source, wait, .. } = msg else { panic!("expected context Read") };
+                    let HubMessage::AiAgentRequest { req_id, op, backend, target, text, keys, lines, read_source, ansi, wait, .. } = msg else { panic!("expected context Read") };
                     assert_eq!(op, AiAgentOp::Read);
                     assert_eq!(backend.as_deref(), Some("herdr"));
                     assert_eq!(target.as_deref(), Some("reviewer"));
                     assert!(text.is_none() && keys.is_empty() && !wait);
                     assert_eq!(lines, Some(120));
                     assert_eq!(read_source, Some(AiAgentReadSource::Bottom));
+                    assert!(!ansi, "prompt-review context must stay plain");
                     let value = match decision {
                         "read_busy" if attempt == 0 => serde_json::json!({"error":"agent_busy"}),
                         "read_unsupported" => serde_json::json!({"error":"ai_agent_unsupported_operation"}),
@@ -1334,6 +1382,7 @@ mod tests {
                 keys,
                 lines,
                 read_source,
+                ansi,
                 wait,
                 ..
             } = message
@@ -1346,6 +1395,7 @@ mod tests {
             assert!(text.is_none() && keys.is_empty() && !wait);
             assert_eq!(lines, Some(120));
             assert_eq!(read_source, Some(AiAgentReadSource::Bottom));
+            assert!(!ansi, "prompt-review context must stay plain");
             state
                 .inner
                 .read()
@@ -1601,7 +1651,7 @@ mod tests {
             text: None,
             keys: Vec::new(),
             lines: None,
-            read_source: None,
+            read_source: None, ansi: false,
             wait: false,
             timeout_ms: None,
         })
@@ -1618,7 +1668,7 @@ mod tests {
             text: Some("look at this".into()),
             keys: Vec::new(),
             lines: None,
-            read_source: None,
+            read_source: None, ansi: false,
             wait: false,
             timeout_ms: None,
         })
@@ -1630,7 +1680,7 @@ mod tests {
             text: Some("x".into()),
             keys: Vec::new(),
             lines: None,
-            read_source: None,
+            read_source: None, ansi: false,
             wait: false,
             timeout_ms: None,
         })
@@ -1646,7 +1696,7 @@ mod tests {
             text: None,
             keys: vec!["esc".into(), "enter".into()],
             lines: None,
-            read_source: None,
+            read_source: None, ansi: false,
             wait: false,
             timeout_ms: None,
         })
@@ -1658,7 +1708,7 @@ mod tests {
             text: None,
             keys: vec!["rm -rf".into()],
             lines: None,
-            read_source: None,
+            read_source: None, ansi: false,
             wait: false,
             timeout_ms: None,
         })

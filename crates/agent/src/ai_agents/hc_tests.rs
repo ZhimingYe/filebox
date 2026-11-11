@@ -335,7 +335,7 @@ def report(state):
     print('\x1b]7501;app=fixture:state='+state+'\x07', end='', flush=True)
 sys.stdin.readline()
 report('idle')
-print('READY', flush=True)
+print('\x1b[31mREADY\x1b[0m \x1b[1;38;2;12;180;90mCOLOR\x1b[0m', flush=True)
 for line in sys.stdin:
     report('working')
     print('RECEIVED: '+line.strip(), flush=True)
@@ -374,6 +374,11 @@ for line in sys.stdin:
         let second = listed.agents.iter().find(|agent| agent.name.as_deref() == Some("frontend")).unwrap();
         assert_ne!(second.target, target);
         assert!(backend.read(target, 80, Some(AiAgentReadSource::Visible), &cancel).await.unwrap().contains("READY"));
+        let ansi = backend.read_ansi(target, 80, Some(AiAgentReadSource::Visible), &cancel).await.unwrap();
+        assert!(ansi.contains("\x1b[0;38;5;1mREADY\x1b[0m"), "{ansi:?}");
+        assert!(ansi.contains("38;2;12;180;90"), "{ansi:?}");
+        let plain_output = backend.read(target, 80, None, &cancel).await.unwrap();
+        assert!(!plain_output.contains('\x1b'), "{plain_output:?}");
         backend.prompt(target, "filebox literal \"prompt\"", Some(5000), &cancel).await.unwrap();
         let output = backend.read(target, 80, None, &cancel).await.unwrap();
         assert!(output.contains("RECEIVED: filebox literal \"prompt\""), "{output}");
@@ -401,5 +406,24 @@ for line in sys.stdin:
         assert_eq!(backend.prompt(target, "must not send", None, &cancel).await.unwrap_err(), "ai_agent_missing");
         assert_eq!(backend.send_keys(target, &["enter".into()], &cancel).await.unwrap_err(), "ai_agent_missing");
         assert!(backend.read(&second.target, 80, None, &cancel).await.unwrap().contains("READY"));
+        assert_eq!(backend.read_ansi(target, 80, None, &cancel).await.unwrap_err(), "ai_agent_missing");
+        let spinner = setup.call("terminal.run", json!({
+            "argv": ["python3", "-u", "-c", "import time; print('\\x1b]7501;app=fixture:state=working\\x07', end='', flush=True)\nwhile True:\n print('\\r\\x1b[32mSPINNING\\x1b[0m', end='', flush=True); time.sleep(0.01)"],
+            "wait": false, "no_parent": true,
+        })).await.unwrap();
+        let spinner = spinner["address"].as_str().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let value = setup.call("terminal.get", json!({"terminal": spinner})).await.unwrap();
+                if allowed(&value) { break; }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await.unwrap();
+        let started = tokio::time::Instant::now();
+        let snapshot = tokio::time::timeout(Duration::from_secs(4), backend.read_ansi(spinner, 80, None, &cancel)).await.unwrap().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(snapshot.contains("SPINNING"), "{snapshot:?}");
+        assert!(snapshot.contains("38;5;2"), "{snapshot:?}");
+        assert!(!snapshot.contains('\r'));
     }
 }

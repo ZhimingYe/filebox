@@ -65,6 +65,7 @@ export function aiAgentBackend(kind?: string | null): AiAgentBackendDescriptor {
 const defaultFeatures: AiAgentFeatures = {
   prompt_wait: true,
   read_visible: true,
+  read_ansi: false,
   keys: null,
   status_detection: true,
 };

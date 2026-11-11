@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api/client';
 import { aiAgentBackendKey } from '../hooks/useAiAgentAttention';
 import { AiAgentsView } from './AiAgentsView';
+import { ansiColors } from '../theme';
 
 vi.mock('../api/client', async (original) => {
   const actual = await original<typeof api>();
@@ -37,6 +38,7 @@ const listed = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  localStorage.removeItem('filebox.aiAgentsListCollapsed');
   vi.mocked(api.aiAgentCommand).mockImplementation(async (_id, body) => {
     if (body.op === 'status') return listed;
     if (body.op === 'read') return { req_id: 'r1', output: 'latest pane output' };
@@ -79,6 +81,29 @@ function button(label: string) {
 }
 
 describe('AiAgentsView', () => {
+  it.each([true, false])('requests and renders ANSI only when advertised (%s)', async (readAnsi) => {
+    const hc = { ...agent, capabilities: { ai_agents: {
+      ...agent.capabilities!.ai_agents!, backend: 'hc', version: '0.1.17',
+      backends: [{ kind: 'hc', version: '0.1.17', features: {
+        read_ansi: readAnsi, prompt_wait: true, read_visible: true,
+        keys: null, status_detection: true,
+      } }],
+    } } } as api.AgentInfo;
+    vi.mocked(api.aiAgentCommand).mockImplementation(async (_id, body) => body.op === 'status'
+      ? listed : { req_id: 'r', output: readAnsi ? '\x1b[31mRED\x1b[0m plain' : 'RED plain' });
+    await render(hc);
+    const read = vi.mocked(api.aiAgentCommand).mock.calls.find(([, body]) => body.op === 'read')![1];
+    expect(read.ansi).toBe(readAnsi ? true : undefined);
+    const pre = container.querySelector('pre')!;
+    expect(pre.textContent).toBe('RED plain');
+    if (readAnsi) {
+      const span = [...pre.querySelectorAll('span')].find(s => s.textContent === 'RED')!;
+      const probe = document.createElement('span');
+      probe.style.color = ansiColors[1];
+      expect(span.style.color).toBe(probe.style.color);
+    }
+  });
+
   it.each([
     [{ state: 'on', model: 'deepseek-flash' }, 'Reviewed by deepseek-flash', false],
     [{ state: 'off' }, 'Prompt review off', false],
@@ -252,9 +277,64 @@ describe('AiAgentsView', () => {
       { op: 'send_keys', backend: 'herdr', target: 'w1:p2', keys: ['down'] }, expect.any(AbortSignal), 15_000);
   });
 
+  it('collapses and expands the desktop list without losing the selected agent or snapshot', async () => {
+    await render();
+    expect(container.querySelector('aside')).not.toBeNull();
+    await act(async () => button('Collapse coding agents list').click());
+    expect(container.querySelector('aside')).toBeNull();
+    expect(container.querySelector('section')!.textContent).toContain('reviewer');
+    expect(container.querySelector('section')!.textContent).toContain('Working');
+    expect(container.querySelector('pre')!.textContent).toBe('latest pane output');
+    expect(localStorage.getItem('filebox.aiAgentsListCollapsed')).toBe('1');
+    expect(button('Expand coding agents list').getAttribute('aria-expanded')).toBe('false');
+    await act(async () => button('Expand coding agents list').click());
+    expect(container.querySelector('aside')).not.toBeNull();
+    expect(localStorage.getItem('filebox.aiAgentsListCollapsed')).toBe('0');
+  });
+
+  it('restores the saved collapsed preference on remount and ignores it on mobile', async () => {
+    await render();
+    await act(async () => button('Collapse coding agents list').click());
+    act(() => root.unmount());
+    root = createRoot(container);
+    await render();
+    expect(container.querySelector('aside')).toBeNull();
+    expect(button('Expand coding agents list')).toBeDefined();
+    await act(async () => {
+      window.innerWidth = 390;
+      window.dispatchEvent(new Event('resize'));
+    });
+    await act(async () => button('Back to agent list').click());
+    expect(container.querySelector('aside')).not.toBeNull();
+    expect(button('Collapse coding agents list')).toBeUndefined();
+    expect(button('Expand coding agents list')).toBeUndefined();
+    expect(localStorage.getItem('filebox.aiAgentsListCollapsed')).toBe('1');
+  });
+
+  it('keeps the desktop list compact and long names and paths ellipsized with tooltips', async () => {
+    window.innerWidth = 1568;
+    const name = 'reviewer-with-a-very-long-coding-agent-name';
+    const cwd = '/workspace/a-very-long-project-directory/packages/frontend';
+    vi.mocked(api.aiAgentCommand).mockImplementation(async (_id, body) => body.op === 'status'
+      ? { ...listed, agents: [{ ...listed.agents[0], name, cwd }] }
+      : { req_id: 'r', output: 'snapshot' });
+    await render();
+    const list = container.querySelector('aside')!;
+    expect(list.style.width).toBe('240px');
+    expect(list.style.boxSizing).toBe('border-box');
+    for (const value of [name, cwd]) {
+      const label = [...list.querySelectorAll<HTMLElement>('span[title]')].find(el => el.title === value)!;
+      expect(label.textContent).toContain(value);
+      expect(label.style.textOverflow).toBe('ellipsis');
+      expect(label.style.overflow).toBe('hidden');
+      expect(label.style.whiteSpace).toBe('nowrap');
+    }
+  });
+
   it('keeps the mobile list until a tap and preserves output across resize', async () => {
     window.innerWidth = 390;
     await render();
+    expect(container.querySelector('aside')!.style.width).toBe('');
     expect(container.querySelector('textarea')).toBeNull();
     await act(async () => container.querySelector<HTMLButtonElement>('aside button')!.click());
     expect(container.querySelector('textarea')).not.toBeNull();
@@ -265,6 +345,7 @@ describe('AiAgentsView', () => {
     });
     expect(vi.mocked(api.aiAgentCommand).mock.calls.length).toBe(calls);
     expect(container.querySelector('pre')!.textContent).toBe('latest pane output');
+    expect(container.querySelector('aside')!.style.width).toBe('240px');
   });
 
   it('refreshes output every minute while status continues every thirty seconds', async () => {

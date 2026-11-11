@@ -36,6 +36,24 @@ export const c = {
   successBg: '#ecfdf5',
 } as const;
 
+export const ansiColors = [
+  '#1e293b', '#b91c1c', '#15803d', '#a16207', '#1d4ed8', '#a21caf', '#0e7490', '#475569',
+  '#64748b', '#ef4444', '#22c55e', '#eab308', '#3b82f6', '#d946ef', '#06b6d4', '#334155',
+] as const;
+
+export function ansiIndexedColor(index: number, background = false): string {
+  if (background && index === 7) return c.textFaint;
+  if (background && index === 15) return c.bgSubtle;
+  if (index < 16) return ansiColors[index];
+  if (index >= 232) {
+    const gray = 8 + (index - 232) * 10;
+    return `rgb(${gray}, ${gray}, ${gray})`;
+  }
+  const n = index - 16;
+  const level = (v: number) => v === 0 ? 0 : 55 + v * 40;
+  return `rgb(${level(Math.floor(n / 36))}, ${level(Math.floor(n / 6) % 6)}, ${level(n % 6)})`;
+}
+
 // File-type badge colors — part of the file-row visual language (see
 // FileBrowser's FileTypeIcon), NOT nav/surface tokens. White label text sits
 // on each chip, so every color here must stay dark/saturated enough to keep

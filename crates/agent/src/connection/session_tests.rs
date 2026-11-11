@@ -587,6 +587,7 @@ async fn ai_agent_requests_stay_bound_to_the_selected_backend() {
             keys: Vec::new(),
             lines: None,
             read_source: None,
+            ansi: false,
             wait: false,
             timeout_ms: None,
         })
@@ -615,6 +616,7 @@ async fn ai_agent_requests_stay_bound_to_the_selected_backend() {
                 keys: Vec::new(),
                 lines: None,
                 read_source: None,
+                ansi: false,
                 wait: false,
                 timeout_ms: None,
             })
@@ -651,6 +653,7 @@ async fn ai_agent_request_reports_a_backend_that_is_not_detected() {
             keys: Vec::new(),
             lines: None,
             read_source: None,
+            ansi: false,
             wait: false,
             timeout_ms: None,
         })
@@ -690,6 +693,7 @@ async fn ai_agents_direct_request_is_rejected_when_disabled() {
             keys: vec![],
             lines: None,
             read_source: None,
+            ansi: false,
             wait: false,
             timeout_ms: None,
         })
