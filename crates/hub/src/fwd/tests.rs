@@ -371,6 +371,61 @@ async fn upstream_headers_use_loopback_without_bypassing_browser_origin_checks()
 }
 
 #[tokio::test]
+async fn forwarding_recovers_browser_origin_without_forwarded_proto_or_fetch_metadata() {
+    let harness = harness().await;
+    let prefix = format!("/_fwd/agent/{}", harness.port);
+    let base = format!("{}{prefix}", harness.hub);
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    for site in [None, Some("same-origin")] {
+        for host in ["192.0.2.1", "192.0.2.1:3000"] {
+            for method in [reqwest::Method::GET, reqwest::Method::POST] {
+                let mut request = client.request(method, format!("{base}/local-headers"))
+                    .header(header::COOKIE, &harness.cookie).header(header::HOST, host)
+                    .header(header::ORIGIN, "https://192.0.2.1:8983")
+                    .header(header::REFERER, format!("https://192.0.2.1:8983{prefix}/app"));
+                if let Some(site) = site { request = request.header("sec-fetch-site", site); }
+                let response = request.send().await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let body: serde_json::Value = response.json().await.unwrap();
+                assert_eq!(body["origin"], format!("http://127.0.0.1:{}", harness.port));
+                assert_eq!(body["referer"], format!("http://127.0.0.1:{}/app", harness.port));
+            }
+        }
+        let mut request = format!("{}/authority-socket", base.replace("http:", "ws:")).into_client_request().unwrap();
+        for (name, value) in [("host", "192.0.2.1"), ("origin", "https://192.0.2.1:8983"), ("cookie", harness.cookie.as_str())] {
+            request.headers_mut().insert(name, value.parse().unwrap());
+        }
+        if let Some(site) = site { request.headers_mut().insert("sec-fetch-site", site.parse().unwrap()); }
+        let (mut socket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(socket.next().await.unwrap().unwrap().into_text().unwrap(), format!("127.0.0.1:{}", harness.port));
+    }
+    let response = client.get(format!("{base}/local-headers")).header(header::HOST, "192.0.2.1")
+        .header(header::COOKIE, &harness.cookie).header("sec-fetch-dest", "document")
+        .header(header::REFERER, format!("https://192.0.2.1:8983{prefix}/local-headers")).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = client.get(format!("{}/asset.js", harness.hub)).header(header::HOST, "192.0.2.1")
+        .header(header::REFERER, format!("https://192.0.2.1:8983{prefix}/app")).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(response.headers()[header::LOCATION], format!("{prefix}/asset.js"));
+    let before = harness.hits.load(Ordering::SeqCst);
+    for (site, origin) in [(None, "null"), (None, "https://evil.test:8983"), (Some("cross-site"), "https://192.0.2.1:8983"), (Some("same-site"), "https://192.0.2.1:8983")] {
+        let mut request = client.post(format!("{base}/local-headers")).header(header::HOST, "192.0.2.1")
+            .header(header::COOKIE, &harness.cookie).header(header::ORIGIN, origin);
+        if let Some(site) = site { request = request.header("sec-fetch-site", site); }
+        assert_eq!(request.send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        let mut request = format!("{}/authority-socket", base.replace("http:", "ws:")).into_client_request().unwrap();
+        for (name, value) in [("host", "192.0.2.1"), ("origin", origin), ("cookie", harness.cookie.as_str())] {
+            request.headers_mut().insert(name, value.parse().unwrap());
+        }
+        if let Some(site) = site { request.headers_mut().insert("sec-fetch-site", site.parse().unwrap()); }
+        let error = tokio_tungstenite::connect_async(request).await.unwrap_err();
+        assert!(matches!(error, tokio_tungstenite::tungstenite::Error::Http(response) if response.status() == StatusCode::FORBIDDEN));
+    }
+    assert_eq!(harness.hits.load(Ordering::SeqCst), before);
+}
+
+#[tokio::test]
 async fn websocket_upgrade_crosses_data_tunnel() {
     let harness = harness().await;
     let mut request = format!("{}/_fwd/agent/{}/socket", harness.hub.replace("http:", "ws:"), harness.port).into_client_request().unwrap();
