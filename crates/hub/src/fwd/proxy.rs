@@ -8,6 +8,25 @@ use super::rewrite;
 
 const FIRST_BYTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
+fn browser_origin(headers: &HeaderMap) -> Option<axum::http::Uri> {
+    let authority = headers.get(header::HOST)?.to_str().ok()?.parse::<axum::http::uri::Authority>().ok()?;
+    if headers.get("sec-fetch-site").is_some_and(|site| site != "same-origin") { return None; }
+    let source = headers.get(header::ORIGIN).or_else(|| headers.get(header::REFERER))?
+        .to_str().ok()?.parse::<axum::http::Uri>().ok()?;
+    if !headers.contains_key(header::ORIGIN) && !source.path().starts_with("/_fwd/") { return None; }
+    if !matches!(source.scheme_str(), Some("http" | "https")) { return None; }
+    let candidate = source.authority()?;
+    if candidate.host() != authority.host() || candidate.as_str().contains('@') { return None; }
+    Some(source)
+}
+
+fn request_host(request: &Request) -> Option<String> {
+    if !request.headers().contains_key("x-forwarded-proto") && request.uri().scheme().is_none() {
+        if let Some(source) = browser_origin(request.headers()) { return source.authority().map(|authority| authority.to_string()); }
+    }
+    effective_host(request.headers(), request_is_https(request))
+}
+
 fn recovered_host(headers: &HeaderMap, secure: bool) -> Option<String> {
     let host = headers.get(header::HOST)?.to_str().ok()?;
     let authority = host.parse::<axum::http::uri::Authority>().ok()?;
@@ -41,6 +60,8 @@ fn safe_origin(headers: &HeaderMap, own: &url::Url, check_site: bool) -> bool {
 
 fn request_is_https(request: &Request) -> bool {
     request.uri().scheme_str() == Some("https") || request.headers().get("x-forwarded-proto").is_some_and(|v| v == "https")
+        || (request.uri().scheme().is_none() && !request.headers().contains_key("x-forwarded-proto")
+            && browser_origin(request.headers()).is_some_and(|source| source.scheme_str() == Some("https")))
 }
 
 fn failure(status: StatusCode) -> Response {
@@ -79,7 +100,7 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
     };
     let websocket = request.headers().get(header::UPGRADE).is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket"))
         && request.headers().get(header::CONNECTION).and_then(|v| v.to_str().ok()).is_some_and(|v| v.split(',').any(|v| v.trim().eq_ignore_ascii_case("upgrade")));
-    let Some(host) = effective_host(request.headers(), request_is_https(&request)) else { return StatusCode::BAD_REQUEST.into_response(); };
+    let Some(host) = request_host(&request) else { return StatusCode::BAD_REQUEST.into_response(); };
     let Some(own) = origin(&host, request_is_https(&request)) else { return StatusCode::BAD_REQUEST.into_response(); };
     if request.method() == Method::GET && document && !websocket
         && request.headers().get("sec-fetch-dest").is_none_or(|dest| dest == "document" || dest == "iframe")
@@ -122,7 +143,22 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
     let (clean_target, _) = super::manifest::clean(request.uri());
     let target = if keep_prefix { clean_target } else { clean_target.strip_prefix(&prefix).unwrap().to_string() };
     let mut headers = rewrite::sanitize(request.headers(), websocket);
-    headers.insert(header::HOST, HeaderValue::from_str(&host).unwrap());
+    let upstream_host = format!("127.0.0.1:{port}");
+    headers.insert(header::HOST, HeaderValue::from_str(&upstream_host).unwrap());
+    if headers.contains_key(header::ORIGIN) {
+        headers.insert(header::ORIGIN, HeaderValue::from_str(&format!("http://{upstream_host}")).unwrap());
+    }
+    if let Some(mut referer) = headers.get(header::REFERER).and_then(|v| v.to_str().ok()).and_then(|v| url::Url::parse(v).ok()) {
+        headers.remove(header::REFERER);
+        if referer.origin() == own.origin() {
+            let path = referer.path().to_string();
+            if !keep_prefix { if let Some(path) = path.strip_prefix(&format!("{prefix}/")) { referer.set_path(&format!("/{path}")); } }
+            referer.set_scheme("http").unwrap();
+            referer.set_host(Some("127.0.0.1")).unwrap();
+            referer.set_port(Some(port)).unwrap();
+            if let Ok(value) = HeaderValue::from_str(referer.as_str()) { headers.insert(header::REFERER, value); }
+        }
+    }
     let reserved = [session_cookie_name(true, &state.cookie_suffix), session_cookie_name(false, &state.cookie_suffix), csrf_cookie_name(true, &state.cookie_suffix), csrf_cookie_name(false, &state.cookie_suffix)];
     let cookies = headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).map(str::trim)
         .filter(|v| v.split_once('=').is_some_and(|(name, _)| !reserved.iter().any(|r| r == name.trim()))).collect::<Vec<_>>().join("; ");
@@ -222,7 +258,7 @@ fn fallback_target(path_query: &str, referer: &str, own: &url::Url) -> Option<St
 
 pub async fn referer_fallback(request: Request, next: Next) -> Response {
     let secure = request_is_https(&request);
-    if let Some(target) = effective_host(request.headers(), secure).and_then(|host| origin(&host, secure)).and_then(|own| {
+    if let Some(target) = request_host(&request).and_then(|host| origin(&host, secure)).and_then(|own| {
         fallback_target(request.uri().path_and_query()?.as_str(), request.headers().get(header::REFERER)?.to_str().ok()?, &own)
     }) { return Redirect::temporary(&target).into_response(); }
     next.run(request).await
