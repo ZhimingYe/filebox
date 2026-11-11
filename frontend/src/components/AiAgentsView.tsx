@@ -752,13 +752,13 @@ export function AiAgentsView({ agent, onStatus, onStatusError, focusRequest }: P
                   >
                     <span style={styles.cardBody}>
                       <span style={styles.cardTop}>
-                        <span style={{ ...styles.cardName, ...(active ? { color: c.accent } : null) }}>{displayName(item)}</span>
+                        <span title={displayName(item)} style={{ ...styles.cardName, ...(active ? { color: c.accent } : null) }}>{displayName(item)}</span>
                         {drafts[paneIdentity(item)]?.trim() && <span style={styles.draftBadge}>Draft</span>}
                         {features.status_detection && <span style={{ ...styles.badge, color: meta.color, background: active ? c.surface : meta.bg }}>
                           <span style={{ ...styles.dot, background: meta.color }} />{meta.label}
                         </span>}
                       </span>
-                      <span style={styles.cardMeta}>
+                      <span style={styles.cardMeta} title={item.cwd ?? undefined}>
                         {backendKind === 'hc' ? `${item.target} · ` : ''}{item.kind || 'agent'}
                         {item.cwd ? ` · ${item.cwd}` : backendKind !== 'hc' && item.id ? ` · ${item.id}` : ''}
                       </span>
@@ -989,7 +989,8 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
   },
   listDesktop: {
-    width: 'clamp(220px, 28%, 300px)',
+    width: 240,
+    boxSizing: 'border-box',
     flexShrink: 0,
     overflow: 'auto',
     border: `1px solid ${c.border}`,

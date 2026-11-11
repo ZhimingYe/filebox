@@ -276,9 +276,30 @@ describe('AiAgentsView', () => {
       { op: 'send_keys', backend: 'herdr', target: 'w1:p2', keys: ['down'] }, expect.any(AbortSignal), 15_000);
   });
 
+  it('keeps the desktop list compact and long names and paths ellipsized with tooltips', async () => {
+    window.innerWidth = 1568;
+    const name = 'reviewer-with-a-very-long-coding-agent-name';
+    const cwd = '/workspace/a-very-long-project-directory/packages/frontend';
+    vi.mocked(api.aiAgentCommand).mockImplementation(async (_id, body) => body.op === 'status'
+      ? { ...listed, agents: [{ ...listed.agents[0], name, cwd }] }
+      : { req_id: 'r', output: 'snapshot' });
+    await render();
+    const list = container.querySelector('aside')!;
+    expect(list.style.width).toBe('240px');
+    expect(list.style.boxSizing).toBe('border-box');
+    for (const value of [name, cwd]) {
+      const label = [...list.querySelectorAll<HTMLElement>('span[title]')].find(el => el.title === value)!;
+      expect(label.textContent).toContain(value);
+      expect(label.style.textOverflow).toBe('ellipsis');
+      expect(label.style.overflow).toBe('hidden');
+      expect(label.style.whiteSpace).toBe('nowrap');
+    }
+  });
+
   it('keeps the mobile list until a tap and preserves output across resize', async () => {
     window.innerWidth = 390;
     await render();
+    expect(container.querySelector('aside')!.style.width).toBe('');
     expect(container.querySelector('textarea')).toBeNull();
     await act(async () => container.querySelector<HTMLButtonElement>('aside button')!.click());
     expect(container.querySelector('textarea')).not.toBeNull();
@@ -289,6 +310,7 @@ describe('AiAgentsView', () => {
     });
     expect(vi.mocked(api.aiAgentCommand).mock.calls.length).toBe(calls);
     expect(container.querySelector('pre')!.textContent).toBe('latest pane output');
+    expect(container.querySelector('aside')!.style.width).toBe('240px');
   });
 
   it('refreshes output every minute while status continues every thirty seconds', async () => {
