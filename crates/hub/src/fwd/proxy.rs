@@ -122,7 +122,22 @@ pub async fn proxy(State(state): State<AppState>, mut request: Request) -> Respo
     let (clean_target, _) = super::manifest::clean(request.uri());
     let target = if keep_prefix { clean_target } else { clean_target.strip_prefix(&prefix).unwrap().to_string() };
     let mut headers = rewrite::sanitize(request.headers(), websocket);
-    headers.insert(header::HOST, HeaderValue::from_str(&host).unwrap());
+    let upstream_host = format!("127.0.0.1:{port}");
+    headers.insert(header::HOST, HeaderValue::from_str(&upstream_host).unwrap());
+    if headers.contains_key(header::ORIGIN) {
+        headers.insert(header::ORIGIN, HeaderValue::from_str(&format!("http://{upstream_host}")).unwrap());
+    }
+    if let Some(mut referer) = headers.get(header::REFERER).and_then(|v| v.to_str().ok()).and_then(|v| url::Url::parse(v).ok()) {
+        headers.remove(header::REFERER);
+        if referer.origin() == own.origin() {
+            let path = referer.path().to_string();
+            if !keep_prefix { if let Some(path) = path.strip_prefix(&format!("{prefix}/")) { referer.set_path(&format!("/{path}")); } }
+            referer.set_scheme("http").unwrap();
+            referer.set_host(Some("127.0.0.1")).unwrap();
+            referer.set_port(Some(port)).unwrap();
+            if let Ok(value) = HeaderValue::from_str(referer.as_str()) { headers.insert(header::REFERER, value); }
+        }
+    }
     let reserved = [session_cookie_name(true, &state.cookie_suffix), session_cookie_name(false, &state.cookie_suffix), csrf_cookie_name(true, &state.cookie_suffix), csrf_cookie_name(false, &state.cookie_suffix)];
     let cookies = headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).map(str::trim)
         .filter(|v| v.split_once('=').is_some_and(|(name, _)| !reserved.iter().any(|r| r == name.trim()))).collect::<Vec<_>>().join("; ");

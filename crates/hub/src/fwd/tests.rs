@@ -73,6 +73,9 @@ async fn harness() -> Harness {
             axum::Json(serde_json::json!({"host":headers[header::HOST].to_str().unwrap(), "uri":uri.to_string()}))
         }))
         .route("/authority-html", get(|| async { axum::response::Html("<head><base href='https://hub.test:8983/app/'></head>") }))
+        .route("/local-headers", axum::routing::any(|headers: HeaderMap| async move {
+            axum::Json(serde_json::json!({"host":headers[header::HOST].to_str().unwrap(), "origin":headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()), "referer":headers.get(header::REFERER).and_then(|v| v.to_str().ok())}))
+        }))
         .route("/authority-socket", get(|headers: HeaderMap, ws: WebSocketUpgrade| async move {
             ws.on_upgrade(move |mut socket| async move {
                 socket.send(axum::extract::ws::Message::Text(headers[header::HOST].to_str().unwrap().to_string().into())).await.unwrap();
@@ -104,6 +107,8 @@ async fn harness() -> Harness {
         .layer(axum::extract::DefaultBodyLimit::disable())
         .layer(axum::middleware::from_fn(move |request: axum::extract::Request, next: axum::middleware::Next| {
             upstream_hits.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request.headers()[header::HOST], format!("127.0.0.1:{port}"));
+            if let Some(origin) = request.headers().get(header::ORIGIN) { assert_eq!(origin, &format!("http://127.0.0.1:{port}")); }
             async move { next.run(request).await }
         }));
     let local_task = tokio::spawn(async move { axum::serve(local, local_app).await.unwrap(); });
@@ -233,7 +238,7 @@ async fn cold_document_bounces_before_upstream_then_recovers_host_and_preserves_
         .header(header::REFERER, format!("https://hub.test:8983{path}")).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(body["host"], "hub.test:8983");
+    assert_eq!(body["host"], format!("127.0.0.1:{}", harness.port));
     assert_eq!(body["uri"], "/authority?token=private%3Cvalue%3E&x=a%2Fb");
     assert_eq!(harness.hits.load(Ordering::SeqCst), 1);
     for (method, host, dest) in [(reqwest::Method::GET, "hub.test:8983", "document"), (reqwest::Method::GET, "hub.test", "empty"), (reqwest::Method::HEAD, "hub.test", "document"), (reqwest::Method::POST, "hub.test", "document")] {
@@ -287,7 +292,7 @@ async fn cross_port_navigation_bounces_without_upstream_and_cross_port_mutations
         .header(header::REFERER, format!("https://hub.test:8983{path}")).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(body["host"], "hub.test:8983");
+    assert_eq!(body["host"], format!("127.0.0.1:{}", harness.port));
     assert_eq!(body["uri"], "/authority?token=unchanged");
     assert_eq!(harness.hits.load(Ordering::SeqCst), 1);
 }
@@ -309,7 +314,7 @@ async fn port_stripping_proxy_preserves_authority_for_posts_websockets_rewriting
         assert_eq!(response.status(), expected, "{host} {origin}");
         if expected == StatusCode::OK {
             assert_eq!(response.headers()[header::LOCATION], format!("/_fwd/agent/{}/next", harness.port));
-            assert_eq!(response.text().await.unwrap(), "hub.test:8983");
+            assert_eq!(response.text().await.unwrap(), format!("127.0.0.1:{}", harness.port));
         }
     }
     let response = client.get(format!("{base}/authority-html")).header(header::COOKIE, &harness.cookie)
@@ -330,7 +335,39 @@ async fn port_stripping_proxy_preserves_authority_for_posts_websockets_rewriting
     }
     let (mut socket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
-    assert_eq!(tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap().into_text().unwrap(), "hub.test:8983");
+    assert_eq!(tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap().into_text().unwrap(), format!("127.0.0.1:{}", harness.port));
+}
+
+#[tokio::test]
+async fn upstream_headers_use_loopback_without_bypassing_browser_origin_checks() {
+    let harness = harness().await;
+    let prefix = format!("/_fwd/agent/{}", harness.port);
+    let base = format!("{}{prefix}", harness.hub);
+    let client = reqwest::Client::new();
+    let local = format!("http://127.0.0.1:{}", harness.port);
+    for method in [reqwest::Method::GET, reqwest::Method::POST] {
+        for with_origin in [false, true] {
+            let mut request = client.request(method.clone(), format!("{base}/local-headers"))
+                .header(header::COOKIE, &harness.cookie).header(header::HOST, "192.0.2.1")
+                .header("x-forwarded-proto", "https").header("sec-fetch-site", "same-origin")
+                .header(header::REFERER, format!("https://192.0.2.1:8983{prefix}/app?q=a%2Fb"));
+            if with_origin { request = request.header(header::ORIGIN, "https://192.0.2.1:8983"); }
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let headers: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(headers["host"], format!("127.0.0.1:{}", harness.port));
+            assert_eq!(headers["origin"], if with_origin { serde_json::json!(local) } else { serde_json::Value::Null });
+            assert_eq!(headers["referer"], format!("{local}/app?q=a%2Fb"));
+        }
+    }
+    let before = harness.hits.load(Ordering::SeqCst);
+    for origin in ["null", "https://evil.test:8983"] {
+        let response = client.post(format!("{base}/local-headers")).header(header::COOKIE, &harness.cookie)
+            .header(header::HOST, "192.0.2.1:8983").header("x-forwarded-proto", "https")
+            .header(header::ORIGIN, origin).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    assert_eq!(harness.hits.load(Ordering::SeqCst), before);
 }
 
 #[tokio::test]
