@@ -94,12 +94,12 @@ export function PortsView({ agent, onRefresh }: Props) {
       </form>
       <div style={styles.list}>
         {forwards.length === 0 ? <div style={styles.empty}>
-          <p style={{ margin: '0 0 6px', fontSize: 13.5, fontWeight: 500, color: c.text }}>No ports yet.</p>
-          <p style={{ margin: 0 }}>Add a local web service above.</p>
-        </div> : forwards.map((forward) => {
+          <p style={styles.emptyTitle}>No ports yet</p>
+          <p style={styles.emptyBody}>Add a local web service above.</p>
+        </div> : forwards.map((forward, index) => {
           const path = api.forwardPath(agent.id, forward.port);
           const canOpen = forward.trusted === true && agent.status !== 'offline' && !pending;
-          return <div key={forward.port} style={styles.row}>
+          return <div key={forward.port} style={{ ...styles.row, ...(index === forwards.length - 1 ? { borderBottom: 'none' } : {}) }}>
             <div style={styles.identity}><span style={styles.name}>{forward.name}</span><span style={styles.port}>:{forward.port}</span>
               {forward.trusted !== true && <span style={{ fontSize: 11, color: c.textMuted }}>Not trusted by agent</span>}
             </div>
@@ -114,7 +114,7 @@ export function PortsView({ agent, onRefresh }: Props) {
                 style={{ ...styles.iconButton, opacity: busy ? 0.6 : 1 }} onClick={() => void change(() => api.deleteForward(agent.id, forward.port), String(forward.port))}><IconTrash /></button>
             </div>
             <div style={{ flex: '1 0 100%', minWidth: 0, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, fontSize: 11, color: c.textSecondary }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <label title="Keeps the forwarding prefix for apps configured with this base URL." style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input type="checkbox" aria-label={`App uses this base path for ${forward.name}`} checked={!!forward.keep_prefix} disabled={!!busy}
                   onChange={(event) => void change(() => api.setForwardPrefix(agent.id, forward.port, event.target.checked), String(forward.port))} />App uses this base path
               </label>
@@ -124,7 +124,6 @@ export function PortsView({ agent, onRefresh }: Props) {
                 setErrors((previous) => ({ ...previous, [forward.port]: ok ? null : 'Could not copy the base path.' }));
               }}>{copiedPath === `prefix:${path}` ? <IconCheck /> : <IconClipboard />}</button>
             </div>
-            <span style={{ fontSize: 11, color: c.textMuted }}>Keeps the forwarding prefix for apps configured with this base URL.</span>
             {busy === String(forward.port) && <span role="status" style={{ fontSize: 11, color: c.textSecondary }}>Saving…</span>}
             {errors[forward.port] && <p role="alert" style={{ ...styles.notice, width: '100%', color: c.danger, background: c.dangerBg }}>{errors[forward.port]}</p>}
           </div>;
@@ -144,11 +143,13 @@ const styles = {
   input: { display: 'block', boxSizing: 'border-box', width: '100%', height: 30, marginTop: 5, padding: '4px 8px', border: `1px solid ${c.border}`, borderRadius: radius.sm, background: c.bg, color: c.text, fontFamily: font.sans, fontSize: 12 },
   button: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: 30, boxSizing: 'border-box', padding: '0 10px', borderWidth: 1, borderStyle: 'solid', borderColor: c.border, borderRadius: radius.sm, background: c.bg, color: c.textSecondary, fontFamily: font.sans, fontSize: 12, textDecoration: 'none', cursor: 'pointer', whiteSpace: 'nowrap' },
   iconButton: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, padding: 0, border: 0, borderRadius: radius.sm, background: 'transparent', color: c.textSecondary, cursor: 'pointer' },
-  list: { borderTop: `1px solid ${c.border}` },
-  row: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '12px 0', borderBottom: `1px solid ${c.borderSubtle}` },
+  list: { display: 'flex', flexDirection: 'column', border: `1px solid ${c.border}`, borderRadius: radius.md, background: c.bg, overflow: 'hidden', flexShrink: 0 },
+  row: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '12px 14px', borderBottom: `1px solid ${c.borderSubtle}` },
   identity: { display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: 8, minWidth: 0, flex: '1 1 120px' },
   name: { fontSize: 13, fontWeight: 500, overflowWrap: 'anywhere' },
   port: { fontSize: 11, fontFamily: font.mono, color: c.textMuted },
   actions: { display: 'flex', alignItems: 'center', gap: 6 },
-  empty: { fontSize: 12.5, lineHeight: 1.45, textAlign: 'center', color: c.textMuted, padding: '28px 16px', marginTop: 14, border: `1px solid ${c.border}`, borderRadius: radius.md },
+  empty: { textAlign: 'center', padding: '28px 16px' },
+  emptyTitle: { margin: 0, fontSize: 13.5, fontWeight: 600, color: c.text },
+  emptyBody: { margin: '6px auto 0', maxWidth: 360, fontSize: 12.5, lineHeight: 1.45, color: c.textMuted },
 } satisfies Record<string, CSSProperties>;
