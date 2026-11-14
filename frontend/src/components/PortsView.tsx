@@ -22,26 +22,30 @@ function PortsViewContent({ agent, onRefresh }: Props) {
   const [keepPrefix, setKeepPrefix] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string | null>>({});
-  const dismissalKey = `filebox.ports.dismissed-error.${agent.id}`;
-  const [dismissedError, setDismissedError] = useState<string | null>(() => {
-    try { return sessionStorage.getItem(dismissalKey); } catch { return null; }
-  });
+  const [observedConfigError, setObservedConfigError] = useState(agent.last_config_error);
+  const [lastOperationError, setLastOperationError] = useState<string | null>(null);
   const error = errors.add;
   const setError = (message: string | null) => setErrors((previous) => ({ ...previous, add: message }));
   const forwards = agent.forwards ?? [];
   const pending = agent.pending_forwards_update;
 
-  function dismissError(message: string, scope?: string) {
-    if (scope) setErrors((previous) => ({ ...previous, [scope]: null }));
-    setDismissedError(message);
-    try { sessionStorage.setItem(dismissalKey, message); } catch { /* Storage may be unavailable. */ }
+  if (observedConfigError !== agent.last_config_error && !busy) {
+    setObservedConfigError(agent.last_config_error);
+    setLastOperationError(null);
+    if (agent.last_config_error && agent.last_config_error !== lastOperationError && !Object.values(errors).includes(agent.last_config_error)) {
+      setErrors((previous) => ({ ...previous, agent: agent.last_config_error }));
+    }
+  }
+
+  function dismissError(message: string, scope: string) {
+    setErrors((previous) => ({ ...previous, [scope]: null, ...(previous.agent === message ? { agent: null } : {}) }));
   }
 
   function clearAddError() {
     if (error) dismissError(error, 'add');
   }
 
-  function errorNotice(message: string, scope?: string) {
+  function errorNotice(message: string, scope: string) {
     return <div role="alert" style={{ ...styles.notice, display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%', color: c.danger, background: c.dangerBg }}>
       <span style={{ flex: 1, minWidth: 0 }}>{message}</span>
       <button type="button" aria-label="Dismiss error" title="Dismiss error" style={{ ...styles.iconButton, width: 20, height: 20, flexShrink: 0 }} onClick={() => dismissError(message, scope)}><IconClose /></button>
@@ -57,7 +61,9 @@ function PortsViewContent({ agent, onRefresh }: Props) {
       if (scope === 'add') { setPort(''); setName(''); setKeepPrefix(false); }
     } catch (cause) {
       const details = cause as api.ApiError;
-      setErrors((previous) => ({ ...previous, [scope]: details?.message || api.friendlyMessage(cause) }));
+      const message = details?.message || api.friendlyMessage(cause);
+      setLastOperationError(message);
+      setErrors((previous) => ({ ...previous, [scope]: message, ...(previous.agent === message ? { agent: null } : {}) }));
     } finally {
       setBusy(null);
       onRefresh();
@@ -92,7 +98,7 @@ function PortsViewContent({ agent, onRefresh }: Props) {
       {(pending || agent.status === 'offline') && <p role="status" style={styles.notice}>
         {agent.status === 'offline' ? 'Agent offline. Changes will sync on reconnect.' : 'Pending sync with Agent…'}
       </p>}
-      {agent.last_config_error && agent.last_config_error !== dismissedError && !Object.values(errors).includes(agent.last_config_error) && errorNotice(agent.last_config_error)}
+      {errors.agent && errorNotice(errors.agent, 'agent')}
       <form onSubmit={add} style={styles.form}>
         <label style={{ ...styles.label, flex: '0 1 84px' }}>Port
           <input aria-label="Port" type="number" min="1" max="65535" step="1" required value={port}

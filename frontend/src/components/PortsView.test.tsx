@@ -22,7 +22,6 @@ const width = window.innerWidth;
 
 beforeEach(() => {
   vi.resetAllMocks();
-  sessionStorage.clear();
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
@@ -148,11 +147,11 @@ it('reports clipboard failures instead of claiming the link was copied', async (
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not copy the link');
 });
 
-it('shows pending/offline and config errors, then updates from refreshed Agent metadata', async () => {
+it('shows pending/offline without a pre-existing config error, then updates from refreshed Agent metadata', async () => {
   const forwards = [{ port: 9001, name: 'Python', trusted: true }];
   await render({ ...agent, forwards, status: 'offline', pending_forwards_update: true, last_config_error: 'Rejected config' });
   expect(host.textContent).toContain('Changes will sync on reconnect');
-  expect(host.textContent).toContain('Rejected config');
+  expect(host.textContent).not.toContain('Rejected config');
   expect(host.querySelector('a')).toBeNull();
   await render({ ...agent, forwards, pending_forwards_update: true });
   expect(host.textContent).toContain('Pending sync');
@@ -285,24 +284,49 @@ it.each(['Port', 'Name (optional)'])('clears the add error when editing %s witho
   expect(host.querySelector('[role="alert"]')).toBeNull();
 });
 
-it('persists config error dismissal across remounts and shows different errors per Agent', async () => {
+it('ignores pre-existing config errors on mount and after remount', async () => {
   const value = { ...agent, last_config_error: 'Old rejection' };
   await render(value);
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')!.click());
   expect(host.querySelector('[role="alert"]')).toBeNull();
   await act(async () => root.render(null));
   await render(value);
   expect(host.querySelector('[role="alert"]')).toBeNull();
-  await render({ ...value, last_config_error: 'New rejection' });
-  expect(host.querySelector('[role="alert"]')?.textContent).toBe('New rejection');
-  await render({ ...value, id: 'a2' });
-  expect(host.querySelector('[role="alert"]')?.textContent).toBe('Old rejection');
 });
 
-it('can dismiss notices even when storage is unavailable', async () => {
-  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('Denied'); });
-  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Denied'); });
-  await render({ ...agent, last_config_error: 'Rejected port' });
+it('shows a newly arriving error once, allows dismissal, and shows a different arrival', async () => {
+  const value = { ...agent, last_config_error: 'Old rejection' };
+  await render(value);
+  await render({ ...value, last_config_error: 'New rejection' });
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('New rejection');
   await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')!.click());
+  await render({ ...value, last_config_error: 'New rejection', rtt_ms: 5 });
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  await render({ ...value, last_config_error: 'Another rejection' });
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('Another rejection');
+});
+
+it('does not retain local or async notices across remounts', async () => {
+  vi.mocked(api.addForward).mockRejectedValue({ message: 'Rejected port' });
+  await render();
+  input('Port', '9001');
+  await submit();
+  expect(host.querySelector('form [role="alert"]')?.textContent).toBe('Rejected port');
+  await act(async () => root.render(null));
+  await render({ ...agent, last_config_error: 'Rejected port' });
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  await render({ ...agent, last_config_error: 'Async rejection' });
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('Async rejection');
+  await act(async () => root.render(null));
+  await render({ ...agent, last_config_error: 'Async rejection' });
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('does not redisplay a late metadata echo after the local error was dismissed', async () => {
+  vi.mocked(api.addForward).mockRejectedValue({ message: 'Rejected port' });
+  await render();
+  input('Port', '9001');
+  await submit();
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')!.click());
+  await render({ ...agent, last_config_error: 'Rejected port' });
   expect(host.querySelector('[role="alert"]')).toBeNull();
 });
