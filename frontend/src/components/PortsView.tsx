@@ -3,7 +3,7 @@ import * as api from '../api/client';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { useIsMobile } from '../state/useIsMobile';
 import { c, font, radius } from '../theme';
-import { IconCheck, IconClipboard, IconTrash } from './icons';
+import { IconCheck, IconClipboard, IconClose, IconTrash } from './icons';
 
 interface Props {
   agent: api.AgentInfo;
@@ -11,6 +11,10 @@ interface Props {
 }
 
 export function PortsView({ agent, onRefresh }: Props) {
+  return <PortsViewContent key={agent.id} agent={agent} onRefresh={onRefresh} />;
+}
+
+function PortsViewContent({ agent, onRefresh }: Props) {
   const isMobile = useIsMobile();
   const { copiedPath, copyToClipboard } = useCopyToClipboard();
   const [port, setPort] = useState('');
@@ -18,10 +22,31 @@ export function PortsView({ agent, onRefresh }: Props) {
   const [keepPrefix, setKeepPrefix] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string | null>>({});
+  const dismissalKey = `filebox.ports.dismissed-error.${agent.id}`;
+  const [dismissedError, setDismissedError] = useState<string | null>(() => {
+    try { return sessionStorage.getItem(dismissalKey); } catch { return null; }
+  });
   const error = errors.add;
   const setError = (message: string | null) => setErrors((previous) => ({ ...previous, add: message }));
   const forwards = agent.forwards ?? [];
   const pending = agent.pending_forwards_update;
+
+  function dismissError(message: string, scope?: string) {
+    if (scope) setErrors((previous) => ({ ...previous, [scope]: null }));
+    setDismissedError(message);
+    try { sessionStorage.setItem(dismissalKey, message); } catch { /* Storage may be unavailable. */ }
+  }
+
+  function clearAddError() {
+    if (error) dismissError(error, 'add');
+  }
+
+  function errorNotice(message: string, scope?: string) {
+    return <div role="alert" style={{ ...styles.notice, display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%', color: c.danger, background: c.dangerBg }}>
+      <span style={{ flex: 1, minWidth: 0 }}>{message}</span>
+      <button type="button" aria-label="Dismiss error" title="Dismiss error" style={{ ...styles.iconButton, width: 20, height: 20, flexShrink: 0 }} onClick={() => dismissError(message, scope)}><IconClose /></button>
+    </div>;
+  }
 
   async function change(operation: () => Promise<api.DesiredStateResponse>, scope = 'add') {
     if (busy) return;
@@ -67,16 +92,14 @@ export function PortsView({ agent, onRefresh }: Props) {
       {(pending || agent.status === 'offline') && <p role="status" style={styles.notice}>
         {agent.status === 'offline' ? 'Agent offline. Changes will sync on reconnect.' : 'Pending sync with Agent…'}
       </p>}
-      {agent.last_config_error && !Object.values(errors).includes(agent.last_config_error) && <p role="alert" style={{ ...styles.notice, color: c.danger, background: c.dangerBg }}>
-        {agent.last_config_error}
-      </p>}
+      {agent.last_config_error && agent.last_config_error !== dismissedError && !Object.values(errors).includes(agent.last_config_error) && errorNotice(agent.last_config_error)}
       <form onSubmit={add} style={styles.form}>
         <label style={{ ...styles.label, flex: '0 1 84px' }}>Port
           <input aria-label="Port" type="number" min="1" max="65535" step="1" required value={port}
-            onChange={(event) => setPort(event.target.value)} style={styles.input} disabled={busy === 'add'} placeholder="9001" />
+            onChange={(event) => { setPort(event.target.value); clearAddError(); }} style={styles.input} disabled={busy === 'add'} placeholder="9001" />
         </label>
         <label style={{ ...styles.label, flex: '1 1 136px' }}>Name <span style={{ color: c.textMuted }}>(optional)</span>
-          <input aria-label="Name (optional)" value={name} onChange={(event) => setName(event.target.value)}
+          <input aria-label="Name (optional)" value={name} onChange={(event) => { setName(event.target.value); clearAddError(); }}
             style={styles.input} disabled={busy === 'add'} placeholder="Local app" />
         </label>
         <button type="submit" disabled={!!busy} style={{ ...styles.button, color: c.onAccent, background: c.accent, borderColor: c.accent, opacity: busy ? 0.6 : 1 }}>
@@ -90,7 +113,7 @@ export function PortsView({ agent, onRefresh }: Props) {
           <p style={{ margin: '6px 0', lineHeight: 1.5 }}>Keep the forwarding prefix for apps configured with this base URL.</p>
           <code style={{ display: 'block', fontFamily: font.mono, overflowWrap: 'anywhere' }}>{`/_fwd/${encodeURIComponent(agent.id)}/${/^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535 ? Number(port) : '<port>'}/`}</code>
         </details>
-        {error && <p role="alert" style={{ ...styles.notice, width: '100%', color: c.danger, background: c.dangerBg }}>{error}</p>}
+        {error && errorNotice(error, 'add')}
       </form>
       <div style={styles.list}>
         {forwards.length === 0 ? <div style={styles.empty}>
@@ -98,6 +121,7 @@ export function PortsView({ agent, onRefresh }: Props) {
           <p style={styles.emptyBody}>Add a local web service above.</p>
         </div> : forwards.map((forward, index) => {
           const path = api.forwardPath(agent.id, forward.port);
+          const rowError = errors[forward.port];
           const canOpen = forward.trusted === true && agent.status !== 'offline' && !pending;
           return <div key={forward.port} style={{ ...styles.row, ...(index === forwards.length - 1 ? { borderBottom: 'none' } : {}) }}>
             <div style={styles.identity}><span style={styles.name}>{forward.name}</span><span style={styles.port}>:{forward.port}</span>
@@ -125,7 +149,7 @@ export function PortsView({ agent, onRefresh }: Props) {
               }}>{copiedPath === `prefix:${path}` ? <IconCheck /> : <IconClipboard />}</button>
             </div>
             {busy === String(forward.port) && <span role="status" style={{ fontSize: 11, color: c.textSecondary }}>Saving…</span>}
-            {errors[forward.port] && <p role="alert" style={{ ...styles.notice, width: '100%', color: c.danger, background: c.dangerBg }}>{errors[forward.port]}</p>}
+            {rowError && errorNotice(rowError, String(forward.port))}
           </div>;
         })}
       </div>

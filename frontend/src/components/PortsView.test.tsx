@@ -22,6 +22,7 @@ const width = window.innerWidth;
 
 beforeEach(() => {
   vi.resetAllMocks();
+  sessionStorage.clear();
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
@@ -252,4 +253,56 @@ it('does not duplicate a rejection echoed through Agent metadata', async () => {
   await render({ ...agent, last_config_error: 'Rejected port' });
   expect(host.querySelectorAll('[role="alert"]')).toHaveLength(1);
   expect(host.querySelector('form [role="alert"]')?.textContent).toBe('Rejected port');
+});
+
+it('dismisses an add error and its metadata echo', async () => {
+  vi.mocked(api.addForward).mockRejectedValue({ message: 'Rejected port' });
+  await render();
+  input('Port', '9001');
+  await submit();
+  await render({ ...agent, last_config_error: 'Rejected port' });
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')!.click());
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('dismisses a row error without removing the row', async () => {
+  vi.mocked(api.setForwardPrefix).mockRejectedValue({ message: 'Cannot save prefix' });
+  await render({ ...agent, forwards: [{ port: 9001, name: 'Python', trusted: true }] });
+  await act(async () => host.querySelector<HTMLInputElement>('[aria-label="App uses this base path for Python"]')!.click());
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('Cannot save prefix');
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')!.click());
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(host.querySelector('[aria-label="Delete Python"]')).not.toBeNull();
+});
+
+it.each(['Port', 'Name (optional)'])('clears the add error when editing %s without exposing its metadata echo', async (field) => {
+  vi.mocked(api.addForward).mockRejectedValue({ message: 'Rejected port' });
+  await render();
+  input('Port', '9001');
+  await submit();
+  await render({ ...agent, last_config_error: 'Rejected port' });
+  input(field, field === 'Port' ? '9002' : 'Draft');
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('persists config error dismissal across remounts and shows different errors per Agent', async () => {
+  const value = { ...agent, last_config_error: 'Old rejection' };
+  await render(value);
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')!.click());
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  await act(async () => root.render(null));
+  await render(value);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  await render({ ...value, last_config_error: 'New rejection' });
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('New rejection');
+  await render({ ...value, id: 'a2' });
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('Old rejection');
+});
+
+it('can dismiss notices even when storage is unavailable', async () => {
+  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('Denied'); });
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Denied'); });
+  await render({ ...agent, last_config_error: 'Rejected port' });
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')!.click());
+  expect(host.querySelector('[role="alert"]')).toBeNull();
 });
