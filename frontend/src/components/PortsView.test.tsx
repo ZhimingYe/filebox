@@ -51,16 +51,19 @@ async function submit() {
 
 it.each([false, undefined])('explains unavailable capability %s without showing controls', async (capability) => {
   await render({ ...agent, capabilities: { port_forward: capability } });
-  expect(host.textContent).toContain('Upgrade the Agent');
-  expect(host.textContent).toContain('FILEBOX_AGENT_PORT_FORWARD=off');
+  expect(host.textContent).toContain('Port forwarding is unavailable');
+  expect(host.textContent).not.toContain('FILEBOX_AGENT');
   expect(host.querySelector('form')).toBeNull();
 });
 
 it('shows an empty state and adds an optional default name', async () => {
   await render();
   expect(host.textContent).toContain('No ports yet');
-  expect(host.querySelector('form')?.textContent).toContain('trusted_ports');
-  expect(host.querySelector('form')?.textContent).toContain('agent.toml / FILEBOX_AGENT_TRUSTED_PORTS');
+  expect(host.textContent).not.toContain('trusted_ports');
+  expect(host.textContent).toContain('Only forward apps you trust');
+  expect(host.textContent).toContain('Hub origin');
+  expect(host.textContent).toContain('running code and writing files');
+  expect(host.textContent).toContain('Anyone signed in to this Hub');
   expect(host.textContent).not.toContain('Allowed ports');
   input('Port', '9001');
   await submit();
@@ -144,11 +147,11 @@ it('reports clipboard failures instead of claiming the link was copied', async (
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not copy the link');
 });
 
-it('shows pending/offline and config errors, then updates from refreshed Agent metadata', async () => {
+it('shows pending/offline without a pre-existing config error, then updates from refreshed Agent metadata', async () => {
   const forwards = [{ port: 9001, name: 'Python', trusted: true }];
   await render({ ...agent, forwards, status: 'offline', pending_forwards_update: true, last_config_error: 'Rejected config' });
   expect(host.textContent).toContain('Changes will sync on reconnect');
-  expect(host.textContent).toContain('Rejected config');
+  expect(host.textContent).not.toContain('Rejected config');
   expect(host.querySelector('a')).toBeNull();
   await render({ ...agent, forwards, pending_forwards_update: true });
   expect(host.textContent).toContain('Pending sync');
@@ -205,4 +208,125 @@ it('toggles existing base paths, copies the prefix, and reflects rejection witho
   await act(async () => toggle.click());
   expect(toggle.checked).toBe(true);
   expect(host.querySelector('[role="alert"]')?.textContent).toBe('Cannot persist base path');
+});
+
+it('keeps row errors local and clears clipboard failures after a successful retry', async () => {
+  const writeText = vi.fn().mockRejectedValueOnce(new Error('Denied')).mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  await render({ ...agent, forwards: [{ port: 9001, name: 'Python', trusted: true }] });
+  const copy = host.querySelector<HTMLButtonElement>('[aria-label="Copy base path for Python"]')!;
+  await act(async () => copy.click());
+  expect(host.querySelector('form [role="alert"]')).toBeNull();
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('Could not copy the base path.');
+  await act(async () => copy.click());
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('allows drafting during row saves without claiming the add form is saving', async () => {
+  let finish!: (response: api.DesiredStateResponse) => void;
+  vi.mocked(api.deleteForward).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  await render({ ...agent, forwards: [{ port: 9001, name: 'Python', trusted: true }] });
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Delete Python"]')!.click());
+  expect(host.querySelector<HTMLInputElement>('[aria-label="Port"]')?.disabled).toBe(false);
+  expect(host.querySelector('form button')?.textContent).toBe('Add port');
+  input('Port', '9002');
+  await submit();
+  expect(api.addForward).not.toHaveBeenCalled();
+  await act(async () => finish({ ok: true, state: 'applied' }));
+  expect(host.querySelector<HTMLInputElement>('[aria-label="Port"]')?.value).toBe('9002');
+});
+
+it('previews the canonical base path and does not preview invalid ports', async () => {
+  await render();
+  input('Port', '009001');
+  expect(host.querySelector('details code')?.textContent).toBe('/_fwd/a1/9001/');
+  input('Port', '65536');
+  expect(host.querySelector('details code')?.textContent).toBe('/_fwd/a1/<port>/');
+});
+
+it('does not duplicate a rejection echoed through Agent metadata', async () => {
+  vi.mocked(api.addForward).mockRejectedValue({ message: 'Rejected port' });
+  await render();
+  input('Port', '9001');
+  await submit();
+  await render({ ...agent, last_config_error: 'Rejected port' });
+  expect(host.querySelectorAll('[role="alert"]')).toHaveLength(1);
+  expect(host.querySelector('form [role="alert"]')?.textContent).toBe('Rejected port');
+});
+
+it('dismisses an add error and its metadata echo', async () => {
+  vi.mocked(api.addForward).mockRejectedValue({ message: 'Rejected port' });
+  await render();
+  input('Port', '9001');
+  await submit();
+  await render({ ...agent, last_config_error: 'Rejected port' });
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')!.click());
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('dismisses a row error without removing the row', async () => {
+  vi.mocked(api.setForwardPrefix).mockRejectedValue({ message: 'Cannot save prefix' });
+  await render({ ...agent, forwards: [{ port: 9001, name: 'Python', trusted: true }] });
+  await act(async () => host.querySelector<HTMLInputElement>('[aria-label="App uses this base path for Python"]')!.click());
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('Cannot save prefix');
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')!.click());
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(host.querySelector('[aria-label="Delete Python"]')).not.toBeNull();
+});
+
+it.each(['Port', 'Name (optional)'])('clears the add error when editing %s without exposing its metadata echo', async (field) => {
+  vi.mocked(api.addForward).mockRejectedValue({ message: 'Rejected port' });
+  await render();
+  input('Port', '9001');
+  await submit();
+  await render({ ...agent, last_config_error: 'Rejected port' });
+  input(field, field === 'Port' ? '9002' : 'Draft');
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('ignores pre-existing config errors on mount and after remount', async () => {
+  const value = { ...agent, last_config_error: 'Old rejection' };
+  await render(value);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  await act(async () => root.render(null));
+  await render(value);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('shows a newly arriving error once, allows dismissal, and shows a different arrival', async () => {
+  const value = { ...agent, last_config_error: 'Old rejection' };
+  await render(value);
+  await render({ ...value, last_config_error: 'New rejection' });
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('New rejection');
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')!.click());
+  await render({ ...value, last_config_error: 'New rejection', rtt_ms: 5 });
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  await render({ ...value, last_config_error: 'Another rejection' });
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('Another rejection');
+});
+
+it('does not retain local or async notices across remounts', async () => {
+  vi.mocked(api.addForward).mockRejectedValue({ message: 'Rejected port' });
+  await render();
+  input('Port', '9001');
+  await submit();
+  expect(host.querySelector('form [role="alert"]')?.textContent).toBe('Rejected port');
+  await act(async () => root.render(null));
+  await render({ ...agent, last_config_error: 'Rejected port' });
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  await render({ ...agent, last_config_error: 'Async rejection' });
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('Async rejection');
+  await act(async () => root.render(null));
+  await render({ ...agent, last_config_error: 'Async rejection' });
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('does not redisplay a late metadata echo after the local error was dismissed', async () => {
+  vi.mocked(api.addForward).mockRejectedValue({ message: 'Rejected port' });
+  await render();
+  input('Port', '9001');
+  await submit();
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')!.click());
+  await render({ ...agent, last_config_error: 'Rejected port' });
+  expect(host.querySelector('[role="alert"]')).toBeNull();
 });
