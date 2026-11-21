@@ -330,3 +330,12 @@ it('does not redisplay a late metadata echo after the local error was dismissed'
   await render({ ...agent, last_config_error: 'Rejected port' });
   expect(host.querySelector('[role="alert"]')).toBeNull();
 });
+
+it('clears an arriving agent error when last_config_error resets to null and disables native form validation', async () => {
+  await render();
+  expect(host.querySelector('form')?.noValidate).toBe(true);
+  await render({ ...agent, last_config_error: 'New rejection' });
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('New rejection');
+  await render({ ...agent, last_config_error: null });
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
